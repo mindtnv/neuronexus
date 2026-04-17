@@ -152,7 +152,11 @@ export const NNDecks = () => {
         <NNBtn size="sm" variant="soft" icon="stack">{t('decks.tree')}</NNBtn>
         <NNBtn size="sm" variant="ghost" icon="filter">{t('decks.filter')}</NNBtn>
         <div style={{ flex: 1 }} />
-        {!isMobile && <NNBtn size="sm" variant="soft" icon="sparkle">{t('decks.importPdf')}</NNBtn>}
+        {!isMobile && (
+          <Link href="/import" style={{ textDecoration: 'none' }}>
+            <NNBtn size="sm" variant="soft" icon="sparkle">{t('decks.importPdf')}</NNBtn>
+          </Link>
+        )}
         <NNBtn size="sm" variant="primary" icon="plus" onClick={() => openCreateAt(null)}>
           {t('decks.newDeck')}
         </NNBtn>
