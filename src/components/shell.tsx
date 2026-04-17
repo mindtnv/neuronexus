@@ -8,6 +8,7 @@ import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { LocaleToggle } from './locale-toggle';
+import { aggregateCounts } from '@/lib/decks';
 
 export type NavItem = {
   id: string;
@@ -75,7 +76,10 @@ export const NNSidebar = ({
 
   const recentDecks = useMemo(() => {
     if (!bootstrapped || decks.length === 0) return FALLBACK_RECENT.slice(0, 4);
-    return decks
+    // Show root decks (those without a parent) with their aggregate card counts.
+    const roots = decks.filter((d) => !d.parentId);
+    const source = roots.length > 0 ? roots : decks;
+    return source
       .slice()
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, 4)
@@ -86,7 +90,7 @@ export const NNSidebar = ({
           | 'violet'
           | 'sky'
           | 'rose',
-        count: cards.filter((c) => c.deckId === d.id).length,
+        count: aggregateCounts(decks, cards, d.id).total,
       }));
   }, [bootstrapped, decks, cards]);
 
