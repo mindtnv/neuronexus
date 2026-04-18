@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { State } from 'ts-fsrs';
 import { addDays, format, isSameDay, startOfDay, startOfMonth, subDays } from 'date-fns';
 import { NNBadge, NNBtn, NNCard, NNHeatmap, NNIcon, NNMiniGraph, NNPlant } from '@/components/ui';
@@ -227,7 +228,9 @@ export const NNHome = () => {
           </div>
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
-            <NNBtn size="lg" variant="primary" icon="bolt">{t('home.startReview')}</NNBtn>
+            <Link href="/review" style={{ textDecoration: 'none' }}>
+              <NNBtn size="lg" variant="primary" icon="bolt">{t('home.startReview')}</NNBtn>
+            </Link>
             <NNBtn size="lg" variant="outline" icon="sparkle">{t('home.aiGenerate')}</NNBtn>
             <div style={{ flex: 1 }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-dim)', fontSize: 12 }}>
@@ -342,7 +345,9 @@ export const NNHome = () => {
                 {t('home.graphSub', { nodes: nodes.toLocaleString(), links: links.toLocaleString(), clusters })}
               </div>
             </div>
-            <NNBtn size="sm" variant="ghost" iconRight="arrow">{t('actions.open')}</NNBtn>
+            <Link href="/graph" style={{ textDecoration: 'none' }}>
+              <NNBtn size="sm" variant="ghost" iconRight="arrow">{t('actions.open')}</NNBtn>
+            </Link>
           </div>
           <div style={{ margin: '4px -4px -4px' }}>
             <NNMiniGraph height={170} />

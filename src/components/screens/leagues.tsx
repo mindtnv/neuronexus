@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { NNBadge, NNBtn, NNCard, NNIcon } from '@/components/ui';
+import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 
@@ -10,18 +11,23 @@ export const NNLeagues = () => {
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const isDesktop = bp === 'desktop';
+  const profile = useNN((s) => s.profile);
+  const meName = profile?.name ?? 'You';
+  const meXp = profile?.xp ?? 0;
+  const meStreak = profile?.streakDays ?? 0;
+  const meInitials = meName.charAt(0).toUpperCase() || 'Y';
   const leagues = ['Seed', 'Sprout', 'Sapling', 'Oak', 'Redwood', 'Ancient'];
   const rows = [
-    { rank: 1, n: 'Mira',   xp: 3420, streak: 31, me: false, tone: 'amber', avatar: '#f3b655', initials: 'M' },
-    { rank: 2, n: 'Kenji',  xp: 3180, streak: 28, me: false, tone: 'amber', avatar: '#e8788a', initials: 'K' },
-    { rank: 3, n: 'Lena',   xp: 2960, streak: 22, me: false, tone: 'amber', avatar: '#a788ff', initials: 'L' },
-    { rank: 4, n: 'Alex',   xp: 2847, streak: 24, me: true,  tone: 'lime',  avatar: '#9ad155', initials: 'A' },
-    { rank: 5, n: 'Jordan', xp: 2510, streak: 14, me: false, tone: 'lime',  avatar: '#55c4d6', initials: 'J' },
-    { rank: 6, n: 'Priya',  xp: 2340, streak: 19, me: false, tone: 'neutral', avatar: '#fd9a86', initials: 'P' },
-    { rank: 7, n: 'Sam',    xp: 2180, streak: 9,  me: false, tone: 'neutral', avatar: '#8ad6ff', initials: 'S' },
-    { rank: 8, n: 'Yuki',   xp: 1920, streak: 12, me: false, tone: 'neutral', avatar: '#f5b4c5', initials: 'Y' },
-    { rank: 9, n: 'Malik',  xp: 1640, streak: 6,  me: false, tone: 'rose',    avatar: '#b6cbff', initials: 'M' },
-    { rank: 10,n: 'Tuna',   xp: 1420, streak: 4,  me: false, tone: 'rose',    avatar: '#d0d0d0', initials: 'T' },
+    { rank: 1, n: 'Mira',    xp: 3420,  streak: 31, me: false, tone: 'amber',   avatar: '#f3b655', initials: 'M' },
+    { rank: 2, n: 'Kenji',   xp: 3180,  streak: 28, me: false, tone: 'amber',   avatar: '#e8788a', initials: 'K' },
+    { rank: 3, n: 'Lena',    xp: 2960,  streak: 22, me: false, tone: 'amber',   avatar: '#a788ff', initials: 'L' },
+    { rank: 4, n: meName,    xp: meXp,  streak: meStreak, me: true, tone: 'lime', avatar: '#9ad155', initials: meInitials },
+    { rank: 5, n: 'Jordan',  xp: 2510,  streak: 14, me: false, tone: 'lime',    avatar: '#55c4d6', initials: 'J' },
+    { rank: 6, n: 'Priya',   xp: 2340,  streak: 19, me: false, tone: 'neutral', avatar: '#fd9a86', initials: 'P' },
+    { rank: 7, n: 'Sam',     xp: 2180,  streak: 9,  me: false, tone: 'neutral', avatar: '#8ad6ff', initials: 'S' },
+    { rank: 8, n: 'Yuki',    xp: 1920,  streak: 12, me: false, tone: 'neutral', avatar: '#f5b4c5', initials: 'Y' },
+    { rank: 9, n: 'Malik',   xp: 1640,  streak: 6,  me: false, tone: 'rose',    avatar: '#b6cbff', initials: 'M' },
+    { rank: 10, n: 'Tuna',   xp: 1420,  streak: 4,  me: false, tone: 'rose',    avatar: '#d0d0d0', initials: 'T' },
   ];
   return (
     <div style={{
