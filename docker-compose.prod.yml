@@ -1,0 +1,71 @@
+# Production-style compose — api + web + managed Postgres volume.
+# For real prod, swap `postgres` for a managed provider (Neon / Supabase /
+# RDS) and drop this service. The env values below are examples: provide
+# them via `docker compose --env-file` or the host secret manager.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-neuronexus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?password required}
+      POSTGRES_DB: ${POSTGRES_DB:-neuronexus}
+    volumes:
+      - neuronexus-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: oven/bun:1.3-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /repo/packages/db
+    command: ['bun', 'run', 'src/migrate.ts']
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+    volumes:
+      - ./packages/db:/repo/packages/db
+      - ./package.json:/repo/package.json
+    restart: 'no'
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_PORT: 3000
+      DATABASE_URL: ${DATABASE_URL}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?secret required}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL}
+      WEB_ORIGIN: ${WEB_ORIGIN}
+    ports:
+      - '3000:3000'
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    ports:
+      - '3001:3001'
+
+volumes:
+  neuronexus-pgdata:

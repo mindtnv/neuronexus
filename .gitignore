@@ -14,11 +14,15 @@
 /coverage
 
 # next.js
-/.next/
-/out/
+**/.next/
+**/out/
 
 # production
 /build
+**/dist/
+
+# bun
+bun.lockb
 
 # misc
 .DS_Store
@@ -38,4 +42,7 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
+**/next-env.d.ts
+
+# drizzle
+packages/db/src/migrations/meta/_journal.json.local

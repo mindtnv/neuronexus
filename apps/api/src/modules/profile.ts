@@ -1,0 +1,134 @@
+import { Elysia, t } from 'elysia';
+import { eq } from 'drizzle-orm';
+import {
+  achievements,
+  cards,
+  db,
+  decks,
+  profile,
+  reviews,
+  user as userTable,
+} from '@neuronexus/db';
+import { PLANT_SPECIES, type PlantSpecies } from '@neuronexus/shared';
+import { authPlugin } from '../auth-plugin.ts';
+
+const plantSpeciesSchema = t.Union([
+  t.Literal('fern'),
+  t.Literal('cactus'),
+  t.Literal('succulent'),
+  t.Literal('bonsai'),
+  t.Literal('sakura'),
+  t.Literal('mushroom'),
+]);
+
+// Narrow the TypeBox-inferred union back to our domain type.
+const asSpecies = (v: unknown): PlantSpecies => v as PlantSpecies;
+void PLANT_SPECIES;
+
+export const profileModule = new Elysia({ prefix: '/profile' })
+  .use(authPlugin)
+  .get(
+    '/',
+    async ({ user }) => {
+      const rows = await db.select().from(profile).where(eq(profile.userId, user.id));
+      if (rows.length === 0) {
+        // Lazy-create on first read — avoids a separate "finish signup" round trip.
+        const [created] = await db
+          .insert(profile)
+          .values({ userId: user.id, name: user.name ?? 'Friend' })
+          .returning();
+        return created;
+      }
+      return rows[0];
+    },
+    { auth: true },
+  )
+  .patch(
+    '/',
+    async ({ user, body, status }) => {
+      // If the user tries to switch to a plant species, make sure they have
+      // it unlocked. Keeps a future client UI from racing past the achievement
+      // reward logic.
+      const species = body.plantSpecies ? asSpecies(body.plantSpecies) : undefined;
+      if (species) {
+        const [row] = await db
+          .select({ unlocked: profile.unlockedSpecies })
+          .from(profile)
+          .where(eq(profile.userId, user.id))
+          .limit(1);
+        const unlocked = row?.unlocked ?? ['fern'];
+        if (!unlocked.includes(species)) {
+          return status(400, { error: 'species_locked' });
+        }
+      }
+      const patch: Record<string, unknown> = { ...body, updatedAt: new Date() };
+      if (species) patch.plantSpecies = species;
+      const [updated] = await db
+        .update(profile)
+        .set(patch)
+        .where(eq(profile.userId, user.id))
+        .returning();
+      if (!updated) throw new Error('profile not found');
+      return updated;
+    },
+    {
+      auth: true,
+      body: t.Partial(
+        t.Object({
+          name: t.String({ minLength: 1, maxLength: 80 }),
+          dailyGoalMinutes: t.Integer({ minimum: 1, maximum: 600 }),
+          desiredRetention: t.Number({ minimum: 0.7, maximum: 0.99 }),
+          plantStage: t.Integer({ minimum: 0, maximum: 5 }),
+          plantSpecies: plantSpeciesSchema,
+        }),
+      ),
+    },
+  )
+  // Full data export. Returns everything we have on the user in a single JSON
+  // blob — profile, decks, cards, reviews, achievements. Intentionally not
+  // paginated: a dedicated user shouldn't have more than a few MB of history,
+  // and GDPR wants "the whole thing".
+  .get(
+    '/export',
+    async ({ user }) => {
+      const [profileRow] = await db.select().from(profile).where(eq(profile.userId, user.id));
+      const [decksRows, cardsRows, reviewsRows, achievementsRows] = await Promise.all([
+        db.select().from(decks).where(eq(decks.userId, user.id)),
+        db.select().from(cards).where(eq(cards.userId, user.id)),
+        db.select().from(reviews).where(eq(reviews.userId, user.id)),
+        db.select().from(achievements).where(eq(achievements.userId, user.id)),
+      ]);
+      return {
+        exportedAt: new Date().toISOString(),
+        user: { id: user.id, email: user.email, name: user.name },
+        profile: profileRow ?? null,
+        decks: decksRows,
+        cards: cardsRows,
+        reviews: reviewsRows,
+        achievements: achievementsRows,
+      };
+    },
+    { auth: true },
+  )
+  // Delete the account. ON DELETE CASCADE on every user-scoped FK takes care
+  // of the subtree in one statement; BetterAuth's own session/account rows
+  // go with the user row too.
+  //
+  // Requires the user to retype their current email as confirmation — cheap
+  // protection against XSRF / accidental clicks.
+  .delete(
+    '/',
+    async ({ user, body, status }) => {
+      if (body.confirmEmail.trim().toLowerCase() !== (user.email ?? '').toLowerCase()) {
+        return status(400, { error: 'email_mismatch' });
+      }
+      await db.delete(userTable).where(eq(userTable.id, user.id));
+      return { ok: true };
+    },
+    {
+      auth: true,
+      body: t.Object({
+        confirmEmail: t.String({ minLength: 3, maxLength: 320 }),
+      }),
+    },
+  );

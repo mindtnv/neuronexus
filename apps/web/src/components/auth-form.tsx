@@ -1,0 +1,206 @@
+'use client';
+
+import { useState } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { signIn, signUp } from '@/lib/auth';
+import { NNBtn, NNLogo } from './ui';
+
+type Mode = 'sign-in' | 'sign-up';
+
+export function AuthForm({ mode }: { mode: Mode }) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isSignIn = mode === 'sign-in';
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      if (isSignIn) {
+        const res = await signIn.email({ email, password });
+        if (res.error) throw new Error(res.error.message);
+      } else {
+        const res = await signUp.email({ email, password, name: name || email.split('@')[0] });
+        if (res.error) throw new Error(res.error.message);
+      }
+      const next = searchParams.get('next') || '/';
+      router.replace(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Что-то пошло не так');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      style={{
+        width: 'min(420px, 100%)',
+        background: 'var(--surface-1, #111517)',
+        border: '1px solid var(--border, rgba(255,255,255,0.08))',
+        borderRadius: 'var(--r-lg, 20px)',
+        padding: 28,
+        boxShadow: 'var(--shadow-lg, 0 30px 80px rgba(0,0,0,0.5))',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16,
+        fontFamily: 'var(--font-sans)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+        <NNLogo />
+        <span style={{ fontSize: 18, fontWeight: 600 }}>NeuroNexus</span>
+      </div>
+
+      <h1 style={{ fontSize: 22, margin: 0, fontWeight: 600 }}>
+        {isSignIn ? 'С возвращением' : 'Создай аккаунт'}
+      </h1>
+      <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: 0 }}>
+        {isSignIn
+          ? 'Войди, чтобы продолжить выращивать свой сад знаний.'
+          : 'Начни с нуля — пара полей, и карточки ждут тебя.'}
+      </p>
+
+      {!isSignIn && (
+        <Field
+          label="Имя"
+          type="text"
+          value={name}
+          onChange={setName}
+          placeholder="Как тебя звать"
+          autoComplete="name"
+        />
+      )}
+      <Field
+        label="Email"
+        type="email"
+        value={email}
+        onChange={setEmail}
+        placeholder="you@example.com"
+        autoComplete="email"
+        required
+      />
+      <Field
+        label="Пароль"
+        type="password"
+        value={password}
+        onChange={setPassword}
+        placeholder={isSignIn ? '••••••••' : 'Минимум 8 символов'}
+        autoComplete={isSignIn ? 'current-password' : 'new-password'}
+        required
+        minLength={8}
+      />
+
+      {error && (
+        <div
+          style={{
+            color: '#ff8080',
+            fontSize: 13,
+            background: 'rgba(255, 128, 128, 0.08)',
+            border: '1px solid rgba(255, 128, 128, 0.2)',
+            borderRadius: 8,
+            padding: '8px 12px',
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      <NNBtn type="submit" variant="primary" size="lg" disabled={loading}>
+        {loading ? '…' : isSignIn ? 'Войти' : 'Зарегистрироваться'}
+      </NNBtn>
+
+      <div
+        style={{
+          fontSize: 13,
+          color: 'var(--text-muted)',
+          textAlign: 'center',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+        }}
+      >
+        {isSignIn ? (
+          <>
+            <span>
+              Нет аккаунта?{' '}
+              <Link href="/auth/sign-up" style={{ color: 'var(--lime-300)' }}>
+                Создать
+              </Link>
+            </span>
+            <Link
+              href="/auth/forgot-password"
+              style={{ color: 'var(--text-dim)', fontSize: 12 }}
+            >
+              Забыл пароль?
+            </Link>
+          </>
+        ) : (
+          <span>
+            Уже есть аккаунт?{' '}
+            <Link href="/auth/sign-in" style={{ color: 'var(--lime-300)' }}>
+              Войти
+            </Link>
+          </span>
+        )}
+      </div>
+    </form>
+  );
+}
+
+function Field({
+  label,
+  type,
+  value,
+  onChange,
+  placeholder,
+  autoComplete,
+  required,
+  minLength,
+}: {
+  label: string;
+  type: 'text' | 'email' | 'password';
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  autoComplete?: string;
+  required?: boolean;
+  minLength?: number;
+}) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span style={{ fontSize: 12, color: 'var(--text-muted)', letterSpacing: 0.3 }}>{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        required={required}
+        minLength={minLength}
+        style={{
+          background: 'var(--surface-2, #0b0f10)',
+          border: '1px solid var(--border, rgba(255,255,255,0.08))',
+          borderRadius: 10,
+          padding: '10px 12px',
+          color: 'var(--text, #fff)',
+          fontSize: 14,
+          fontFamily: 'inherit',
+          outline: 'none',
+          transition: 'border-color 120ms ease',
+        }}
+        onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--lime-400, #a3e635)')}
+        onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--border, rgba(255,255,255,0.08))')}
+      />
+    </label>
+  );
+}

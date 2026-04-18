@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: neuronexus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: neuronexus
+      POSTGRES_PASSWORD: neuronexus
+      POSTGRES_DB: neuronexus
+      # Second DB created on first boot by /docker-entrypoint-initdb.d/init.sql
+      POSTGRES_MULTIPLE_DATABASES: neuronexus_test
+    ports:
+      - '5432:5432'
+    volumes:
+      - neuronexus-pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U neuronexus -d neuronexus']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  neuronexus-pgdata:

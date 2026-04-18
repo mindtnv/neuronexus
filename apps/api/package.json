@@ -1,0 +1,33 @@
+{
+  "name": "@neuronexus/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun --env-file=../../.env --watch src/index.ts",
+    "build": "bun build src/index.ts --target bun --outdir ./dist",
+    "start": "NODE_ENV=production bun --env-file=../../.env dist/index.js",
+    "test": "NODE_ENV=test bun --env-file=../../.env test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@elysiajs/cors": "^1.2.0",
+    "@elysiajs/swagger": "^1.2.0",
+    "@neuronexus/auth": "workspace:*",
+    "@neuronexus/db": "workspace:*",
+    "@neuronexus/shared": "workspace:*",
+    "drizzle-orm": "^0.38.3",
+    "elysia": "^1.2.10",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "ts-fsrs": "^5.3.2"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.3"
+  }
+}
