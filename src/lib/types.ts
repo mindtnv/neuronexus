@@ -50,6 +50,7 @@ export interface Profile {
   streakDays: number;
   lastReviewDate?: string;
   dailyGoalMinutes: number;
+  desiredRetention?: number;
   plantSpecies: PlantSpecies;
   plantStage: 0 | 1 | 2 | 3 | 4 | 5;
   createdAt: number;
