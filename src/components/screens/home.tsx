@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { State } from 'ts-fsrs';
 import { addDays, format, isSameDay, startOfDay, startOfMonth, subDays } from 'date-fns';
 import { NNBadge, NNBtn, NNCard, NNHeatmap, NNIcon, NNMiniGraph, NNPlant } from '@/components/ui';
@@ -13,6 +14,7 @@ import { useT, useDateLocale } from '@/lib/i18n';
 
 export const NNHome = () => {
   const t = useT();
+  const router = useRouter();
   const dateLocale = useDateLocale();
   useEmptyRedirect('first-run');
   const bp = useBreakpoint();
@@ -227,7 +229,7 @@ export const NNHome = () => {
           </div>
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
-            <NNBtn size="lg" variant="primary" icon="bolt">{t('home.startReview')}</NNBtn>
+            <NNBtn size="lg" variant="primary" icon="bolt" onClick={() => router.push('/review')}>{t('home.startReview')}</NNBtn>
             <NNBtn size="lg" variant="outline" icon="sparkle">{t('home.aiGenerate')}</NNBtn>
             <div style={{ flex: 1 }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-dim)', fontSize: 12 }}>
@@ -342,7 +344,7 @@ export const NNHome = () => {
                 {t('home.graphSub', { nodes: nodes.toLocaleString(), links: links.toLocaleString(), clusters })}
               </div>
             </div>
-            <NNBtn size="sm" variant="ghost" iconRight="arrow">{t('actions.open')}</NNBtn>
+            <NNBtn size="sm" variant="ghost" iconRight="arrow" onClick={() => router.push('/graph')}>{t('actions.open')}</NNBtn>
           </div>
           <div style={{ margin: '4px -4px -4px' }}>
             <NNMiniGraph height={170} />
