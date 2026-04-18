@@ -17,7 +17,6 @@ export const NNHome = () => {
   const router = useRouter();
   const dateLocale = useDateLocale();
   useEmptyRedirect('first-run');
-  const router = useRouter();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const isDesktop = bp === 'desktop';
