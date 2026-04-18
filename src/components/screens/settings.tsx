@@ -29,16 +29,26 @@ export const NNSettings = () => {
   const dailyGoalOptions = [15, 30, 45, 60];
   const currentGoal = profile?.dailyGoalMinutes ?? 30;
 
-  // TODO: wire these toggles to persisted profile flags once Profile shape is extended.
-  const toggles: { t: string; d: string; on?: boolean; v?: string; beta?: boolean }[] = [
-    { t: t('settings.toggles.interleaving.t'), d: t('settings.toggles.interleaving.d'), on: true },
-    { t: t('settings.toggles.fuzz.t'), d: t('settings.toggles.fuzz.d'), on: true },
+  const [toggleStates, setToggleStates] = useState<Record<string, boolean>>({
+    interleaving: true,
+    fuzz: true,
+    aiHints: true,
+    siblingsBurying: true,
+    timeBias: false,
+    graphAware: true,
+  });
+  const flipToggle = (key: string) => setToggleStates((prev) => ({ ...prev, [key]: !prev[key] }));
+
+  type ToggleDef = { key?: string; t: string; d: string; v?: string; beta?: boolean };
+  const toggles: ToggleDef[] = [
+    { key: 'interleaving', t: t('settings.toggles.interleaving.t'), d: t('settings.toggles.interleaving.d') },
+    { key: 'fuzz', t: t('settings.toggles.fuzz.t'), d: t('settings.toggles.fuzz.d') },
     { t: t('settings.toggles.lapseSteps.t'), d: t('settings.toggles.lapseSteps.d'), v: '10m · 1d · 3d' },
     { t: t('settings.toggles.maxInterval.t'), d: t('settings.toggles.maxInterval.d'), v: '180d' },
-    { t: t('settings.toggles.aiHints.t'), d: t('settings.toggles.aiHints.d'), on: true },
-    { t: t('settings.toggles.siblingsBurying.t'), d: t('settings.toggles.siblingsBurying.d'), on: true },
-    { t: t('settings.toggles.timeBias.t'), d: t('settings.toggles.timeBias.d'), on: false },
-    { t: t('settings.toggles.graphAware.t'), d: t('settings.toggles.graphAware.d'), on: true, beta: true },
+    { key: 'aiHints', t: t('settings.toggles.aiHints.t'), d: t('settings.toggles.aiHints.d') },
+    { key: 'siblingsBurying', t: t('settings.toggles.siblingsBurying.t'), d: t('settings.toggles.siblingsBurying.d') },
+    { key: 'timeBias', t: t('settings.toggles.timeBias.t'), d: t('settings.toggles.timeBias.d') },
+    { key: 'graphAware', t: t('settings.toggles.graphAware.t'), d: t('settings.toggles.graphAware.d'), beta: true },
   ];
 
   const onResetDemo = async () => {
@@ -208,35 +218,44 @@ export const NNSettings = () => {
           </div>
         </div>
 
-        {/* More toggles — visual only for now */}
-        {/* TODO: persist each toggle once Profile shape supports algorithm flags. */}
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 10 : 12 }}>
-          {toggles.map((o, i) => (
-            <div key={i} style={{ padding: '14px 16px', borderRadius: 10, background: 'var(--surface)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {o.t}
-                  {o.beta && <NNBadge tone="violet" size="xs">{t('settings.toggles.beta')}</NNBadge>}
+          {toggles.map((o, i) => {
+            const on = o.key ? (toggleStates[o.key] ?? false) : undefined;
+            return (
+              <div key={i} style={{ padding: '14px 16px', borderRadius: 10, background: 'var(--surface)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {o.t}
+                    {o.beta && <NNBadge tone="violet" size="xs">{t('settings.toggles.beta')}</NNBadge>}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 2 }}>{o.d}</div>
                 </div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 2 }}>{o.d}</div>
+                {o.v != null ? (
+                  <span className="mono" style={{ fontSize: 12, color: 'var(--text)', background: 'var(--surface-2)', padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)' }}>{o.v}</span>
+                ) : (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={!!on}
+                    onClick={() => { if (o.key) flipToggle(o.key); }}
+                    style={{
+                      width: 36, height: 20, borderRadius: 10, flexShrink: 0,
+                      background: on ? 'var(--lime-500)' : 'var(--surface-3)',
+                      position: 'relative', transition: 'background 180ms',
+                      border: 'none', padding: 0, cursor: 'pointer',
+                    }}
+                  >
+                    <div style={{
+                      position: 'absolute', top: 2, left: on ? 18 : 2,
+                      width: 16, height: 16, borderRadius: '50%', background: '#fff',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+                      transition: 'left 180ms',
+                    }}/>
+                  </button>
+                )}
               </div>
-              {o.v != null ? (
-                <span className="mono" style={{ fontSize: 12, color: 'var(--text)', background: 'var(--surface-2)', padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)' }}>{o.v}</span>
-              ) : (
-                <div style={{
-                  width: 36, height: 20, borderRadius: 10, flexShrink: 0,
-                  background: o.on ? 'var(--lime-500)' : 'var(--surface-3)',
-                  position: 'relative', transition: 'all 180ms',
-                }}>
-                  <div style={{
-                    position: 'absolute', top: 2, left: o.on ? 18 : 2,
-                    width: 16, height: 16, borderRadius: '50%', background: '#fff',
-                    boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
-                  }}/>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* API — static. TODO: real token rotation + webhook management. */}
