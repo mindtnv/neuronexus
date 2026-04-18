@@ -25,6 +25,11 @@ export const NNSettings = () => {
     setNameDraft(profile?.name ?? '');
   }, [profile?.name]);
 
+  const [retentionDraft, setRetentionDraft] = useState(profile?.desiredRetention ?? 90);
+  React.useEffect(() => {
+    setRetentionDraft(profile?.desiredRetention ?? 90);
+  }, [profile?.desiredRetention]);
+
   const fsrsWeights = useMemo(() => generatorParameters().w, []);
   const dailyGoalOptions = [15, 30, 45, 60];
   const currentGoal = profile?.dailyGoalMinutes ?? 30;
@@ -167,11 +172,22 @@ export const NNSettings = () => {
               <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{t('settings.retention.subtitle')}</div>
             </div>
             <div style={{ flex: 1 }}/>
-            <div style={{ fontSize: 32, fontWeight: 600, color: 'var(--lime-400)', letterSpacing: -1 }} className="mono">90%</div>
+            <div style={{ fontSize: 32, fontWeight: 600, color: 'var(--lime-400)', letterSpacing: -1 }} className="mono">{retentionDraft}%</div>
           </div>
           <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, position: 'relative', marginTop: 16 }}>
-            <div style={{ height: '100%', width: '73%', background: 'linear-gradient(to right, var(--rose-500), var(--amber-500), var(--lime-500))', borderRadius: 3 }}/>
-            <div style={{ position: 'absolute', top: -5, left: '73%', width: 16, height: 16, borderRadius: '50%', background: 'var(--lime-500)', border: '2px solid var(--bg)', transform: 'translateX(-50%)' }}/>
+            <div style={{ height: '100%', width: `${((retentionDraft - 70) / 29) * 100}%`, background: 'linear-gradient(to right, var(--rose-500), var(--amber-500), var(--lime-500))', borderRadius: 3 }}/>
+            <div style={{ position: 'absolute', top: -5, left: `${((retentionDraft - 70) / 29) * 100}%`, width: 16, height: 16, borderRadius: '50%', background: 'var(--lime-500)', border: '2px solid var(--bg)', transform: 'translateX(-50%)', pointerEvents: 'none' }}/>
+            <input
+              type="range"
+              min={70}
+              max={99}
+              value={retentionDraft}
+              onChange={e => setRetentionDraft(Number(e.target.value))}
+              onMouseUp={() => { void updateProfile({ desiredRetention: retentionDraft }); }}
+              onTouchEnd={() => { void updateProfile({ desiredRetention: retentionDraft }); }}
+              aria-label={t('settings.retention.title')}
+              style={{ position: 'absolute', inset: '-8px 0', width: '100%', opacity: 0, cursor: 'pointer' }}
+            />
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10.5, color: 'var(--text-dim)' }} className="mono">
             <span>{t('settings.retention.relaxed')}</span><span>85%</span><span>{t('settings.retention.typical')}</span><span>95%</span><span>{t('settings.retention.hardcore')}</span>

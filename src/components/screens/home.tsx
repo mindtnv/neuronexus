@@ -230,7 +230,7 @@ export const NNHome = () => {
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
             <NNBtn size="lg" variant="primary" icon="bolt" onClick={() => router.push('/review')}>{t('home.startReview')}</NNBtn>
-            <NNBtn size="lg" variant="outline" icon="sparkle">{t('home.aiGenerate')}</NNBtn>
+            <NNBtn size="lg" variant="outline" icon="sparkle" onClick={() => router.push('/import')}>{t('home.aiGenerate')}</NNBtn>
             <div style={{ flex: 1 }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-dim)', fontSize: 12 }}>
               <NNIcon name="clock" size={13} /> {t('home.lastSession', { label: lastSessionLabel })}
@@ -420,31 +420,35 @@ export const NNHome = () => {
                   t: t('home.suggestions.weakArea'),
                   d: t('home.suggestions.weakAreaDesc'),
                   cta: t('home.suggestions.weakAreaCta'),
-                  tone: 'violet',
+                  tone: 'violet' as const,
                   icon: 'target',
+                  href: undefined as string | undefined,
                 },
                 {
                   t: t('home.suggestions.createLink'),
                   d: t('home.suggestions.createLinkDesc'),
                   cta: t('home.suggestions.createLinkCta'),
-                  tone: 'sky',
+                  tone: 'sky' as const,
                   icon: 'link',
+                  href: undefined as string | undefined,
                 },
                 {
                   t: t('home.suggestions.mnemonic'),
                   d: t('home.suggestions.mnemonicDesc'),
                   cta: t('home.suggestions.mnemonicCta'),
-                  tone: 'amber',
+                  tone: 'amber' as const,
                   icon: 'bulb',
+                  href: undefined as string | undefined,
                 },
                 {
                   t: t('home.suggestions.importPdf'),
                   d: t('home.suggestions.importPdfDesc'),
                   cta: t('home.suggestions.importPdfCta'),
-                  tone: 'lime',
+                  tone: 'lime' as const,
                   icon: 'plus',
+                  href: '/import' as string | undefined,
                 },
-              ] as const
+              ]
             ).map((s, i) => (
               <div
                 key={i}
@@ -485,7 +489,7 @@ export const NNHome = () => {
                   <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', marginBottom: 3 }}>{s.t}</div>
                   <div style={{ fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.4 }}>{s.d}</div>
                 </div>
-                <NNBtn size="sm" variant="soft">
+                <NNBtn size="sm" variant="soft" onClick={s.href ? () => router.push(s.href!) : undefined}>
                   {s.cta}
                 </NNBtn>
               </div>
