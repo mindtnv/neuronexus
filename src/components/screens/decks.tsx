@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { NNIcon, NNBtn, NNCard, NNPlant, NNBadge } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import type { DeckColor } from '@/lib/types';
@@ -46,6 +47,8 @@ export const NNDecks = () => {
       return next;
     });
   };
+
+  const router = useRouter();
 
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
@@ -403,6 +406,25 @@ export const NNDecks = () => {
                         padding: 4,
                       }}
                     >
+                        <button
+                        type="button"
+                        onClick={() => { setOpenMenuId(null); router.push(`/editor?deck=${encodeURIComponent(d.id)}`); }}
+                        style={menuItemStyle()}
+                      >
+                        <NNIcon name="plus" size={13} />
+                        <span>{t('decks.addCard')}</span>
+                      </button>
+                      {agg.due > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => { setOpenMenuId(null); router.push(`/review?deck=${encodeURIComponent(d.id)}`); }}
+                          style={menuItemStyle('var(--lime-400)')}
+                        >
+                          <NNIcon name="bolt" size={13} />
+                          <span>{t('decks.review')}</span>
+                        </button>
+                      )}
+                      <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
                       <button
                         type="button"
                         onClick={() => openCreateAt(d.id)}
