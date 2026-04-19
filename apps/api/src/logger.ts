@@ -67,6 +67,21 @@ export function getRootLogger(): Logger {
 
 export const rootLogger: Logger = getRootLogger();
 
+export type RequestStore = {
+  log?: Logger;
+  requestId?: string;
+  requestStartedAt?: number;
+};
+
+export type ApiErrorBody = {
+  requestId: string;
+  error: {
+    code: string;
+    message: string;
+    detail?: unknown;
+  };
+};
+
 /** Per-request child logger. `requestId` lets downstream lines group. */
 export function requestLogger(opts: {
   requestId: string;
@@ -85,4 +100,31 @@ export function pickRequestId(headers: Headers): string {
   const incoming = headers.get('x-request-id');
   if (incoming && incoming.length > 0 && incoming.length <= 128) return incoming;
   return crypto.randomUUID();
+}
+
+export function getRequestLogger(store: unknown): Logger {
+  return (store as RequestStore | undefined)?.log ?? rootLogger;
+}
+
+export function getRequestId(store: unknown): string {
+  return (store as RequestStore | undefined)?.requestId ?? 'unknown-request';
+}
+
+export function apiErrorBody(
+  store: unknown,
+  code: string,
+  message: string,
+  detail?: unknown,
+): ApiErrorBody {
+  return {
+    requestId: getRequestId(store),
+    error: detail === undefined ? { code, message } : { code, message, detail },
+  };
+}
+
+export function requestFields(store: unknown, fields: Record<string, unknown> = {}) {
+  return {
+    requestId: getRequestId(store),
+    ...fields,
+  };
 }
