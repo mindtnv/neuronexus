@@ -11,6 +11,11 @@
     "dev:web": "bun run --filter @neuronexus/web dev",
     "dev:api": "bun run --filter @neuronexus/api dev",
     "build": "bun run --filter '*' build",
+    "smoke": "bun run smoke:learner",
+    "smoke:install": "bunx playwright install chromium",
+    "smoke:learner": "bun run scripts/smoke-learner.ts",
+    "staging:deploy": "bun run scripts/staging-release.ts",
+    "staging:rollback": "bun run scripts/staging-rollback.ts",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "NODE_ENV=test bun --env-file=./.env test",
     "test:unit": "NODE_ENV=test bun --env-file=./.env test packages/shared",
@@ -26,6 +31,7 @@
     "db:studio": "bun run --filter @neuronexus/db db:studio"
   },
   "devDependencies": {
+    "playwright": "^1.55.0",
     "@types/node": "^20",
     "typescript": "^5.7.3"
   },

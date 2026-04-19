@@ -2,10 +2,12 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNKbd, NNMiniGraph, NNSkeleton, NNTag } from '@/components/ui';
+import { api, ok } from '@/lib/api';
 import { humanInterval, previewGrades } from '@/lib/fsrs';
 import { useT } from '@/lib/i18n';
+import { cardFromApi } from '@/lib/mappers';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
@@ -143,15 +145,18 @@ export const NNReviewClassic = () => {
   const t = useT();
   useEmptyRedirect('first-run');
   const router = useRouter();
+  const searchParams = useSearchParams();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const bootstrapped = useNN((s) => s.bootstrapped);
-  const cards = useNN((s) => s.cards);
   const decks = useNN((s) => s.decks);
   const grade = useNN((s) => s.gradeCard);
+  const selectedDeckId = searchParams?.get('deck') ?? null;
 
   // Freeze the queue for this session so newly-rescheduled cards don't jump back in
   const [queue, setQueue] = useState<Card[]>([]);
+  const [queueLoaded, setQueueLoaded] = useState(false);
+  const [queueError, setQueueError] = useState(false);
   const [index, setIndex] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [completed, setCompleted] = useState(0);
@@ -172,18 +177,58 @@ export const NNReviewClassic = () => {
   const sessionSavedRef = useRef(false);
   const sessionStartedRef = useRef(false);
 
-  // Build initial queue once data is loaded
+  // Always start a session from the server-authoritative queue so the deck
+  // scoped flow and per-session caps match the backend contract.
   useEffect(() => {
-    if (!bootstrapped || queue.length > 0) return;
+    if (!bootstrapped) return;
+    let cancelled = false;
     const now = Date.now();
-    const due = cards
-      .filter((c) => new Date(c.fsrs.due).getTime() <= now)
-      .sort((a, b) => new Date(a.fsrs.due).getTime() - new Date(b.fsrs.due).getTime());
-    setQueue(due);
-    setStartedAt(Date.now());
-    sessionStartRef.current = Date.now();
-    if (due.length > 0) sessionStartedRef.current = true;
-  }, [bootstrapped, cards, queue.length]);
+
+    setQueueLoaded(false);
+    setQueueError(false);
+    setQueue([]);
+    setIndex(0);
+    setCompleted(0);
+    setXpGained(0);
+    setStartedAt(now);
+    setGradeCounts({ 1: 0, 2: 0, 3: 0, 4: 0 });
+    setRevealed(false);
+    setTypedAnswer('');
+    setSubmitted(false);
+    lockRef.current = false;
+    sessionStartRef.current = now;
+    sessionSavedRef.current = false;
+    sessionStartedRef.current = false;
+
+    (async () => {
+      try {
+        const query: Record<string, string> = {};
+        if (selectedDeckId) query.deckId = selectedDeckId;
+        const res = await ok(await (api as any).cards.queue.get({ query }));
+        if (cancelled) return;
+        const fetched = [
+          ...(((res as { due?: unknown[] }).due ?? []).map(cardFromApi)),
+          ...(((res as { new?: unknown[] }).new ?? []).map(cardFromApi)),
+        ];
+        const startedAt = Date.now();
+        setQueue(fetched);
+        setStartedAt(startedAt);
+        sessionStartRef.current = startedAt;
+        sessionStartedRef.current = fetched.length > 0;
+      } catch (err) {
+        console.error('review queue failed', err);
+        if (cancelled) return;
+        setQueue([]);
+        setQueueError(true);
+      } finally {
+        if (!cancelled) setQueueLoaded(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapped, selectedDeckId]);
 
   const current = queue[index];
   const deck = useMemo(() => (current ? decks.find((d) => d.id === current.deckId) : undefined), [current, decks]);
@@ -264,7 +309,7 @@ export const NNReviewClassic = () => {
       // Edit shortcut — only outside inputs
       if ((e.key === 'e' || e.key === 'E') && !inInput) {
         e.preventDefault();
-        router.push(`/editor?card=${current.id}`);
+        router.push(`/editor?card=${current.id}&from=review`);
         return;
       }
 
@@ -359,17 +404,17 @@ export const NNReviewClassic = () => {
     }
   }, [current, queue, completed, xpGained, gradeCounts, decks, t]);
 
-  if (!bootstrapped) {
+  if (!bootstrapped || !queueLoaded) {
     return <ReviewSkeleton isMobile={isMobile} />;
   }
 
   if (queue.length === 0) {
     return (
       <ReviewEmpty
-        title={t('review.allCaught.title')}
-        subtitle={t('review.allCaught.subtitle')}
+        title={queueError ? t('review.error.title') : t('review.allCaught.title')}
+        subtitle={queueError ? t('review.error.subtitle') : t('review.allCaught.subtitle')}
         cta={t('review.allCaught.cta')}
-        href="/editor"
+        href={selectedDeckId ? `/editor?deck=${encodeURIComponent(selectedDeckId)}&from=decks` : '/editor?from=home'}
       />
     );
   }
@@ -446,6 +491,7 @@ export const NNReviewClassic = () => {
 
       {/* Card */}
       <div
+        data-testid="review-card"
         onClick={(e) => {
           // Don't flip when clicking interactive children
           const t = e.target as HTMLElement;
@@ -702,7 +748,7 @@ export const NNReviewClassic = () => {
             <NNKbd>J</NNKbd> {t('review.hints.prev')} · <NNKbd>K</NNKbd> {t('review.hints.skip')} · <NNKbd>E</NNKbd> {t('review.hints.edit')} · <NNKbd>Esc</NNKbd> {t('review.hints.home')}
           </span>
           <Link
-            href={`/editor?card=${current.id}`}
+            href={`/editor?card=${current.id}&from=review`}
             onClick={(e) => e.stopPropagation()}
             style={{ color: 'inherit', display: 'inline-flex' }}
           >
@@ -740,6 +786,7 @@ export const NNReviewClassic = () => {
                 return (
                   <button
                     key={r.k}
+                    data-testid={`review-grade-${r.k}`}
                     onClick={() => handleGrade(r.k)}
                     style={{
                       padding: isMobile ? '10px 6px' : '14px 12px',
@@ -898,6 +945,7 @@ const SessionDone = ({ completed, xp }: { completed: number; xp: number }) => {
   const isMobile = bp === 'mobile';
   return (
     <div
+      data-testid="review-session-done"
       style={{
         flex: 1,
         display: 'flex',
@@ -922,13 +970,8 @@ const SessionDone = ({ completed, xp }: { completed: number; xp: number }) => {
         </span>
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-        <Link href="/session/complete">
-          <NNBtn size="lg" variant="primary" icon="check">
-            {t('review.sessionComplete.viewSummary')}
-          </NNBtn>
-        </Link>
         <Link href="/">
-          <NNBtn size="lg" variant="outline">
+          <NNBtn size="lg" variant="primary" icon="check">
             {t('review.sessionComplete.backHome')}
           </NNBtn>
         </Link>

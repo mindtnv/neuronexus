@@ -18,6 +18,10 @@ const m = {
     subtitle: 'No cards due right now. Nice work — come back later or add more cards.',
     cta: 'Add a card',
   },
+  error: {
+    title: 'Could not open the queue',
+    subtitle: 'The review session did not load. Try again in a moment.',
+  },
   type: {
     placeholder: 'Type the answer…',
     checkBtn: 'Check · Enter',

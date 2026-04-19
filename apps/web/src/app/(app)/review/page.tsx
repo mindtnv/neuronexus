@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { NNAppPage } from '@/components/app-page';
 import { NNReview } from '@/components/screens/review';
 import { countDueCards } from '@/lib/cards';
@@ -11,7 +12,9 @@ export default function Page() {
   const due = useNN((s) => countDueCards(s.cards));
   return (
     <NNAppPage title={t('nav.review')} subtitle={t('review.pageSubtitle', { due })}>
-      <NNReview variant="classic" />
+      <Suspense fallback={null}>
+        <NNReview variant="classic" />
+      </Suspense>
     </NNAppPage>
   );
 }

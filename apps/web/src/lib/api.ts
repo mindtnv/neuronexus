@@ -11,10 +11,7 @@
 import { treaty } from '@elysiajs/eden';
 import type { App } from '@neuronexus/api';
 
-const baseURL =
-  typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL
-    : 'http://localhost:3000';
+const baseURL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 
 export const api = treaty<App>(baseURL, {
   fetch: {

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { NNIcon, NNBtn, NNCard, NNPlant, NNBadge } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import type { DeckColor } from '@/lib/types';
@@ -21,6 +21,8 @@ export const NNDecks = () => {
   const t = useT();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
+  const searchParams = useSearchParams();
+  const shouldOpenFirstDeckFlow = searchParams?.get('new') === '1';
 
   const decks = useNN((s) => s.decks);
   const cards = useNN((s) => s.cards);
@@ -55,6 +57,11 @@ export const NNDecks = () => {
   const [newColor, setNewColor] = useState<DeckColor>('lime');
   const [newParentId, setNewParentId] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!shouldOpenFirstDeckFlow || creating || decks.length > 0) return;
+    openCreateAt(null);
+  }, [creating, decks.length, shouldOpenFirstDeckFlow]);
 
   const now = Date.now();
 
@@ -114,7 +121,8 @@ export const NNDecks = () => {
     const name = newName.trim();
     if (!name) return;
     try {
-      await addDeck({
+      const wasFirstRootDeck = decks.length === 0 && !newParentId;
+      const created = await addDeck({
         name,
         color: newColor,
         species: 'fern',
@@ -130,6 +138,10 @@ export const NNDecks = () => {
           } catch {}
           return next;
         });
+      }
+      if (wasFirstRootDeck) {
+        router.replace(`/editor?deck=${encodeURIComponent(created.id)}&from=decks`);
+        return;
       }
       resetForm();
     } catch (err) {
@@ -153,12 +165,17 @@ export const NNDecks = () => {
     <div style={{ flex: 1, overflow: 'auto', padding: isMobile ? 14 : 24 }}>
       <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
         <NNBtn size="sm" variant="soft" icon="stack">{t('decks.tree')}</NNBtn>
-        <NNBtn size="sm" variant="ghost" icon="filter">{t('decks.filter')}</NNBtn>
         <div style={{ flex: 1 }} />
         {/* Import PDF lives behind a feature flag until the LLM integration
             lands — hidden from the deck toolbar so we don't route users to a
             placeholder screen. */}
-        <NNBtn size="sm" variant="primary" icon="plus" onClick={() => openCreateAt(null)}>
+        <NNBtn
+          size="sm"
+          variant="primary"
+          icon="plus"
+          onClick={() => openCreateAt(null)}
+          testId="decks-create-trigger"
+        >
           {t('decks.newDeck')}
         </NNBtn>
       </div>
@@ -174,6 +191,7 @@ export const NNDecks = () => {
             <div style={{ flex: '1 1 220px', minWidth: 200 }}>
               <div style={labelStyle}>{t('decks.name')}</div>
               <input
+                data-testid="decks-create-name"
                 autoFocus
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
@@ -218,7 +236,13 @@ export const NNDecks = () => {
               <NNBtn size="sm" variant="ghost" onClick={resetForm}>
                 {t('actions.cancel')}
               </NNBtn>
-              <NNBtn size="sm" variant="primary" icon="check" onClick={handleCreate}>
+              <NNBtn
+                size="sm"
+                variant="primary"
+                icon="check"
+                onClick={handleCreate}
+                testId="decks-create-submit"
+              >
                 {t('actions.create')}
               </NNBtn>
             </div>
@@ -232,7 +256,7 @@ export const NNDecks = () => {
           <div style={{ fontSize: 12 }}>{t('decks.emptyHint')}</div>
         </NNCard>
       ) : (
-        <NNCard padding={0} style={{ overflow: 'visible' }}>
+        <NNCard padding={0} style={{ overflow: 'visible' }} testId="decks-tree">
           {/* header row */}
           <div
             style={{
@@ -356,7 +380,7 @@ export const NNDecks = () => {
                       {agg.due}
                     </span>
                     <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                      <Link href={`/editor?deck=${encodeURIComponent(d.id)}`} style={{ textDecoration: 'none' }}>
+                      <Link href={`/editor?deck=${encodeURIComponent(d.id)}&from=decks`} style={{ textDecoration: 'none' }}>
                         <NNBtn size="sm" variant="ghost" icon="plus">
                           {t('decks.addCard')}
                         </NNBtn>
@@ -410,7 +434,7 @@ export const NNDecks = () => {
                     >
                         <button
                         type="button"
-                        onClick={() => { setOpenMenuId(null); router.push(`/editor?deck=${encodeURIComponent(d.id)}`); }}
+                        onClick={() => { setOpenMenuId(null); router.push(`/editor?deck=${encodeURIComponent(d.id)}&from=decks`); }}
                         style={menuItemStyle()}
                       >
                         <NNIcon name="plus" size={13} />

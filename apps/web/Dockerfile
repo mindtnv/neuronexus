@@ -16,6 +16,9 @@ RUN bun install --frozen-lockfile
 
 FROM deps AS build
 WORKDIR /repo
+ENV NODE_ENV=production
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 COPY tsconfig.base.json ./
 COPY packages/ packages/
 COPY apps/web/ apps/web/
