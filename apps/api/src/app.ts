@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
 import { swagger } from '@elysiajs/swagger';
+import type { Logger } from 'pino';
 import { env } from './env.ts';
 import { dbPing } from '@neuronexus/db';
 import { authPlugin } from './auth-plugin.ts';
@@ -10,21 +11,29 @@ import { cardsModule } from './modules/cards.ts';
 import { reviewsModule } from './modules/reviews.ts';
 import { profileModule } from './modules/profile.ts';
 import { AUTH_RATE_RULES, clientIpFromRequest, rateLimitCheck } from './rate-limit.ts';
-import { pickRequestId, requestLogger, rootLogger } from './logger.ts';
+import { getRootLogger, pickRequestId, requestLogger } from './logger.ts';
 
 /**
  * Build the full Elysia app (no .listen). Separating this from the binding
  * lets tests call `app.handle(req)` directly against an in-process instance.
  */
 export function buildApp() {
+  const rootLogger = getRootLogger();
   return new Elysia()
     .state('log', rootLogger)
+    .state('requestStartedAt', 0)
     .use(
       cors({
         origin: env.WEB_ORIGIN,
         credentials: true,
         methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization'],
+        allowedHeaders: [
+          'Content-Type',
+          'Authorization',
+          'x-forwarded-for',
+          'x-client-flow-id',
+          'x-client-scenario-id',
+        ],
         exposeHeaders: ['x-request-id'],
       }),
     )
@@ -38,10 +47,26 @@ export function buildApp() {
         requestId,
         method: request.method,
         path: url.pathname,
+        clientFlowId: request.headers.get('x-client-flow-id') ?? undefined,
+        clientScenarioId: request.headers.get('x-client-scenario-id') ?? undefined,
       });
-      (store as { log: typeof rootLogger }).log = child;
+      (store as { log: Logger; requestStartedAt: number }).log = child;
+      (store as { log: Logger; requestStartedAt: number }).requestStartedAt = Date.now();
       set.headers['x-request-id'] = requestId;
       child.debug('request.start');
+    })
+    .onAfterResponse(({ set, store }) => {
+      const state = store as { log?: Logger; requestStartedAt?: number };
+      const log = state.log ?? rootLogger;
+      const startedAt = state.requestStartedAt ?? Date.now();
+      const durationMs = Date.now() - startedAt;
+      const statusCode =
+        typeof set.status === 'number'
+          ? set.status
+          : typeof set.status === 'string'
+            ? Number(set.status) || 200
+            : 200;
+      log.info({ statusCode, durationMs }, 'request.end');
     })
     // IP-based rate limiter for the auth surface. Runs before `.mount(auth.handler)`
     // in authPlugin, so any 429 short-circuits BetterAuth entirely.
@@ -69,7 +94,7 @@ export function buildApp() {
     })
     .use(authPlugin)
     .get('/health', async ({ status, store }) => {
-      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+      const log = (store as { log?: Logger }).log ?? rootLogger;
       try {
         const ping = await dbPing();
         return { ok: true, now: new Date().toISOString(), db: ping };
@@ -83,7 +108,7 @@ export function buildApp() {
       }
     })
     .onError(({ code, error, status, store }) => {
-      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+      const log = (store as { log?: Logger }).log ?? rootLogger;
       if (code === 'VALIDATION') {
         log.warn({ code, err: String(error) }, 'validation');
         return status(400, { error: 'ValidationError', detail: String(error) });

@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import React from 'react';
 import { NNBtn, NNIcon, NNPlant } from '@/components/ui';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -10,13 +11,6 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   if (kind === 'first-run') {
-    const starterDecks: { key: string; label: string }[] = [
-      { key: 'top1000', label: t('empty.firstRun.starter.top1000') },
-      { key: 'usStates', label: t('empty.firstRun.starter.usStates') },
-      { key: 'basicFrench', label: t('empty.firstRun.starter.basicFrench') },
-      { key: 'pythonSyntax', label: t('empty.firstRun.starter.pythonSyntax') },
-      { key: 'chemistry101', label: t('empty.firstRun.starter.chemistry101') },
-    ];
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: isMobile ? '24px 14px' : 40 }}>
         <div style={{ textAlign: 'center', maxWidth: 480, width: '100%' }}>
@@ -29,19 +23,10 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
           <div style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 10, lineHeight: 1.6 }}>
             {t('empty.firstRun.subtitle')}
           </div>
-          <div style={{ display: 'flex', gap: isMobile ? 7 : 10, justifyContent: 'center', marginTop: 24, flexWrap: 'wrap' }}>
-            <NNBtn size="lg" variant="primary" icon="plus">{t('empty.firstRun.newDeck')}</NNBtn>
-            <NNBtn size="lg" variant="soft" icon="sparkle">{t('empty.firstRun.importPdf')}</NNBtn>
-            <NNBtn size="lg" variant="ghost" icon="stack">{t('empty.firstRun.fromAnki')}</NNBtn>
-          </div>
-          {/* sample decks */}
-          <div style={{ marginTop: isMobile ? 22 : 32, paddingTop: isMobile ? 16 : 24, borderTop: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>{t('empty.firstRun.starterLabel')}</div>
-            <div style={{ display: 'flex', gap: isMobile ? 6 : 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-              {starterDecks.map(d => (
-                <span key={d.key} style={{ padding: '6px 12px', fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 999, color: 'var(--text-muted)' }}>{d.label}</span>
-              ))}
-            </div>
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 24 }}>
+            <Link href="/decks?new=1" style={{ textDecoration: 'none' }}>
+              <NNBtn size="lg" variant="primary" icon="plus">{t('empty.firstRun.newDeck')}</NNBtn>
+            </Link>
           </div>
         </div>
       </div>
@@ -61,9 +46,10 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
             {t('empty.done.subtitlePrefix')} <span className="mono" style={{ color: 'var(--lime-400)' }}>6h 14m</span>.
             {' '}{t('empty.done.subtitleSuffix')}
           </div>
-          <div style={{ display: 'flex', gap: isMobile ? 7 : 10, justifyContent: 'center', marginTop: 24, flexWrap: 'wrap' }}>
-            <NNBtn size="lg" variant="soft" icon="bolt">{t('empty.done.learnNew', { n: 12 })}</NNBtn>
-            <NNBtn size="lg" variant="ghost" icon="graph">{t('empty.done.exploreGraph')}</NNBtn>
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 24 }}>
+            <Link href="/editor" style={{ textDecoration: 'none' }}>
+              <NNBtn size="lg" variant="soft" icon="plus">{t('empty.done.learnNew', { n: 12 })}</NNBtn>
+            </Link>
           </div>
         </div>
       </div>

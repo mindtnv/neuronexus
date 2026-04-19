@@ -1,7 +1,9 @@
 import { closeDb } from '@neuronexus/db';
 import { buildApp, type App } from './app.ts';
 import { env } from './env.ts';
-import { rootLogger } from './logger.ts';
+import { getRootLogger } from './logger.ts';
+
+const rootLogger = getRootLogger();
 
 const app = buildApp().listen(env.PORT, () => {
   rootLogger.info(

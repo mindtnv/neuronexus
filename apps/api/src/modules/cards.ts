@@ -84,7 +84,32 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       );
 
       const base = [eq(cards.userId, user.id), eq(cards.suspended, false)];
-      if (deckId) base.push(eq(cards.deckId, deckId));
+      if (deckId) {
+        const allDecks = await db
+          .select({ id: decks.id, parentId: decks.parentId })
+          .from(decks)
+          .where(eq(decks.userId, user.id));
+        if (!allDecks.some((deck) => deck.id === deckId)) {
+          return { due: [], new: [], total: 0 };
+        }
+
+        const childrenByParent = new Map<string, string[]>();
+        for (const deck of allDecks) {
+          if (!deck.parentId) continue;
+          const children = childrenByParent.get(deck.parentId) ?? [];
+          children.push(deck.id);
+          childrenByParent.set(deck.parentId, children);
+        }
+
+        const scopedDeckIds = [deckId];
+        for (let i = 0; i < scopedDeckIds.length; i++) {
+          for (const childId of childrenByParent.get(scopedDeckIds[i]!) ?? []) {
+            scopedDeckIds.push(childId);
+          }
+        }
+
+        base.push(inArray(cards.deckId, scopedDeckIds));
+      }
 
       // Due (not-new) cards first — sorted by due ASC.
       const due = await db

@@ -3,12 +3,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { State } from 'ts-fsrs';
-import { addDays, format, isSameDay, startOfDay, startOfMonth, subDays } from 'date-fns';
-import { NNBadge, NNBtn, NNCard, NNHeatmap, NNIcon, NNMiniGraph, NNPlant, NNSkeleton } from '@/components/ui';
+import { format, startOfDay, startOfMonth, subDays } from 'date-fns';
+import { NNBadge, NNBtn, NNCard, NNHeatmap, NNIcon, NNPlant, NNSkeleton } from '@/components/ui';
 import { countDueCards } from '@/lib/cards';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
 import { reviewFromApi } from '@/lib/mappers';
+import { getHomeAddCardHref } from '@/lib/home-actions';
 import type { Review } from '@/lib/types';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -21,7 +22,6 @@ export const NNHome = () => {
   useEmptyRedirect('first-run');
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
-  const isDesktop = bp === 'desktop';
   const bootstrapped = useNN((s) => s.bootstrapped);
   const cards = useNN((s) => s.cards);
   const decks = useNN((s) => s.decks);
@@ -30,9 +30,6 @@ export const NNHome = () => {
   const [recentReviews, setRecentReviews] = useState<Review[]>([]);
   const [monthReviews, setMonthReviews] = useState<Review[]>([]);
   const [lastReviewAt, setLastReviewAt] = useState<number | null>(null);
-  const [recentAchievements, setRecentAchievements] = useState<
-    { code: string; title: string; unlockedAt: string | null }[]
-  >([]);
 
   useEffect(() => {
     if (!bootstrapped) return;
@@ -43,10 +40,9 @@ export const NNHome = () => {
       const sinceMonth = startOfMonth(now).getTime();
       try {
         // Both lists are server-ordered (reviewedAt desc).
-        const [recentRaw, monthlyRaw, summaryRaw] = await Promise.all([
+        const [recentRaw, monthlyRaw] = await Promise.all([
           ok(await (api as any).reviews.get({ query: { since: String(since30) } })),
           ok(await (api as any).reviews.get({ query: { since: String(sinceMonth) } })),
-          ok(await (api as any).achievements.summary.get()).catch(() => null),
         ]);
         if (cancelled) return;
         const recent = (recentRaw as any[]).map(reviewFromApi);
@@ -54,35 +50,11 @@ export const NNHome = () => {
         setRecentReviews(recent);
         setMonthReviews(monthly);
         setLastReviewAt(recent[0]?.reviewedAt ?? null);
-
-        if (summaryRaw && typeof summaryRaw === 'object' && 'recent' in summaryRaw) {
-          const codes = (summaryRaw as { recent: { code: string; unlockedAt: string }[] }).recent;
-          if (codes.length > 0) {
-            try {
-              const catalog = (await ok(await (api as any).achievements.catalog.get())) as Record<
-                string,
-                { title: string }
-              >;
-              setRecentAchievements(
-                codes.map((c) => ({
-                  code: c.code,
-                  title: catalog[c.code]?.title ?? c.code,
-                  unlockedAt: c.unlockedAt,
-                })),
-              );
-            } catch {
-              setRecentAchievements([]);
-            }
-          } else {
-            setRecentAchievements([]);
-          }
-        }
       } catch {
         if (cancelled) return;
         setRecentReviews([]);
         setMonthReviews([]);
         setLastReviewAt(null);
-        setRecentAchievements([]);
       }
     })();
     return () => {
@@ -149,31 +121,6 @@ export const NNHome = () => {
     return xp >= 1000 ? `${(xp / 1000).toFixed(1)}k` : String(xp);
   }, [profile]);
 
-  // Forecast: next 7 days bucketed by due date.
-  const forecast = useMemo(() => {
-    const buckets: { day: string; date: string; n: number; clr: 'lime' | 'amber' }[] = [];
-    for (let i = 0; i < 7; i++) {
-      const d = addDays(now, i);
-      const n = cards.filter((c) => isSameDay(new Date(c.fsrs.due), d)).length;
-      const label =
-        i === 0 ? t('time.today') : i === 1 ? t('time.tomorrow') : format(d, 'EEEE', { locale: dateLocale });
-      buckets.push({
-        day: label,
-        date: format(d, 'MMM d', { locale: dateLocale }),
-        n,
-        clr: n > 50 ? 'amber' : 'lime',
-      });
-    }
-    return buckets;
-  }, [cards, dateLocale, now, t]);
-
-  const forecastMax = Math.max(80, ...forecast.map((b) => b.n));
-
-  // Graph metrics — estimate links, clusters = deck count.
-  const nodes = cards.length;
-  const links = cards.length * 2;
-  const clusters = decks.length;
-
   const lastSessionLabel = useMemo(() => {
     if (!lastReviewAt) return t('time.noSessions');
     const diffMs = Date.now() - lastReviewAt;
@@ -196,6 +143,7 @@ export const NNHome = () => {
   }, [monthReviews, t]);
 
   const todayLabel = format(now, 'MMM d', { locale: dateLocale });
+  const homeAddCardHref = getHomeAddCardHref(decks.map((deck) => deck.id));
 
   // Flex ratios for the todo/learn/critical bar — avoid 0 widths.
   const barReview = Math.max(0, reviewCount);
@@ -249,6 +197,7 @@ export const NNHome = () => {
 
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 8 }}>
             <div
+              data-testid="home-due-count"
               style={{
                 fontFamily: 'var(--font-serif)',
                 fontSize: isMobile ? 40 : 72,
@@ -284,7 +233,15 @@ export const NNHome = () => {
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
             <NNBtn size="lg" variant="primary" icon="bolt" onClick={() => router.push('/review')}>{t('home.startReview')}</NNBtn>
-            <NNBtn size="lg" variant="outline" icon="plus" onClick={() => router.push('/editor')}>{t('home.addCard')}</NNBtn>
+            <NNBtn
+              size="lg"
+              variant="outline"
+              icon="plus"
+              testId="home-add-card"
+              onClick={() => router.push(homeAddCardHref)}
+            >
+              {t('home.addCard')}
+            </NNBtn>
             <div style={{ flex: 1 }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-dim)', fontSize: 12 }}>
               <NNIcon name="clock" size={13} /> {t('home.lastSession', { label: lastSessionLabel })}
@@ -357,10 +314,14 @@ export const NNHome = () => {
             {[
               { v: String(cards.length), l: t('home.stats.cards') },
               { v: retentionPct != null ? `${retentionPct}%` : '—', l: t('home.stats.retention') },
-              { v: xpDisplay, l: t('home.stats.xp') },
+              { v: xpDisplay, l: t('home.stats.xp'), testId: 'home-stat-xp' },
             ].map((s) => (
               <div key={s.l}>
-                <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text)' }} className="mono">
+                <div
+                  data-testid={s.testId}
+                  style={{ fontSize: 16, fontWeight: 600, color: 'var(--text)' }}
+                  className="mono"
+                >
                   {s.v}
                 </div>
                 <div style={{ fontSize: 10.5, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.6 }}>
@@ -372,7 +333,7 @@ export const NNHome = () => {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1.1fr 1fr', gap: isMobile ? 10 : 16, marginBottom: isMobile ? 14 : 20 }}>
+      <div style={{ marginBottom: isMobile ? 14 : 20 }}>
         <NNCard padding={20}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
             <div>
@@ -410,142 +371,6 @@ export const NNHome = () => {
               {t('home.more')}
             </div>
             <span className="mono">{t('time.today')}</span>
-          </div>
-        </NNCard>
-
-        <NNCard padding={20}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{t('home.knowledgeGraph')}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                {t('home.graphSub', { nodes: nodes.toLocaleString(), links: links.toLocaleString(), clusters })}
-              </div>
-            </div>
-            <NNBtn size="sm" variant="ghost" iconRight="arrow" onClick={() => router.push('/graph')}>{t('actions.open')}</NNBtn>
-          </div>
-          <div style={{ margin: '4px -4px -4px' }}>
-            <NNMiniGraph height={170} />
-          </div>
-        </NNCard>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 10 : 16 }}>
-        <NNCard padding={0}>
-          <div
-            style={{
-              padding: '16px 20px 12px',
-              borderBottom: '1px solid var(--border)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <div style={{ fontSize: 14, fontWeight: 600 }}>{t('home.forecast')}</div>
-            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('home.forecastSub')}</span>
-          </div>
-          <div style={{ padding: '8px 8px' }}>
-            {forecast.map((r, i) => (
-              <div
-                key={i}
-                style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', borderRadius: 8 }}
-              >
-                <div style={{ width: 90, fontSize: 12.5, color: 'var(--text)', fontWeight: 500 }}>{r.day}</div>
-                <div style={{ width: 60, fontSize: 11.5, color: 'var(--text-dim)' }} className="mono">
-                  {r.date}
-                </div>
-                <div style={{ flex: 1, height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      width: `${(r.n / forecastMax) * 100}%`,
-                      height: '100%',
-                      background: r.clr === 'amber' ? 'var(--amber-500)' : 'var(--lime-500)',
-                    }}
-                  />
-                </div>
-                <div
-                  style={{ width: 32, textAlign: 'right', fontSize: 12.5, color: 'var(--text)', fontWeight: 500 }}
-                  className="mono"
-                >
-                  {r.n}
-                </div>
-              </div>
-            ))}
-          </div>
-        </NNCard>
-
-        <NNCard padding={0}>
-          <div
-            style={{
-              padding: '16px 20px 12px',
-              borderBottom: '1px solid var(--border)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <NNIcon name="trophy" size={14} color="var(--amber-400)" />
-              <div style={{ fontSize: 14, fontWeight: 600 }}>Последние награды</div>
-            </div>
-            <NNBtn size="sm" variant="ghost" iconRight="arrow" onClick={() => router.push('/achievements')}>
-              Все
-            </NNBtn>
-          </div>
-          <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {recentAchievements.length > 0 ? (
-              recentAchievements.map((a) => (
-                <div
-                  key={a.code}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12,
-                    padding: 12,
-                    borderRadius: 10,
-                    background: 'var(--surface-2)',
-                    border: '1px solid var(--border)',
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 30,
-                      height: 30,
-                      borderRadius: 7,
-                      flexShrink: 0,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      background: 'rgba(243,182,85,0.15)',
-                      color: 'var(--amber-400)',
-                    }}
-                  >
-                    <NNIcon name="trophy" size={14} />
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)' }}>{a.title}</div>
-                    {a.unlockedAt && (
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                        {format(new Date(a.unlockedAt), 'MMM d', { locale: dateLocale })}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div
-                style={{
-                  padding: 24,
-                  textAlign: 'center',
-                  fontSize: 12.5,
-                  color: 'var(--text-muted)',
-                  lineHeight: 1.5,
-                }}
-              >
-                Пока нет наград.
-                <br />
-                Начни повтор — первая ачивка не заставит себя ждать.
-              </div>
-            )}
           </div>
         </NNCard>
       </div>

@@ -20,40 +20,52 @@ const level =
 
 const isProd = process.env.NODE_ENV === 'production';
 
-export const rootLogger: Logger = pino({
-  level,
-  base: { app: 'neuronexus-api' },
-  timestamp: pino.stdTimeFunctions.isoTime,
-  // Pretty transport in dev; raw JSON in prod. pino-pretty is a devDep; if
-  // somehow missing in prod, pino will just emit JSON — no crash.
-  ...(isProd
-    ? {}
-    : {
-        transport: {
-          target: 'pino-pretty',
-          options: {
-            colorize: true,
-            singleLine: true,
-            ignore: 'pid,hostname',
-            translateTime: 'HH:MM:ss.l',
+let cachedRootLogger: Logger | null = null;
+
+export function getRootLogger(): Logger {
+  if (cachedRootLogger) return cachedRootLogger;
+  const options = {
+    level,
+    base: { app: 'neuronexus-api' },
+    timestamp: pino.stdTimeFunctions.isoTime,
+    // Pretty transport in dev; raw JSON in prod. pino-pretty is a devDep; if
+    // somehow missing in prod, pino will just emit JSON — no crash.
+    ...(isProd
+      ? {}
+      : {
+          transport: {
+            target: 'pino-pretty',
+            options: {
+              colorize: true,
+              singleLine: true,
+              ignore: 'pid,hostname',
+              translateTime: 'HH:MM:ss.l',
+            },
           },
-        },
-      }),
-  // Redact sensitive fields in case someone logs an entire request/body.
-  redact: {
-    paths: [
-      'req.headers.authorization',
-      'req.headers.cookie',
-      'body.password',
-      'body.newPassword',
-      'body.token',
-      '*.password',
-      '*.newPassword',
-      '*.token',
-    ],
-    censor: '[REDACTED]',
-  },
-});
+        }),
+    // Redact sensitive fields in case someone logs an entire request/body.
+    redact: {
+      paths: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'body.password',
+        'body.newPassword',
+        'body.token',
+        '*.password',
+        '*.newPassword',
+        '*.token',
+      ],
+      censor: '[REDACTED]',
+    },
+  } satisfies Parameters<typeof pino>[0];
+
+  cachedRootLogger = isProd
+    ? pino(options, pino.destination({ sync: true }))
+    : pino(options);
+  return cachedRootLogger;
+}
+
+export const rootLogger: Logger = getRootLogger();
 
 /** Per-request child logger. `requestId` lets downstream lines group. */
 export function requestLogger(opts: {
@@ -61,8 +73,10 @@ export function requestLogger(opts: {
   method: string;
   path: string;
   userId?: string;
+  clientFlowId?: string;
+  clientScenarioId?: string;
 }): Logger {
-  return rootLogger.child(opts);
+  return getRootLogger().child(opts);
 }
 
 /** Extract or generate a request id. Honours upstream `x-request-id` header
