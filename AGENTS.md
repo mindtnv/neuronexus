@@ -22,6 +22,16 @@ Ports: web **3001**, api **3000**, postgres **5432**. Swagger UI at `http://loca
 
 Prereqs: `bun >=1.3`, Docker, a root `.env` (copy from `.env.example`). CI gates: `bun run typecheck` + `bun run test` + clean builds. No linter configured.
 
+## Autonomous Delivery Contract
+
+- Never ship from `main`. If the work arrives on `main`, create a task branch before making or validating changes.
+- Release work is not done until the branch name, latest commit SHA, push result, PR URL (or explicit pushed-branch URL/path when no PR exists), and validation summary are all recorded in the issue or handoff comment.
+- Minimum validation for branch-ready work is `docker compose up -d postgres`, `bun run typecheck`, `bun run test`, and `bun run build`.
+- If the diff changes a user flow or other shipped UI, also run a browser-level QA pass. Prefer `bun run smoke:learner` for the learner loop and call out any equivalent manual QA if a different path was exercised.
+- If the diff changes schema or production delivery behavior, include the matching migration files, deploy docs, or rollback notes in the same branch before handing it off.
+- If any required release artifact is missing, keep the task in progress or send it back with explicit findings instead of silently "almost shipping" it.
+- Full policy: `docs/ops/autonomous-delivery.md`.
+
 ## Production
 
 - **Versioned migrations**: edit schema → `bun run db:generate` → commit the `packages/db/src/migrations/*.sql` files. Apply via `bun run db:migrate:apply` (calls the programmatic `packages/db/src/migrate.ts`). CI runs `db:migrate:apply:test` before `bun run test`. Dev loop still uses `db:push --force` for speed.
