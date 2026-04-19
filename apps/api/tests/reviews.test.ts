@@ -6,8 +6,6 @@ const app = buildApp();
 
 async function setupCard(): Promise<{ cookie: string; cardId: string; deckId: string }> {
   const { cookie } = await signUpAndCookie(app, uniqueEmail());
-  // Touch /profile so lazy-create runs → streak rollup has somewhere to write.
-  await callApp(app, 'GET', '/profile', { cookie });
   const deck = await (
     await callApp(app, 'POST', '/decks', { cookie, body: { name: 'D' } })
   ).json<{ id: string }>();
@@ -35,7 +33,7 @@ describe('reviews', () => {
     const body = await res.json<{
       card: { state: string; reps: number; lapses: number };
       review: { rating: number; durationMs: number };
-      profile: { xp: number; streakDays: number; plantStage: number };
+      profile: { userId: string; xp: number; streakDays: number; plantStage: number };
       leeched: boolean;
     }>();
     expect(body.card.state).not.toBe('new');
@@ -44,6 +42,7 @@ describe('reviews', () => {
     expect(body.review.rating).toBe(3);
     expect(body.review.durationMs).toBe(2000);
     // Good = 10 XP, streak starts at 1.
+    expect(body.profile.userId).toBeTruthy();
     expect(body.profile.xp).toBe(10);
     expect(body.profile.streakDays).toBe(1);
     expect(body.profile.plantStage).toBe(0);
@@ -138,5 +137,100 @@ describe('reviews', () => {
     expect(none).toEqual([]);
     const all = await (await callApp(app, 'GET', '/reviews', { cookie })).json<unknown[]>();
     expect(all.length).toBe(1);
+  });
+
+  test('replaying the same attemptKey is idempotent and does not mint extra XP or reviews', async () => {
+    const { cookie, cardId } = await setupCard();
+    const attemptKey = 'retry-1';
+
+    const first = await callApp(app, 'POST', '/reviews', {
+      cookie,
+      body: { cardId, rating: 3, durationMs: 1500, attemptKey },
+    });
+    expect(first.status).toBe(200);
+    const firstBody = await first.json<{
+      review: { id: string };
+      profile: { xp: number; streakDays: number };
+      freezeUsed: boolean;
+      dailyGoalJustMet: boolean;
+      newAchievements: string[];
+    }>();
+
+    const retry = await callApp(app, 'POST', '/reviews', {
+      cookie,
+      body: { cardId, rating: 3, durationMs: 1500, attemptKey },
+    });
+    expect(retry.status).toBe(200);
+    const retryBody = await retry.json<{
+      review: { id: string };
+      profile: { xp: number; streakDays: number };
+      freezeUsed: boolean;
+      dailyGoalJustMet: boolean;
+      newAchievements: string[];
+    }>();
+
+    expect(retryBody.review.id).toBe(firstBody.review.id);
+    expect(retryBody.profile.xp).toBe(firstBody.profile.xp);
+    expect(retryBody.profile.streakDays).toBe(firstBody.profile.streakDays);
+    expect(retryBody.freezeUsed).toBe(false);
+    expect(retryBody.dailyGoalJustMet).toBe(false);
+    expect(retryBody.newAchievements).toEqual([]);
+
+    const count = await (await callApp(app, 'GET', '/reviews/count', { cookie })).json<{ count: number }>();
+    expect(count.count).toBe(1);
+  });
+
+  test('same attemptKey can be retried concurrently without duplicate review rows', async () => {
+    const { cookie, cardId } = await setupCard();
+    const attemptKey = 'retry-concurrent';
+
+    const [a, b] = await Promise.all([
+      callApp(app, 'POST', '/reviews', {
+        cookie,
+        body: { cardId, rating: 3, attemptKey },
+      }),
+      callApp(app, 'POST', '/reviews', {
+        cookie,
+        body: { cardId, rating: 3, attemptKey },
+      }),
+    ]);
+
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+
+    const [aBody, bBody] = await Promise.all([
+      a.json<{ review: { id: string }; profile: { xp: number } }>(),
+      b.json<{ review: { id: string }; profile: { xp: number } }>(),
+    ]);
+    expect(aBody.review.id).toBe(bBody.review.id);
+    expect(aBody.profile.xp).toBe(10);
+    expect(bBody.profile.xp).toBe(10);
+
+    const count = await (await callApp(app, 'GET', '/reviews/count', { cookie })).json<{ count: number }>();
+    expect(count.count).toBe(1);
+  });
+
+  test('reusing an attemptKey with a different payload returns 409', async () => {
+    const { cookie, cardId } = await setupCard();
+    const attemptKey = 'retry-conflict';
+
+    const first = await callApp(app, 'POST', '/reviews', {
+      cookie,
+      body: { cardId, rating: 3, attemptKey },
+    });
+    expect(first.status).toBe(200);
+
+    const conflict = await callApp(app, 'POST', '/reviews', {
+      cookie,
+      body: { cardId, rating: 4, attemptKey },
+      headers: { 'x-request-id': 'review-attempt-conflict-rid' },
+    });
+    expect(conflict.status).toBe(409);
+    const body = await conflict.json<{
+      requestId: string;
+      error: { code: string };
+    }>();
+    expect(body.requestId).toBe('review-attempt-conflict-rid');
+    expect(body.error.code).toBe('REVIEW_ATTEMPT_CONFLICT');
   });
 });

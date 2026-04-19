@@ -44,10 +44,8 @@ describe('auth', () => {
     expect(body.userId).toBe(userId);
   });
 
-  test('PATCH /profile updates name + dailyGoalMinutes', async () => {
+  test('PATCH /profile upserts and updates writable fields without a prior read', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
-    // Seed profile
-    await callApp(app, 'GET', '/profile', { cookie });
     const res = await callApp(app, 'PATCH', '/profile', {
       cookie,
       body: { name: 'Renamed', dailyGoalMinutes: 45, desiredRetention: 0.92 },
@@ -57,5 +55,16 @@ describe('auth', () => {
     expect(body.name).toBe('Renamed');
     expect(body.dailyGoalMinutes).toBe(45);
     expect(body.desiredRetention).toBeCloseTo(0.92, 5);
+  });
+
+  test('PATCH /profile ignores derived fields such as plantStage', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('derived'));
+    const res = await callApp(app, 'PATCH', '/profile', {
+      cookie,
+      body: { plantStage: 5 },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json<{ plantStage: number }>();
+    expect(body.plantStage).toBe(0);
   });
 });
