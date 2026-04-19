@@ -400,7 +400,9 @@ async function main() {
     webServer = await ensureServer('web', webReadyUrl, {
       cwd: join(repoRoot, 'apps/web'),
       command: 'bun',
-      args: ['x', 'next', 'dev', '--port', String(webPort)],
+      // Turbopack panics from git worktrees because workspace symlinks resolve
+      // outside its inferred filesystem root; webpack stays stable here.
+      args: ['x', 'next', 'dev', '--webpack', '--port', String(webPort)],
       env: {
         ...sharedEnv,
         NODE_ENV: 'development',

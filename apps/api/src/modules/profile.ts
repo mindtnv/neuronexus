@@ -25,38 +25,36 @@ const plantSpeciesSchema = t.Union([
 const asSpecies = (v: unknown): PlantSpecies => v as PlantSpecies;
 void PLANT_SPECIES;
 
+async function ensureProfileRow(user: { id: string; name?: string | null }) {
+  await db
+    .insert(profile)
+    .values({ userId: user.id, name: user.name ?? 'Friend' })
+    .onConflictDoNothing();
+  const [row] = await db.select().from(profile).where(eq(profile.userId, user.id)).limit(1);
+  if (!row) throw new Error('profile not found after ensure');
+  return row;
+}
+
 export const profileModule = new Elysia({ prefix: '/profile' })
   .use(authPlugin)
   .get(
     '/',
     async ({ user }) => {
-      const rows = await db.select().from(profile).where(eq(profile.userId, user.id));
-      if (rows.length === 0) {
-        // Lazy-create on first read — avoids a separate "finish signup" round trip.
-        const [created] = await db
-          .insert(profile)
-          .values({ userId: user.id, name: user.name ?? 'Friend' })
-          .returning();
-        return created;
-      }
-      return rows[0];
+      // Lazy-create on first read so auth signup stays decoupled from app data.
+      return ensureProfileRow(user);
     },
     { auth: true },
   )
   .patch(
     '/',
     async ({ user, body, status }) => {
+      const existing = await ensureProfileRow(user);
       // If the user tries to switch to a plant species, make sure they have
       // it unlocked. Keeps a future client UI from racing past the achievement
       // reward logic.
       const species = body.plantSpecies ? asSpecies(body.plantSpecies) : undefined;
       if (species) {
-        const [row] = await db
-          .select({ unlocked: profile.unlockedSpecies })
-          .from(profile)
-          .where(eq(profile.userId, user.id))
-          .limit(1);
-        const unlocked = row?.unlocked ?? ['fern'];
+        const unlocked = existing.unlockedSpecies ?? ['fern'];
         if (!unlocked.includes(species)) {
           return status(400, { error: 'species_locked' });
         }
@@ -78,7 +76,6 @@ export const profileModule = new Elysia({ prefix: '/profile' })
           name: t.String({ minLength: 1, maxLength: 80 }),
           dailyGoalMinutes: t.Integer({ minimum: 1, maximum: 600 }),
           desiredRetention: t.Number({ minimum: 0.7, maximum: 0.99 }),
-          plantStage: t.Integer({ minimum: 0, maximum: 5 }),
           plantSpecies: plantSpeciesSchema,
         }),
       ),
@@ -91,7 +88,7 @@ export const profileModule = new Elysia({ prefix: '/profile' })
   .get(
     '/export',
     async ({ user }) => {
-      const [profileRow] = await db.select().from(profile).where(eq(profile.userId, user.id));
+      const profileRow = await ensureProfileRow(user);
       const [decksRows, cardsRows, reviewsRows, achievementsRows] = await Promise.all([
         db.select().from(decks).where(eq(decks.userId, user.id)),
         db.select().from(cards).where(eq(cards.userId, user.id)),

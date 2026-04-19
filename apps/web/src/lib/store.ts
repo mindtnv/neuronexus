@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 import { countDueCardsByDeck, getDueCards } from './cards';
-import { api, ok } from './api';
+import { NNApiError, api, ok } from './api';
 import { cardFromApi, deckFromApi, profileFromApi, reviewFromApi } from './mappers';
 import { logTrace } from './trace';
 import type { Card, Deck, Profile, Rating, Review } from './types';
@@ -29,7 +29,23 @@ interface State {
   deleteCard: (id: string) => Promise<void>;
 
   gradeCard: (cardId: string, rating: Rating, durationMs: number) => Promise<Review>;
-  updateProfile: (patch: Partial<Omit<Profile, 'id'>>) => Promise<void>;
+  updateProfile: (patch: ProfilePatch) => Promise<void>;
+}
+
+type ProfilePatch = Partial<Pick<Profile, 'name' | 'dailyGoalMinutes' | 'desiredRetention' | 'plantSpecies'>>;
+
+function apiErrorFields(error: unknown) {
+  if (error instanceof NNApiError) {
+    return {
+      error: error.message,
+      status: error.status,
+      code: error.code,
+      requestId: error.requestId,
+    };
+  }
+  return {
+    error: error instanceof Error ? error.message : String(error),
+  };
 }
 
 export const useNN = create<State>()((set, get) => ({
@@ -91,7 +107,7 @@ export const useNN = create<State>()((set, get) => ({
     } catch (error) {
       logTrace('deck.create.error', {
         name: input.name,
-        error: error instanceof Error ? error.message : String(error),
+        ...apiErrorFields(error),
       });
       throw error;
     }
@@ -145,7 +161,7 @@ export const useNN = create<State>()((set, get) => ({
     } catch (error) {
       logTrace('card.create.error', {
         deckId: input.deckId,
-        error: error instanceof Error ? error.message : String(error),
+        ...apiErrorFields(error),
       });
       throw error;
     }
@@ -169,7 +185,7 @@ export const useNN = create<State>()((set, get) => ({
     } catch (error) {
       logTrace('card.update.error', {
         cardId: id,
-        error: error instanceof Error ? error.message : String(error),
+        ...apiErrorFields(error),
       });
       throw error;
     }
@@ -182,15 +198,17 @@ export const useNN = create<State>()((set, get) => ({
 
   async gradeCard(cardId, rating, durationMs) {
     let res: any;
+    const attemptKey = crypto.randomUUID();
     try {
       res = await ok(
-        await (api as any).reviews.post({ cardId, rating, durationMs }),
+        await (api as any).reviews.post({ cardId, rating, durationMs, attemptKey }),
       );
     } catch (error) {
       logTrace('review.grade.error', {
         cardId,
         rating,
-        error: error instanceof Error ? error.message : String(error),
+        attemptKey,
+        ...apiErrorFields(error),
       });
       throw error;
     }
@@ -205,6 +223,7 @@ export const useNN = create<State>()((set, get) => ({
       cardId,
       rating,
       reviewId: review.id,
+      attemptKey,
       leeched: Boolean(res.leeched),
       newAchievements: Array.isArray(res.newAchievements) ? res.newAchievements.length : 0,
       xp: nextProfile?.xp ?? null,
@@ -268,7 +287,7 @@ export const useNN = create<State>()((set, get) => ({
     if (patch.name !== undefined) body.name = patch.name;
     if (patch.dailyGoalMinutes !== undefined) body.dailyGoalMinutes = patch.dailyGoalMinutes;
     if (patch.desiredRetention !== undefined) body.desiredRetention = patch.desiredRetention;
-    if (patch.plantStage !== undefined) body.plantStage = patch.plantStage;
+    if (patch.plantSpecies !== undefined) body.plantSpecies = patch.plantSpecies;
     const next = profileFromApi(await ok(await (api as any).profile.patch(body)));
     set({ profile: next });
   },

@@ -56,7 +56,23 @@ bun run db:studio     # open drizzle-kit studio
 bun run typecheck     # tsc --noEmit across all workspaces
 ```
 
-No linter, no unit tests yet — typecheck + clean `next build` + api smoke-test are the current gates.
+## Quality gates
+
+```bash
+docker compose up -d postgres
+bun run typecheck
+bun run test
+bun run build
+```
+
+If a change touches the shipped learner flow, also run:
+
+```bash
+bun run smoke:learner
+```
+
+The full branch, validation, push, and PR contract lives in
+[docs/ops/autonomous-delivery.md](docs/ops/autonomous-delivery.md).
 
 ## Environment variables
 

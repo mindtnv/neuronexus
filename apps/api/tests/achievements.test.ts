@@ -158,12 +158,13 @@ describe('gamification — /reviews grade flow', () => {
     // Dump 99 synthetic review rows for the same user (no business impact;
     // achievements evaluator just counts).
     const { reviews: reviewsTable } = await import('@neuronexus/db');
-    const rows = Array.from({ length: 99 }, () => ({
+    const rows = Array.from({ length: 99 }, (_, idx) => ({
       userId,
       cardId: card.id,
       deckId,
       rating: 3,
       durationMs: 1000,
+      attemptKey: `seed-review-${idx}`,
       reviewedAt: new Date(),
       nextDue: new Date(),
       nextStability: 1,

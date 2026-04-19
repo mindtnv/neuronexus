@@ -14,6 +14,8 @@
     "smoke": "bun run smoke:learner",
     "smoke:install": "bunx playwright install chromium",
     "smoke:learner": "bun run scripts/smoke-learner.ts",
+    "staging:deploy": "bun run scripts/staging-release.ts",
+    "staging:rollback": "bun run scripts/staging-rollback.ts",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "NODE_ENV=test bun --env-file=./.env test",
     "test:unit": "NODE_ENV=test bun --env-file=./.env test packages/shared",
