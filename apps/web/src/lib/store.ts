@@ -2,8 +2,9 @@
 
 import { create } from 'zustand';
 import { countDueCardsByDeck, getDueCards } from './cards';
-import { api, ok } from './api';
+import { NNApiError, api, ok } from './api';
 import { cardFromApi, deckFromApi, profileFromApi, reviewFromApi } from './mappers';
+import { logTrace } from './trace';
 import type { Card, Deck, Profile, Rating, Review } from './types';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
@@ -31,6 +32,20 @@ interface State {
   updateProfile: (patch: Partial<Omit<Profile, 'id'>>) => Promise<void>;
 }
 
+function apiErrorFields(error: unknown) {
+  if (error instanceof NNApiError) {
+    return {
+      error: error.message,
+      status: error.status,
+      code: error.code,
+      requestId: error.requestId,
+    };
+  }
+  return {
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
 export const useNN = create<State>()((set, get) => ({
   bootstrapped: false,
   decks: [],
@@ -56,6 +71,10 @@ export const useNN = create<State>()((set, get) => ({
       cards: (cardRows as any[]).map(cardFromApi),
       bootstrapped: true,
     });
+    logTrace('store.bootstrap.snapshot', {
+      decks: Array.isArray(decks) ? decks.length : 0,
+      cards: Array.isArray(cardRows) ? cardRows.length : 0,
+    });
   },
 
   reset() {
@@ -65,18 +84,31 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async addDeck(input) {
-    const created = deckFromApi(
-      await ok(
-        await (api as any).decks.post({
-          name: input.name,
-          color: input.color,
-          icon: input.icon,
-          parentId: input.parentId,
-        }),
-      ),
-    );
-    set((s) => ({ decks: [...s.decks, created] }));
-    return created;
+    try {
+      const created = deckFromApi(
+        await ok(
+          await (api as any).decks.post({
+            name: input.name,
+            color: input.color,
+            icon: input.icon,
+            parentId: input.parentId,
+          }),
+        ),
+      );
+      set((s) => ({ decks: [...s.decks, created] }));
+      logTrace('deck.create.success', {
+        deckId: created.id,
+        name: created.name,
+        parentId: created.parentId ?? null,
+      });
+      return created;
+    } catch (error) {
+      logTrace('deck.create.error', {
+        name: input.name,
+        ...apiErrorFields(error),
+      });
+      throw error;
+    }
   },
 
   async updateDeck(id, patch) {
@@ -104,20 +136,33 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async addCard(input) {
-    const created = cardFromApi(
-      await ok(
-        await (api as any).cards.post({
-          deckId: input.deckId,
-          variant: input.variant,
-          front: input.front,
-          back: input.back,
-          clozeText: input.clozeText,
-          tags: input.tags,
-        }),
-      ),
-    );
-    set((s) => ({ cards: [...s.cards, created] }));
-    return created;
+    try {
+      const created = cardFromApi(
+        await ok(
+          await (api as any).cards.post({
+            deckId: input.deckId,
+            variant: input.variant,
+            front: input.front,
+            back: input.back,
+            clozeText: input.clozeText,
+            tags: input.tags,
+          }),
+        ),
+      );
+      set((s) => ({ cards: [...s.cards, created] }));
+      logTrace('card.create.success', {
+        cardId: created.id,
+        deckId: created.deckId,
+        variant: created.variant,
+      });
+      return created;
+    } catch (error) {
+      logTrace('card.create.error', {
+        deckId: input.deckId,
+        ...apiErrorFields(error),
+      });
+      throw error;
+    }
   },
 
   async updateCard(id, patch) {
@@ -128,8 +173,20 @@ export const useNN = create<State>()((set, get) => ({
     if (patch.back !== undefined) body.back = patch.back;
     if (patch.clozeText !== undefined) body.clozeText = patch.clozeText;
     if (patch.tags !== undefined) body.tags = patch.tags;
-    const updated = cardFromApi(await ok(await (api as any).cards({ id }).patch(body)));
-    set((s) => ({ cards: s.cards.map((c) => (c.id === id ? updated : c)) }));
+    try {
+      const updated = cardFromApi(await ok(await (api as any).cards({ id }).patch(body)));
+      set((s) => ({ cards: s.cards.map((c) => (c.id === id ? updated : c)) }));
+      logTrace('card.update.success', {
+        cardId: id,
+        variant: updated.variant,
+      });
+    } catch (error) {
+      logTrace('card.update.error', {
+        cardId: id,
+        ...apiErrorFields(error),
+      });
+      throw error;
+    }
   },
 
   async deleteCard(id) {
@@ -138,9 +195,19 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async gradeCard(cardId, rating, durationMs) {
-    const res: any = await ok(
-      await (api as any).reviews.post({ cardId, rating, durationMs }),
-    );
+    let res: any;
+    try {
+      res = await ok(
+        await (api as any).reviews.post({ cardId, rating, durationMs }),
+      );
+    } catch (error) {
+      logTrace('review.grade.error', {
+        cardId,
+        rating,
+        ...apiErrorFields(error),
+      });
+      throw error;
+    }
     const updatedCard = cardFromApi(res.card);
     const review = reviewFromApi(res.review);
     const nextProfile = res.profile ? profileFromApi(res.profile) : null;
@@ -148,6 +215,16 @@ export const useNN = create<State>()((set, get) => ({
       cards: s.cards.map((c) => (c.id === cardId ? updatedCard : c)),
       profile: nextProfile ?? s.profile,
     }));
+    logTrace('review.grade.success', {
+      cardId,
+      rating,
+      reviewId: review.id,
+      leeched: Boolean(res.leeched),
+      newAchievements: Array.isArray(res.newAchievements) ? res.newAchievements.length : 0,
+      xp: nextProfile?.xp ?? null,
+      level: nextProfile?.level ?? null,
+      streakDays: nextProfile?.streakDays ?? null,
+    });
 
     // Fire gamification toasts. The server returns everything we need in the
     // grade response (newAchievements: string[], freezeUsed, dailyGoalJustMet)

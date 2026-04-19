@@ -86,8 +86,15 @@ describe('reviews', () => {
     const res = await callApp(app, 'POST', '/reviews', {
       cookie: bCookie,
       body: { cardId: aCard.id, rating: 3 },
+      headers: { 'x-request-id': 'review-not-found-rid' },
     });
     expect(res.status).toBe(404);
+    const body = await res.json<{
+      requestId: string;
+      error: { code: string; message: string };
+    }>();
+    expect(body.requestId).toBe('review-not-found-rid');
+    expect(body.error.code).toBe('REVIEW_CARD_NOT_FOUND');
   });
 
   test('cannot grade a suspended card (409)', async () => {
@@ -96,8 +103,15 @@ describe('reviews', () => {
     const res = await callApp(app, 'POST', '/reviews', {
       cookie,
       body: { cardId, rating: 3 },
+      headers: { 'x-request-id': 'review-suspended-rid' },
     });
     expect(res.status).toBe(409);
+    const body = await res.json<{
+      requestId: string;
+      error: { code: string; message: string };
+    }>();
+    expect(body.requestId).toBe('review-suspended-rid');
+    expect(body.error.code).toBe('REVIEW_CARD_SUSPENDED');
   });
 
   test('GET /reviews/count reports totals', async () => {

@@ -13,6 +13,7 @@ import {
   type FsrsCard,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
+import { apiErrorBody, getRequestLogger, requestFields } from '../logger.ts';
 
 const stateFromLabel: Record<string, State> = {
   new: State.New,
@@ -54,90 +55,116 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
   )
   .post(
     '/',
-    async ({ user, body, status }) => {
+    async ({ user, body, status, store }) => {
+      const log = getRequestLogger(store);
       const now = new Date();
-      return await db.transaction(async (tx) => {
-        const [card] = await tx
-          .select()
-          .from(cards)
-          .where(and(eq(cards.id, body.cardId), eq(cards.userId, user.id)))
-          .limit(1);
-        if (!card) return status(404, { error: 'card_not_found' });
-        if (card.suspended) return status(409, { error: 'card_suspended' });
+      try {
+        const outcome = await db.transaction(async (tx) => {
+          const [card] = await tx
+            .select()
+            .from(cards)
+            .where(and(eq(cards.id, body.cardId), eq(cards.userId, user.id)))
+            .limit(1);
+          if (!card) {
+            log.warn(
+              requestFields(store, {
+                errorCode: 'REVIEW_CARD_NOT_FOUND',
+                userId: user.id,
+                cardId: body.cardId,
+              }),
+              'reviews.grade.card_not_found',
+            );
+            return status(404, apiErrorBody(store, 'REVIEW_CARD_NOT_FOUND', 'Card not found.'));
+          }
+          if (card.suspended) {
+            log.warn(
+              requestFields(store, {
+                errorCode: 'REVIEW_CARD_SUSPENDED',
+                userId: user.id,
+                cardId: card.id,
+                deckId: card.deckId,
+              }),
+              'reviews.grade.card_suspended',
+            );
+            return status(
+              409,
+              apiErrorBody(store, 'REVIEW_CARD_SUSPENDED', 'Card is suspended.'),
+            );
+          }
 
-        const [existingProfile] = await tx
-          .select()
-          .from(profile)
-          .where(eq(profile.userId, user.id))
-          .limit(1);
+          const [existingProfile] = await tx
+            .select()
+            .from(profile)
+            .where(eq(profile.userId, user.id))
+            .limit(1);
 
-        const requestRetention =
-          existingProfile?.desiredRetention ?? ANKI_DEFAULTS.requestRetention;
+          const requestRetention =
+            existingProfile?.desiredRetention ?? ANKI_DEFAULTS.requestRetention;
 
         // FSRS step
-        const fsrsCard: FsrsCard = {
-          due: card.due,
-          stability: card.stability,
-          difficulty: card.difficulty,
-          elapsed_days: card.elapsedDays,
-          scheduled_days: card.scheduledDays,
-          learning_steps: card.learningSteps,
-          reps: card.reps,
-          lapses: card.lapses,
-          state: stateFromLabel[card.state] ?? State.New,
-          last_review: card.lastReview ?? undefined,
-        };
-        const res = gradeFsrs(fsrsCard, body.rating, now, { requestRetention });
+          const fsrsCard: FsrsCard = {
+            due: card.due,
+            stability: card.stability,
+            difficulty: card.difficulty,
+            elapsed_days: card.elapsedDays,
+            scheduled_days: card.scheduledDays,
+            learning_steps: card.learningSteps,
+            reps: card.reps,
+            lapses: card.lapses,
+            state: stateFromLabel[card.state] ?? State.New,
+            last_review: card.lastReview ?? undefined,
+          };
+          const res = gradeFsrs(fsrsCard, body.rating, now, { requestRetention });
 
         // Leech detection — auto-suspend once threshold crossed.
-        const nowLeech = isLeech(res.card.lapses);
-        const shouldSuspend = nowLeech && !isLeech(card.lapses);
+          const nowLeech = isLeech(res.card.lapses);
+          const shouldSuspend = nowLeech && !isLeech(card.lapses);
 
-        const [updatedCard] = await tx
-          .update(cards)
-          .set({
-            due: new Date(res.card.due),
-            stability: res.card.stability,
-            difficulty: res.card.difficulty,
-            elapsedDays: res.card.elapsed_days,
-            scheduledDays: res.card.scheduled_days,
-            learningSteps: res.card.learning_steps,
-            reps: res.card.reps,
-            lapses: res.card.lapses,
-            state: stateLabel(res.card.state),
-            lastReview: now,
-            updatedAt: now,
-            ...(shouldSuspend ? { suspended: true } : {}),
-          })
-          .where(eq(cards.id, card.id))
-          .returning();
+          const [updatedCard] = await tx
+            .update(cards)
+            .set({
+              due: new Date(res.card.due),
+              stability: res.card.stability,
+              difficulty: res.card.difficulty,
+              elapsedDays: res.card.elapsed_days,
+              scheduledDays: res.card.scheduled_days,
+              learningSteps: res.card.learning_steps,
+              reps: res.card.reps,
+              lapses: res.card.lapses,
+              state: stateLabel(res.card.state),
+              lastReview: now,
+              updatedAt: now,
+              ...(shouldSuspend ? { suspended: true } : {}),
+            })
+            .where(eq(cards.id, card.id))
+            .returning();
 
-        const [review] = await tx
-          .insert(reviews)
-          .values({
-            userId: user.id,
-            cardId: card.id,
-            deckId: card.deckId,
-            rating: body.rating,
-            durationMs: body.durationMs ?? 0,
-            reviewedAt: now,
-            nextDue: new Date(res.card.due),
-            nextStability: res.card.stability,
-            nextDifficulty: res.card.difficulty,
-          })
-          .returning();
+          const [review] = await tx
+            .insert(reviews)
+            .values({
+              userId: user.id,
+              cardId: card.id,
+              deckId: card.deckId,
+              rating: body.rating,
+              durationMs: body.durationMs ?? 0,
+              reviewedAt: now,
+              nextDue: new Date(res.card.due),
+              nextStability: res.card.stability,
+              nextDifficulty: res.card.difficulty,
+            })
+            .returning();
 
         // ── gamification rollup ────────────────────────────────────────
         // Stats snapshot for the achievement evaluator. Total reviews is the
         // *post-insert* count; deck count is also snapshotted here so e.g.
         // the "polyglot" achievement fires on the first grade after creating
         // the 3rd deck.
-        let updatedProfile = existingProfile ?? null;
-        let newAchievementCodes: AchievementCode[] = [];
-        let freezeUsed = false;
-        let dailyGoalJustMet = false;
+          let updatedProfile = existingProfile ?? null;
+          let newAchievementCodes: AchievementCode[] = [];
+          let freezeUsed = false;
+          let dailyGoalJustMet = false;
 
-        if (existingProfile) {
+          if (existingProfile) {
           const [totalReviewsRow] = await tx
             .select({ n: count() })
             .from(reviews)
@@ -220,18 +247,53 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
                 set: { unlockedAt: now },
               });
           }
-        }
+          }
 
-        return {
-          card: updatedCard,
-          review,
-          profile: updatedProfile,
-          leeched: shouldSuspend,
-          newAchievements: newAchievementCodes,
-          freezeUsed,
-          dailyGoalJustMet,
-        };
-      });
+          return {
+            card: updatedCard,
+            review,
+            profile: updatedProfile,
+            leeched: shouldSuspend,
+            newAchievements: newAchievementCodes,
+            freezeUsed,
+            dailyGoalJustMet,
+          };
+        });
+        if (outcome && typeof outcome === 'object' && 'review' in outcome && 'card' in outcome) {
+          const diagnostics = outcome as {
+            card: { id: string; deckId: string; state: string };
+            review: { id: string };
+            leeched: boolean;
+            newAchievements: string[];
+          };
+          log.info(
+            requestFields(store, {
+              userId: user.id,
+              cardId: diagnostics.card.id,
+              deckId: diagnostics.card.deckId,
+              reviewId: diagnostics.review.id,
+              rating: body.rating,
+              leeched: diagnostics.leeched,
+              newAchievementCount: diagnostics.newAchievements.length,
+              nextState: diagnostics.card.state,
+            }),
+            'reviews.grade.succeeded',
+          );
+        }
+        return outcome;
+      } catch (err) {
+        log.error(
+          requestFields(store, {
+            errorCode: 'REVIEW_TRANSACTION_FAILED',
+            userId: user.id,
+            cardId: body.cardId,
+            rating: body.rating,
+            err,
+          }),
+          'reviews.grade.failed',
+        );
+        throw err;
+      }
     },
     {
       auth: true,

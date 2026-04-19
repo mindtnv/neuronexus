@@ -3,6 +3,7 @@ import { and, asc, count, desc, eq, inArray, lt, lte, ne } from 'drizzle-orm';
 import { cards, db, decks } from '@neuronexus/db';
 import { newFsrsCard, stateLabel } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
+import { apiErrorBody, getRequestLogger, requestFields } from '../logger.ts';
 
 const cardVariantSchema = t.Union([t.Literal('basic'), t.Literal('cloze'), t.Literal('type')]);
 
@@ -75,7 +76,8 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
   // Both lists respect `suspended = false`. Callers render the concatenation.
   .get(
     '/queue',
-    async ({ user, query }) => {
+    async ({ user, query, status, store }) => {
+      const log = getRequestLogger(store);
       const deckId = query.deckId;
       const newLimit = Math.max(0, Math.min(200, Number(query.newLimit ?? DAILY_NEW_LIMIT)));
       const reviewLimit = Math.max(
@@ -84,7 +86,40 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       );
 
       const base = [eq(cards.userId, user.id), eq(cards.suspended, false)];
-      if (deckId) base.push(eq(cards.deckId, deckId));
+      if (deckId) {
+        const allDecks = await db
+          .select({ id: decks.id, parentId: decks.parentId })
+          .from(decks)
+          .where(eq(decks.userId, user.id));
+        if (!allDecks.some((deck) => deck.id === deckId)) {
+          log.warn(
+            requestFields(store, {
+              errorCode: 'QUEUE_DECK_NOT_FOUND',
+              userId: user.id,
+              deckId,
+            }),
+            'cards.queue.deck_not_found',
+          );
+          return status(404, apiErrorBody(store, 'QUEUE_DECK_NOT_FOUND', 'Deck not found.'));
+        }
+
+        const childrenByParent = new Map<string, string[]>();
+        for (const deck of allDecks) {
+          if (!deck.parentId) continue;
+          const children = childrenByParent.get(deck.parentId) ?? [];
+          children.push(deck.id);
+          childrenByParent.set(deck.parentId, children);
+        }
+
+        const scopedDeckIds = [deckId];
+        for (let i = 0; i < scopedDeckIds.length; i++) {
+          for (const childId of childrenByParent.get(scopedDeckIds[i]!) ?? []) {
+            scopedDeckIds.push(childId);
+          }
+        }
+
+        base.push(inArray(cards.deckId, scopedDeckIds));
+      }
 
       // Due (not-new) cards first — sorted by due ASC.
       const due = await db
@@ -102,7 +137,19 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         .orderBy(asc(cards.createdAt))
         .limit(newLimit);
 
-      return { due, new: fresh, total: due.length + fresh.length };
+      const payload = { due, new: fresh, total: due.length + fresh.length };
+      log.info(
+        requestFields(store, {
+          userId: user.id,
+          deckId: deckId ?? null,
+          dueCount: due.length,
+          newCount: fresh.length,
+          total: payload.total,
+          queueState: payload.total === 0 ? 'empty' : 'ready',
+        }),
+        'cards.queue.loaded',
+      );
+      return payload;
     },
     {
       auth: true,
@@ -115,14 +162,25 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
   )
   .post(
     '/',
-    async ({ user, body, status }) => {
+    async ({ user, body, status, store }) => {
       // Authorize: deck must belong to this user.
+      const log = getRequestLogger(store);
       const deck = await db
         .select({ id: decks.id })
         .from(decks)
         .where(and(eq(decks.id, body.deckId), eq(decks.userId, user.id)))
         .limit(1);
-      if (deck.length === 0) return status(400, { error: 'deck_not_found' });
+      if (deck.length === 0) {
+        log.warn(
+          requestFields(store, {
+            errorCode: 'CARD_DECK_NOT_FOUND',
+            userId: user.id,
+            deckId: body.deckId,
+          }),
+          'cards.create.deck_not_found',
+        );
+        return status(400, apiErrorBody(store, 'CARD_DECK_NOT_FOUND', 'Deck not found.'));
+      }
 
       const initial = newFsrsCard(new Date());
       const [created] = await db
@@ -162,13 +220,13 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
   )
   .patch(
     '/:id',
-    async ({ user, params, body, status }) => {
+    async ({ user, params, body, status, store }) => {
       const [updated] = await db
         .update(cards)
         .set({ ...body, updatedAt: new Date() })
         .where(and(eq(cards.id, params.id), eq(cards.userId, user.id)))
         .returning();
-      if (!updated) return status(404, { error: 'not_found' });
+      if (!updated) return status(404, apiErrorBody(store, 'CARD_NOT_FOUND', 'Card not found.'));
       return updated;
     },
     {
@@ -188,17 +246,35 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
   )
   .delete(
     '/:id',
-    async ({ user, params, status }) => {
+    async ({ user, params, status, store }) => {
       const [deleted] = await db
         .delete(cards)
         .where(and(eq(cards.id, params.id), eq(cards.userId, user.id)))
         .returning({ id: cards.id });
-      if (!deleted) return status(404, { error: 'not_found' });
+      if (!deleted) return status(404, apiErrorBody(store, 'CARD_NOT_FOUND', 'Card not found.'));
       return { ok: true };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+  .get(
+    '/stats',
+    async ({ user }) => {
+      const [all, dueNow, suspended] = await Promise.all([
+        db.select({ n: count() }).from(cards).where(eq(cards.userId, user.id)),
+        db
+          .select({ n: count() })
+          .from(cards)
+          .where(and(eq(cards.userId, user.id), eq(cards.suspended, false), lte(cards.due, new Date()))),
+        db
+          .select({ n: count() })
+          .from(cards)
+          .where(and(eq(cards.userId, user.id), eq(cards.suspended, true))),
+      ]);
+      return {
+        total: all[0]?.n ?? 0,
+        due: dueNow[0]?.n ?? 0,
+        suspended: suspended[0]?.n ?? 0,
+      };
+    },
+    { auth: true },
   );
-
-// No-ops re-exports to silence unused-import warnings if we add stats later.
-void count;
-void inArray;

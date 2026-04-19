@@ -23,16 +23,72 @@ export const api = treaty<App>(baseURL, {
   },
 });
 
+export type ApiErrorPayload = {
+  requestId?: string;
+  error?: {
+    code?: string;
+    message?: string;
+    detail?: unknown;
+  };
+};
+
+export class NNApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly requestId: string | null;
+  readonly detail: unknown;
+
+  constructor(opts: {
+    status: number;
+    code: string;
+    message: string;
+    requestId?: string | null;
+    detail?: unknown;
+  }) {
+    super(opts.message);
+    this.name = 'NNApiError';
+    this.status = opts.status;
+    this.code = opts.code;
+    this.requestId = opts.requestId ?? null;
+    this.detail = opts.detail;
+  }
+}
+
+function parseApiErrorPayload(value: unknown): ApiErrorPayload {
+  return value && typeof value === 'object' ? (value as ApiErrorPayload) : {};
+}
+
 // Helpers that unwrap Eden's { data, error } envelope into plain promises.
 // Throws on network / non-2xx so callers can use try/catch.
-export async function ok<T, E>(result: { data: T | null; error: E | null }): Promise<T> {
+export async function ok<T, E>(result: {
+  data: T | null;
+  error: E | null;
+  status: number;
+  headers: Record<string, string>;
+}): Promise<T> {
   if (result.error) {
-    const message =
-      typeof result.error === 'object' && result.error && 'value' in result.error
-        ? JSON.stringify((result.error as { value: unknown }).value)
-        : String(result.error);
-    throw new Error(message);
+    const error = result.error as
+      | { status?: number; value?: unknown; message?: string }
+      | null;
+    const payload = parseApiErrorPayload(error?.value);
+    throw new NNApiError({
+      status: error?.status ?? result.status,
+      code: payload.error?.code ?? 'API_REQUEST_FAILED',
+      message:
+        payload.error?.message ??
+        error?.message ??
+        (typeof error?.value === 'string' ? error.value : 'Request failed.'),
+      requestId: payload.requestId ?? result.headers['x-request-id'] ?? null,
+      detail: payload.error?.detail,
+    });
   }
-  if (result.data === null) throw new Error('empty response');
+  if (result.data === null) {
+    throw new NNApiError({
+      status: result.status,
+      code: 'EMPTY_RESPONSE',
+      message: 'Empty response.',
+      requestId: result.headers['x-request-id'] ?? null,
+    });
+  }
   return result.data;
 }
