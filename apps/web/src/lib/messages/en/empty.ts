@@ -3,8 +3,8 @@ const m = {
     pageSubtitle: 'Welcome to NeuroNexus',
     title: 'A quiet garden.',
     subtitle:
-      "Plant your first deck and start reviewing. You can import from Anki, drop in a PDF, or create cards from scratch — we'll help.",
-    newDeck: 'New deck',
+      'Plant your first deck to unlock the review loop. We will take you straight into card creation after the deck is ready.',
+    newDeck: 'Create first deck',
     importPdf: 'Import PDF',
     fromAnki: 'From Anki',
     starterLabel: 'Or try a starter deck',
@@ -21,7 +21,7 @@ const m = {
     title: 'Inbox zero for your brain.',
     subtitlePrefix: 'Nothing due right now. Next batch unlocks in',
     subtitleSuffix: 'Your fern is already the happiest in the garden.',
-    learnNew: 'Learn {n} new',
+    learnNew: 'Add a card',
     exploreGraph: 'Explore graph',
   },
   graph: {

@@ -46,3 +46,6 @@ yarn-error.log*
 
 # drizzle
 packages/db/src/migrations/meta/_journal.json.local
+
+# staging runtime state
+.staging/

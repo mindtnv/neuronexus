@@ -5,10 +5,7 @@ import Link from 'next/link';
 // BetterAuth's endpoint name varies between versions — calling it via the
 // SDK would lock us to a specific method name. A bare `fetch` to the REST
 // path works on every version and needs zero type gymnastics.
-const API_BASE =
-  typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL
-    : 'http://localhost:3000';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 import { NNBtn, NNLogo } from '@/components/ui';
 
 export default function ForgotPasswordPage() {

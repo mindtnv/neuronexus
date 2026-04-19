@@ -21,6 +21,7 @@ RUN bun install --frozen-lockfile
 
 FROM deps AS build
 WORKDIR /repo
+ENV NODE_ENV=production
 COPY tsconfig.base.json ./
 COPY packages/ packages/
 COPY apps/api/ apps/api/

@@ -63,3 +63,9 @@ jobs:
       # Production build — catches server-component / SSR regressions.
       - name: Build
         run: bun run build
+
+      - name: Install Chromium for smoke
+        run: bunx playwright install --with-deps chromium
+
+      - name: Learner smoke
+        run: bun run smoke:learner

@@ -169,6 +169,7 @@ export const NNBtn = ({
   title,
   ariaLabel,
   disabled,
+  testId,
 }: {
   children?: ReactNode;
   variant?: BtnVariant;
@@ -183,6 +184,7 @@ export const NNBtn = ({
   title?: string;
   ariaLabel?: string;
   disabled?: boolean;
+  testId?: string;
 }) => {
   const sizes: Record<BtnSize, { h: number; px: number; fs: number; gap: number; r: number }> = {
     sm: { h: 28, px: 10, fs: 12.5, gap: 6, r: 8 },
@@ -204,6 +206,7 @@ export const NNBtn = ({
   return (
     <button
       type={type ?? 'button'}
+      data-testid={testId}
       onClick={onClick}
       title={title}
       aria-label={ariaLabel ?? title}
@@ -336,14 +339,17 @@ export const NNCard = ({
   style,
   hoverable,
   onClick,
+  testId,
 }: {
   children?: ReactNode;
   padding?: number;
   style?: CSSProperties;
   hoverable?: boolean;
   onClick?: () => void;
+  testId?: string;
 }) => (
   <div
+    data-testid={testId}
     onClick={onClick}
     style={{
       background: 'var(--surface)',
@@ -581,4 +587,3 @@ export const NNSkeleton = ({
     }}
   />
 );
-

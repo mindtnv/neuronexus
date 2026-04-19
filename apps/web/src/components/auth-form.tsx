@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { signIn, signUp } from '@/lib/auth';
+import { logTrace } from '@/lib/trace';
 import { NNBtn, NNLogo } from './ui';
 
 type Mode = 'sign-in' | 'sign-up';
@@ -23,6 +24,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
     e.preventDefault();
     setError(null);
     setLoading(true);
+    logTrace('auth.submit.start', { mode });
     try {
       if (isSignIn) {
         const res = await signIn.email({ email, password });
@@ -31,9 +33,14 @@ export function AuthForm({ mode }: { mode: Mode }) {
         const res = await signUp.email({ email, password, name: name || email.split('@')[0] });
         if (res.error) throw new Error(res.error.message);
       }
+      logTrace('auth.submit.success', { mode });
       const next = searchParams.get('next') || '/';
       router.replace(next);
     } catch (err) {
+      logTrace('auth.submit.error', {
+        mode,
+        error: err instanceof Error ? err.message : String(err),
+      });
       setError(err instanceof Error ? err.message : 'Что-то пошло не так');
     } finally {
       setLoading(false);
@@ -74,6 +81,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
         <Field
           label="Имя"
           type="text"
+          testId="auth-name"
           value={name}
           onChange={setName}
           placeholder="Как тебя звать"
@@ -83,6 +91,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
       <Field
         label="Email"
         type="email"
+        testId="auth-email"
         value={email}
         onChange={setEmail}
         placeholder="you@example.com"
@@ -92,6 +101,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
       <Field
         label="Пароль"
         type="password"
+        testId="auth-password"
         value={password}
         onChange={setPassword}
         placeholder={isSignIn ? '••••••••' : 'Минимум 8 символов'}
@@ -115,7 +125,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
         </div>
       )}
 
-      <NNBtn type="submit" variant="primary" size="lg" disabled={loading}>
+      <NNBtn type="submit" variant="primary" size="lg" disabled={loading} testId="auth-submit">
         {loading ? '…' : isSignIn ? 'Войти' : 'Зарегистрироваться'}
       </NNBtn>
 
@@ -166,6 +176,7 @@ function Field({
   autoComplete,
   required,
   minLength,
+  testId,
 }: {
   label: string;
   type: 'text' | 'email' | 'password';
@@ -175,11 +186,13 @@ function Field({
   autoComplete?: string;
   required?: boolean;
   minLength?: number;
+  testId?: string;
 }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <span style={{ fontSize: 12, color: 'var(--text-muted)', letterSpacing: 0.3 }}>{label}</span>
       <input
+        data-testid={testId}
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}

@@ -116,6 +116,36 @@ describe('cards', () => {
     expect(q.total).toBe(2);
   });
 
+  test('/cards/queue scopes deckId to the selected deck subtree', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('tree'));
+    const rootDeck = await freshDeck(cookie, 'Root');
+    const childDeck = await (
+      await callApp(app, 'POST', '/decks', {
+        cookie,
+        body: { name: 'Child', parentId: rootDeck },
+      })
+    ).json<{ id: string }>();
+    const siblingDeck = await freshDeck(cookie, 'Sibling');
+
+    await callApp(app, 'POST', '/cards', {
+      cookie,
+      body: { deckId: childDeck.id, front: 'child-front', back: 'child-back' },
+    });
+    await callApp(app, 'POST', '/cards', {
+      cookie,
+      body: { deckId: siblingDeck, front: 'sibling-front', back: 'sibling-back' },
+    });
+
+    const scoped = await (
+      await callApp(app, 'GET', `/cards/queue?deckId=${encodeURIComponent(rootDeck)}&newLimit=10`, {
+        cookie,
+      })
+    ).json<{ new: { front: string }[]; total: number }>();
+
+    expect(scoped.new.map((card) => card.front)).toEqual(['child-front']);
+    expect(scoped.total).toBe(1);
+  });
+
   test('DELETE /cards/:id removes the card and leaves the deck', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const deck = await freshDeck(cookie);

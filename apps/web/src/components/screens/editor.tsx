@@ -7,7 +7,7 @@ import { useNN } from '@/lib/store';
 import type { CardVariant } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
-import { buildDeckTree, deckPathLabel, flattenTree, DeckNode } from '@/lib/decks';
+import { buildDeckTree, deckPathLabel, flattenTree } from '@/lib/decks';
 
 // ─────────────────────────────────────────────
 // Editor screen
@@ -84,12 +84,13 @@ export const NNEditor = () => {
   const t = useT();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
-  const isDesktop = bp === 'desktop';
 
   const router = useRouter();
   const searchParams = useSearchParams();
   const cardId = searchParams?.get('card') ?? null;
   const deckQuery = searchParams?.get('deck') ?? null;
+  const fromQuery = searchParams?.get('from');
+  const justCreated = searchParams?.get('created') === '1';
 
   const decks = useNN((s) => s.decks);
   const cards = useNN((s) => s.cards);
@@ -186,7 +187,7 @@ export const NNEditor = () => {
           clozeText: variant === 'cloze' ? clozeText.trim() : undefined,
           tags,
         });
-        router.replace(`/editor?card=${encodeURIComponent(created.id)}`);
+        router.replace(`/editor?card=${encodeURIComponent(created.id)}&deck=${encodeURIComponent(deckId)}&from=${encodeURIComponent(fromQuery ?? 'decks')}&created=1`);
       }
     } catch (err) {
       console.error('save failed', err);
@@ -210,16 +211,21 @@ export const NNEditor = () => {
 
   const deckTone = (currentDeck?.color ?? 'neutral') as
     | 'neutral' | 'lime' | 'amber' | 'violet' | 'sky' | 'rose';
+  const backHref =
+    fromQuery === 'review'
+      ? '/review'
+      : fromQuery === 'home'
+      ? '/'
+      : '/decks';
 
   return (
     <div style={{
       flex: 1,
-      display: isMobile ? 'flex' : 'grid',
+      display: 'flex',
       flexDirection: isMobile ? 'column' : undefined,
-      gridTemplateColumns: isMobile ? undefined : '1fr 360px',
-      overflow: isMobile ? 'auto' : 'hidden',
+      overflow: 'auto',
     }}>
-      <div style={{ padding: isMobile ? '16px 14px' : 24, overflow: isMobile ? 'visible' : 'auto' }}>
+      <div style={{ width: '100%', padding: isMobile ? '16px 14px' : 24, overflow: 'visible' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: 20, flexWrap: 'wrap' }}>
           <NNBadge tone={deckTone} size="sm">{currentDeck?.name ?? t('editor.noDeck')}</NNBadge>
           <span style={{ color: 'var(--text-dim)', fontSize: 13 }}>/</span>
@@ -227,21 +233,48 @@ export const NNEditor = () => {
             {editing ? t('editor.editingCard', { id: editing.id.slice(0, 6) }) : t('editor.newCard')}
           </span>
           <div style={{ flex: 1 }}/>
-          {!isMobile && <NNBtn size="sm" variant="ghost" icon="chevl"/>}
-          {!isMobile && <NNBtn size="sm" variant="ghost" icon="chevr"/>}
+          <NNBtn size="sm" variant="ghost" onClick={() => router.push(backHref)}>
+            {t('actions.cancel')}
+          </NNBtn>
           {editing && (
             <NNBtn size="sm" variant="danger" icon="x" onClick={handleDelete}>{t('actions.delete')}</NNBtn>
           )}
-          <NNBtn size="sm" variant="primary" icon="check" onClick={handleSave}>
+          <NNBtn
+            size="sm"
+            variant="primary"
+            icon="check"
+            onClick={handleSave}
+            testId="editor-save"
+          >
             {saving ? t('editor.saving') : editing ? t('actions.save') : t('actions.create')}
           </NNBtn>
         </div>
+
+        {justCreated && currentDeck && (
+          <NNCard style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
+              {t('actions.create')}
+            </div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 12 }}>
+              {currentDeck.name}
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <NNBtn size="sm" variant="soft" icon="plus" onClick={() => router.replace(`/editor?deck=${encodeURIComponent(currentDeck.id)}&from=decks`)}>
+                {t('home.addCard')}
+              </NNBtn>
+              <NNBtn size="sm" variant="primary" icon="bolt" onClick={() => router.push(`/review?deck=${encodeURIComponent(currentDeck.id)}`)}>
+                {t('home.startReview')}
+              </NNBtn>
+            </div>
+          </NNCard>
+        )}
 
         {/* Deck + variant selectors */}
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 8 : 12, marginBottom: 16 }}>
           <div>
             <div style={labelStyle}><span>{t('editor.deckLabel')}</span></div>
             <select
+              data-testid="editor-deck"
               value={deckId}
               onChange={(e) => setDeckId(e.target.value)}
               style={inputStyle}
@@ -283,9 +316,6 @@ export const NNEditor = () => {
                   </button>
                 );
               })}
-              <NNBadge tone="neutral" size="md">{t('editor.variants.reverse')}</NNBadge>
-              <NNBadge tone="neutral" size="md">{t('editor.variants.imageOcclusion')}</NNBadge>
-              <NNBadge tone="violet" size="md" icon="sparkle">{t('editor.variants.aiOpenEnded')}</NNBadge>
             </div>
           </div>
         </div>
@@ -294,6 +324,7 @@ export const NNEditor = () => {
         <div style={{ marginBottom: 14 }}>
           <div style={labelStyle}><span>{t('editor.fields.front')}</span></div>
           <textarea
+            data-testid="editor-front"
             ref={frontRef}
             value={front}
             onChange={(e) => setFront(e.target.value)}
@@ -311,6 +342,7 @@ export const NNEditor = () => {
             </span>
           </div>
           <textarea
+            data-testid="editor-back"
             ref={backRef}
             value={back}
             onChange={(e) => setBack(e.target.value)}
@@ -358,8 +390,6 @@ export const NNEditor = () => {
             ) : tags.map((tag, i) => (
               <NNTag key={`${tag}-${i}`} color={deckTone === 'neutral' ? 'sky' : deckTone}>{tag}</NNTag>
             ))}
-            <div style={{ width: 1, background: 'var(--border)', margin: '0 6px', alignSelf: 'stretch' }}/>
-            <NNBadge size="xs" tone="neutral">{t('editor.linkTodo')}</NNBadge>
           </div>
         </div>
 
@@ -429,76 +459,6 @@ export const NNEditor = () => {
           </NNCard>
         </div>
       </div>
-
-      {/* Right: AI + stats (preserved as TODO placeholders) */}
-      <aside style={{
-        borderLeft: isMobile ? 'none' : '1px solid var(--border)',
-        borderTop: isMobile ? '1px solid var(--border)' : 'none',
-        background: 'var(--surface)',
-        overflow: isMobile ? 'visible' : 'auto',
-        width: isMobile ? '100%' : undefined,
-      }}>
-        <div style={{ padding: 18, borderBottom: '1px solid var(--border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-            <NNIcon name="sparkle" size={14} color="var(--violet-400)"/>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{t('editor.aiAssistant')}</div>
-            <div style={{ flex: 1 }}/>
-            <span style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8 }}>{t('editor.todo')}</span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, opacity: 0.55, pointerEvents: 'none' }}>
-            <NNBtn block size="sm" variant="soft" icon="bulb">{t('editor.ai.mnemonic')}</NNBtn>
-            <NNBtn block size="sm" variant="soft" icon="graph">{t('editor.ai.links')}</NNBtn>
-            <NNBtn block size="sm" variant="soft" icon="mic">{t('editor.ai.tts')}</NNBtn>
-            <NNBtn block size="sm" variant="soft" icon="image">{t('editor.ai.illustration')}</NNBtn>
-            <NNBtn block size="sm" variant="soft" icon="target">{t('editor.ai.variations')}</NNBtn>
-          </div>
-        </div>
-        <div style={{ padding: 18, borderBottom: '1px solid var(--border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{t('editor.fsrsParams')}</div>
-            <div style={{ flex: 1 }}/>
-            <span style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8 }}>{t('editor.todo')}</span>
-          </div>
-          {(() => {
-            const fsrs = editing?.fsrs;
-            const rows: { l: string; v: string; c: string }[] = fsrs
-              ? [
-                  { l: t('editor.fsrsLabels.stability'), v: t('editor.stabilityDays', { n: fsrs.stability?.toFixed?.(1) ?? '-' }), c: 'lime' },
-                  { l: t('editor.fsrsLabels.difficulty'), v: `${fsrs.difficulty?.toFixed?.(1) ?? '-'}`, c: 'amber' },
-                  { l: t('editor.fsrsLabels.reps'), v: `${fsrs.reps ?? 0}`, c: 'lime' },
-                  { l: t('editor.fsrsLabels.lapses'), v: `${fsrs.lapses ?? 0}`, c: fsrs.lapses ? 'rose' : 'lime' },
-                ]
-              : [
-                  { l: t('editor.fsrsLabels.stability'), v: '—', c: 'neutral' },
-                  { l: t('editor.fsrsLabels.difficulty'), v: '—', c: 'neutral' },
-                  { l: t('editor.fsrsLabels.retrievability'), v: '—', c: 'neutral' },
-                  { l: t('editor.fsrsLabels.lastGrade'), v: '—', c: 'neutral' },
-                ];
-            return rows.map((p) => (
-              <div key={p.l} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 12.5 }}>
-                <span style={{ color: 'var(--text-muted)' }}>{p.l}</span>
-                <span className="mono" style={{ color: `var(--${p.c}-400)` }}>{p.v}</span>
-              </div>
-            ));
-          })()}
-        </div>
-        <div style={{ padding: 18 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{t('editor.history')}</div>
-            <div style={{ flex: 1 }}/>
-            <span style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8 }}>{t('editor.todo')}</span>
-          </div>
-          <div style={{ display: 'flex', gap: 4, height: 50, alignItems: 'flex-end', opacity: 0.5 }}>
-            {[30, 45, 20, 60, 50, 75, 90].map((h, i) => (
-              <div key={i} style={{
-                flex: 1, height: `${h}%`,
-                background: h > 80 ? 'var(--lime-500)' : h > 40 ? 'var(--lime-600)' : 'var(--amber-500)',
-                borderRadius: 2,
-              }}/>
-            ))}
-          </div>
-        </div>
-      </aside>
     </div>
   );
 };

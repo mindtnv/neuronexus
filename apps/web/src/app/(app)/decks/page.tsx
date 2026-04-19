@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { NNAppPage } from '@/components/app-page';
 import { NNDecks } from '@/components/screens/decks';
 import { useNN } from '@/lib/store';
@@ -16,7 +17,9 @@ export default function Page() {
         title={t('nav.decks')}
         subtitle={`${decks.length} ${deckWord} · ${cards.length} ${cardWord}`}
       >
-      <NNDecks />
+      <Suspense fallback={null}>
+        <NNDecks />
+      </Suspense>
     </NNAppPage>
   );
 }

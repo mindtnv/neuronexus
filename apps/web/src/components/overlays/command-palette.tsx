@@ -39,9 +39,7 @@ const buildStaticCmdData: StaticBuilder = (t) => {
     { group: GRP_QUICK, id: 'new-deck',   icon: 'stack', label: t('overlays.palette.quick.newDeck.label'),   sub: null, kbd: [], href: '/decks' },
     { group: GRP_NAV,   id: 'nav-home',     icon: 'home',     label: t('overlays.palette.quick.goHome'),     sub: null, kbd: [], href: '/' },
     { group: GRP_NAV,   id: 'nav-review',   icon: 'bolt',     label: t('overlays.palette.quick.goReview'),   sub: null, kbd: [], href: '/review' },
-    { group: GRP_NAV,   id: 'nav-graph',    icon: 'graph',    label: t('overlays.palette.quick.goGraph'),    sub: null, kbd: [], href: '/graph' },
     { group: GRP_NAV,   id: 'nav-decks',    icon: 'stack',    label: t('overlays.palette.quick.goDecks'),    sub: null, kbd: [], href: '/decks' },
-    { group: GRP_NAV,   id: 'nav-stats',    icon: 'target',   label: t('overlays.palette.quick.goStats'),    sub: null, kbd: [], href: '/stats' },
     { group: GRP_NAV,   id: 'nav-settings', icon: 'settings', label: t('overlays.palette.quick.goSettings'), sub: null, kbd: [], href: '/settings' },
   ];
 };
@@ -85,7 +83,6 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
     t('overlays.palette.groups.quickActions'),
     t('overlays.palette.groups.cards'),
     t('overlays.palette.groups.decks'),
-    t('overlays.palette.groups.graph'),
     t('overlays.palette.groups.navigate'),
   ], [t]);
   const groupCards = t('overlays.palette.groups.cards');

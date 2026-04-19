@@ -34,6 +34,7 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
 
   return (
     <div
+      data-testid="app-shell"
       style={{
         display: 'flex',
         height: '100vh',
