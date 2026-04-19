@@ -12,7 +12,6 @@ describe('profile GDPR', () => {
   test('GET /profile/export returns the full snapshot', async () => {
     const email = uniqueEmail('export');
     const { cookie } = await signUpAndCookie(app, email);
-    await callApp(app, 'GET', '/profile', { cookie });
     const deck = await (
       await callApp(app, 'POST', '/decks', { cookie, body: { name: 'D' } })
     ).json<{ id: string }>();
@@ -80,7 +79,6 @@ describe('profile GDPR', () => {
 
   test('PATCH /profile refuses species that is not unlocked', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail('species'));
-    await callApp(app, 'GET', '/profile', { cookie });
     const res = await callApp(app, 'PATCH', '/profile', {
       cookie,
       body: { plantSpecies: 'sakura' },
@@ -92,7 +90,6 @@ describe('profile GDPR', () => {
 
   test('PATCH /profile accepts fern (always unlocked by default)', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail('fern'));
-    await callApp(app, 'GET', '/profile', { cookie });
     const res = await callApp(app, 'PATCH', '/profile', {
       cookie,
       body: { plantSpecies: 'fern' },

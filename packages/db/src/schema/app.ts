@@ -184,6 +184,7 @@ export const reviews = pgTable(
       .references(() => decks.id, { onDelete: 'cascade' }),
     rating: integer('rating').notNull(), // 1..4
     durationMs: integer('duration_ms').notNull().default(0),
+    attemptKey: text('attempt_key').notNull(),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }).notNull().defaultNow(),
     nextDue: timestamp('next_due', { withTimezone: true }).notNull(),
     nextStability: doublePrecision('next_stability').notNull(),
@@ -192,6 +193,7 @@ export const reviews = pgTable(
   (t) => [
     index('reviews_user_idx').on(t.userId, t.reviewedAt),
     index('reviews_card_idx').on(t.cardId),
+    uniqueIndex('reviews_user_attempt_key_idx').on(t.userId, t.attemptKey),
   ],
 );
 
