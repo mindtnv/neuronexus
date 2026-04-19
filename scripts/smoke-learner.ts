@@ -310,8 +310,10 @@ async function runSmoke(page: Page) {
     await page.locator('[data-testid="decks-tree"]').getByText(deckName).waitFor();
     await expectTraceEvent('deck.create.success');
 
-    await page.goto(`${webBaseUrl}/editor`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${webBaseUrl}/`, { waitUntil: 'domcontentloaded' });
     await waitForClientReady(page);
+    await page.locator('[data-testid="home-add-card"]').click();
+    await page.waitForURL(/\/editor\?deck=.*from=home/);
     await page.waitForFunction(() => {
       const select = document.querySelector('[data-testid="editor-deck"]');
       return select instanceof HTMLSelectElement && select.value.length > 0;
@@ -398,7 +400,9 @@ async function main() {
     webServer = await ensureServer('web', webReadyUrl, {
       cwd: join(repoRoot, 'apps/web'),
       command: 'bun',
-      args: ['x', 'next', 'dev', '--port', String(webPort)],
+      // Turbopack panics from git worktrees because workspace symlinks resolve
+      // outside its inferred filesystem root; webpack stays stable here.
+      args: ['x', 'next', 'dev', '--webpack', '--port', String(webPort)],
       env: {
         ...sharedEnv,
         NODE_ENV: 'development',

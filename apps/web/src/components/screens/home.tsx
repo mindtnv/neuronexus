@@ -9,6 +9,7 @@ import { countDueCards } from '@/lib/cards';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
 import { reviewFromApi } from '@/lib/mappers';
+import { getHomeAddCardHref } from '@/lib/home-actions';
 import type { Review } from '@/lib/types';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -23,6 +24,7 @@ export const NNHome = () => {
   const isMobile = bp === 'mobile';
   const bootstrapped = useNN((s) => s.bootstrapped);
   const cards = useNN((s) => s.cards);
+  const decks = useNN((s) => s.decks);
   const profile = useNN((s) => s.profile);
 
   const [recentReviews, setRecentReviews] = useState<Review[]>([]);
@@ -141,6 +143,7 @@ export const NNHome = () => {
   }, [monthReviews, t]);
 
   const todayLabel = format(now, 'MMM d', { locale: dateLocale });
+  const homeAddCardHref = getHomeAddCardHref(decks.map((deck) => deck.id));
 
   // Flex ratios for the todo/learn/critical bar — avoid 0 widths.
   const barReview = Math.max(0, reviewCount);
@@ -230,7 +233,15 @@ export const NNHome = () => {
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
             <NNBtn size="lg" variant="primary" icon="bolt" onClick={() => router.push('/review')}>{t('home.startReview')}</NNBtn>
-            <NNBtn size="lg" variant="outline" icon="plus" onClick={() => router.push('/editor?from=home')}>{t('home.addCard')}</NNBtn>
+            <NNBtn
+              size="lg"
+              variant="outline"
+              icon="plus"
+              testId="home-add-card"
+              onClick={() => router.push(homeAddCardHref)}
+            >
+              {t('home.addCard')}
+            </NNBtn>
             <div style={{ flex: 1 }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-dim)', fontSize: 12 }}>
               <NNIcon name="clock" size={13} /> {t('home.lastSession', { label: lastSessionLabel })}
