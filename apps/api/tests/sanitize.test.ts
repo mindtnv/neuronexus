@@ -100,13 +100,21 @@ describe('sanitizeFieldValues', () => {
 });
 
 describe('SANITIZE_CONFIG shape (referenced by Phase 4b + client edge)', () => {
-  test('allowlist is the pinned narrow set', () => {
+  test('allowlist is the pinned narrow set (M1 tags + M2 img)', () => {
     expect(SANITIZE_CONFIG.allowedTags).toEqual([
-      'b', 'i', 'em', 'strong', 'u', 'ul', 'ol', 'li', 'br', 'hr', 'p', 'span', 'div',
+      'b', 'i', 'em', 'strong', 'u', 'ul', 'ol', 'li', 'br', 'hr', 'p', 'span', 'div', 'img',
     ]);
-    expect(SANITIZE_CONFIG.allowedAttributes).toEqual({ span: ['class'], div: ['class'] });
-    // img is NOT in the allowlist (M1 strips media).
-    expect(SANITIZE_CONFIG.allowedTags).not.toContain('img');
+    expect(SANITIZE_CONFIG.allowedAttributes).toEqual({
+      span: ['class'],
+      div: ['class'],
+      img: ['src', 'alt', 'width', 'height'],
+    });
+    // img is allowed in M2, but ONLY as the relative media token — no scheme
+    // may ever ride on it (see imgExclusiveFilter + MEDIA_TOKEN_RE).
+    expect(SANITIZE_CONFIG.allowedTags).toContain('img');
+    expect(SANITIZE_CONFIG.allowedSchemesByTag).toEqual({ img: [] });
+    expect(SANITIZE_CONFIG.allowProtocolRelative).toBe(false);
+    // <a> remains stripped (no link surface in M2).
     expect(SANITIZE_CONFIG.allowedTags).not.toContain('a');
   });
 });

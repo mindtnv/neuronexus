@@ -34,6 +34,91 @@
 import { stripCloze } from './card-query-match.ts';
 import type { FieldValues, NoteTypeDef, RenderKind } from './note-type.ts';
 
+// ── Math markers (Milestone 2, Phase 5) ──────────────────────────────────────
+//
+// LaTeX is stored RAW in the field value and rendered CLIENT-SIDE by KaTeX at
+// display time (`apps/web/src/lib/render-card.tsx`). These constants are the
+// single source of truth for the delimiters so the DOM-free shared layer
+// (search-plaintext extraction) and the client KaTeX pass agree byte-for-byte.
+//
+//   \(…\)   inline math   (Anki-native; avoids the `$…$` currency collision)
+//   \[…\]   display math
+//
+// An author escapes a LITERAL backslash-paren by doubling the leading backslash
+// (`\\(` / `\\[`): the leading escape-skip branch `\\` consumes such a pair as a
+// literal so the trailing `(`/`[` is plain text, NOT a math opener. DOM-free,
+// pure string ops — no `\(` inside an HTML attribute is special here; that
+// distinction is enforced at the client render edge which only tokenizes outside
+// tags.
+//
+// LINEAR-TIME grammar (M2 validation fix — ReDoS hardening). The previous
+// `(?<!\\)…[\s\S]*?…(?<!\\)` form was O(n²): a variable lookbehind re-checked at
+// every candidate position over a global scan, plus a lazy `[\s\S]*?` body that
+// re-scanned to EOF at each unterminated opener — a 64 KiB run of `\(` stalled
+// the event loop ~17s. The replacement is strictly left-to-right linear:
+//
+//   1. `\\`              — an escaped backslash-pair, matched FIRST and passed
+//                          through verbatim, so `\\(`/`\\[` can never be read as
+//                          an opener (replaces the opener lookbehind).
+//   2. `\[(body)\]`      — display span (capture group 1).
+//   3. `\((body)\)`      — inline span (capture group 2).
+//
+// The body is `(?:[^\\]|\\[^()])*` (inline) / `(?:[^\\]|\\[^\[\]])*` (display):
+// "a non-backslash char, OR a backslash NOT followed by the delimiter pair".
+// This lets a backslash COMMAND (`\pi`, `\frac`) and a LITERAL paren/bracket
+// inside a formula survive, while a bare `\)`/`\]` can be consumed by neither
+// branch — so it can only terminate the span (the linear analogue of the old
+// `(?<!\\)` closer). Every step consumes ≥1 char and the body cannot span across
+// a closer or another opener, so an unterminated opener fails in O(1) per
+// position → O(n) overall. The escape-skip branch is group-LESS, so a match with
+// BOTH capture groups `undefined` is a passthrough (see consumers below).
+const MATH_INLINE_RE = /\\\\|\\\(((?:[^\\]|\\[^()])*)\\\)/g;
+const MATH_DISPLAY_RE = /\\\\|\\\[((?:[^\\]|\\[^\[\]])*)\\\]/g;
+
+/** A combined matcher for both math kinds (used by extract/strip). The display
+ * form is tried first so `\[…\]` is never mis-read as an inline `\(` neighbour.
+ * The leading `\\` escape-skip branch (group-less) makes `\\(`/`\\[` literal.
+ * Both branches use the linear-time body grammar (see above). */
+export const MATH_RE =
+  /\\\\|\\\[((?:[^\\]|\\[^\[\]])*)\\\]|\\\(((?:[^\\]|\\[^()])*)\\\)/g;
+
+/** One extracted math span: the inner LaTeX `source` + whether it is `display`. */
+export type MathSpan = { source: string; display: boolean };
+
+/**
+ * Extract every math span (in document order) from a string. Inline `\(…\)` →
+ * `display:false`, display `\[…\]` → `display:true`. Escaped `\\(`/`\\[` are not
+ * matched (the `\\` escape-skip branch leaves both capture groups undefined).
+ * Pure/DOM-free.
+ */
+export function extractMath(s: string): MathSpan[] {
+  const out: MathSpan[] = [];
+  const re = new RegExp(MATH_RE.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    if (m[1] !== undefined) {
+      out.push({ source: m[1], display: true });
+    } else if (m[2] !== undefined) {
+      out.push({ source: m[2], display: false });
+    }
+    // else: the `\\` escape-skip branch — not a math span, skip it.
+  }
+  return out;
+}
+
+/**
+ * Replace every math span with its inner LaTeX SOURCE (delimiters removed) so
+ * plaintext search matches by the formula source. `\(x^2\)` → `x^2`,
+ * `\[\frac12\]` → `\frac12`. Escaped `\\(` is left untouched (the `\\` branch
+ * passes through verbatim). Pure/DOM-free.
+ */
+export function stripMath(s: string): string {
+  const re = new RegExp(MATH_RE.source, 'g');
+  return s.replace(re, (full, disp: string | undefined, inline: string | undefined) =>
+    disp !== undefined ? disp : inline !== undefined ? inline : full,
+  );
+}
+
 /** Escape the 5 HTML-significant chars: `& < > " '`. Order matters (`&` first). */
 export function escapeHtml(s: string): string {
   return s
@@ -145,11 +230,39 @@ export function renderTemplate(
   return out;
 }
 
-// Strip HTML tags → plaintext (collapse runs of whitespace, trim). Pure string
-// ops; this is the search-text path, never the display path.
+// Pull the `alt` text out of an `<img …>` tag (double- or single-quoted), or the
+// empty string when absent. Used to keep media discoverable by search via its
+// alt text once the tag itself is stripped. Pure string op.
+const IMG_TAG_RE = /<img\b[^>]*>/gi;
+const IMG_ALT_RE = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
+
+// Strip HTML tags → plaintext for the search-text path (never the display path).
+// Order matters (M2 Phase 5):
+//   1. `<img>` → its `alt` text (extract before the tag is deleted; drop if no
+//      alt) so an image is searchable by its description.
+//   2. remaining HTML tags → space.
+//   3. math `\(…\)`/`\[…\]` → its formula SOURCE (delimiters removed) so a
+//      `field:`/bareword search on `\(x^2\)` matches `x^2`.
+// Steps 1+3 keep media + math discoverable with ZERO query-structure change
+// (one-AST-two-consumers). Pure string ops; DOM-free.
+//
+// Belt-and-suspenders: a defensive length cap (`SEARCH_TEXT_CAP`) bounds the
+// input BEFORE the (now linear-time) math pass. The search-text column is just a
+// plaintext cache — a 32 KiB ceiling is far above any real card body and caps
+// the worst-case work even if the regex ever regressed.
+const SEARCH_TEXT_CAP = 32_768;
 function stripTags(html: string): string {
-  return html
+  const capped = html.length > SEARCH_TEXT_CAP ? html.slice(0, SEARCH_TEXT_CAP) : html;
+  return capped
+    .replace(IMG_TAG_RE, (tag) => {
+      const m = IMG_ALT_RE.exec(tag);
+      const alt = m ? (m[1] ?? m[2] ?? '') : '';
+      return alt ? ` ${alt} ` : ' ';
+    })
     .replace(/<[^>]*>/g, ' ')
+    .replace(MATH_RE, (full, disp: string | undefined, inline: string | undefined) =>
+      disp !== undefined ? disp : inline !== undefined ? inline : full,
+    )
     .replace(/\s+/g, ' ')
     .trim();
 }

@@ -20,6 +20,7 @@ const TABLES = [
   'notes',
   'note_types',
   'decks',
+  'media',
   'profile',
   'account',
   'session',

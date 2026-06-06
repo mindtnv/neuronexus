@@ -10,6 +10,7 @@ import { noteTypesModule } from './modules/note-types.ts';
 import { notesModule } from './modules/notes.ts';
 import { reviewsModule } from './modules/reviews.ts';
 import { profileModule } from './modules/profile.ts';
+import { mediaModule } from './modules/media.ts';
 import { AUTH_RATE_RULES, clientIpFromRequest, rateLimitCheck } from './rate-limit.ts';
 import { pickRequestId, requestLogger, rootLogger } from './logger.ts';
 
@@ -103,7 +104,8 @@ export function buildApp() {
     .use(noteTypesModule)
     .use(notesModule)
     .use(cardsModule)
-    .use(reviewsModule);
+    .use(reviewsModule)
+    .use(mediaModule);
 }
 
 export type App = ReturnType<typeof buildApp>;

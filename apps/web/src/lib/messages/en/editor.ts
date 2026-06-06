@@ -13,6 +13,14 @@ const m = {
     bold: 'Bold',
     italic: 'Italic',
     bulletList: 'Bullet list',
+    image: 'Insert image',
+    math: 'Insert math (LaTeX)',
+  },
+  media: {
+    uploading: 'Uploading…',
+    tooLarge: 'Image is too large (max {size}).',
+    badType: 'Unsupported image type. Use PNG, JPEG, WebP or GIF.',
+    failed: 'Upload failed.',
   },
   variants: {
     basic: 'Basic',

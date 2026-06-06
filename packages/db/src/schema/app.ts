@@ -245,6 +245,40 @@ export const reviews = pgTable(
   ],
 );
 
+// ── media ───────────────────────────────────────────────────────────────────
+// Tracks uploaded media objects (images) stored in S3-compatible storage.
+// `id` is the UUID used as both the DB primary key and the S3 key
+// (`media/{id}`, ext-free per C-1). The API reads the returned `id` to
+// construct the storage key and the `/m/{id}` token. `s3Key` stores the full
+// key (`media/{id}`) for clarity; it is unique across the bucket. `userId`
+// cascades on user delete.
+//
+// Ownership-bound lifecycle (M2 validation fix): `POST /media/presign` INSERTs a
+// PENDING row (`verified = false`) immediately to CLAIM the uuid under the
+// caller; `POST /media/:id/finalize` SELECTs it by `(id, userId)` (404 if
+// missing — so user B can't finalize user A's presigned uuid) then flips
+// `verified = true` after the HEAD + magic-byte sniff. `GET /media` returns only
+// `verified = true` rows. Pending/unverified rows are orphan-cleanup candidates.
+// (The dead `width`/`height` columns were dropped in migration 0005 — re-add in
+// a future milestone if image dimensions are needed.)
+
+export const media = pgTable(
+  'media',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    s3Key: text('s3_key').notNull().unique(),
+    mime: text('mime').notNull(),
+    size: integer('size').notNull(),
+    // false until finalize verifies the real bytes; presign sets it false.
+    verified: boolean('verified').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('media_user_idx').on(t.userId)],
+);
+
 // ── relations ──────────────────────────────────────────────────────────────
 
 export const profileRelations = relations(profile, ({ one }) => ({
@@ -286,6 +320,10 @@ export const reviewsRelations = relations(reviews, ({ one }) => ({
   deck: one(decks, { fields: [reviews.deckId], references: [decks.id] }),
 }));
 
+export const mediaRelations = relations(media, ({ one }) => ({
+  user: one(user, { fields: [media.userId], references: [user.id] }),
+}));
+
 // ── inferred types ─────────────────────────────────────────────────────────
 
 export type Profile = typeof profile.$inferSelect;
@@ -300,3 +338,5 @@ export type Card = typeof cards.$inferSelect;
 export type NewCard = typeof cards.$inferInsert;
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
+export type Media = typeof media.$inferSelect;
+export type NewMedia = typeof media.$inferInsert;

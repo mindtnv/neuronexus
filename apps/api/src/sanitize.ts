@@ -9,40 +9,102 @@
 // search cache, NOT a security artifact. Display HTML is re-sanitized in the
 // browser before DOM injection (defense in depth).
 //
-// Allowlist (intentionally narrow for M1):
-//   tags:    b i em strong u ul ol li br hr p span div
-//   attrs:   span/div → class only
+// Allowlist (M1 narrow set + M2 img):
+//   tags:    b i em strong u ul ol li br hr p span div img
+//   attrs:   span/div → class only; img → src alt width height
 //   NO:      script style iframe on* (event handlers), javascript: URLs
-//   img:     STRIPPED in M1 (media lands in M2).
+//   img:     allowed ONLY as the relative token `/m/<uuid>` (M2 Phase 3, plan
+//            amendments A1 + C-6). The `src` must match the STRICT canonical
+//            UUID token regex below; everything else (absolute URLs,
+//            protocol-relative `//evil`, userinfo `@evil`, suffix
+//            `media.com.evil`, `data:`/`javascript:`, traversal, malformed
+//            36-char tokens) is DROPPED whole by `imgExclusiveFilter`. No
+//            scheme is ever allowed on img (`allowedSchemesByTag.img = []`),
+//            and `allowProtocolRelative:false` blocks `//host` smuggling.
 
 import sanitizeHtml from 'sanitize-html';
+
+/**
+ * The STRICT canonical-UUID relative-token regex (plan C-6). The ONLY shape an
+ * `<img src>` may take. Anchored (`^…$`) so no prefix/suffix smuggling. The
+ * SAME literal is mirrored on the client edge (`render-card.tsx`
+ * `ALLOWED_URI_REGEXP`) and the Next `/m/:uuid` reverse-proxy route — keep all
+ * three byte-identical.
+ */
+export const MEDIA_TOKEN_RE =
+  /^\/m\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
  * The pinned allowlist config. Exported so Phase 4b tests + the client edge
  * (Phase 5) can reference the same shape / derive a matching DOMPurify config.
  */
 export const SANITIZE_CONFIG: sanitizeHtml.IOptions = {
-  allowedTags: ['b', 'i', 'em', 'strong', 'u', 'ul', 'ol', 'li', 'br', 'hr', 'p', 'span', 'div'],
+  allowedTags: ['b', 'i', 'em', 'strong', 'u', 'ul', 'ol', 'li', 'br', 'hr', 'p', 'span', 'div', 'img'],
   allowedAttributes: {
     span: ['class'],
     div: ['class'],
+    // img carries NO url-bearing attribute beyond `src`, which is gated to the
+    // relative media token by `imgExclusiveFilter` (below). width/height are
+    // clamped to digits-only by `transformTags` so no non-numeric injection.
+    img: ['src', 'alt', 'width', 'height'],
   },
-  // No schemes are needed (no href/src tags are allowed at all in M1) but pin an
-  // explicit safe set so a future tag addition can't silently enable javascript:.
+  // No schemes are needed for the M1 tags. img is explicitly schemeless
+  // (`allowedSchemesByTag.img = []`) — its only legal src is a scheme-LESS
+  // relative token. Pin an explicit safe set so a future tag addition can't
+  // silently enable javascript:.
   allowedSchemes: ['http', 'https'],
-  allowedSchemesByTag: {},
+  allowedSchemesByTag: { img: [] },
+  // Block `//host` protocol-relative URLs from ever passing as a valid src
+  // (defense in depth — the exclusiveFilter already rejects them).
+  allowProtocolRelative: false,
   // Strip disallowed tags AND their text content for the dangerous structural
   // elements so nothing leaks through as visible text (mXSS hardening).
   disallowedTagsMode: 'discard',
   nonTextTags: ['script', 'style', 'textarea', 'noscript', 'iframe'],
   // No comments (could hide conditional-comment vectors).
   allowVulnerableTags: false,
+  // Clamp img width/height to digits-only (sanitize-html keeps numeric attrs as
+  // strings; this strips any non-numeric value rather than letting e.g.
+  // `width="100 onload=…"`-style residue through). src/alt pass untouched here;
+  // src is gated by imgExclusiveFilter.
+  transformTags: {
+    img: (tagName, attribs) => {
+      const out: Record<string, string> = {};
+      // Canonicalize src by trimming ASCII whitespace — a browser/DOMPurify trims
+      // it before use, so storing the trimmed value keeps the persisted HTML
+      // byte-identical with what the client edge produces.
+      if (typeof attribs.src === 'string') out.src = attribs.src.trim();
+      if (typeof attribs.alt === 'string') out.alt = attribs.alt;
+      for (const dim of ['width', 'height'] as const) {
+        const v = attribs[dim];
+        if (typeof v === 'string' && /^[0-9]+$/.test(v)) out[dim] = v;
+      }
+      return { tagName, attribs: out };
+    },
+  },
+  // DROP any <img> whose src is not EXACTLY the strict media token. Runs after
+  // attribute filtering, so `src` here is the post-allowlist value. Returning
+  // true removes the whole element (not just the attribute) — an img with no
+  // legal src is useless and a bad-src img must never reach the DOM.
+  //
+  // We trim leading/trailing ASCII whitespace before matching to stay BYTE-
+  // IDENTICAL with the client edge: DOMPurify (and the URL spec a real browser
+  // applies) strips such whitespace before the value is ever observed, so
+  // `src="  /m/<uuid>"` resolves to our own same-origin media on both edges.
+  // Trimming here keeps server/client keep-drop in lockstep; strictness is still
+  // proven by the malformed-UUID / traversal / userinfo / suffix corpus cases.
+  exclusiveFilter: (frame) => {
+    if (frame.tag !== 'img') return false;
+    return !MEDIA_TOKEN_RE.test((frame.attribs.src ?? '').trim());
+  },
 };
 
 /**
  * Sanitize a single note field value (HTML string) against the pinned allowlist.
  * Returns safe HTML with all script / style / iframe / event-handler / unsafe-URL
- * vectors and `<img>` removed. Non-string input degrades to the empty string.
+ * vectors removed. `<img>` survives ONLY when its `src` is the strict relative
+ * media token `/m/<uuid>` (see MEDIA_TOKEN_RE); any other img is dropped whole.
+ * Non-string input degrades to the empty string.
  */
 export function sanitizeFieldHtml(html: string): string {
   if (typeof html !== 'string') return '';

@@ -29,6 +29,20 @@
       "when": 1780750141217,
       "tag": "0003_black_starjammers",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1780759190851,
+      "tag": "0004_fearless_tarantula",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1780770809315,
+      "tag": "0005_little_meltdown",
+      "breakpoints": true
     }
   ]
 }

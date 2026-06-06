@@ -122,6 +122,14 @@ interface State {
 
   gradeCard: (cardId: string, rating: Rating, durationMs: number) => Promise<Review>;
   updateProfile: (patch: Partial<Omit<Profile, 'id'>>) => Promise<void>;
+
+  /**
+   * Upload an image to S3 (M2 Phase 4). Three-step (plan Decision A1): presign →
+   * direct multipart POST to S3 (bytes never touch Bun) → finalize. Returns the
+   * relative media token `/m/{uuid}` to embed as `<img src=…>` (the only img-src
+   * shape the dual-edge sanitizer keeps) plus the media id.
+   */
+  uploadMedia: (file: File) => Promise<{ token: string; mediaId: string }>;
 }
 
 export const useNN = create<State>()((set, get) => ({
@@ -439,6 +447,34 @@ export const useNN = create<State>()((set, get) => ({
     if (patch.plantSpecies !== undefined) body.plantSpecies = patch.plantSpecies;
     const next = profileFromApi(await ok(await (api as any).profile.patch(body)));
     set({ profile: next });
+  },
+
+  async uploadMedia(file) {
+    // 1. Presign: server validates {mime,size}, mints a uuid, returns the POST
+    //    policy (url + fields) + the relative token. NO DB row yet.
+    const presign: any = await ok(
+      await (api as any).media.presign.post({ mime: file.type, size: file.size }),
+    );
+
+    // 2. Direct multipart POST to S3/MinIO — a RAW cross-origin fetch, NOT Eden
+    //    (the bytes must bypass Bun, plan A1). The policy fields go first, then
+    //    Content-Type (signed in the policy), then the file LAST per S3's rules.
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(presign.upload.fields as Record<string, string>)) {
+      fd.append(k, v);
+    }
+    fd.set('Content-Type', file.type);
+    fd.append('file', file);
+    const res = await fetch(presign.upload.url, { method: 'POST', body: fd });
+    if (!res.ok) {
+      throw new Error(`upload failed (${res.status})`);
+    }
+
+    // 3. Finalize: server HEADs the object for real size + ranged-GET magic-byte
+    //    sniff, then inserts the media row (deletes + 400 on mismatch).
+    await ok(await (api as any).media({ id: presign.mediaId }).finalize.post());
+
+    return { token: presign.token as string, mediaId: presign.mediaId as string };
   },
 }));
 

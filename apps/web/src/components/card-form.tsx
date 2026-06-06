@@ -2,14 +2,19 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { NNBtn, NNBadge, NNTag, NNCard } from '@/components/ui';
+import { NNBtn, NNBadge, NNTag, NNCard, NNIcon } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import type { Card, NoteType } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { buildDeckTree, deckPathLabel, flattenTree } from '@/lib/decks';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
-import type { FieldValues } from '@neuronexus/shared';
+import {
+  MAX_MEDIA_BYTES,
+  MAX_MEDIA_LABEL,
+  MEDIA_MIME_ALLOWLIST,
+  type FieldValues,
+} from '@neuronexus/shared';
 
 // ─────────────────────────────────────────────
 // Note editor (Milestone 1, Phase 5a)
@@ -52,12 +57,20 @@ const labelStyle: React.CSSProperties = {
   gap: 8,
 };
 
+// Client-side image pre-checks (server re-validates at presign + finalize). The
+// allowlist + cap come from @neuronexus/shared (single source of truth, mirrored
+// by the server) — they're a fast UX gate, not the security boundary. The label
+// is derived from the byte cap so the copy can never drift from the real limit.
+const ALLOWED_IMAGE_TYPES: readonly string[] = MEDIA_MIME_ALLOWLIST;
+const MAX_IMAGE_BYTES = MAX_MEDIA_BYTES;
+const MAX_IMAGE_LABEL = MAX_MEDIA_LABEL;
+
 // ── Rich-text field input ─────────────────────────────────────────────────────
 //
-// A contentEditable surface with a tiny toolbar (bold / italic / bullet list).
-// The HTML it emits is sanitized at the server save edge; the live preview
-// DOMPurifies it again. Uncontrolled (we read innerHTML on input + reset on
-// `resetKey` change) to avoid caret jumps mid-edit.
+// A contentEditable surface with a tiny toolbar (bold / italic / bullet list /
+// image upload / LaTeX). The HTML it emits is sanitized at the server save edge;
+// the live preview DOMPurifies it again. Uncontrolled (we read innerHTML on input
+// + reset on `resetKey` change) to avoid caret jumps mid-edit.
 
 const RichField = ({
   value,
@@ -78,6 +91,10 @@ const RichField = ({
 }) => {
   const t = useT();
   const ref = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadMedia = useNN((s) => s.uploadMedia);
+  const [uploading, setUploading] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
 
   // Reset the DOM content when the edited entity changes (resetKey) — not on
   // every keystroke (that would reset the caret).
@@ -98,6 +115,67 @@ const RichField = ({
     // execCommand is deprecated but remains the simplest cross-browser inline
     // rich-text primitive; the output HTML is sanitized at both edges.
     document.execCommand(command, false);
+    if (ref.current) onChange(ref.current.innerHTML);
+  };
+
+  // Insert raw HTML at the caret via the SAME contentEditable mechanism the
+  // bold/italic buttons use, then propagate the new innerHTML so onChange fires
+  // and the live preview re-renders. The inserted markup (img token / math
+  // delimiters) is sanitized at the server save edge + the preview render edge.
+  const execInsert = (html: string) => {
+    ref.current?.focus();
+    document.execCommand('insertHTML', false, html);
+    if (ref.current) onChange(ref.current.innerHTML);
+  };
+
+  const onPickImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Reset the input so picking the same file again re-triggers change.
+    e.target.value = '';
+    if (!file) return;
+    setMediaError(null);
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      setMediaError(t('editor.media.badType'));
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setMediaError(t('editor.media.tooLarge', { size: MAX_IMAGE_LABEL }));
+      return;
+    }
+    setUploading(true);
+    try {
+      const { token } = await uploadMedia(file);
+      // Insert the RELATIVE token only — the sole img-src shape the dual-edge
+      // sanitizer keeps; a Next `/m/:uuid` rewrite resolves it at display time.
+      execInsert(`<img src="${token}" alt="">`);
+    } catch (err) {
+      console.error('image upload failed', err);
+      setMediaError(t('editor.media.failed'));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Insert the inline-math delimiters at the caret, then move the caret BETWEEN
+  // them (back over the ` \)` we just inserted) so the user types the formula
+  // inside. The field stores raw LaTeX; KaTeX renders it in the preview.
+  const onInsertMath = () => {
+    execInsert('\\( \\)');
+    // After insertHTML the caret sits AFTER the closing delimiter. Walk it back
+    // past the 3 trailing chars (` \)`) so it lands between `\( ` and `\)`.
+    const sel = typeof window !== 'undefined' ? window.getSelection() : null;
+    if (sel && sel.rangeCount > 0 && ref.current) {
+      const range = sel.getRangeAt(0);
+      const node = range.endContainer;
+      // The just-inserted text is in a text node; clamp the back-step to its length.
+      if (node.nodeType === Node.TEXT_NODE) {
+        const offset = Math.max(0, range.endOffset - 3);
+        range.setStart(node, offset);
+        range.setEnd(node, offset);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }
     if (ref.current) onChange(ref.current.innerHTML);
   };
 
@@ -127,15 +205,79 @@ const RichField = ({
     </button>
   );
 
+  // An action button styled like `btn`, but wired to a custom onMouseDown handler
+  // (image / math insert) rather than a plain execCommand.
+  const actionBtn = (
+    key: string,
+    content: React.ReactNode,
+    title: string,
+    onActivate: () => void,
+    disabled?: boolean,
+  ): React.ReactNode => (
+    <button
+      key={key}
+      type="button"
+      title={title}
+      disabled={disabled}
+      onMouseDown={(e) => {
+        e.preventDefault();
+        if (!disabled) onActivate();
+      }}
+      style={{
+        minWidth: 28,
+        height: 26,
+        padding: '0 7px',
+        borderRadius: 6,
+        background: 'var(--surface-2)',
+        border: '1px solid var(--border)',
+        color: 'var(--text-muted)',
+        fontFamily: 'var(--font-sans)',
+        fontSize: 13,
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {content}
+    </button>
+  );
+
   const isEmpty = !value || value === '<br>';
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
         {btn('bold', 'B', t('editor.richText.bold'))}
         {btn('italic', 'I', t('editor.richText.italic'))}
         {btn('insertUnorderedList', '•', t('editor.richText.bulletList'))}
+        {actionBtn(
+          'image',
+          <NNIcon name="image" size={14} />,
+          t('editor.richText.image'),
+          () => fileInputRef.current?.click(),
+          uploading,
+        )}
+        {actionBtn('math', 'ƒₓ', t('editor.richText.math'), onInsertMath)}
+        {uploading && (
+          <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 2 }}>
+            {t('editor.media.uploading')}
+          </span>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ALLOWED_IMAGE_TYPES.join(',')}
+          onChange={onPickImage}
+          style={{ display: 'none' }}
+        />
       </div>
+      {mediaError && (
+        <div style={{ fontSize: 11.5, color: 'var(--rose-400)', marginBottom: 6 }}>
+          {mediaError}
+        </div>
+      )}
       <div style={{ position: 'relative' }}>
         {isEmpty && placeholder && (
           <div
