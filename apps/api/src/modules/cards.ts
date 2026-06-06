@@ -1,9 +1,20 @@
 import { Elysia, t } from 'elysia';
 import { and, asc, desc, eq, gt, inArray, lt, lte, ne, or, sql } from 'drizzle-orm';
-import { cards, db, decks, noteTypes, notes } from '@neuronexus/db';
-import { parseCardQuery, CardQueryError } from '@neuronexus/shared';
+import {
+  cards,
+  db,
+  deckOptionsPreset,
+  decks,
+  filteredDeck,
+  noteTypes,
+  notes,
+  profile,
+} from '@neuronexus/db';
+import { parseCardQuery, CardQueryError, todayISO } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
 import { buildCardWhere } from './card-query-sql.ts';
+import { resolveDeckConfig } from './deck-config.ts';
+import { SORT_ORDERS, type SortOrder } from './filtered-decks.ts';
 
 // ── Card read-payload enrichment (M1 Phase 5a) ────────────────────────────────
 //
@@ -85,11 +96,6 @@ async function enrichCards(rows: CardRow[]): Promise<EnrichedCard[]> {
     };
   });
 }
-
-// Anki-style per-session caps. Reasonable starting point; we can expose them
-// in user preferences later.
-const DAILY_NEW_LIMIT = 20;
-const DAILY_REVIEW_LIMIT = 200;
 
 // Pagination defaults for GET /cards. The hard ceiling protects us against
 // a client asking for everything at once on a 10k-card account.
@@ -197,6 +203,21 @@ function decodeSortValue(field: SortField, v: string | number): Date | number | 
 type DeckRow = { id: string; parentId: string | null; name: string };
 
 /**
+ * Recursively collect the ids of every descendant of `deckId` over `userDecks`
+ * (the subtree, NOT including `deckId` itself). Cycle-safe via a `seen` set so a
+ * malformed parent loop can't infinitely recurse. Mirrors
+ * lib/decks.ts:getDescendantIds — kept server-side so both the deck-name
+ * resolver (`makeDeckResolver`) and the regular `/queue` subtree aggregation
+ * share ONE implementation.
+ */
+function descendantIds(deckId: string, userDecks: DeckRow[], seen = new Set<string>()): string[] {
+  if (seen.has(deckId)) return [];
+  seen.add(deckId);
+  const children = userDecks.filter((d) => d.parentId === deckId).map((d) => d.id);
+  return children.flatMap((id) => [id, ...descendantIds(id, userDecks, seen)]);
+}
+
+/**
  * Build a `resolveDeckIds(value, nested)` closure over the user's decks. Plain
  * `deck:` resolves to the named deck plus its whole subtree (descendants), which
  * matches the client predicate's behavior and AC7. A deck matches when its name
@@ -207,10 +228,7 @@ type DeckRow = { id: string; parentId: string | null; name: string };
  */
 function makeDeckResolver(userDecks: DeckRow[]): (value: string, nested: boolean) => string[] {
   const byId = new Map(userDecks.map((d) => [d.id, d]));
-  const descendantsOf = (deckId: string): string[] => {
-    const children = userDecks.filter((d) => d.parentId === deckId).map((d) => d.id);
-    return children.flatMap((id) => [id, ...descendantsOf(id)]);
-  };
+  const descendantsOf = (deckId: string): string[] => descendantIds(deckId, userDecks);
   // Full root→deck path label, joined ` / ` — mirrors lib/decks.ts:deckPathLabel
   // (with the same cycle guard).
   const pathLabel = (deckId: string): string => {
@@ -292,22 +310,153 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       }),
     },
   )
-  // Today's review queue. Returns, in order:
+  // Today's review queue (M3 Phase 4 — REGULAR paths). Returns, in order:
   //   1. Due cards (state != new, due <= now), ordered by earliest due first
-  //   2. New cards, capped at `newLimit` (default 20)
+  //   2. New cards
   // Both lists respect `suspended = false`. Callers render the concatenation.
+  //
+  // Limit VALUES come from `resolveDeckConfig` (per-deck preset → profile →
+  // ANKI_DEFAULTS) instead of hardcoded 20/200, and the GLOBAL per-user daily
+  // counter (`profile.{newIntroducedToday,reviewsDoneToday}` with a same-day
+  // guard) is subtracted so reloading the reviewer can't re-serve a fresh
+  // budget. Two paths:
+  //   • `?deckId=<id>` (scoped): subtree-aggregated (deck + descendants), limit
+  //     values from the TARGET deck's resolved config.
+  //   • no `deckId` (whole-collection, Decision 8 — the shipped reviewer path):
+  //     spans ALL the user's non-suspended cards, limits from
+  //     `resolveDeckConfig(null, …)` (profile / ANKI_DEFAULTS).
+  // Explicit `newLimit`/`reviewLimit` query params clamp DOWN to the derived
+  // daily-remaining (they can shrink a fetch, never exceed the daily budget).
+  // Envelope carries `mode: 'regular'`. (The `?filteredDeckId=` branch +
+  // `mode: 'filtered'` come in Phase 7.)
   .get(
     '/queue',
-    async ({ user, query }) => {
+    async ({ user, query, status }) => {
+      // ── Filtered branch (M3 Phase 7, `?filteredDeckId=`, Decision 4/5/7) ──────
+      //
+      // An EARLY return ABOVE the regular logic: load the saved filtered-deck row
+      // (user-scoped, 404 if foreign), re-run its query via the shared SQL builder
+      // (verbatim, no edit), apply the sortOrder enum as an OUTER `.orderBy()` +
+      // `.limit(row.cardLimit)`, and return EVERYTHING under the `due` key so the
+      // reviewer's `[...due, ...new]` stays single-path. `mode: 'filtered'`.
+      if (query.filteredDeckId) {
+        const now = new Date();
+        const [row] = await db
+          .select()
+          .from(filteredDeck)
+          .where(
+            and(eq(filteredDeck.id, query.filteredDeckId), eq(filteredDeck.userId, user.id)),
+          )
+          .limit(1);
+        if (!row) return status(404, { error: 'not_found' });
+
+        // Defensive: POST/PATCH already validate, but a malformed stored query
+        // shouldn't 500 — surface a clear 400.
+        let ast;
+        try {
+          ast = parseCardQuery(row.query);
+        } catch (err) {
+          if (err instanceof CardQueryError) return status(400, { error: 'bad_query' });
+          throw err;
+        }
+
+        // Reuse the same deck-name resolver setup the /cards/search handler uses.
+        const fUserDecks = await db
+          .select({ id: decks.id, parentId: decks.parentId, name: decks.name })
+          .from(decks)
+          .where(eq(decks.userId, user.id));
+        const resolveDeckIds = makeDeckResolver(fUserDecks);
+        const where = buildCardWhere(ast, { userId: user.id, now, resolveDeckIds });
+
+        const sortOrder = (SORT_ORDERS as readonly string[]).includes(row.sortOrder)
+          ? (row.sortOrder as SortOrder)
+          : 'due';
+
+        // WHERE: query predicate AND (suspended gate unless includeSuspended) AND
+        // (an `overdue` due-gate when sortOrder === 'overdue'). `cram` intentionally
+        // drops the due-gate (Decision 5 — future-due cards are returned).
+        const conditions = [where];
+        if (!row.includeSuspended) conditions.push(eq(cards.suspended, false));
+        if (sortOrder === 'overdue') conditions.push(lte(cards.due, now));
+
+        const orderBy =
+          sortOrder === 'added'
+            ? desc(cards.createdAt)
+            : sortOrder === 'random'
+              ? sql`random()`
+              : sortOrder === 'difficultyDesc'
+                ? desc(cards.difficulty)
+                : sortOrder === 'lapses'
+                  ? desc(cards.lapses)
+                  : // 'due' | 'overdue' | 'cram' all order by due ASC
+                    asc(cards.due);
+
+        const sessionRows = await db
+          .select()
+          .from(cards)
+          .where(and(...conditions))
+          .orderBy(orderBy)
+          .limit(row.cardLimit);
+
+        const sessionCards = await enrichCards(sessionRows);
+        return {
+          due: sessionCards,
+          new: [] as typeof sessionCards,
+          total: sessionCards.length,
+          mode: 'filtered' as const,
+        };
+      }
+
       const deckId = query.deckId;
-      const newLimit = Math.max(0, Math.min(200, Number(query.newLimit ?? DAILY_NEW_LIMIT)));
-      const reviewLimit = Math.max(
-        0,
-        Math.min(1000, Number(query.reviewLimit ?? DAILY_REVIEW_LIMIT)),
-      );
+
+      // Snapshot for the resolver (Principle 1): the user's decks, presets, and
+      // profile — a few cheap selects, mirroring the grade handler's batch.
+      const userDecks = await db.select().from(decks).where(eq(decks.userId, user.id));
+      const userPresets = await db
+        .select()
+        .from(deckOptionsPreset)
+        .where(eq(deckOptionsPreset.userId, user.id));
+      const presetsById = new Map(userPresets.map((p) => [p.id, p]));
+      const [existingProfile] = await db
+        .select()
+        .from(profile)
+        .where(eq(profile.userId, user.id))
+        .limit(1);
+      const snapshot = { userDecks, presetsById, profile: existingProfile ?? null };
+
+      // GLOBAL consumed-today, with the same-day reset guard: if the stored
+      // counter date isn't today, treat consumption as 0 (a stale counter from a
+      // previous day — the next grade's nextDailyCounts rolls it over).
+      const today = todayISO(new Date());
+      const consumedNew =
+        existingProfile?.dailyCountsDate === today ? existingProfile.newIntroducedToday : 0;
+      const consumedReviews =
+        existingProfile?.dailyCountsDate === today ? existingProfile.reviewsDoneToday : 0;
+
+      // Limit VALUES — scoped resolves the TARGET deck; whole-collection passes
+      // null so everything falls to profile / ANKI_DEFAULTS (Decision 8).
+      const cfg = resolveDeckConfig(deckId ?? null, snapshot);
+      let newLimit = Math.max(0, cfg.newPerDay - consumedNew);
+      let reviewLimit = Math.max(0, cfg.reviewsPerDay - consumedReviews);
+
+      // Explicit query params clamp DOWN to the daily-remaining (never above it).
+      if (query.newLimit !== undefined) {
+        const requested = Number(query.newLimit);
+        if (Number.isFinite(requested)) newLimit = Math.min(newLimit, Math.max(0, requested));
+      }
+      if (query.reviewLimit !== undefined) {
+        const requested = Number(query.reviewLimit);
+        if (Number.isFinite(requested)) reviewLimit = Math.min(reviewLimit, Math.max(0, requested));
+      }
 
       const base = [eq(cards.userId, user.id), eq(cards.suspended, false)];
-      if (deckId) base.push(eq(cards.deckId, deckId));
+      if (deckId) {
+        // Scoped path: aggregate the deck + its whole subtree (descendants).
+        const subtree = [deckId, ...descendantIds(deckId, userDecks)];
+        base.push(inArray(cards.deckId, subtree));
+      }
+      // Whole-collection path (no deckId): no extra filter — spans all the
+      // user's non-suspended cards.
 
       // Due (not-new) cards first — sorted by due ASC.
       const due = await db
@@ -333,12 +482,14 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         due: dueEnriched,
         new: freshEnriched,
         total: dueEnriched.length + freshEnriched.length,
+        mode: 'regular' as const,
       };
     },
     {
       auth: true,
       query: t.Object({
         deckId: t.Optional(t.String({ format: 'uuid' })),
+        filteredDeckId: t.Optional(t.String()),
         newLimit: t.Optional(t.String()),
         reviewLimit: t.Optional(t.String()),
       }),

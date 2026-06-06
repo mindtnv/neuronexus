@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { and, eq } from 'drizzle-orm';
-import { db, decks } from '@neuronexus/db';
+import { db, deckOptionsPreset, decks } from '@neuronexus/db';
 import { authPlugin } from '../auth-plugin.ts';
 
 const deckColorSchema = t.Union([
@@ -71,6 +71,18 @@ export const decksModule = new Elysia({ prefix: '/decks' })
           cursor = row?.parentId ?? null;
         }
       }
+      // Preset binding: a non-null presetId must reference a preset owned by the
+      // same user before we bind it. `null` unbinds (FK is nullable). The DB FK
+      // `ON DELETE SET NULL` only unbinds on preset DELETE — this guards the
+      // bind direction so a user can't attach another user's preset.
+      if (body.presetId) {
+        const owned = await db
+          .select({ id: deckOptionsPreset.id })
+          .from(deckOptionsPreset)
+          .where(and(eq(deckOptionsPreset.id, body.presetId), eq(deckOptionsPreset.userId, user.id)))
+          .limit(1);
+        if (owned.length === 0) return status(404, { error: 'preset_not_found' });
+      }
       const [updated] = await db
         .update(decks)
         .set(body)
@@ -88,6 +100,7 @@ export const decksModule = new Elysia({ prefix: '/decks' })
           color: deckColorSchema,
           icon: t.String(),
           parentId: t.Union([t.String({ format: 'uuid' }), t.Null()]),
+          presetId: t.Union([t.String({ format: 'uuid' }), t.Null()]),
         }),
       ),
     },

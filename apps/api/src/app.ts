@@ -5,6 +5,8 @@ import { env } from './env.ts';
 import { dbPing } from '@neuronexus/db';
 import { authPlugin } from './auth-plugin.ts';
 import { decksModule } from './modules/decks.ts';
+import { deckOptionsModule } from './modules/deck-options.ts';
+import { filteredDecksModule } from './modules/filtered-decks.ts';
 import { cardsModule } from './modules/cards.ts';
 import { noteTypesModule } from './modules/note-types.ts';
 import { notesModule } from './modules/notes.ts';
@@ -104,6 +106,8 @@ export function buildApp() {
     .use(noteTypesModule)
     .use(notesModule)
     .use(cardsModule)
+    .use(deckOptionsModule)
+    .use(filteredDecksModule)
     .use(reviewsModule)
     .use(mediaModule);
 }

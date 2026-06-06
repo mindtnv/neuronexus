@@ -1,8 +1,47 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { eq } from 'drizzle-orm';
+import { cards, db, deckOptionsPreset, decks } from '@neuronexus/db';
 import { buildApp } from '../src/app.ts';
 import { callApp, resetTestDb, seedBasicCard, signUpAndCookie, uniqueEmail } from './helpers.ts';
 
 const app = buildApp();
+
+type ProfileRow = {
+  newIntroducedToday: number;
+  reviewsDoneToday: number;
+  dailyCountsDate: string | null;
+};
+
+/** Insert a preset for `userId` (Phase 5 CRUD doesn't exist yet — go direct). */
+async function insertPreset(
+  userId: string,
+  over: Partial<typeof deckOptionsPreset.$inferInsert> = {},
+): Promise<string> {
+  const [row] = await db
+    .insert(deckOptionsPreset)
+    .values({ userId, name: 'P', ...over })
+    .returning();
+  return row!.id;
+}
+
+/** Bind a deck to a preset directly (Phase 5 PATCH binding doesn't exist yet). */
+async function bindPreset(deckId: string, presetId: string): Promise<void> {
+  await db.update(decks).set({ presetId }).where(eq(decks.id, deckId));
+}
+
+async function makeDeck(cookie: string, name: string, parentId?: string): Promise<string> {
+  const deck = await (
+    await callApp(app, 'POST', '/decks', {
+      cookie,
+      body: { name, ...(parentId ? { parentId } : {}) },
+    })
+  ).json<{ id: string }>();
+  return deck.id;
+}
+
+async function readProfile(cookie: string): Promise<ProfileRow> {
+  return (await callApp(app, 'GET', '/profile', { cookie })).json<ProfileRow>();
+}
 
 async function setupCard(): Promise<{ cookie: string; cardId: string; deckId: string }> {
   const { cookie } = await signUpAndCookie(app, uniqueEmail());
@@ -119,5 +158,189 @@ describe('reviews', () => {
     expect(none).toEqual([]);
     const all = await (await callApp(app, 'GET', '/reviews', { cookie })).json<unknown[]>();
     expect(all.length).toBe(1);
+  });
+});
+
+// ── M3 Phase 3: per-deck config + global daily counters ──────────────────────
+
+describe('reviews — per-deck preset config', () => {
+  beforeEach(async () => {
+    await resetTestDb();
+  });
+
+  test('(a) custom learningSteps reach FSRS — distinct due vs default', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    await callApp(app, 'GET', '/profile', { cookie });
+
+    // Control deck (no preset) + preset deck with day-scale learning steps.
+    const controlDeck = await makeDeck(cookie, 'control');
+    const presetDeck = await makeDeck(cookie, 'fast');
+    const presetId = await insertPreset(userId, { learningSteps: ['1d', '3d'] });
+    await bindPreset(presetDeck, presetId);
+
+    const controlCard = await seedBasicCard(app, cookie, {
+      deckId: controlDeck,
+      front: 'a',
+      back: 'b',
+    });
+    const presetCard = await seedBasicCard(app, cookie, {
+      deckId: presetDeck,
+      front: 'c',
+      back: 'd',
+    });
+
+    const controlRes = await (
+      await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: controlCard.id, rating: 3 } })
+    ).json<{ card: { due: string } }>();
+    const presetRes = await (
+      await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: presetCard.id, rating: 3 } })
+    ).json<{ card: { due: string } }>();
+
+    // Default '1m','10m' steps → due within minutes; '1d','3d' → due a day out.
+    expect(controlRes.card.due).not.toBe(presetRes.card.due);
+    const controlMs = new Date(controlRes.card.due).getTime() - Date.now();
+    const presetMs = new Date(presetRes.card.due).getTime() - Date.now();
+    expect(controlMs).toBeLessThan(60 * 60 * 1000); // < 1h
+    expect(presetMs).toBeGreaterThan(12 * 60 * 60 * 1000); // > 12h
+  });
+
+  test('(b) per-deck leechThreshold=3 auto-suspends at the 3rd lapse, not 8', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    await callApp(app, 'GET', '/profile', { cookie });
+
+    const deckId = await makeDeck(cookie, 'leechy');
+    const presetId = await insertPreset(userId, { leechThreshold: 3 });
+    await bindPreset(deckId, presetId);
+
+    const card = await seedBasicCard(app, cookie, { deckId, front: 'q', back: 'a' });
+    // Drive the card to Review state with 2 prior lapses; one more Again → 3.
+    await db
+      .update(cards)
+      .set({ state: 'review', lapses: 2, stability: 10, difficulty: 5, reps: 5 })
+      .where(eq(cards.id, card.id));
+
+    const res = await callApp(app, 'POST', '/reviews', {
+      cookie,
+      body: { cardId: card.id, rating: 1 },
+    });
+    const body = await res.json<{ card: { lapses: number; suspended: boolean }; leeched: boolean }>();
+    expect(body.card.lapses).toBe(3);
+    expect(body.leeched).toBe(true);
+    expect(body.card.suspended).toBe(true);
+
+    // A 4th grade on the now-suspended card → 409.
+    const blocked = await callApp(app, 'POST', '/reviews', {
+      cookie,
+      body: { cardId: card.id, rating: 3 },
+    });
+    expect(blocked.status).toBe(409);
+  });
+
+  test('(b2) default threshold (8) does NOT suspend at 3 lapses', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    await callApp(app, 'GET', '/profile', { cookie });
+
+    const deckId = await makeDeck(cookie, 'plain'); // no preset → ANKI default 8
+    const card = await seedBasicCard(app, cookie, { deckId, front: 'q', back: 'a' });
+    await db
+      .update(cards)
+      .set({ state: 'review', lapses: 2, stability: 10, difficulty: 5, reps: 5 })
+      .where(eq(cards.id, card.id));
+
+    const body = await (
+      await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: card.id, rating: 1 } })
+    ).json<{ card: { lapses: number; suspended: boolean }; leeched: boolean }>();
+    expect(body.card.lapses).toBe(3);
+    expect(body.leeched).toBe(false);
+    expect(body.card.suspended).toBe(false);
+  });
+
+  test('(c) 3-level inheritance — child grades with grandparent preset steps', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    await callApp(app, 'GET', '/profile', { cookie });
+
+    // grandparent (HAS preset) → parent (no preset) → child (no preset).
+    const grand = await makeDeck(cookie, 'grand');
+    const parent = await makeDeck(cookie, 'parent', grand);
+    const child = await makeDeck(cookie, 'child', parent);
+    const presetId = await insertPreset(userId, { learningSteps: ['1d', '3d'] });
+    await bindPreset(grand, presetId);
+
+    // Control card on a wholly-default deck for comparison.
+    const controlDeck = await makeDeck(cookie, 'control');
+    const controlCard = await seedBasicCard(app, cookie, {
+      deckId: controlDeck,
+      front: 'a',
+      back: 'b',
+    });
+    const childCard = await seedBasicCard(app, cookie, { deckId: child, front: 'c', back: 'd' });
+
+    const controlRes = await (
+      await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: controlCard.id, rating: 3 } })
+    ).json<{ card: { due: string } }>();
+    const childRes = await (
+      await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: childCard.id, rating: 3 } })
+    ).json<{ card: { due: string } }>();
+
+    expect(childRes.card.due).not.toBe(controlRes.card.due);
+    const childMs = new Date(childRes.card.due).getTime() - Date.now();
+    expect(childMs).toBeGreaterThan(12 * 60 * 60 * 1000); // grandparent's '1d' step
+  });
+
+  test('(d) NEW card grade increments new_introduced_today', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    await callApp(app, 'GET', '/profile', { cookie });
+
+    const deckId = await makeDeck(cookie, 'D');
+    const card = await seedBasicCard(app, cookie, { deckId, front: 'q', back: 'a' });
+
+    const before = await readProfile(cookie);
+    expect(before.newIntroducedToday).toBe(0);
+    expect(before.reviewsDoneToday).toBe(0);
+
+    await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: card.id, rating: 3 } });
+
+    const after = await readProfile(cookie);
+    expect(after.newIntroducedToday).toBe(1);
+    expect(after.reviewsDoneToday).toBe(0);
+    expect(after.dailyCountsDate).toBe(new Date().toISOString().slice(0, 10));
+  });
+
+  test('(d2) REVIEW card grade increments reviews_done_today', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    await callApp(app, 'GET', '/profile', { cookie });
+
+    const deckId = await makeDeck(cookie, 'D');
+    const card = await seedBasicCard(app, cookie, { deckId, front: 'q', back: 'a' });
+    // Flip to a non-new state so the grade counts as a review, not introduction.
+    await db
+      .update(cards)
+      .set({ state: 'review', stability: 10, difficulty: 5, reps: 3 })
+      .where(eq(cards.id, card.id));
+
+    await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: card.id, rating: 3 } });
+
+    const after = await readProfile(cookie);
+    expect(after.newIntroducedToday).toBe(0);
+    expect(after.reviewsDoneToday).toBe(1);
+  });
+
+  test('(e) source:filtered grade leaves both counters unchanged', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    await callApp(app, 'GET', '/profile', { cookie });
+
+    const deckId = await makeDeck(cookie, 'D');
+    const card = await seedBasicCard(app, cookie, { deckId, front: 'q', back: 'a' });
+
+    const res = await callApp(app, 'POST', '/reviews', {
+      cookie,
+      body: { cardId: card.id, rating: 3, source: 'filtered' },
+    });
+    expect(res.status).toBe(200);
+
+    const after = await readProfile(cookie);
+    expect(after.newIntroducedToday).toBe(0);
+    expect(after.reviewsDoneToday).toBe(0);
+    expect(after.dailyCountsDate).toBeNull();
   });
 });

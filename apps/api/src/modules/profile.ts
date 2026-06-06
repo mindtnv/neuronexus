@@ -10,7 +10,7 @@ import {
   reviews,
   user as userTable,
 } from '@neuronexus/db';
-import { PLANT_SPECIES, type PlantSpecies } from '@neuronexus/shared';
+import { MAX_RETENTION, MIN_RETENTION, PLANT_SPECIES, type PlantSpecies } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
 
 const plantSpeciesSchema = t.Union([
@@ -78,7 +78,7 @@ export const profileModule = new Elysia({ prefix: '/profile' })
         t.Object({
           name: t.String({ minLength: 1, maxLength: 80 }),
           dailyGoalMinutes: t.Integer({ minimum: 1, maximum: 600 }),
-          desiredRetention: t.Number({ minimum: 0.7, maximum: 0.99 }),
+          desiredRetention: t.Number({ minimum: MIN_RETENTION, maximum: MAX_RETENTION }),
           plantStage: t.Integer({ minimum: 0, maximum: 5 }),
           plantSpecies: plantSpeciesSchema,
         }),

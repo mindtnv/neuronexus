@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { eq } from 'drizzle-orm';
+import { db, deckOptionsPreset, decks as decksTable } from '@neuronexus/db';
 import { buildApp } from '../src/app.ts';
 import {
   callApp,
@@ -11,10 +13,44 @@ import {
 
 const app = buildApp();
 
-async function freshDeck(cookie: string, name = 'Test'): Promise<string> {
-  const res = await callApp(app, 'POST', '/decks', { cookie, body: { name } });
+async function freshDeck(cookie: string, name = 'Test', parentId?: string): Promise<string> {
+  const res = await callApp(app, 'POST', '/decks', {
+    cookie,
+    body: { name, ...(parentId ? { parentId } : {}) },
+  });
   return (await res.json<{ id: string }>()).id;
 }
+
+/**
+ * Seed a deck-options preset directly via the DB and bind it to `deckId`. The
+ * preset CRUD endpoint (`/deck-options`) + the `PATCH /decks { presetId }`
+ * binding ship in Phase 5; Phase 4 tests the QUEUE consuming a bound preset, so
+ * we seed the binding at the DB layer (the same shape Phase 5 will write).
+ */
+async function bindPreset(
+  userId: string,
+  deckId: string,
+  fields: { newPerDay?: number; reviewsPerDay?: number },
+): Promise<string> {
+  const [preset] = await db
+    .insert(deckOptionsPreset)
+    .values({
+      userId,
+      name: 'P',
+      ...(fields.newPerDay !== undefined ? { newPerDay: fields.newPerDay } : {}),
+      ...(fields.reviewsPerDay !== undefined ? { reviewsPerDay: fields.reviewsPerDay } : {}),
+    })
+    .returning();
+  await db.update(decksTable).set({ presetId: preset!.id }).where(eq(decksTable.id, deckId));
+  return preset!.id;
+}
+
+type QueueResp = {
+  due: { id: string; deckId: string }[];
+  new: { id: string; deckId: string }[];
+  total: number;
+  mode: string;
+};
 
 describe('cards', () => {
   beforeEach(async () => {
@@ -218,5 +254,152 @@ describe('cards', () => {
     expect(res.status).toBe(400);
     const body = await res.json<{ error: string }>();
     expect(body.error).toBe('deck_not_found');
+  });
+
+  // ── M3 Phase 4: regular queue config + subtree + global daily-remaining ──────
+
+  test('/cards/queue honors a bound preset newPerDay/reviewsPerDay over the 20/200 defaults', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail('preset'));
+    const deck = await freshDeck(cookie);
+    await bindPreset(userId, deck, { newPerDay: 5, reviewsPerDay: 7 });
+
+    // 8 new cards — preset caps new at 5.
+    for (let i = 0; i < 8; i++) {
+      await seedBasicCard(app, cookie, { deckId: deck, front: `f${i}`, back: `b${i}` });
+    }
+
+    const q = await (await callApp(app, 'GET', `/cards/queue?deckId=${deck}`, { cookie })).json<QueueResp>();
+    expect(q.new.length).toBe(5); // preset cap, not the default 20
+    expect(q.mode).toBe('regular');
+  });
+
+  test('/cards/queue decrements the GLOBAL new budget after grading new cards', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail('decrement'));
+    // Materialize the profile row (the web bootstrap fetches GET /profile right
+    // after sign-in — lazy-create-on-read). The grade handler only advances the
+    // GLOBAL daily counter when a profile row exists, so the per-day remaining
+    // semantics require this row, exactly as in real usage.
+    await callApp(app, 'GET', '/profile', { cookie });
+    const deck = await freshDeck(cookie);
+    await bindPreset(userId, deck, { newPerDay: 5 });
+
+    const ids: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const c = await seedBasicCard(app, cookie, { deckId: deck, front: `f${i}`, back: `b${i}` });
+      ids.push(c.id);
+    }
+
+    // Before any grade: 5 new slots available.
+    const before = await (
+      await callApp(app, 'GET', `/cards/queue?deckId=${deck}`, { cookie })
+    ).json<QueueResp>();
+    expect(before.new.length).toBe(5);
+
+    // Grade 2 NEW cards (regular) → consumes 2 of the daily NEW budget.
+    for (let i = 0; i < 2; i++) {
+      const r = await callApp(app, 'POST', '/reviews', {
+        cookie,
+        body: { cardId: ids[i], rating: 3 },
+      });
+      expect(r.status).toBe(200);
+    }
+
+    // Same-day decrement: cfg.newPerDay (5) − 2 consumed = 3 remaining slots. The
+    // two graded cards are now `learning` (not `new`), so they leave the new
+    // list regardless; the cap itself is what matters here.
+    const after = await (
+      await callApp(app, 'GET', `/cards/queue?deckId=${deck}`, { cookie })
+    ).json<QueueResp>();
+    expect(after.new.length).toBe(3); // 6 still-new cards, but capped at 5−2=3
+  });
+
+  test('/cards/queue aggregates a deck subtree and counts child cards against the parent cap', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail('subtree'));
+    const parent = await freshDeck(cookie, 'Parent');
+    const child = await freshDeck(cookie, 'Child', parent);
+    // Cap the PARENT at 3 new; the CHILD has no preset → inherits the parent's cap.
+    await bindPreset(userId, parent, { newPerDay: 3 });
+
+    // M=5 cards live in the CHILD deck only.
+    const childCardIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const c = await seedBasicCard(app, cookie, { deckId: child, front: `c${i}`, back: `b${i}` });
+      childCardIds.push(c.id);
+    }
+
+    const q = await (
+      await callApp(app, 'GET', `/cards/queue?deckId=${parent}`, { cookie })
+    ).json<QueueResp>();
+    // Child cards appear in the parent's queue (subtree aggregation)…
+    expect(q.new.every((c) => childCardIds.includes(c.id))).toBe(true);
+    expect(q.new.every((c) => c.deckId === child)).toBe(true);
+    // …AND count against the PARENT's resolved cap of 3 (5 cards present → ≤3).
+    expect(q.new.length).toBe(3);
+    expect(q.mode).toBe('regular');
+  });
+
+  test('/cards/queue (no deckId) spans the whole collection with default limits', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('whole'));
+    const deckA = await freshDeck(cookie, 'A');
+    const deckB = await freshDeck(cookie, 'B');
+    const a = await seedBasicCard(app, cookie, { deckId: deckA, front: 'a', back: 'a' });
+    const b = await seedBasicCard(app, cookie, { deckId: deckB, front: 'b', back: 'b' });
+
+    const q = await (await callApp(app, 'GET', '/cards/queue', { cookie })).json<QueueResp>();
+    // Both decks' cards are returned (no deckId/subtree filter).
+    const ids = q.new.map((c) => c.id);
+    expect(ids).toContain(a.id);
+    expect(ids).toContain(b.id);
+    expect(q.mode).toBe('regular');
+  });
+
+  test('/cards/queue (no deckId) applies the GLOBAL daily-new decrement', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('whole-decrement'));
+    // Materialize the profile row so the GLOBAL daily counter advances on grade
+    // (mirrors the web bootstrap's GET /profile after sign-in).
+    await callApp(app, 'GET', '/profile', { cookie });
+    const deck = await freshDeck(cookie);
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const c = await seedBasicCard(app, cookie, { deckId: deck, front: `f${i}`, back: `b${i}` });
+      ids.push(c.id);
+    }
+
+    const before = await (await callApp(app, 'GET', '/cards/queue', { cookie })).json<QueueResp>();
+    expect(before.new.length).toBe(4); // default cap 20, all 4 new shown
+
+    // Grade 1 new card (regular) → consumes 1 of the GLOBAL new budget.
+    await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: ids[0], rating: 3 } });
+
+    const after = await (await callApp(app, 'GET', '/cards/queue', { cookie })).json<QueueResp>();
+    // 3 cards still `new`; the consumed count is global so it applies here too.
+    expect(after.new.length).toBe(3);
+  });
+
+  test('/cards/queue excludes suspended cards by default (whole-collection)', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('q-suspend'));
+    const deck = await freshDeck(cookie);
+    const keep = await seedBasicCard(app, cookie, { deckId: deck, front: 'keep', back: '1' });
+    const susp = await seedBasicCard(app, cookie, { deckId: deck, front: 'susp', back: '2' });
+    await callApp(app, 'PATCH', `/cards/${susp.id}`, { cookie, body: { suspended: true } });
+
+    const q = await (await callApp(app, 'GET', '/cards/queue', { cookie })).json<QueueResp>();
+    const ids = q.new.map((c) => c.id);
+    expect(ids).toContain(keep.id);
+    expect(ids).not.toContain(susp.id);
+  });
+
+  test('/cards/queue envelope carries mode: regular on both paths', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('q-mode'));
+    const deck = await freshDeck(cookie);
+    await seedBasicCard(app, cookie, { deckId: deck, front: 'x', back: 'y' });
+
+    const scoped = await (
+      await callApp(app, 'GET', `/cards/queue?deckId=${deck}`, { cookie })
+    ).json<QueueResp>();
+    expect(scoped.mode).toBe('regular');
+
+    const whole = await (await callApp(app, 'GET', '/cards/queue', { cookie })).json<QueueResp>();
+    expect(whole.mode).toBe('regular');
   });
 });
