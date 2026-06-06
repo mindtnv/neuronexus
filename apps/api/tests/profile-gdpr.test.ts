@@ -30,7 +30,6 @@ describe('profile GDPR', () => {
       decks: unknown[];
       cards: unknown[];
       reviews: unknown[];
-      achievements: unknown[];
     }>();
     expect(body.exportedAt).toBeTruthy();
     expect(body.user.email).toBe(email);
@@ -38,7 +37,6 @@ describe('profile GDPR', () => {
     expect(body.decks.length).toBe(1);
     expect(body.cards.length).toBe(1);
     expect(Array.isArray(body.reviews)).toBe(true);
-    expect(Array.isArray(body.achievements)).toBe(true);
   });
 
   test('DELETE /profile requires matching confirmEmail', async () => {
@@ -78,16 +76,16 @@ describe('profile GDPR', () => {
     expect(decksAfter.status).toBe(401);
   });
 
-  test('PATCH /profile refuses species that is not unlocked', async () => {
+  test('PATCH /profile switches plant species and persists it (all unlocked by default)', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail('species'));
     await callApp(app, 'GET', '/profile', { cookie });
     const res = await callApp(app, 'PATCH', '/profile', {
       cookie,
       body: { plantSpecies: 'sakura' },
     });
-    expect(res.status).toBe(400);
-    const body = await res.json<{ error: string }>();
-    expect(body.error).toBe('species_locked');
+    expect(res.status).toBe(200);
+    const body = await res.json<{ plantSpecies: string }>();
+    expect(body.plantSpecies).toBe('sakura');
   });
 
   test('PATCH /profile accepts fern (always unlocked by default)', async () => {

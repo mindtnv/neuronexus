@@ -1,7 +1,4 @@
 const m = {
-  tree: 'Tree',
-  filter: 'Filter',
-  importPdf: 'Import PDF · AI',
   newDeck: 'New deck',
   newSubDeck: 'New sub-deck',
   underParent: 'Under',

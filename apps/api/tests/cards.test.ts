@@ -181,4 +181,70 @@ describe('cards', () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
   });
+
+  test('PATCH /cards/:id moves card to another deck owned by the same user', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('move'));
+    const deckA = await freshDeck(cookie, 'Deck A');
+    const deckB = await freshDeck(cookie, 'Deck B');
+
+    const card = await (
+      await callApp(app, 'POST', '/cards', {
+        cookie,
+        body: { deckId: deckA, front: 'front', back: 'back' },
+      })
+    ).json<{ id: string; deckId: string }>();
+    expect(card.deckId).toBe(deckA);
+
+    const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
+      cookie,
+      body: { deckId: deckB },
+    });
+    expect(res.status).toBe(200);
+    const updated = await res.json<{ id: string; deckId: string }>();
+    expect(updated.deckId).toBe(deckB);
+  });
+
+  test('PATCH /cards/:id returns 400 deck_not_found for a non-existent deck', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('move-noexist'));
+    const deckA = await freshDeck(cookie, 'Deck A');
+    const card = await (
+      await callApp(app, 'POST', '/cards', {
+        cookie,
+        body: { deckId: deckA, front: 'front', back: 'back' },
+      })
+    ).json<{ id: string }>();
+
+    const nonExistentDeckId = '00000000-0000-4000-8000-000000000000';
+    const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
+      cookie,
+      body: { deckId: nonExistentDeckId },
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json<{ error: string }>();
+    expect(body.error).toBe('deck_not_found');
+  });
+
+  test('PATCH /cards/:id returns 400 deck_not_found when target deck belongs to another user', async () => {
+    const { cookie: aCookie } = await signUpAndCookie(app, uniqueEmail('move-a'));
+    const { cookie: bCookie } = await signUpAndCookie(app, uniqueEmail('move-b'));
+
+    const aDeck = await freshDeck(aCookie, 'A Deck');
+    const bDeck = await freshDeck(bCookie, 'B Deck');
+
+    const card = await (
+      await callApp(app, 'POST', '/cards', {
+        cookie: aCookie,
+        body: { deckId: aDeck, front: 'front', back: 'back' },
+      })
+    ).json<{ id: string }>();
+
+    // User A tries to move their card into user B's deck — must be rejected.
+    const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
+      cookie: aCookie,
+      body: { deckId: bDeck },
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json<{ error: string }>();
+    expect(body.error).toBe('deck_not_found');
+  });
 });

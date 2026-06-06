@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { State } from 'ts-fsrs';
 import { format, startOfDay, subDays } from 'date-fns';
-import { NNBadge, NNBtn, NNCard } from '@/components/ui';
+import { NNCard } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
 import { reviewFromApi } from '@/lib/mappers';
@@ -290,11 +290,6 @@ export const NNStats = () => {
               </div>
             </div>
             <div style={{ flex: 1 }} />
-            <div style={{ display: 'flex', gap: 4 }}>
-              {['7D', '30D', '90D', '1Y'].map((r, i) => (
-                <NNBadge key={r} size="sm" tone={i === 1 ? 'lime' : 'neutral'}>{r}</NNBadge>
-              ))}
-            </div>
           </div>
           {/* chart */}
           <svg viewBox="0 0 600 200" style={{ width: '100%', height: 200 }}>
@@ -365,8 +360,6 @@ export const NNStats = () => {
       <NNCard padding={0}>
         <div style={{ padding: '14px 20px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
           <div style={{ fontSize: 14, fontWeight: 600 }}>{t('stats.perDeck')}</div>
-          <div style={{ flex: 1 }} />
-          <NNBtn size="sm" variant="ghost" icon="filter">{t('stats.filter')}</NNBtn>
         </div>
         <div>
           {perDeck.length === 0 ? (
@@ -423,40 +416,8 @@ export const NNStats = () => {
         </div>
       </NNCard>
 
-      {/* Forgetting curve + hour heatmap */}
-      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 10 : 12, marginTop: isMobile ? 12 : 16 }}>
-        <NNCard padding={20}>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{t('stats.forgettingCurve')}</div>
-          <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginBottom: 14 }}>
-            {t('stats.forgettingSub')}
-          </div>
-          {/* TODO: real comparison against an "avg user" dataset — currently mock curve for visual only. */}
-          <svg viewBox="0 0 400 160" style={{ width: '100%', height: 160 }}>
-            <path d="M 0 20 Q 60 40 120 70 T 240 110 T 400 140" fill="none" stroke="var(--violet-400)" strokeWidth="2" />
-            <path
-              d="M 0 30 Q 60 60 120 95 T 240 135 T 400 155"
-              fill="none"
-              stroke="var(--rose-400)"
-              strokeWidth="1.5"
-              strokeDasharray="3 3"
-            />
-            {/* legend */}
-            <circle cx="10" cy="155" r="3" fill="var(--violet-400)" />
-            <text x="18" y="159" fontSize="10" fill="var(--text-muted)">
-              {t('stats.you', {
-                v: (() => {
-                  const mature = cards.filter((c) => (c.fsrs.state as unknown as State) === State.Review);
-                  if (mature.length === 0) return '—';
-                  const avg = mature.reduce((s, c) => s + (c.fsrs.stability || 0), 0) / mature.length;
-                  return t('stats.stabilityDays', { n: avg.toFixed(0) });
-                })(),
-              })}
-            </text>
-            <circle cx="160" cy="155" r="3" fill="var(--rose-400)" />
-            <text x="168" y="159" fontSize="10" fill="var(--text-muted)">{t('stats.avgUser')}</text>
-          </svg>
-        </NNCard>
-
+      {/* Hour heatmap */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: isMobile ? 10 : 12, marginTop: isMobile ? 12 : 16 }}>
         <NNCard padding={20}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{t('stats.bestTime')}</div>
           <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginBottom: 14 }}>{t('stats.bestTimeSub')}</div>

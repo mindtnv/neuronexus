@@ -1,9 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { NNIcon, NNBtn, NNKbd } from '@/components/ui';
-import { NNTopbar } from '@/components/shell';
-import { NNReview } from '@/components/screens/review';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 
@@ -163,24 +161,3 @@ export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
   );
 };
 
-// Demo: graph screen with cheatsheet open on top
-export const NNKbdCheatsheetDemo = () => {
-  const t = useT();
-  const [open, setOpen] = useState(true);
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
-      <NNTopbar title={t('overlays.cheatsheet.demoTopbar.title')} subtitle={t('overlays.cheatsheet.demoTopbar.subtitle')}/>
-      <div style={{ flex: 1, overflow: 'hidden', filter: open ? 'blur(1px)' : 'none' }}>
-        <NNReview variant="classic"/>
-      </div>
-      {open && <KbdCheatsheet onClose={() => setOpen(false)}/>}
-      {!open && (
-        <div style={{ position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)' }}>
-          <NNBtn variant="soft" onClick={() => setOpen(true)}>
-            {t('overlays.cheatsheet.openCheatsheet')} <NNKbd>?</NNKbd>
-          </NNBtn>
-        </div>
-      )}
-    </div>
-  );
-};

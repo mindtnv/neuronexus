@@ -10,9 +10,6 @@ const m = {
     basic: 'Обычная',
     cloze: 'Пропуск',
     type: 'Ввод',
-    reverse: 'Обратная',
-    imageOcclusion: 'Скрытие на картинке',
-    aiOpenEnded: 'Открытый ИИ',
   },
   fields: {
     front: 'Лицо',
@@ -28,11 +25,9 @@ const m = {
   tagsLinks: 'Теги · Связи',
   tagsPlaceholder: 'теги, через, запятую',
   noTags: 'тегов пока нет',
-  linkTodo: '+ связь (TODO)',
   preview: 'Предпросмотр',
   frontPreview: 'Превью лица…',
   backPreview: 'Превью оборота…',
-  aiAssistant: 'ИИ-ассистент',
   todo: 'TODO',
   ai: {
     mnemonic: 'Сгенерировать мнемонику',
@@ -51,7 +46,6 @@ const m = {
     lastGrade: 'Last grade',
   },
   stabilityDays: '{n}d',
-  history: 'История · 7 повторов',
   errors: {
     pickDeck: 'Сначала выбери колоду.',
     frontRequired: 'Лицо не может быть пустым.',

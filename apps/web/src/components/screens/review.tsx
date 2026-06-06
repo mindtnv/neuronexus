@@ -3,8 +3,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { NNBadge, NNBtn, NNCard, NNIcon, NNKbd, NNMiniGraph, NNSkeleton, NNTag } from '@/components/ui';
-import { humanInterval, previewGrades } from '@/lib/fsrs';
+import { NNBadge, NNBtn, NNCard, NNIcon, NNKbd, NNSkeleton, NNTag } from '@/components/ui';
+import { CLOZE_RE, previewGrades, xpForRating } from '@neuronexus/shared';
+import { humanInterval } from '@/lib/fsrs';
+import { api, ok } from '@/lib/api';
+import { cardFromApi } from '@/lib/mappers';
 import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -26,17 +29,14 @@ const RATINGS: RatingMeta[] = [
   { k: 4, labelKey: 'review.ratings.easy', tone: 'sky', hue: 'var(--sky-500)', bg: 'rgba(85,196,214,0.12)' },
 ];
 
-export const NNReview = ({ variant = 'classic' }: { variant?: 'classic' | 'focus' | 'context' }) => {
-  if (variant === 'focus') return <NNReviewFocus />;
-  if (variant === 'context') return <NNReviewContext />;
+export const NNReview = ({ variant: _variant = 'classic' }: { variant?: 'classic' }) => {
   return <NNReviewClassic />;
 };
 
 // ─────────────────────────────────────────────
-// Cloze helpers
+// Cloze helpers — the regex source comes from the shared CLOZE_RE
+// (@neuronexus/shared); the JSX rendering stays local (DOM-specific).
 // ─────────────────────────────────────────────
-const CLOZE_RE = /\{\{c\d+::([^}]+)\}\}/g;
-
 const renderClozePrompt = (text: string): React.ReactNode[] => {
   const out: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -146,8 +146,8 @@ export const NNReviewClassic = () => {
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const bootstrapped = useNN((s) => s.bootstrapped);
-  const cards = useNN((s) => s.cards);
   const decks = useNN((s) => s.decks);
+  const profile = useNN((s) => s.profile);
   const grade = useNN((s) => s.gradeCard);
 
   // Freeze the queue for this session so newly-rescheduled cards don't jump back in
@@ -171,26 +171,41 @@ export const NNReviewClassic = () => {
   const sessionStartRef = useRef<number>(Date.now());
   const sessionSavedRef = useRef(false);
   const sessionStartedRef = useRef(false);
+  const queueLoadedRef = useRef(false);
 
-  // Build initial queue once data is loaded
+  // Build the session queue from the server's scheduler queue — this respects
+  // the daily new/review caps and excludes suspended (leeched) cards. We freeze
+  // it once for the session so rescheduled cards don't jump back in.
   useEffect(() => {
-    if (!bootstrapped || queue.length > 0) return;
-    const now = Date.now();
-    const due = cards
-      .filter((c) => new Date(c.fsrs.due).getTime() <= now)
-      .sort((a, b) => new Date(a.fsrs.due).getTime() - new Date(b.fsrs.due).getTime());
-    setQueue(due);
-    setStartedAt(Date.now());
-    sessionStartRef.current = Date.now();
-    if (due.length > 0) sessionStartedRef.current = true;
-  }, [bootstrapped, cards, queue.length]);
+    if (!bootstrapped || queueLoadedRef.current) return;
+    queueLoadedRef.current = true;
+    (async () => {
+      try {
+        const res: any = await ok(await (api as any).cards.queue.get({ query: {} }));
+        const due = ((res?.due ?? []) as any[]).map(cardFromApi);
+        const fresh = ((res?.new ?? []) as any[]).map(cardFromApi);
+        const q = [...due, ...fresh];
+        setQueue(q);
+        setStartedAt(Date.now());
+        sessionStartRef.current = Date.now();
+        if (q.length > 0) sessionStartedRef.current = true;
+      } catch {
+        // Leave the queue empty → renders the "all caught up" empty state.
+      }
+    })();
+  }, [bootstrapped]);
 
   const current = queue[index];
   const deck = useMemo(() => (current ? decks.find((d) => d.id === current.deckId) : undefined), [current, decks]);
 
   const previews = useMemo(
-    () => (current ? previewGrades(current.fsrs, new Date()) : null),
-    [current],
+    () =>
+      current
+        ? previewGrades(current.fsrs, new Date(), {
+            requestRetention: profile?.desiredRetention,
+          })
+        : null,
+    [current, profile?.desiredRetention],
   );
 
   // Pulse glow whenever reveal-state changes
@@ -226,7 +241,7 @@ export const NNReviewClassic = () => {
       try {
         await grade(current.id, rating, duration);
         setCompleted((c) => c + 1);
-        setXpGained((x) => x + rating * 10);
+        setXpGained((x) => x + xpForRating(rating));
         setGradeCounts((g) => ({ ...g, [rating]: g[rating] + 1 }));
         setIndex((i) => i + 1);
         setRevealed(false);
@@ -937,126 +952,3 @@ const SessionDone = ({ completed, xp }: { completed: number; xp: number }) => {
   );
 };
 
-// ─────────────────────────────────────────────
-// Variant B/C — preserved as mockups for the design canvas
-// ─────────────────────────────────────────────
-export const NNReviewFocus = () => {
-  const t = useT();
-  return (
-  <div
-    style={{
-      flex: 1,
-      display: 'flex',
-      flexDirection: 'column',
-      background: 'radial-gradient(ellipse at top, rgba(154,209,85,0.04), transparent 60%), var(--bg)',
-      padding: '0 32px',
-    }}
-  >
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 20, padding: '20px 0' }}>
-      <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-        {Array.from({ length: 42 }).map((_, i) => (
-          <div
-            key={i}
-            style={{
-              width: 5,
-              height: i === 13 ? 14 : 8,
-              background: i < 14 ? 'var(--lime-500)' : i === 14 ? 'var(--text)' : 'var(--surface-3)',
-              borderRadius: 1,
-            }}
-          />
-        ))}
-      </div>
-      <span style={{ fontSize: 12, color: 'var(--text-dim)' }} className="mono">
-        14/42
-      </span>
-    </div>
-    <div
-      style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        textAlign: 'center',
-        gap: 32,
-      }}
-    >
-      <NNBadge tone="amber" size="sm">
-        {t('review.focus.levelBadge')}
-      </NNBadge>
-      <div
-        style={{
-          fontFamily: 'var(--font-serif)',
-          fontSize: 120,
-          lineHeight: 1,
-          letterSpacing: -3,
-          color: 'var(--text)',
-          fontWeight: 400,
-        }}
-      >
-        der Nachbar
-      </div>
-      <div style={{ fontSize: 16, color: 'var(--text-muted)', fontStyle: 'italic' }}>/ˈnaːx.baːɐ̯/</div>
-      <NNBtn size="xl" variant="soft">
-        {t('review.focus.revealBtn')}
-      </NNBtn>
-    </div>
-  </div>
-  );
-};
-
-export const NNReviewContext = () => {
-  const t = useT();
-  return (
-  <div style={{ flex: 1, overflow: 'auto', padding: 24, display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16 }}>
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-        <NNBadge icon="stack" size="sm">
-          {t('review.context.deckBadge')}
-        </NNBadge>
-        <div style={{ flex: 1, height: 4, background: 'var(--surface-3)', borderRadius: 2, overflow: 'hidden' }}>
-          <div style={{ width: '34%', height: '100%', background: 'var(--lime-500)' }} />
-        </div>
-        <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          14/42
-        </span>
-      </div>
-      <div
-        style={{
-          padding: '32px 36px',
-          borderRadius: 16,
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          minHeight: 320,
-        }}
-      >
-        <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
-          <NNTag color="amber">german</NNTag>
-          <NNTag color="sky">workplace</NNTag>
-          <NNTag color="lime">b1</NNTag>
-        </div>
-        <div
-          style={{
-            fontFamily: 'var(--font-serif)',
-            fontSize: 52,
-            lineHeight: 1.1,
-            letterSpacing: -1,
-            color: 'var(--text)',
-          }}
-        >
-          der Nachbar
-        </div>
-      </div>
-    </div>
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <NNCard padding={14}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-          <NNIcon name="graph" size={14} color="var(--sky-400)" />
-          <span style={{ fontSize: 12, fontWeight: 600 }}>{t('review.context.localGraph')}</span>
-        </div>
-        <NNMiniGraph height={160} />
-      </NNCard>
-    </div>
-  </div>
-  );
-};

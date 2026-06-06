@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { NNBtn, NNIcon, NNPlant } from '@/components/ui';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
@@ -30,9 +31,7 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
             {t('empty.firstRun.subtitle')}
           </div>
           <div style={{ display: 'flex', gap: isMobile ? 7 : 10, justifyContent: 'center', marginTop: 24, flexWrap: 'wrap' }}>
-            <NNBtn size="lg" variant="primary" icon="plus">{t('empty.firstRun.newDeck')}</NNBtn>
-            <NNBtn size="lg" variant="soft" icon="sparkle">{t('empty.firstRun.importPdf')}</NNBtn>
-            <NNBtn size="lg" variant="ghost" icon="stack">{t('empty.firstRun.fromAnki')}</NNBtn>
+            <Link href="/decks"><NNBtn size="lg" variant="primary" icon="plus">{t('empty.firstRun.newDeck')}</NNBtn></Link>
           </div>
           {/* sample decks */}
           <div style={{ marginTop: isMobile ? 22 : 32, paddingTop: isMobile ? 16 : 24, borderTop: '1px solid var(--border)' }}>
@@ -62,8 +61,8 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
             {' '}{t('empty.done.subtitleSuffix')}
           </div>
           <div style={{ display: 'flex', gap: isMobile ? 7 : 10, justifyContent: 'center', marginTop: 24, flexWrap: 'wrap' }}>
-            <NNBtn size="lg" variant="soft" icon="bolt">{t('empty.done.learnNew', { n: 12 })}</NNBtn>
-            <NNBtn size="lg" variant="ghost" icon="graph">{t('empty.done.exploreGraph')}</NNBtn>
+            <Link href="/review"><NNBtn size="lg" variant="soft" icon="bolt">{t('empty.done.learnNew', { n: 12 })}</NNBtn></Link>
+            <Link href="/graph"><NNBtn size="lg" variant="ghost" icon="graph">{t('empty.done.exploreGraph')}</NNBtn></Link>
           </div>
         </div>
       </div>
@@ -92,7 +91,7 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
           {' '}{t('empty.graph.subtitleSuffix')}
         </div>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 24 }}>
-          <NNBtn size="lg" variant="primary" icon="plus">{t('empty.graph.addCards')}</NNBtn>
+          <Link href="/editor"><NNBtn size="lg" variant="primary" icon="plus">{t('empty.graph.addCards')}</NNBtn></Link>
         </div>
       </div>
     </div>

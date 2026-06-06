@@ -4,7 +4,6 @@ import { swagger } from '@elysiajs/swagger';
 import { env } from './env.ts';
 import { dbPing } from '@neuronexus/db';
 import { authPlugin } from './auth-plugin.ts';
-import { achievementsModule } from './modules/achievements.ts';
 import { decksModule } from './modules/decks.ts';
 import { cardsModule } from './modules/cards.ts';
 import { reviewsModule } from './modules/reviews.ts';
@@ -97,8 +96,7 @@ export function buildApp() {
     .use(profileModule)
     .use(decksModule)
     .use(cardsModule)
-    .use(reviewsModule)
-    .use(achievementsModule);
+    .use(reviewsModule);
 }
 
 export type App = ReturnType<typeof buildApp>;

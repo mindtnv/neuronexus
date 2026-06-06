@@ -2,9 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
-import { NNIcon, NNBtn, NNKbd } from '@/components/ui';
-import { NNTopbar } from '@/components/shell';
-import { NNHome } from '@/components/screens/home';
+import { NNIcon, NNKbd } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import type { Card, Deck, DeckColor } from '@/lib/types';
@@ -28,11 +26,10 @@ type StaticBuilder = (t: (k: string, p?: Record<string, string | number>) => str
 const buildStaticCmdData: StaticBuilder = (t) => {
   const GRP_QUICK = t('overlays.palette.groups.quickActions');
   const GRP_NAV = t('overlays.palette.groups.navigate');
-  // Only list actions that land the user on a real, working screen. The
-  // /import route is behind a coming-soon placeholder, and the fake graph
-  // node examples were decorative — both removed. Keyboard G-chord bindings
-  // aren't wired to a global listener either, so `kbd` shows reference only
-  // for the two shortcuts the palette itself handles via input focus.
+  // Only list actions that land the user on a real, working screen.
+  // Keyboard G-chord bindings aren't wired to a global listener either,
+  // so `kbd` shows reference only for the two shortcuts the palette itself
+  // handles via input focus.
   return [
     { group: GRP_QUICK, id: 'review-now', icon: 'bolt',  label: t('overlays.palette.quick.reviewNow.label'), sub: t('overlays.palette.quick.reviewNow.sub'), kbd: [], href: '/review' },
     { group: GRP_QUICK, id: 'new-card',   icon: 'plus',  label: t('overlays.palette.quick.newCard.label'),   sub: t('overlays.palette.quick.newCard.sub'),   kbd: [], href: '/editor' },
@@ -343,29 +340,3 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
   );
 };
 
-// ─────────────────────────────────────────────
-// Desktop shell with palette open
-// ─────────────────────────────────────────────
-export const NNCmdPaletteDemo = ({ query = '' }: { query?: string }) => {
-  const t = useT();
-  const [open, setOpen] = useState(true);
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
-      {/* Blurred background — home screen */}
-      <NNTopbar title={t('overlays.palette.demo.topbarTitle')} subtitle={t('overlays.palette.demo.topbarSubtitle')}/>
-      <div style={{ filter: open ? 'blur(1px)' : 'none', flex: 1, overflow: 'hidden' }}>
-        <NNHome/>
-      </div>
-      {open && <CommandPalette defaultQuery={query} onClose={() => setOpen(false)}/>}
-      {!open && (
-        <div style={{
-          position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)',
-        }}>
-          <NNBtn variant="soft" icon="search" onClick={() => setOpen(true)}>
-            {t('overlays.palette.demo.openPalette')} <NNKbd>⌘K</NNKbd>
-          </NNBtn>
-        </div>
-      )}
-    </div>
-  );
-};

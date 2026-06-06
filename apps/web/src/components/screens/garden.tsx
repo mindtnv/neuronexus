@@ -2,6 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
+import { State } from 'ts-fsrs';
 import { NNIcon, NNBtn, NNBadge, NNPlant } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import type { DeckColor, PlantSpecies } from '@/lib/types';
@@ -51,13 +52,16 @@ export const NNGardenGrid = () => {
 
   const plots = decks.map(d => {
     const deckCards = cards.filter(c => c.deckId === d.id);
+    const reviewCount = deckCards.filter(c => (c.fsrs.state as unknown as State) === State.Review).length;
+    const mastery = deckCards.length ? Math.round(reviewCount / deckCards.length * 100) : 0;
     return {
       id: d.id,
       deck: d.name,
       color: d.color as DeckColor,
       count: deckCards.length,
       stage: stageForCount(deckCards.length),
-      mastery: Math.min(100, deckCards.length * 2),
+      species: d.species,
+      mastery,
     };
   });
 
@@ -118,7 +122,7 @@ export const NNGardenGrid = () => {
               <div style={{ flex: 1 }}/>
               <NNBadge size="xs" icon="stack" tone="neutral">{p.count}</NNBadge>
             </div>
-            <NNPlant stage={p.stage} size={110}/>
+            <NNPlant stage={p.stage} size={110} species={p.species}/>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{p.deck}</div>
             <div style={{ width: '100%', height: 4, background: 'var(--surface-3)', borderRadius: 2, overflow: 'hidden' }}>
               <div style={{ width: `${p.mastery}%`, height: '100%', background: `var(--${p.color}-500)` }}/>
@@ -164,7 +168,7 @@ export const NNGardenTerrarium = () => {
   // Side plants: up to 3 other decks as background ecosystem.
   const sidePlants = decks.slice(0, 3).map(d => {
     const count = cards.filter(c => c.deckId === d.id).length;
-    return { id: d.id, stage: stageForCount(count) };
+    return { id: d.id, stage: stageForCount(count), species: d.species };
   });
 
   return (
@@ -206,22 +210,22 @@ export const NNGardenTerrarium = () => {
         <div style={{
           position: 'absolute', bottom: isMobile ? 20 : 30, left: '50%', transform: 'translateX(-50%)',
         }}>
-          <NNPlant stage={stage} size={Math.round(220 * m)}/>
+          <NNPlant stage={stage} size={Math.round(220 * m)} species={currentSpecies}/>
         </div>
         {/* side plants from decks */}
         {sidePlants[0] && (
           <div style={{ position: 'absolute', bottom: isMobile ? 14 : 20, left: '8%' }}>
-            <NNPlant stage={sidePlants[0].stage} size={Math.round(120 * m)}/>
+            <NNPlant stage={sidePlants[0].stage} size={Math.round(120 * m)} species={sidePlants[0].species}/>
           </div>
         )}
         {sidePlants[1] && (
           <div style={{ position: 'absolute', bottom: isMobile ? 10 : 15, left: '78%' }}>
-            <NNPlant stage={sidePlants[1].stage} size={Math.round(110 * m)}/>
+            <NNPlant stage={sidePlants[1].stage} size={Math.round(110 * m)} species={sidePlants[1].species}/>
           </div>
         )}
         {sidePlants[2] && (
           <div style={{ position: 'absolute', bottom: isMobile ? 10 : 15, left: '25%' }}>
-            <NNPlant stage={sidePlants[2].stage} size={Math.round(90 * m)}/>
+            <NNPlant stage={sidePlants[2].stage} size={Math.round(90 * m)} species={sidePlants[2].species}/>
           </div>
         )}
         {/* fireflies */}

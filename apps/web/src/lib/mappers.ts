@@ -61,6 +61,7 @@ export function cardFromApi(row: any): Card {
     back: row.back ?? '',
     clozeText: row.clozeText ?? undefined,
     tags: row.tags ?? [],
+    suspended: row.suspended ?? false,
     createdAt: toEpoch(row.createdAt),
     updatedAt: toEpoch(row.updatedAt),
     fsrs,

@@ -8,14 +8,13 @@ import {
   pgTable,
   text,
   timestamp,
-  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { user } from './auth.ts';
 
-// Catalog of plant species. `fern` is granted by default; the rest are
-// unlocked via achievements. Keep this list in sync with ACHIEVEMENTS in
-// @neuronexus/shared (server checks there at reward time).
+// Catalog of plant species. All species are available to every user (the
+// achievement-gated unlock flow was removed). Keep this list in sync with
+// PLANT_SPECIES in @neuronexus/shared.
 export const plantSpeciesEnum = [
   'fern',
   'cactus',
@@ -52,8 +51,8 @@ export const profile = pgTable('profile', {
   xp: integer('xp').notNull().default(0),
   streakDays: integer('streak_days').notNull().default(0),
   lastReviewDate: text('last_review_date'), // ISO date yyyy-mm-dd
-  // Gamification — freezes absorb one missed day each. Earned via streak
-  // achievements; capped at `MAX_STREAK_FREEZES` in shared helpers.
+  // Gamification — freezes absorb one missed day each. Capped at
+  // `MAX_STREAK_FREEZES` in shared helpers.
   streakFreezes: integer('streak_freezes').notNull().default(0),
   // Per-day review-minute ledger. `todayMinutesDate` is the ISO date that
   // `todayMinutes` belongs to; when a new day arrives, the counter resets
@@ -71,32 +70,10 @@ export const profile = pgTable('profile', {
   unlockedSpecies: text('unlocked_species')
     .array()
     .notNull()
-    .default(sql`ARRAY['fern']::text[]`),
+    .default(sql`ARRAY['fern','cactus','succulent','bonsai','sakura','mushroom']::text[]`),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
-
-// Per-user achievement log. One row per (user, code) unlocked.
-// `progress` is optional: for e.g. a "10 000 reviews" achievement we may want
-// to render partial progress before unlock — callers write progress updates
-// even when the achievement isn't yet earned (unlockedAt stays null).
-export const achievements = pgTable(
-  'achievements',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    userId: text('user_id')
-      .notNull()
-      .references(() => user.id, { onDelete: 'cascade' }),
-    code: text('code').notNull(),
-    progress: integer('progress'),
-    unlockedAt: timestamp('unlocked_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    uniqueIndex('achievements_user_code_idx').on(t.userId, t.code),
-    index('achievements_user_unlocked_idx').on(t.userId, t.unlockedAt),
-  ],
-);
 
 // ── decks ───────────────────────────────────────────────────────────────────
 // Self-referential parent for Anki-style nested decks. ON DELETE CASCADE at the
@@ -163,6 +140,13 @@ export const cards = pgTable(
     index('cards_user_idx').on(t.userId),
     index('cards_deck_idx').on(t.deckId),
     index('cards_due_idx').on(t.userId, t.due),
+    // Card-database (Browse) query paths:
+    //  - GIN on tags powers `tag:` array containment (`tags @> ARRAY[...]`).
+    //  - (user_id, state) and (user_id, created_at) match the hot filter+sort
+    //    paths of GET /cards/search (is:/state filters, default created sort).
+    index('cards_tags_gin_idx').using('gin', t.tags),
+    index('cards_user_state_idx').on(t.userId, t.state),
+    index('cards_user_created_idx').on(t.userId, t.createdAt),
   ],
 );
 
@@ -201,10 +185,6 @@ export const profileRelations = relations(profile, ({ one }) => ({
   user: one(user, { fields: [profile.userId], references: [user.id] }),
 }));
 
-export const achievementsRelations = relations(achievements, ({ one }) => ({
-  user: one(user, { fields: [achievements.userId], references: [user.id] }),
-}));
-
 export const decksRelations = relations(decks, ({ one, many }) => ({
   user: one(user, { fields: [decks.userId], references: [user.id] }),
   parent: one(decks, {
@@ -232,8 +212,6 @@ export const reviewsRelations = relations(reviews, ({ one }) => ({
 
 export type Profile = typeof profile.$inferSelect;
 export type NewProfile = typeof profile.$inferInsert;
-export type Achievement = typeof achievements.$inferSelect;
-export type NewAchievement = typeof achievements.$inferInsert;
 export type Deck = typeof decks.$inferSelect;
 export type NewDeck = typeof decks.$inferInsert;
 export type Card = typeof cards.$inferSelect;

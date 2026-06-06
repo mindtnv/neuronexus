@@ -23,6 +23,7 @@ export interface Card {
   back: string;
   clozeText?: string;
   tags: string[];
+  suspended: boolean;
   createdAt: number;
   updatedAt: number;
   fsrs: FsrsCard;

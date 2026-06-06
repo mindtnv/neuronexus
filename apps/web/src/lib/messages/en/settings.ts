@@ -90,11 +90,24 @@ const m = {
     copy: 'Copy',
     rotate: 'Rotate',
   },
+  data: {
+    title: 'Your data',
+    subtitle: 'Download a full copy of your account data.',
+    export: 'Export data',
+    exportDesc: 'Download all your decks, cards, reviews, and profile as a JSON file.',
+    exporting: 'Exporting…',
+    exportError: 'Export failed. Please try again.',
+  },
   danger: {
     title: 'Reset demo data',
     subtitle: 'Wipes every deck, card, and review from local storage. Cannot be undone.',
     button: 'Reset demo data',
     confirm: 'Delete all decks, cards, and reviews? Demo data will be re-seeded.',
+    deleteAccount: 'Delete account',
+    deleteAccountDesc: 'Permanently delete your account and all associated data. This cannot be undone.',
+    confirmEmailPlaceholder: 'Type your email to confirm',
+    deleting: 'Deleting…',
+    deleteError: 'Deletion failed. Please try again.',
   },
 };
 export default m;

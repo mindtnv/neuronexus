@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
-import { and, count, desc, eq, gte, sql } from 'drizzle-orm';
-import { achievements, cards, db, decks, profile, reviews } from '@neuronexus/db';
+import { and, count, desc, eq, gte } from 'drizzle-orm';
+import { cards, db, profile, reviews } from '@neuronexus/db';
 import {
   ANKI_DEFAULTS,
   applyGradeRollup,
@@ -8,7 +8,6 @@ import {
   isLeech,
   stateLabel,
   State,
-  type AchievementCode,
   xpForRating,
   type FsrsCard,
 } from '@neuronexus/shared';
@@ -128,31 +127,14 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
           .returning();
 
         // ── gamification rollup ────────────────────────────────────────
-        // Stats snapshot for the achievement evaluator. Total reviews is the
-        // *post-insert* count; deck count is also snapshotted here so e.g.
-        // the "polyglot" achievement fires on the first grade after creating
-        // the 3rd deck.
+        // Streak / freeze / today-minutes / daily-goal / XP / level / plant
+        // stage fold into a new profile snapshot. (Achievements were removed.)
         let updatedProfile = existingProfile ?? null;
-        let newAchievementCodes: AchievementCode[] = [];
         let freezeUsed = false;
         let dailyGoalJustMet = false;
 
         if (existingProfile) {
-          const [totalReviewsRow] = await tx
-            .select({ n: count() })
-            .from(reviews)
-            .where(eq(reviews.userId, user.id));
-          const [deckCountRow] = await tx
-            .select({ n: count() })
-            .from(decks)
-            .where(eq(decks.userId, user.id));
-          const existingUnlocks = await tx
-            .select({ code: achievements.code })
-            .from(achievements)
-            .where(and(eq(achievements.userId, user.id), sql`${achievements.unlockedAt} IS NOT NULL`));
-
           const rollup = applyGradeRollup({
-            rating: body.rating,
             durationMs: body.durationMs ?? 0,
             now,
             previous: {
@@ -165,23 +147,12 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
               dailyGoalMetCount: existingProfile.dailyGoalMetCount,
               dailyGoalMetDate: existingProfile.dailyGoalMetDate,
               xp: existingProfile.xp,
-              unlockedSpecies: existingProfile.unlockedSpecies,
             },
-            stats: {
-              streak: existingProfile.streakDays, // overwritten by rollup
-              totalReviews: totalReviewsRow?.n ?? 0,
-              deckCount: deckCountRow?.n ?? 0,
-              level: existingProfile.level,
-              plantStage: existingProfile.plantStage,
-              dailyGoalMetCount: existingProfile.dailyGoalMetCount, // overwritten
-            },
-            alreadyUnlocked: existingUnlocks.map((r) => r.code),
             ratingXp: xpForRating(body.rating),
           });
 
           freezeUsed = rollup.freezeUsed;
           dailyGoalJustMet = rollup.dailyGoalJustMet;
-          newAchievementCodes = rollup.newAchievements.map((a) => a.code);
 
           const [saved] = await tx
             .update(profile)
@@ -196,30 +167,11 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
               xp: rollup.xp,
               level: rollup.level,
               plantStage: rollup.plantStage,
-              unlockedSpecies: rollup.unlockedSpecies,
               updatedAt: now,
             })
             .where(eq(profile.userId, user.id))
             .returning();
           updatedProfile = saved ?? null;
-
-          // Persist newly-unlocked achievements. Upsert with unlockedAt=now.
-          if (rollup.newAchievements.length > 0) {
-            await tx
-              .insert(achievements)
-              .values(
-                rollup.newAchievements.map((a) => ({
-                  userId: user.id,
-                  code: a.code,
-                  unlockedAt: now,
-                  progress: a.def.target,
-                })),
-              )
-              .onConflictDoUpdate({
-                target: [achievements.userId, achievements.code],
-                set: { unlockedAt: now },
-              });
-          }
         }
 
         return {
@@ -227,7 +179,6 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
           review,
           profile: updatedProfile,
           leeched: shouldSuspend,
-          newAchievements: newAchievementCodes,
           freezeUsed,
           dailyGoalJustMet,
         };

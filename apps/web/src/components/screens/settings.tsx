@@ -4,7 +4,8 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ANKI_DEFAULTS } from '@neuronexus/shared';
 import { NNBadge, NNBtn } from '@/components/ui';
-import { signOut } from '@/lib/auth';
+import { signOut, useSession } from '@/lib/auth';
+import { api, ok } from '@/lib/api';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
@@ -24,6 +25,8 @@ export const NNSettings = () => {
   const profile = useNN((s) => s.profile);
   const updateProfile = useNN((s) => s.updateProfile);
   const resetStore = useNN((s) => s.reset);
+  const { data: session } = useSession();
+  const userEmail = session?.user?.email ?? '';
 
   const [nameDraft, setNameDraft] = useState(profile?.name ?? '');
   React.useEffect(() => {
@@ -46,6 +49,46 @@ export const NNSettings = () => {
     } finally {
       resetStore();
       router.replace('/auth/sign-in');
+    }
+  };
+
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
+
+  const handleExport = async () => {
+    setExporting(true);
+    setExportError('');
+    try {
+      const data = await ok(await (api as any).profile.export.get());
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'neuronexus-export.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setExportError(t('settings.data.exportError'));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const [confirmEmail, setConfirmEmail] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+
+  const handleDeleteAccount = async () => {
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await ok(await (api as any).profile.delete({ confirmEmail }));
+      await signOut();
+      router.replace('/auth/sign-in');
+    } catch {
+      setDeleteError(t('settings.danger.deleteError'));
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -188,14 +231,52 @@ export const NNSettings = () => {
         <InfoRow label="Leech threshold" value={`${ANKI_DEFAULTS.leechThreshold} lapses`} />
       </Section>
 
+      {/* ── Your data (export) ── */}
+      <Section title={t('settings.data.title')} subtitle={t('settings.data.subtitle')}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{t('settings.data.exportDesc')}</div>
+            {exportError && <div style={{ fontSize: 12, color: 'var(--rose-500)', marginTop: 4 }}>{exportError}</div>}
+          </div>
+          <NNBtn size="md" variant="soft" onClick={handleExport} disabled={exporting}>
+            {exporting ? t('settings.data.exporting') : t('settings.data.export')}
+          </NNBtn>
+        </div>
+      </Section>
+
       {/* ── Danger zone ── */}
       <div style={{ ...cardStyle, borderColor: 'rgba(251, 113, 133, 0.25)', marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        {/* Sign out */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid rgba(251,113,133,0.15)' }}>
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--rose-500)' }}>Выйти из аккаунта</div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>Сессия закроется, данные останутся — зайди снова, чтобы продолжить.</div>
           </div>
           <NNBtn size="md" variant="danger" icon="x" onClick={handleSignOut}>{t('auth.signOut')}</NNBtn>
+        </div>
+
+        {/* Delete account */}
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--rose-500)', marginBottom: 2 }}>{t('settings.danger.deleteAccount')}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>{t('settings.danger.deleteAccountDesc')}</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              type="email"
+              value={confirmEmail}
+              onChange={(e) => setConfirmEmail(e.target.value)}
+              placeholder={t('settings.danger.confirmEmailPlaceholder')}
+              style={{ ...inputStyle, maxWidth: 280 }}
+            />
+            <NNBtn
+              size="md"
+              variant="danger"
+              onClick={handleDeleteAccount}
+              disabled={deleting || confirmEmail !== userEmail}
+            >
+              {deleting ? t('settings.danger.deleting') : t('settings.danger.deleteAccount')}
+            </NNBtn>
+          </div>
+          {deleteError && <div style={{ fontSize: 12, color: 'var(--rose-500)', marginTop: 8 }}>{deleteError}</div>}
         </div>
       </div>
     </div>

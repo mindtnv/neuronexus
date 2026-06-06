@@ -1,7 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { eq } from 'drizzle-orm';
 import {
-  achievements,
   cards,
   db,
   decks,
@@ -92,11 +91,10 @@ export const profileModule = new Elysia({ prefix: '/profile' })
     '/export',
     async ({ user }) => {
       const [profileRow] = await db.select().from(profile).where(eq(profile.userId, user.id));
-      const [decksRows, cardsRows, reviewsRows, achievementsRows] = await Promise.all([
+      const [decksRows, cardsRows, reviewsRows] = await Promise.all([
         db.select().from(decks).where(eq(decks.userId, user.id)),
         db.select().from(cards).where(eq(cards.userId, user.id)),
         db.select().from(reviews).where(eq(reviews.userId, user.id)),
-        db.select().from(achievements).where(eq(achievements.userId, user.id)),
       ]);
       return {
         exportedAt: new Date().toISOString(),
@@ -105,7 +103,6 @@ export const profileModule = new Elysia({ prefix: '/profile' })
         decks: decksRows,
         cards: cardsRows,
         reviews: reviewsRows,
-        achievements: achievementsRows,
       };
     },
     { auth: true },

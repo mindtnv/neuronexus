@@ -3,18 +3,14 @@ import home from './en/home';
 import review from './en/review';
 import decks from './en/decks';
 import editor from './en/editor';
+import cards from './en/cards';
 import stats from './en/stats';
 import settings from './en/settings';
 import garden from './en/garden';
-import achievements from './en/achievements';
-import leagues from './en/leagues';
-import importPdf from './en/import';
 import overlays from './en/overlays';
-import mobile from './en/mobile';
 import graph from './en/graph';
 import empty from './en/empty';
 import sessionComplete from './en/session-complete';
-import cardTypes from './en/card-types';
 
 const messages = {
   ...common,
@@ -22,18 +18,14 @@ const messages = {
   review,
   decks,
   editor,
+  cards,
   stats,
   settings,
   garden,
-  achievements,
-  leagues,
-  import: importPdf,
   overlays,
-  mobile,
   graph,
   empty,
   session: sessionComplete,
-  cards: cardTypes,
 };
 
 export default messages;

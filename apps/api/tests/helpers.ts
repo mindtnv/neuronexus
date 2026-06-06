@@ -15,7 +15,6 @@ import { db } from '@neuronexus/db/client';
 import { sql } from 'drizzle-orm';
 
 const TABLES = [
-  'achievements',
   'reviews',
   'cards',
   'decks',

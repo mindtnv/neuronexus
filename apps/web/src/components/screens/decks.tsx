@@ -152,8 +152,6 @@ export const NNDecks = () => {
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: isMobile ? 14 : 24 }}>
       <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
-        <NNBtn size="sm" variant="soft" icon="stack">{t('decks.tree')}</NNBtn>
-        <NNBtn size="sm" variant="ghost" icon="filter">{t('decks.filter')}</NNBtn>
         <div style={{ flex: 1 }} />
         {/* Import PDF lives behind a feature flag until the LLM integration
             lands — hidden from the deck toolbar so we don't route users to a
@@ -415,6 +413,21 @@ export const NNDecks = () => {
                       >
                         <NNIcon name="plus" size={13} />
                         <span>{t('decks.addCard')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenMenuId(null);
+                          // Drill into the Browse screen pre-filtered to this deck.
+                          // Quote the name (escaping embedded quotes) so deck names
+                          // with spaces parse as one `deck:` term.
+                          const escaped = d.name.replace(/"/g, '\\"');
+                          router.push(`/cards?q=${encodeURIComponent(`deck:"${escaped}"`)}`);
+                        }}
+                        style={menuItemStyle()}
+                      >
+                        <NNIcon name="grid" size={13} />
+                        <span>{t('cards.openCards')}</span>
                       </button>
                       {agg.due > 0 && (
                         <button

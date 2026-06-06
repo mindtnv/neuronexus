@@ -3,10 +3,8 @@ const m = {
     pageSubtitle: 'Welcome to NeuroNexus',
     title: 'A quiet garden.',
     subtitle:
-      "Plant your first deck and start reviewing. You can import from Anki, drop in a PDF, or create cards from scratch — we'll help.",
+      'Plant your first deck and start reviewing. Create cards from scratch — we\'ll help.',
     newDeck: 'New deck',
-    importPdf: 'Import PDF',
-    fromAnki: 'From Anki',
     starterLabel: 'Or try a starter deck',
     starter: {
       top1000: 'Top 1000 English words',

@@ -4,6 +4,9 @@
 
 export * from './fsrs.ts';
 export * from './gamification.ts';
+export * from './card-query.ts';
+export * from './card-query-predicate.ts';
+export * from './card-query-match.ts';
 
 export const CARD_RATINGS = [1, 2, 3, 4] as const;
 

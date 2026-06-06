@@ -2,20 +2,25 @@
 
 import React, { useEffect, useState } from 'react';
 import { NNIcon } from './ui';
+import { useT } from '@/lib/i18n';
 
 // Lightweight toast stack. Any component can raise one via:
 //   window.dispatchEvent(new CustomEvent('nn:toast', {
-//     detail: { kind: 'achievement', title: 'Week runner', description: '+1 freeze' }
+//     detail: { kind: 'freeze', title: 'Streak saved', description: 'A freeze was used.' }
 //   }))
 // Mounted once per app shell.
 
-export type ToastKind = 'achievement' | 'freeze' | 'dailyGoal' | 'info';
+export type ToastKind = 'freeze' | 'dailyGoal' | 'leech' | 'info';
 
 export interface ToastPayload {
   id?: string;
   kind: ToastKind;
-  title: string;
+  /** Pre-resolved text (e.g. titles from external sources). */
+  title?: string;
   description?: string;
+  /** i18n keys, resolved at render time via useT(). Take precedence over title/description. */
+  titleKey?: string;
+  descriptionKey?: string;
   durationMs?: number;
 }
 
@@ -24,13 +29,14 @@ interface ToastState extends ToastPayload {
 }
 
 const KIND_META: Record<ToastKind, { emoji: string; accent: string; glow: string }> = {
-  achievement: { emoji: '🏆', accent: 'var(--amber-400)', glow: '243,182,85' },
   freeze: { emoji: '🛡', accent: 'var(--sky-400)', glow: '85,196,214' },
   dailyGoal: { emoji: '🎯', accent: 'var(--lime-400)', glow: '154,209,85' },
+  leech: { emoji: '🐌', accent: 'var(--rose-400)', glow: '232,120,138' },
   info: { emoji: '✨', accent: 'var(--violet-400)', glow: '167,136,255' },
 };
 
 export function ToastsStack() {
+  const t = useT();
   const [toasts, setToasts] = useState<ToastState[]>([]);
 
   useEffect(() => {
@@ -64,11 +70,13 @@ export function ToastsStack() {
         pointerEvents: 'none',
       }}
     >
-      {toasts.map((t) => {
-        const meta = KIND_META[t.kind];
+      {toasts.map((toast) => {
+        const meta = KIND_META[toast.kind];
+        const title = toast.titleKey ? t(toast.titleKey) : (toast.title ?? '');
+        const description = toast.descriptionKey ? t(toast.descriptionKey) : toast.description;
         return (
           <div
-            key={t.id}
+            key={toast.id}
             style={{
               pointerEvents: 'auto',
               minWidth: 260,
@@ -103,9 +111,9 @@ export function ToastsStack() {
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: meta.accent, letterSpacing: 0.2 }}>
-                {t.title}
+                {title}
               </div>
-              {t.description && (
+              {description && (
                 <div
                   style={{
                     fontSize: 12,
@@ -114,14 +122,14 @@ export function ToastsStack() {
                     lineHeight: 1.4,
                   }}
                 >
-                  {t.description}
+                  {description}
                 </div>
               )}
             </div>
             <button
               type="button"
-              aria-label="Закрыть"
-              onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+              aria-label={t('actions.close')}
+              onClick={() => setToasts((prev) => prev.filter((x) => x.id !== toast.id))}
               style={{
                 background: 'transparent',
                 border: 'none',
@@ -147,7 +155,7 @@ export function ToastsStack() {
   );
 }
 
-/** Helper for other components — `raiseToast({ kind: 'achievement', ... })`. */
+/** Helper for other components — `raiseToast({ kind: 'freeze', ... })`. */
 export function raiseToast(payload: ToastPayload) {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent<ToastPayload>('nn:toast', { detail: payload }));

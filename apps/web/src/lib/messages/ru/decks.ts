@@ -1,7 +1,4 @@
 const m = {
-  tree: 'Дерево',
-  filter: 'Фильтр',
-  importPdf: 'Импорт PDF · ИИ',
   newDeck: 'Новая колода',
   newSubDeck: 'Новая под-колода',
   underParent: 'Внутри',

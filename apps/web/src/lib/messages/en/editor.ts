@@ -10,9 +10,6 @@ const m = {
     basic: 'Basic',
     cloze: 'Cloze',
     type: 'Type-in',
-    reverse: 'Reverse',
-    imageOcclusion: 'Image occlusion',
-    aiOpenEnded: 'AI open-ended',
   },
   fields: {
     front: 'Front',
@@ -28,11 +25,9 @@ const m = {
   tagsLinks: 'Tags · Links',
   tagsPlaceholder: 'comma, separated, tags',
   noTags: 'no tags yet',
-  linkTodo: '+ link (TODO)',
   preview: 'Preview',
   frontPreview: 'Front preview…',
   backPreview: 'Back preview…',
-  aiAssistant: 'AI assistant',
   todo: 'TODO',
   ai: {
     mnemonic: 'Generate mnemonic',
@@ -51,7 +46,6 @@ const m = {
     lastGrade: 'Last grade',
   },
   stabilityDays: '{n}d',
-  history: 'History · 7 reviews',
   errors: {
     pickDeck: 'Pick a deck first.',
     frontRequired: 'Front cannot be empty.',

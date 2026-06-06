@@ -333,9 +333,11 @@ export const NNSessionComplete = () => {
               </NNBadge>
             )}
             <div style={{ flex: 1 }} />
-            <NNBtn size="sm" variant="soft">
-              {t('session.attention.requeueAll')}
-            </NNBtn>
+            <Link href="/review">
+              <NNBtn size="sm" variant="soft">
+                {t('session.attention.requeueAll')}
+              </NNBtn>
+            </Link>
           </div>
           <div
             style={{
@@ -394,19 +396,27 @@ export const NNSessionComplete = () => {
         </div>
 
         <div style={{ display: 'flex', gap: isMobile ? 7 : 10, marginTop: isMobile ? 22 : 32, flexWrap: 'wrap' }}>
-          <NNBtn size="lg" variant="soft" icon="garden">
-            {t('session.actions.visitGarden')}
-          </NNBtn>
-          <NNBtn size="lg" variant="soft" icon="graph">
-            {t('session.actions.viewGraph')}
-          </NNBtn>
+          <Link href="/garden">
+            <NNBtn size="lg" variant="soft" icon="garden">
+              {t('session.actions.visitGarden')}
+            </NNBtn>
+          </Link>
+          <Link href="/graph">
+            <NNBtn size="lg" variant="soft" icon="graph">
+              {t('session.actions.viewGraph')}
+            </NNBtn>
+          </Link>
           <div style={{ flex: 1 }} />
-          <NNBtn size="lg" variant="ghost">
-            {t('session.actions.finish')}
-          </NNBtn>
-          <NNBtn size="lg" variant="primary" icon="bolt">
-            {t('session.actions.learnNew', { n: Math.max(0, cards.length - session.cards) })}
-          </NNBtn>
+          <Link href="/">
+            <NNBtn size="lg" variant="ghost">
+              {t('session.actions.finish')}
+            </NNBtn>
+          </Link>
+          <Link href="/review">
+            <NNBtn size="lg" variant="primary" icon="bolt">
+              {t('session.actions.learnNew', { n: Math.max(0, cards.length - session.cards) })}
+            </NNBtn>
+          </Link>
         </div>
       </div>
 
@@ -462,45 +472,6 @@ export const NNSessionComplete = () => {
             }}
           />
           <NNPlant stage={plantStage} size={160} />
-        </div>
-
-        <div
-          style={{
-            marginTop: 20,
-            padding: 14,
-            background: 'var(--surface-2)',
-            borderRadius: 10,
-            width: '100%',
-          }}
-        >
-          <div style={{ fontSize: 12, color: 'var(--lime-400)', fontWeight: 600, marginBottom: 10 }}>
-            {t('session.badges.title')}
-          </div>
-          {[
-            { n: t('session.badges.perfectStreak.name'), d: t('session.badges.perfectStreak.desc'), icon: 'flame' },
-            { n: t('session.badges.earlyBird.name'), d: t('session.badges.earlyBird.desc'), icon: 'sparkle' },
-          ].map((b) => (
-            <div key={b.n} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
-              <div
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
-                  background: 'rgba(154,209,85,0.12)',
-                  border: '1px solid rgba(154,209,85,0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <NNIcon name={b.icon} size={16} color="var(--lime-400)" />
-              </div>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{b.n}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{b.d}</div>
-              </div>
-            </div>
-          ))}
         </div>
 
         <div
