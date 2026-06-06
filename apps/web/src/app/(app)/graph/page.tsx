@@ -1,6 +1,7 @@
 'use client';
 
 import { NNAppPage } from '@/components/app-page';
+import { CardsViewSwitcher } from '@/components/cards-view-switcher';
 import { NNGraph } from '@/components/screens/graph';
 import { getGraphSummary } from '@/lib/graph';
 import { useNN } from '@/lib/store';
@@ -16,6 +17,9 @@ export default function Page() {
         title={t('nav.graph')}
         subtitle={t('graph.pageSubtitle', summary)}
       >
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+        <CardsViewSwitcher />
+      </div>
       <NNGraph variant="force" />
     </NNAppPage>
   );

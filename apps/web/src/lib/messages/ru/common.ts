@@ -9,12 +9,17 @@ const common = {
     review: 'Повтор',
     graph: 'Граф',
     decks: 'Колоды',
+    cards: 'Карточки',
     garden: 'Сад',
     editor: 'Редактор',
     stats: 'Статистика',
     settings: 'Настройки',
-    workspace: 'Рабочее пространство',
     recentDecks: 'Недавние колоды',
+    sections: {
+      overview: 'Обзор',
+      learning: 'Изучение',
+      progress: 'Прогресс',
+    },
   },
   topbar: {
     newCard: 'Новая карта',
@@ -79,6 +84,20 @@ const common = {
     loading: 'Загрузка…',
     noData: 'Нет данных',
     todo: 'TODO',
+  },
+  toasts: {
+    freeze: {
+      title: 'Стрик сохранён',
+      description: 'Использована заморозка — серия продолжается.',
+    },
+    dailyGoal: {
+      title: 'Дневная цель выполнена',
+      description: 'Так держать — стрик и XP идут дальше.',
+    },
+    leech: {
+      title: 'Карточка приостановлена',
+      description: 'Слишком много ошибок — карточка стала «пиявкой» и приостановлена.',
+    },
   },
 };
 

@@ -4,7 +4,7 @@ import React, { CSSProperties, ReactNode, useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { NNBtn, NNIcon, NNKbd, NNLogo } from './ui';
-import { APP_NAV, getActiveNavId } from './nav-config';
+import { APP_NAV, NAV_SECTIONS, NAV_SECTION_LABEL, SETTINGS_NAV, getActiveNavId, type AppNavItem } from './nav-config';
 import { countDueCards } from '@/lib/cards';
 import { signOut } from '@/lib/auth';
 import { useNN } from '@/lib/store';
@@ -12,6 +12,76 @@ import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { LocaleToggle } from './locale-toggle';
 import { aggregateCounts } from '@/lib/decks';
+
+// Single nav-item row. Shared across grouped sections + the pinned Settings item.
+const renderNavItem = ({
+  item,
+  isActive,
+  badge,
+  collapsed,
+  label,
+}: {
+  item: AppNavItem;
+  isActive: boolean;
+  badge?: number;
+  collapsed?: boolean;
+  label: string;
+}) => (
+  <Link
+    key={item.id}
+    href={item.href}
+    onClick={() => window.dispatchEvent(new CustomEvent('nn:close-drawer'))}
+    style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: collapsed ? '9px 0' : '8px 10px',
+      justifyContent: collapsed ? 'center' : 'flex-start',
+      borderRadius: 8,
+      marginBottom: 2,
+      cursor: 'pointer',
+      background: isActive ? 'var(--surface-3)' : 'transparent',
+      color: isActive ? 'var(--text)' : 'var(--text-muted)',
+      fontSize: 13,
+      fontWeight: 500,
+      letterSpacing: -0.1,
+      position: 'relative',
+      textDecoration: 'none',
+    }}
+  >
+    <NNIcon name={item.icon} size={16} />
+    {!collapsed && <span style={{ flex: 1 }}>{label}</span>}
+    {!collapsed && badge != null && (
+      <span
+        style={{
+          fontSize: 10.5,
+          fontWeight: 600,
+          background: 'var(--lime-500)',
+          color: '#0d1608',
+          padding: '2px 6px',
+          borderRadius: 999,
+          minWidth: 20,
+          textAlign: 'center',
+        }}
+      >
+        {badge}
+      </span>
+    )}
+    {collapsed && badge != null && (
+      <span
+        style={{
+          position: 'absolute',
+          top: 4,
+          right: 4,
+          width: 6,
+          height: 6,
+          borderRadius: 3,
+          background: 'var(--lime-500)',
+        }}
+      />
+    )}
+  </Link>
+);
 
 export const NNSidebar = ({
   active,
@@ -138,81 +208,35 @@ export const NNSidebar = ({
       )}
 
       <nav style={{ padding: collapsed ? '8px 6px' : '8px 10px', flex: 1, overflowY: 'auto' }}>
-        {!collapsed && (
-          <div
-            style={{
-              fontSize: 10.5,
-              fontWeight: 500,
-              color: 'var(--text-dim)',
-              textTransform: 'uppercase',
-              letterSpacing: 0.8,
-              padding: '10px 8px 6px',
-            }}
-          >
-            {t('nav.workspace')}
-          </div>
-        )}
-        {APP_NAV.map((item) => {
-          const isActive = currentId === item.id;
-          const badge = item.id === 'review' && dueCount > 0 ? dueCount : undefined;
-          const label = t(item.labelKey);
+        {NAV_SECTIONS.map((section) => {
+          const items = APP_NAV.filter((item) => item.section === section);
+          if (items.length === 0) return null;
           return (
-            <Link
-              key={item.id}
-              href={item.href}
-              onClick={() => window.dispatchEvent(new CustomEvent('nn:close-drawer'))}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                padding: collapsed ? '9px 0' : '8px 10px',
-                justifyContent: collapsed ? 'center' : 'flex-start',
-                borderRadius: 8,
-                marginBottom: 2,
-                cursor: 'pointer',
-                background: isActive ? 'var(--surface-3)' : 'transparent',
-                color: isActive ? 'var(--text)' : 'var(--text-muted)',
-                fontSize: 13,
-                fontWeight: 500,
-                letterSpacing: -0.1,
-                position: 'relative',
-                textDecoration: 'none',
-              }}
-            >
-              <NNIcon name={item.icon} size={16} />
-              {!collapsed && <span style={{ flex: 1 }}>{label}</span>}
-              {!collapsed && badge != null && (
-                <span
+            <React.Fragment key={section}>
+              {!collapsed && (
+                <div
                   style={{
                     fontSize: 10.5,
-                    fontWeight: 600,
-                    background: 'var(--lime-500)',
-                    color: '#0d1608',
-                    padding: '2px 6px',
-                    borderRadius: 999,
-                    minWidth: 20,
-                    textAlign: 'center',
+                    fontWeight: 500,
+                    color: 'var(--text-dim)',
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.8,
+                    padding: '10px 8px 6px',
                   }}
                 >
-                  {badge}
-                </span>
+                  {t(NAV_SECTION_LABEL[section])}
+                </div>
               )}
-              {collapsed && badge != null && (
-                <span
-                  style={{
-                    position: 'absolute',
-                    top: 4,
-                    right: 4,
-                    width: 6,
-                    height: 6,
-                    borderRadius: 3,
-                    background: 'var(--lime-500)',
-                  }}
-                />
+              {items.map((item) =>
+                renderNavItem({ item, isActive: currentId === item.id, badge: item.id === 'review' && dueCount > 0 ? dueCount : undefined, collapsed, label: t(item.labelKey) }),
               )}
-            </Link>
+            </React.Fragment>
           );
         })}
+
+        {/* Settings — pinned below the sections behind a thin divider. */}
+        <div style={{ height: 1, background: 'var(--border)', margin: collapsed ? '10px 6px' : '10px 4px' }} />
+        {renderNavItem({ item: SETTINGS_NAV, isActive: currentId === SETTINGS_NAV.id, collapsed, label: t(SETTINGS_NAV.labelKey) })}
 
         {!collapsed && (
           <>
@@ -232,7 +256,7 @@ export const NNSidebar = ({
               recentDecks.map((d) => (
                 <Link
                   key={d.id}
-                  href="/decks"
+                  href={`/cards?q=${encodeURIComponent(`deck:${JSON.stringify(d.name)}`)}`}
                   onClick={() => window.dispatchEvent(new CustomEvent('nn:close-drawer'))}
                   style={{
                     display: 'flex',

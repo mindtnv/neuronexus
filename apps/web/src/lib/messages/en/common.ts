@@ -9,12 +9,17 @@ const common = {
     review: 'Review',
     graph: 'Graph',
     decks: 'Decks',
+    cards: 'Cards',
     garden: 'Garden',
     editor: 'Editor',
     stats: 'Stats',
     settings: 'Settings',
-    workspace: 'Workspace',
     recentDecks: 'Recent decks',
+    sections: {
+      overview: 'Overview',
+      learning: 'Learning',
+      progress: 'Progress',
+    },
   },
   topbar: {
     newCard: 'New card',
@@ -79,6 +84,20 @@ const common = {
     loading: 'Loading…',
     noData: 'No data',
     todo: 'TODO',
+  },
+  toasts: {
+    freeze: {
+      title: 'Streak saved',
+      description: 'A freeze was used — your streak continues.',
+    },
+    dailyGoal: {
+      title: 'Daily goal reached',
+      description: 'Nice work — streak and XP roll on.',
+    },
+    leech: {
+      title: 'Card suspended',
+      description: 'Too many lapses — this card became a leech and was suspended.',
+    },
   },
 };
 
