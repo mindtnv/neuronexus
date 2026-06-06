@@ -18,6 +18,65 @@ export interface Deck {
   createdAt: number;
   /** Parent deck id. Undefined for root-level decks. */
   parentId?: string;
+  /** Bound preset id. Null or undefined = inherit/default. */
+  presetId?: string | null;
+}
+
+// ── Deck Options Presets (M3) ─────────────────────────────────────────────────
+
+/**
+ * A named set of FSRS + queue options that can be bound to one or more decks.
+ * When a deck has no preset bound, it uses the system Anki defaults.
+ */
+export interface DeckOptionsPreset {
+  id: string;
+  userId: string;
+  name: string;
+  newPerDay: number;
+  reviewsPerDay: number;
+  /** Learning steps, e.g. ["1m", "10m"]. */
+  learningSteps: string[];
+  /** Relearning steps, e.g. ["10m"]. */
+  relearningSteps: string[];
+  /** Override desired retention (0.7–0.99). Null = inherit global. */
+  desiredRetention: number | null;
+  leechThreshold: number;
+  maximumInterval: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ── Filtered Decks (M3) ──────────────────────────────────────────────────────
+
+/**
+ * The sort order for a filtered-deck session. Mirrors the server enum
+ * (`sort_order` column in `filtered_deck`).
+ */
+export type FilteredDeckSortOrder =
+  | 'due'
+  | 'added'
+  | 'random'
+  | 'difficultyDesc'
+  | 'overdue'
+  | 'lapses'
+  | 'cram';
+
+/**
+ * A named custom-study session backed by a card query + sort/limit config.
+ * Session cards are returned under the `due` key in the queue envelope and
+ * graded with `source: 'filtered'` so the daily counters are skipped.
+ */
+export interface FilteredDeck {
+  id: string;
+  userId: string;
+  name: string;
+  /** Card search query (same grammar as the Browse search box). */
+  query: string;
+  sortOrder: FilteredDeckSortOrder;
+  cardLimit: number;
+  includeSuspended: boolean;
+  createdAt: number;
+  updatedAt: number;
 }
 
 // ── Note-types model (M1) ─────────────────────────────────────────────────────

@@ -2,11 +2,12 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ANKI_DEFAULTS } from '@neuronexus/shared';
+import { ANKI_DEFAULTS, MIN_RETENTION, MAX_RETENTION } from '@neuronexus/shared';
 import { NNBadge, NNBtn } from '@/components/ui';
 import { signOut, useSession } from '@/lib/auth';
 import { api, ok } from '@/lib/api';
 import { useNN } from '@/lib/store';
+import type { DeckOptionsPreset } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 
@@ -17,6 +18,25 @@ import { useT } from '@/lib/i18n';
 // it's really functional.
 // ─────────────────────────────────────────────
 
+// ── Default values for a new preset form ─────────────────────────────────────
+const PRESET_DEFAULTS = {
+  name: '',
+  newPerDay: 20,
+  reviewsPerDay: 200,
+  learningSteps: '1m 10m',
+  relearningSteps: '10m',
+  desiredRetentionPct: '',
+  leechThreshold: 8,
+  maximumInterval: 36500,
+};
+
+function parseSteps(raw: string): string[] {
+  return raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export const NNSettings = () => {
   const t = useT();
   const router = useRouter();
@@ -24,6 +44,11 @@ export const NNSettings = () => {
   const isMobile = bp === 'mobile';
   const profile = useNN((s) => s.profile);
   const updateProfile = useNN((s) => s.updateProfile);
+  const presets = useNN((s) => s.presets);
+  const decks = useNN((s) => s.decks);
+  const addPreset = useNN((s) => s.addPreset);
+  const updatePreset = useNN((s) => s.updatePreset);
+  const deletePreset = useNN((s) => s.deletePreset);
   const resetStore = useNN((s) => s.reset);
   const { data: session } = useSession();
   const userEmail = session?.user?.email ?? '';
@@ -42,6 +67,98 @@ export const NNSettings = () => {
 
   const dailyGoalOptions = [15, 30, 45, 60];
   const currentGoal = profile?.dailyGoalMinutes ?? 15;
+
+  // ── Preset editor state ───────────────────────────────────────────────────
+  const [presetEditing, setPresetEditing] = useState<string | 'new' | null>(null);
+  const [presetForm, setPresetForm] = useState(PRESET_DEFAULTS);
+  const [presetSaving, setPresetSaving] = useState(false);
+  const [presetSaveError, setPresetSaveError] = useState('');
+  const [presetDeleteError, setPresetDeleteError] = useState('');
+
+  const openCreatePreset = () => {
+    setPresetForm(PRESET_DEFAULTS);
+    setPresetSaveError('');
+    setPresetEditing('new');
+  };
+
+  const openEditPreset = (p: DeckOptionsPreset) => {
+    setPresetForm({
+      name: p.name,
+      newPerDay: p.newPerDay,
+      reviewsPerDay: p.reviewsPerDay,
+      learningSteps: p.learningSteps.join(' '),
+      relearningSteps: p.relearningSteps.join(' '),
+      desiredRetentionPct: p.desiredRetention != null ? String(Math.round(p.desiredRetention * 100)) : '',
+      leechThreshold: p.leechThreshold,
+      maximumInterval: p.maximumInterval,
+    });
+    setPresetSaveError('');
+    setPresetEditing(p.id);
+  };
+
+  const cancelPresetEdit = () => {
+    setPresetEditing(null);
+    setPresetSaveError('');
+  };
+
+  const handleSavePreset = async () => {
+    const retPctRaw = presetForm.desiredRetentionPct.trim();
+    const desiredRetention = retPctRaw === '' ? null : Number(retPctRaw) / 100;
+    if (desiredRetention !== null && (desiredRetention < MIN_RETENTION || desiredRetention > MAX_RETENTION)) {
+      setPresetSaveError(t('settings.deckOptions.fields.desiredRetentionHint'));
+      return;
+    }
+    const learningSteps = parseSteps(presetForm.learningSteps);
+    const relearningSteps = parseSteps(presetForm.relearningSteps);
+    setPresetSaving(true);
+    setPresetSaveError('');
+    try {
+      if (presetEditing === 'new') {
+        await addPreset({
+          name: presetForm.name,
+          newPerDay: Number(presetForm.newPerDay),
+          reviewsPerDay: Number(presetForm.reviewsPerDay),
+          learningSteps,
+          relearningSteps,
+          desiredRetention,
+          leechThreshold: Number(presetForm.leechThreshold),
+          maximumInterval: Number(presetForm.maximumInterval),
+        });
+      } else if (presetEditing) {
+        await updatePreset(presetEditing, {
+          name: presetForm.name,
+          newPerDay: Number(presetForm.newPerDay),
+          reviewsPerDay: Number(presetForm.reviewsPerDay),
+          learningSteps,
+          relearningSteps,
+          desiredRetention,
+          leechThreshold: Number(presetForm.leechThreshold),
+          maximumInterval: Number(presetForm.maximumInterval),
+        });
+      }
+      setPresetEditing(null);
+    } catch {
+      setPresetSaveError(t('settings.deckOptions.saveError'));
+    } finally {
+      setPresetSaving(false);
+    }
+  };
+
+  const handleDeletePreset = async (p: DeckOptionsPreset) => {
+    if (typeof window === 'undefined') return;
+    const deckCount = decks.filter((d) => d.presetId === p.id).length;
+    const affectedNote = deckCount > 0
+      ? t('settings.deckOptions.deleteAffected', { n: deckCount })
+      : t('settings.deckOptions.deleteZeroAffected');
+    const msg = t('settings.deckOptions.deleteConfirm', { name: p.name, affected: affectedNote });
+    if (!window.confirm(msg)) return;
+    setPresetDeleteError('');
+    try {
+      await deletePreset(p.id);
+    } catch {
+      setPresetDeleteError(t('settings.deckOptions.deleteError'));
+    }
+  };
 
   const handleSignOut = async () => {
     try {
@@ -231,6 +348,88 @@ export const NNSettings = () => {
         <InfoRow label="Leech threshold" value={`${ANKI_DEFAULTS.leechThreshold} lapses`} />
       </Section>
 
+      {/* ── Deck Options presets ── */}
+      <Section
+        title={t('settings.deckOptions.title')}
+        subtitle={t('settings.deckOptions.subtitle')}
+        accent={
+          <NNBtn size="sm" variant="soft" onClick={openCreatePreset}>
+            {t('settings.deckOptions.createPreset')}
+          </NNBtn>
+        }
+      >
+        {presets.length === 0 && presetEditing !== 'new' && (
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', padding: '8px 0' }}>
+            {t('settings.deckOptions.noPresets')}
+          </div>
+        )}
+        {presetDeleteError && (
+          <div style={{ fontSize: 12, color: 'var(--rose-500)', marginBottom: 8 }}>
+            {presetDeleteError}
+          </div>
+        )}
+        {presets.map((p) => {
+          const isEditing = presetEditing === p.id;
+          const boundCount = decks.filter((d) => d.presetId === p.id).length;
+          return (
+            <div
+              key={p.id}
+              style={{
+                borderTop: '1px solid var(--border)',
+                paddingTop: 12,
+                marginTop: 8,
+              }}
+            >
+              {isEditing ? (
+                <PresetForm
+                  form={presetForm}
+                  onChange={setPresetForm}
+                  saving={presetSaving}
+                  saveError={presetSaveError}
+                  onSave={handleSavePreset}
+                  onCancel={cancelPresetEdit}
+                  t={t}
+                />
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 160 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{p.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                      {p.newPerDay} new · {p.reviewsPerDay} reviews
+                      {p.desiredRetention != null && ` · ${Math.round(p.desiredRetention * 100)}% retention`}
+                      {boundCount > 0 && (
+                        <span style={{ color: 'var(--lime-400)', marginLeft: 6 }}>
+                          {t('settings.deckOptions.boundTo', { n: boundCount })}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <NNBtn size="sm" variant="ghost" onClick={() => openEditPreset(p)}>
+                    {t('settings.deckOptions.editPreset')}
+                  </NNBtn>
+                  <NNBtn size="sm" variant="ghost" onClick={() => void handleDeletePreset(p)}>
+                    {t('settings.deckOptions.deletePreset')}
+                  </NNBtn>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {presetEditing === 'new' && (
+          <div style={{ borderTop: presets.length > 0 ? '1px solid var(--border)' : undefined, paddingTop: presets.length > 0 ? 12 : 0, marginTop: presets.length > 0 ? 8 : 0 }}>
+            <PresetForm
+              form={presetForm}
+              onChange={setPresetForm}
+              saving={presetSaving}
+              saveError={presetSaveError}
+              onSave={handleSavePreset}
+              onCancel={cancelPresetEdit}
+              t={t}
+            />
+          </div>
+        )}
+      </Section>
+
       {/* ── Your data (export) ── */}
       <Section title={t('settings.data.title')} subtitle={t('settings.data.subtitle')}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -345,6 +544,137 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div style={{ display: 'flex', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--border)' }}>
       <span style={{ flex: 1, fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
       <span className="mono" style={{ fontSize: 12, color: 'var(--text)' }}>{value}</span>
+    </div>
+  );
+}
+
+type PresetFormState = typeof PRESET_DEFAULTS;
+
+function PresetForm({
+  form,
+  onChange,
+  saving,
+  saveError,
+  onSave,
+  onCancel,
+  t,
+}: {
+  form: PresetFormState;
+  onChange: (f: PresetFormState) => void;
+  saving: boolean;
+  saveError: string;
+  onSave: () => void;
+  onCancel: () => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  const set = (k: keyof PresetFormState, v: string | number) =>
+    onChange({ ...form, [k]: v });
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label={t('settings.deckOptions.fields.name')}>
+          <input
+            type="text"
+            value={form.name}
+            onChange={(e) => set('name', e.target.value)}
+            placeholder={t('settings.deckOptions.fields.namePlaceholder')}
+            style={inputStyle}
+          />
+        </Field>
+        <Field label={t('settings.deckOptions.fields.desiredRetention')}>
+          <input
+            type="number"
+            value={form.desiredRetentionPct}
+            onChange={(e) => set('desiredRetentionPct', e.target.value)}
+            placeholder={t('settings.deckOptions.fields.desiredRetentionPlaceholder')}
+            min={MIN_RETENTION * 100}
+            max={MAX_RETENTION * 100}
+            style={inputStyle}
+          />
+          <div style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 3 }}>
+            {t('settings.deckOptions.fields.desiredRetentionHint')}
+          </div>
+        </Field>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label={t('settings.deckOptions.fields.newPerDay')}>
+          <input
+            type="number"
+            value={form.newPerDay}
+            onChange={(e) => set('newPerDay', Number(e.target.value))}
+            min={0}
+            max={9999}
+            style={inputStyle}
+          />
+        </Field>
+        <Field label={t('settings.deckOptions.fields.reviewsPerDay')}>
+          <input
+            type="number"
+            value={form.reviewsPerDay}
+            onChange={(e) => set('reviewsPerDay', Number(e.target.value))}
+            min={0}
+            max={9999}
+            style={inputStyle}
+          />
+        </Field>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label={t('settings.deckOptions.fields.learningSteps')}>
+          <input
+            type="text"
+            value={form.learningSteps}
+            onChange={(e) => set('learningSteps', e.target.value)}
+            placeholder={t('settings.deckOptions.fields.learningStepsPlaceholder')}
+            style={inputStyle}
+          />
+          <div style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 3 }}>
+            {t('settings.deckOptions.fields.learningStepsHint')}
+          </div>
+        </Field>
+        <Field label={t('settings.deckOptions.fields.relearningSteps')}>
+          <input
+            type="text"
+            value={form.relearningSteps}
+            onChange={(e) => set('relearningSteps', e.target.value)}
+            placeholder={t('settings.deckOptions.fields.relearningStepsPlaceholder')}
+            style={inputStyle}
+          />
+        </Field>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label={t('settings.deckOptions.fields.leechThreshold')}>
+          <input
+            type="number"
+            value={form.leechThreshold}
+            onChange={(e) => set('leechThreshold', Number(e.target.value))}
+            min={1}
+            max={99}
+            style={inputStyle}
+          />
+        </Field>
+        <Field label={t('settings.deckOptions.fields.maximumInterval')}>
+          <input
+            type="number"
+            value={form.maximumInterval}
+            onChange={(e) => set('maximumInterval', Number(e.target.value))}
+            min={1}
+            max={36500}
+            style={inputStyle}
+          />
+        </Field>
+      </div>
+      {saveError && (
+        <div style={{ fontSize: 12, color: 'var(--rose-500)' }}>{saveError}</div>
+      )}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <NNBtn size="sm" variant="ghost" onClick={onCancel} disabled={saving}>
+          {t('settings.deckOptions.actions.cancel')}
+        </NNBtn>
+        <NNBtn size="sm" variant="primary" onClick={onSave} disabled={saving}>
+          {saving ? t('settings.deckOptions.saving') : t('settings.deckOptions.actions.save')}
+        </NNBtn>
+      </div>
     </div>
   );
 }

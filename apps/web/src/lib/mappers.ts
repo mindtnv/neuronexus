@@ -4,7 +4,7 @@
 
 import { State, type Card as FsrsCard } from 'ts-fsrs';
 import type { RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, Note, NoteType, Profile, Review } from './types';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Note, NoteType, Profile, Review } from './types';
 
 type IsoOrDate = string | Date | null | undefined;
 
@@ -38,6 +38,38 @@ export function deckFromApi(row: any): Deck {
     species: row.species ?? 'fern',
     createdAt: toEpoch(row.createdAt),
     parentId: row.parentId ?? undefined,
+    presetId: row.presetId ?? null,
+  };
+}
+
+export function presetFromApi(row: any): DeckOptionsPreset {
+  return {
+    id: row.id,
+    userId: row.userId ?? '',
+    name: row.name,
+    newPerDay: row.newPerDay ?? 20,
+    reviewsPerDay: row.reviewsPerDay ?? 200,
+    learningSteps: Array.isArray(row.learningSteps) ? row.learningSteps : [],
+    relearningSteps: Array.isArray(row.relearningSteps) ? row.relearningSteps : [],
+    desiredRetention: row.desiredRetention ?? null,
+    leechThreshold: row.leechThreshold ?? 8,
+    maximumInterval: row.maximumInterval ?? 36500,
+    createdAt: toEpoch(row.createdAt),
+    updatedAt: toEpoch(row.updatedAt),
+  };
+}
+
+export function filteredDeckFromApi(row: any): FilteredDeck {
+  return {
+    id: row.id,
+    userId: row.userId ?? '',
+    name: row.name,
+    query: row.query ?? '',
+    sortOrder: (row.sortOrder ?? 'due') as FilteredDeckSortOrder,
+    cardLimit: row.cardLimit ?? 50,
+    includeSuspended: row.includeSuspended ?? false,
+    createdAt: toEpoch(row.createdAt),
+    updatedAt: toEpoch(row.updatedAt),
   };
 }
 

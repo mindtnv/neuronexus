@@ -6,12 +6,14 @@ import { api, ok } from './api';
 import {
   cardFromApi,
   deckFromApi,
+  filteredDeckFromApi,
   noteTypeFromApi,
+  presetFromApi,
   profileFromApi,
   reviewFromApi,
 } from './mappers';
 import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, NoteType, Profile, Rating, Review } from './types';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, NoteType, Profile, Rating, Review } from './types';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
 // and profile — fetched at bootstrap, mutated optimistically-ish on each API
@@ -24,6 +26,8 @@ interface State {
   decks: Deck[];
   cards: Card[];
   noteTypes: NoteType[];
+  presets: DeckOptionsPreset[];
+  filteredDecks: FilteredDeck[];
   profile: Profile | null;
   cardTags: string[];
 
@@ -120,8 +124,71 @@ interface State {
    */
   getCardTags: () => Promise<string[]>;
 
-  gradeCard: (cardId: string, rating: Rating, durationMs: number) => Promise<Review>;
+  gradeCard: (cardId: string, rating: Rating, durationMs: number, source?: 'regular' | 'filtered') => Promise<Review>;
   updateProfile: (patch: Partial<Omit<Profile, 'id'>>) => Promise<void>;
+
+  /** Create a preset (POST /deck-options). Appends to the mirror. */
+  addPreset: (input: {
+    name: string;
+    newPerDay: number;
+    reviewsPerDay: number;
+    learningSteps: string[];
+    relearningSteps: string[];
+    desiredRetention?: number | null;
+    leechThreshold: number;
+    maximumInterval: number;
+  }) => Promise<DeckOptionsPreset>;
+
+  /** Update a preset (PATCH /deck-options/:id). Replaces in the mirror. */
+  updatePreset: (
+    id: string,
+    patch: Partial<{
+      name: string;
+      newPerDay: number;
+      reviewsPerDay: number;
+      learningSteps: string[];
+      relearningSteps: string[];
+      desiredRetention: number | null;
+      leechThreshold: number;
+      maximumInterval: number;
+    }>,
+  ) => Promise<DeckOptionsPreset>;
+
+  /**
+   * Delete a preset (DELETE /deck-options/:id). Returns the count of decks
+   * whose presetId was SET NULL by the server (they revert to defaults).
+   */
+  deletePreset: (id: string) => Promise<{ affectedDecks: number }>;
+
+  /**
+   * Bind (or unbind) a preset to a deck (PATCH /decks/:id { presetId }).
+   * Pass null to unbind (revert to defaults).
+   */
+  bindDeckPreset: (deckId: string, presetId: string | null) => Promise<void>;
+
+  /** Create a filtered deck (POST /filtered-decks). Appends to the mirror. */
+  addFilteredDeck: (input: {
+    name: string;
+    query: string;
+    sortOrder: FilteredDeckSortOrder;
+    cardLimit: number;
+    includeSuspended: boolean;
+  }) => Promise<FilteredDeck>;
+
+  /** Update a filtered deck (PATCH /filtered-decks/:id). Replaces in the mirror. */
+  updateFilteredDeck: (
+    id: string,
+    patch: Partial<{
+      name: string;
+      query: string;
+      sortOrder: FilteredDeckSortOrder;
+      cardLimit: number;
+      includeSuspended: boolean;
+    }>,
+  ) => Promise<FilteredDeck>;
+
+  /** Delete a filtered deck (DELETE /filtered-decks/:id). Removes from mirror. */
+  deleteFilteredDeck: (id: string) => Promise<void>;
 
   /**
    * Upload an image to S3 (M2 Phase 4). Three-step (plan Decision A1): presign →
@@ -137,6 +204,8 @@ export const useNN = create<State>()((set, get) => ({
   decks: [],
   cards: [],
   noteTypes: [],
+  presets: [],
+  filteredDecks: [],
   profile: null,
   cardTags: [],
 
@@ -146,11 +215,15 @@ export const useNN = create<State>()((set, get) => ({
     // bootstrap takes the first page (500 most recent cards). If the user has
     // more, we load on-demand later — all current UI fits in one page. Note-
     // types (own + global builtins) load too so the note editor can pick one.
-    const [profile, decks, cardsPage, noteTypes] = await Promise.all([
+    // Presets (deck-options) are also fetched here so the settings editor and
+    // per-deck binding are immediately available.
+    const [profile, decks, cardsPage, noteTypes, presetsRes, filteredDecksRes] = await Promise.all([
       ok(await (api as any).profile.get()),
       ok(await (api as any).decks.get()),
       ok(await (api as any).cards.get()),
       ok(await (api as any)['note-types'].get()),
+      ok(await (api as any)['deck-options'].get()),
+      ok(await (api as any)['filtered-decks'].get()),
     ]);
     const cardRows = Array.isArray(cardsPage)
       ? cardsPage
@@ -160,6 +233,8 @@ export const useNN = create<State>()((set, get) => ({
       decks: (decks as any[]).map(deckFromApi),
       cards: (cardRows as any[]).map(cardFromApi),
       noteTypes: (noteTypes as any[]).map(noteTypeFromApi),
+      presets: (presetsRes as any[]).map(presetFromApi),
+      filteredDecks: (filteredDecksRes as any[]).map(filteredDeckFromApi),
       bootstrapped: true,
     });
   },
@@ -167,7 +242,7 @@ export const useNN = create<State>()((set, get) => ({
   reset() {
     // Server is source of truth — blow away the local mirror and let bootstrap
     // repopulate on next mount.
-    set({ decks: [], cards: [], noteTypes: [], profile: null, bootstrapped: false });
+    set({ decks: [], cards: [], noteTypes: [], presets: [], filteredDecks: [], profile: null, bootstrapped: false });
   },
 
   async addDeck(input) {
@@ -382,9 +457,11 @@ export const useNN = create<State>()((set, get) => ({
     return tags;
   },
 
-  async gradeCard(cardId, rating, durationMs) {
+  async gradeCard(cardId, rating, durationMs, source) {
+    const body: Record<string, unknown> = { cardId, rating, durationMs };
+    if (source) body.source = source;
     const res: any = await ok(
-      await (api as any).reviews.post({ cardId, rating, durationMs }),
+      await (api as any).reviews.post(body),
     );
     const updatedCard = cardFromApi(res.card);
     const review = reviewFromApi(res.review);
@@ -395,9 +472,8 @@ export const useNN = create<State>()((set, get) => ({
     }));
 
     // Fire gamification toasts. The server returns everything we need in the
-    // grade response (newAchievements: string[], freezeUsed, dailyGoalJustMet)
-    // — we just turn them into user-visible notifications without pulling in
-    // an extra subscription layer.
+    // grade response (freezeUsed, dailyGoalJustMet) — we just turn them into
+    // user-visible notifications without pulling in an extra subscription layer.
     if (typeof window !== 'undefined') {
       // Defer a tick so React has committed the state update first.
       queueMicrotask(async () => {
@@ -447,6 +523,97 @@ export const useNN = create<State>()((set, get) => ({
     if (patch.plantSpecies !== undefined) body.plantSpecies = patch.plantSpecies;
     const next = profileFromApi(await ok(await (api as any).profile.patch(body)));
     set({ profile: next });
+  },
+
+  async addPreset(input) {
+    const created = presetFromApi(
+      await ok(
+        await (api as any)['deck-options'].post({
+          name: input.name,
+          newPerDay: input.newPerDay,
+          reviewsPerDay: input.reviewsPerDay,
+          learningSteps: input.learningSteps,
+          relearningSteps: input.relearningSteps,
+          desiredRetention: input.desiredRetention ?? null,
+          leechThreshold: input.leechThreshold,
+          maximumInterval: input.maximumInterval,
+        }),
+      ),
+    );
+    set((s) => ({ presets: [...s.presets, created] }));
+    return created;
+  },
+
+  async updatePreset(id, patch) {
+    const body: any = {};
+    if (patch.name !== undefined) body.name = patch.name;
+    if (patch.newPerDay !== undefined) body.newPerDay = patch.newPerDay;
+    if (patch.reviewsPerDay !== undefined) body.reviewsPerDay = patch.reviewsPerDay;
+    if (patch.learningSteps !== undefined) body.learningSteps = patch.learningSteps;
+    if (patch.relearningSteps !== undefined) body.relearningSteps = patch.relearningSteps;
+    if ('desiredRetention' in patch) body.desiredRetention = patch.desiredRetention ?? null;
+    if (patch.leechThreshold !== undefined) body.leechThreshold = patch.leechThreshold;
+    if (patch.maximumInterval !== undefined) body.maximumInterval = patch.maximumInterval;
+    const updated = presetFromApi(
+      await ok(await (api as any)['deck-options']({ id }).patch(body)),
+    );
+    set((s) => ({ presets: s.presets.map((p) => (p.id === id ? updated : p)) }));
+    return updated;
+  },
+
+  async deletePreset(id) {
+    const res: any = await ok(await (api as any)['deck-options']({ id }).delete());
+    const affectedDecks: number = res.affectedDecks ?? 0;
+    set((s) => ({
+      presets: s.presets.filter((p) => p.id !== id),
+      // Mirror the SET NULL that the server applied to bound decks.
+      decks: s.decks.map((d) => (d.presetId === id ? { ...d, presetId: null } : d)),
+    }));
+    return { affectedDecks };
+  },
+
+  async bindDeckPreset(deckId, presetId) {
+    const updated = deckFromApi(
+      await ok(await (api as any).decks({ id: deckId }).patch({ presetId })),
+    );
+    set((s) => ({ decks: s.decks.map((d) => (d.id === deckId ? updated : d)) }));
+  },
+
+  async addFilteredDeck(input) {
+    const created = filteredDeckFromApi(
+      await ok(
+        await (api as any)['filtered-decks'].post({
+          name: input.name,
+          query: input.query,
+          sortOrder: input.sortOrder,
+          cardLimit: input.cardLimit,
+          includeSuspended: input.includeSuspended,
+        }),
+      ),
+    );
+    set((s) => ({ filteredDecks: [...s.filteredDecks, created] }));
+    return created;
+  },
+
+  async updateFilteredDeck(id, patch) {
+    const body: any = {};
+    if (patch.name !== undefined) body.name = patch.name;
+    if (patch.query !== undefined) body.query = patch.query;
+    if (patch.sortOrder !== undefined) body.sortOrder = patch.sortOrder;
+    if (patch.cardLimit !== undefined) body.cardLimit = patch.cardLimit;
+    if (patch.includeSuspended !== undefined) body.includeSuspended = patch.includeSuspended;
+    const updated = filteredDeckFromApi(
+      await ok(await (api as any)['filtered-decks']({ id }).patch(body)),
+    );
+    set((s) => ({
+      filteredDecks: s.filteredDecks.map((fd) => (fd.id === id ? updated : fd)),
+    }));
+    return updated;
+  },
+
+  async deleteFilteredDeck(id) {
+    await ok(await (api as any)['filtered-decks']({ id }).delete());
+    set((s) => ({ filteredDecks: s.filteredDecks.filter((fd) => fd.id !== id) }));
   },
 
   async uploadMedia(file) {

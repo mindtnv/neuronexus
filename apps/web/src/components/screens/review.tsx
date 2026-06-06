@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNKbd, NNSkeleton, NNTag } from '@/components/ui';
 import { previewGrades, xpForRating } from '@neuronexus/shared';
 import { humanInterval } from '@/lib/fsrs';
@@ -13,6 +13,7 @@ import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
+import { resolveDeckConfigClient } from '@/lib/deck-config';
 import type { Card, Rating } from '@/lib/types';
 
 type RatingMeta = {
@@ -86,11 +87,17 @@ export const NNReviewClassic = () => {
   const t = useT();
   useEmptyRedirect('first-run');
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const filteredDeckId = searchParams.get('filteredDeckId') ?? undefined;
+  // deck= param from the decks screen "Review" button (per-deck scoped queue).
+  const deckId = searchParams.get('deck') ?? undefined;
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const bootstrapped = useNN((s) => s.bootstrapped);
   const decks = useNN((s) => s.decks);
   const noteTypes = useNN((s) => s.noteTypes);
+  const filteredDecks = useNN((s) => s.filteredDecks);
+  const presets = useNN((s) => s.presets);
   const profile = useNN((s) => s.profile);
   const grade = useNN((s) => s.gradeCard);
 
@@ -102,6 +109,8 @@ export const NNReviewClassic = () => {
   const [xpGained, setXpGained] = useState(0);
   const [startedAt, setStartedAt] = useState<number>(() => Date.now());
   const [gradeCounts, setGradeCounts] = useState<Record<Rating, number>>({ 1: 0, 2: 0, 3: 0, 4: 0 });
+  // 'regular' | 'filtered' — populated from the queue envelope's `mode` field
+  const [sessionMode, setSessionMode] = useState<'regular' | 'filtered'>('regular');
 
   // Type variant state
   const [typedAnswer, setTypedAnswer] = useState('');
@@ -125,10 +134,17 @@ export const NNReviewClassic = () => {
     queueLoadedRef.current = true;
     (async () => {
       try {
-        const res: any = await ok(await (api as any).cards.queue.get({ query: {} }));
+        const query: Record<string, string> = {};
+        if (filteredDeckId) query.filteredDeckId = filteredDeckId;
+        if (deckId) query.deckId = deckId;
+        const res: any = await ok(await (api as any).cards.queue.get({ query }));
         const due = ((res?.due ?? []) as any[]).map(cardFromApi);
         const fresh = ((res?.new ?? []) as any[]).map(cardFromApi);
         const q = [...due, ...fresh];
+        // Capture the mode from the envelope for mode-aware grading (Decision 7).
+        if (res?.mode === 'filtered') {
+          setSessionMode('filtered');
+        }
         setQueue(q);
         setStartedAt(Date.now());
         sessionStartRef.current = Date.now();
@@ -137,19 +153,31 @@ export const NNReviewClassic = () => {
         // Leave the queue empty → renders the "all caught up" empty state.
       }
     })();
+  // filteredDeckId is stable for the lifetime of the session (frozen by queueLoadedRef).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootstrapped]);
 
   const current = queue[index];
   const deck = useMemo(() => (current ? decks.find((d) => d.id === current.deckId) : undefined), [current, decks]);
 
+  // Resolve per-deck FSRS config so preview intervals match what the server
+  // will actually schedule (mirrors server deck-config.ts resolveDeckConfig).
+  const currentDeckConfig = useMemo(
+    () => resolveDeckConfigClient(current?.deckId, decks, presets, profile),
+    [current?.deckId, decks, presets, profile],
+  );
+
   const previews = useMemo(
     () =>
       current
         ? previewGrades(current.fsrs, new Date(), {
-            requestRetention: profile?.desiredRetention,
+            requestRetention: currentDeckConfig.desiredRetention,
+            learningSteps: currentDeckConfig.learningSteps,
+            relearningSteps: currentDeckConfig.relearningSteps,
+            maximumInterval: currentDeckConfig.maximumInterval,
           })
         : null,
-    [current, profile?.desiredRetention],
+    [current, currentDeckConfig],
   );
 
   // Pulse glow whenever reveal-state changes
@@ -183,7 +211,10 @@ export const NNReviewClassic = () => {
       lockRef.current = true;
       const duration = Date.now() - startedAt;
       try {
-        await grade(current.id, rating, duration);
+        // Pass source:'filtered' when in a filtered session so the server skips
+        // the global daily counters (plan Decision 2 / Must-Fix #5).
+        const source = sessionMode === 'filtered' ? 'filtered' as const : undefined;
+        await grade(current.id, rating, duration, source);
         setCompleted((c) => c + 1);
         setXpGained((x) => x + xpForRating(rating));
         setGradeCounts((g) => ({ ...g, [rating]: g[rating] + 1 }));
@@ -196,7 +227,7 @@ export const NNReviewClassic = () => {
         lockRef.current = false;
       }
     },
-    [current, grade, startedAt, submitted],
+    [current, grade, sessionMode, startedAt, submitted],
   );
 
   const handleTypeSubmit = useCallback(() => {
@@ -331,6 +362,8 @@ export const NNReviewClassic = () => {
         subtitle={t('review.allCaught.subtitle')}
         cta={t('review.allCaught.cta')}
         href="/editor"
+        customStudyHref="/review/custom-study"
+        customStudyLabel={t('review.customStudy.title')}
       />
     );
   }
@@ -418,6 +451,11 @@ export const NNReviewClassic = () => {
         <NNBadge icon="stack" size="sm" tone={deck?.color ?? 'neutral'}>
           {deck?.name ?? t('review.queueFallback')}
         </NNBadge>
+        {sessionMode === 'filtered' && (
+          <NNBadge size="sm" tone="violet">
+            {t('review.customStudy.filterBadge')}
+          </NNBadge>
+        )}
         <div
           style={{
             flex: 1,
@@ -821,11 +859,15 @@ const ReviewEmpty = ({
   subtitle,
   cta,
   href,
+  customStudyHref,
+  customStudyLabel,
 }: {
   title: string;
   subtitle: string;
   cta?: string;
   href?: string;
+  customStudyHref?: string;
+  customStudyLabel?: string;
 }) => {
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
@@ -844,13 +886,22 @@ const ReviewEmpty = ({
     >
       <div style={{ fontFamily: 'var(--font-serif)', fontSize: isMobile ? 36 : 48, color: 'var(--text)', letterSpacing: -1 }}>{title}</div>
       <div style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 460, lineHeight: 1.5 }}>{subtitle}</div>
-      {cta && href && (
-        <Link href={href} style={{ marginTop: 8 }}>
-          <NNBtn size="lg" variant="primary" icon="plus">
-            {cta}
-          </NNBtn>
-        </Link>
-      )}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8 }}>
+        {cta && href && (
+          <Link href={href}>
+            <NNBtn size="lg" variant="primary" icon="plus">
+              {cta}
+            </NNBtn>
+          </Link>
+        )}
+        {customStudyHref && customStudyLabel && (
+          <Link href={customStudyHref}>
+            <NNBtn size="lg" variant="soft" icon="filter">
+              {customStudyLabel}
+            </NNBtn>
+          </Link>
+        )}
+      </div>
     </div>
   );
 };

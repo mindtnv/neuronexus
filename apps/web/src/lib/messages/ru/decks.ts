@@ -30,5 +30,11 @@ const m = {
   cardsPlural: '{n} карт',
   addCard: 'Добавить карту',
   review: 'Повтор →',
+  deckOptions: 'Настройки',
+  deckOptionsMenu: 'Настройки колоды',
+  presetBound: 'Пресет: {name}',
+  presetNone: 'По умолчанию',
+  presetPickTitle: 'Выбери пресет для «{deck}»',
+  presetPickNone: 'По умолчанию',
 };
 export default m;

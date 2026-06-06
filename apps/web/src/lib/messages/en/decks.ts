@@ -30,5 +30,11 @@ const m = {
   cardsPlural: '{n} cards',
   addCard: 'Add card',
   review: 'Review →',
+  deckOptions: 'Options',
+  deckOptionsMenu: 'Deck options',
+  presetBound: 'Preset: {name}',
+  presetNone: 'Inherit / Default',
+  presetPickTitle: 'Choose a preset for "{deck}"',
+  presetPickNone: 'Inherit / Default',
 };
 export default m;

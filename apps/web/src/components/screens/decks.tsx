@@ -24,9 +24,11 @@ export const NNDecks = () => {
 
   const decks = useNN((s) => s.decks);
   const cards = useNN((s) => s.cards);
+  const presets = useNN((s) => s.presets);
   const addDeck = useNN((s) => s.addDeck);
   const updateDeck = useNN((s) => s.updateDeck);
   const deleteDeck = useNN((s) => s.deleteDeck);
+  const bindDeckPreset = useNN((s) => s.bindDeckPreset);
 
   // Collapsed nodes stored in localStorage; default is expanded.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -325,6 +327,14 @@ export const NNDecks = () => {
                       {t('decks.subCount', { n: node.children.length })}
                     </NNBadge>
                   )}
+                  {!isMobile && d.presetId && (() => {
+                    const preset = presets.find((p) => p.id === d.presetId);
+                    return preset ? (
+                      <NNBadge size="xs" tone="neutral">
+                        {t('decks.presetBound', { name: preset.name })}
+                      </NNBadge>
+                    ) : null;
+                  })()}
                 </div>
 
                 {/* cards / due on mobile shows due only */}
@@ -487,6 +497,31 @@ export const NNDecks = () => {
                       >
                         <NNIcon name="tag" size={13} />
                         <span>{t('actions.recolor')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setOpenMenuId(null);
+                          if (typeof window === 'undefined') return;
+                          const options = [t('decks.presetPickNone'), ...presets.map((p) => p.name)];
+                          const optionsStr = options.map((o, i) => `${i === 0 ? '0' : i}. ${o}`).join('\n');
+                          const picked = window.prompt(
+                            `${t('decks.presetPickTitle', { deck: d.name })}\n\n${optionsStr}`,
+                          );
+                          if (picked === null) return;
+                          const idx = parseInt(picked.trim(), 10);
+                          if (Number.isNaN(idx) || idx < 0 || idx > presets.length) return;
+                          const presetId = idx === 0 ? null : (presets[idx - 1]?.id ?? null);
+                          try {
+                            await bindDeckPreset(d.id, presetId);
+                          } catch (err) {
+                            console.error('bindDeckPreset failed', err);
+                          }
+                        }}
+                        style={menuItemStyle()}
+                      >
+                        <NNIcon name="settings" size={13} />
+                        <span>{t('decks.deckOptionsMenu')}</span>
                       </button>
                       <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
                       <button
