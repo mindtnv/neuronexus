@@ -1,9 +1,11 @@
 import { Elysia, t } from 'elysia';
-import { eq } from 'drizzle-orm';
+import { eq, isNull, or } from 'drizzle-orm';
 import {
   cards,
   db,
   decks,
+  noteTypes,
+  notes,
   profile,
   reviews,
   user as userTable,
@@ -84,15 +86,21 @@ export const profileModule = new Elysia({ prefix: '/profile' })
     },
   )
   // Full data export. Returns everything we have on the user in a single JSON
-  // blob — profile, decks, cards, reviews, achievements. Intentionally not
+  // blob — profile, decks, note-types, notes, cards, reviews. Intentionally not
   // paginated: a dedicated user shouldn't have more than a few MB of history,
-  // and GDPR wants "the whole thing".
+  // and GDPR wants "the whole thing". Note-types include the user's own types
+  // PLUS the global builtins their notes reference (so the export is complete).
   .get(
     '/export',
     async ({ user }) => {
       const [profileRow] = await db.select().from(profile).where(eq(profile.userId, user.id));
-      const [decksRows, cardsRows, reviewsRows] = await Promise.all([
+      const [decksRows, noteTypesRows, notesRows, cardsRows, reviewsRows] = await Promise.all([
         db.select().from(decks).where(eq(decks.userId, user.id)),
+        db
+          .select()
+          .from(noteTypes)
+          .where(or(eq(noteTypes.userId, user.id), isNull(noteTypes.userId))),
+        db.select().from(notes).where(eq(notes.userId, user.id)),
         db.select().from(cards).where(eq(cards.userId, user.id)),
         db.select().from(reviews).where(eq(reviews.userId, user.id)),
       ]);
@@ -101,6 +109,8 @@ export const profileModule = new Elysia({ prefix: '/profile' })
         user: { id: user.id, email: user.email, name: user.name },
         profile: profileRow ?? null,
         decks: decksRows,
+        noteTypes: noteTypesRows,
+        notes: notesRows,
         cards: cardsRows,
         reviews: reviewsRows,
       };

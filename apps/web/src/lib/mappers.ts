@@ -3,7 +3,8 @@
 // while the source of truth shifts from Dexie to the server.
 
 import { State, type Card as FsrsCard } from 'ts-fsrs';
-import type { Card, Deck, Profile, Review } from './types';
+import type { RenderKind } from '@neuronexus/shared';
+import type { Card, Deck, Note, NoteType, Profile, Review } from './types';
 
 type IsoOrDate = string | Date | null | undefined;
 
@@ -53,18 +54,63 @@ export function cardFromApi(row: any): Card {
     state: stateFromLabel[row.state] ?? State.New,
     last_review: toDate(row.lastReview),
   };
+  // Embedded note/noteType from the enriched card read-payload (used for the
+  // lazy HTML render path). Tags live on the note (Anki-correct).
+  const note = row.note
+    ? {
+        id: row.note.id,
+        fieldValues: (row.note.fieldValues ?? {}) as Record<string, string>,
+        tags: (row.note.tags ?? []) as string[],
+      }
+    : null;
+  const noteType = row.noteType
+    ? {
+        id: row.noteType.id,
+        name: row.noteType.name ?? '',
+        kind: (row.noteType.kind ?? 'basic') as RenderKind,
+        templates: row.noteType.templates ?? [],
+        styling: row.noteType.styling ?? '',
+      }
+    : null;
   return {
     id: row.id,
     deckId: row.deckId,
-    variant: row.variant ?? 'basic',
-    front: row.front ?? '',
-    back: row.back ?? '',
-    clozeText: row.clozeText ?? undefined,
-    tags: row.tags ?? [],
+    noteId: row.noteId,
+    templateOrd: row.templateOrd ?? 0,
+    renderText: row.renderText ?? '',
+    renderFrontText: row.renderFrontText ?? '',
+    renderBackText: row.renderBackText ?? '',
+    renderKind: (row.renderKind ?? 'basic') as RenderKind,
+    // Tags from the embedded note (fallback to row.tags / [] for safety).
+    tags: note?.tags ?? row.tags ?? [],
     suspended: row.suspended ?? false,
     createdAt: toEpoch(row.createdAt),
     updatedAt: toEpoch(row.updatedAt),
     fsrs,
+    note,
+    noteType,
+  };
+}
+
+export function noteFromApi(row: any): Note {
+  return {
+    id: row.id,
+    noteTypeId: row.noteTypeId,
+    fieldValues: (row.fieldValues ?? {}) as Record<string, string>,
+    tags: (row.tags ?? []) as string[],
+    deckId: row.deckId ?? '',
+  };
+}
+
+export function noteTypeFromApi(row: any): NoteType {
+  return {
+    id: row.id,
+    name: row.name,
+    fields: row.fields ?? [],
+    templates: row.templates ?? [],
+    styling: row.styling ?? '',
+    kind: (row.kind ?? 'custom') as RenderKind,
+    isBuiltin: row.isBuiltin ?? false,
   };
 }
 

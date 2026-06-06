@@ -97,13 +97,13 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
     const cardItems: CmdItem[] = cards
       .filter((c: Card) => {
         const deck = deckById.get(c.deckId);
-        return matches(q, c.front, c.back, c.clozeText, deck?.name, ...(c.tags ?? []));
+        return matches(q, c.renderFrontText, c.renderBackText, deck?.name, ...(c.tags ?? []));
       })
       .slice(0, 24)
       .map((c: Card) => {
         const deck = deckById.get(c.deckId);
         const tag = deck ? DECK_TAG[deck.color] : undefined;
-        const front = (c.front ?? c.clozeText ?? '').trim() || t('overlays.palette.untitledCard');
+        const front = c.renderFrontText.trim() || t('overlays.palette.untitledCard');
         return {
           group: groupCards,
           id: `card-${c.id}`,

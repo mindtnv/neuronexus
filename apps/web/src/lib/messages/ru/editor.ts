@@ -5,7 +5,15 @@ const m = {
   saving: 'Сохранение…',
   deckLabel: 'Колода',
   variantLabel: 'Тип',
+  noteTypeLabel: 'Тип заметки',
+  manageNoteTypes: 'Управление / новый тип',
+  noNoteTypes: '(нет типов заметок)',
   noDecksYet: '(колод ещё нет)',
+  richText: {
+    bold: 'Жирный',
+    italic: 'Курсив',
+    bulletList: 'Маркированный список',
+  },
   variants: {
     basic: 'Обычная',
     cloze: 'Пропуск',
@@ -48,10 +56,11 @@ const m = {
   stabilityDays: '{n}d',
   errors: {
     pickDeck: 'Сначала выбери колоду.',
-    frontRequired: 'Лицо не может быть пустым.',
+    pickNoteType: 'Сначала выбери тип заметки.',
+    frontRequired: 'Первое поле не может быть пустым.',
     saveFailed: 'Не удалось сохранить.',
     deleteFailed: 'Не удалось удалить.',
   },
-  deleteConfirm: 'Удалить эту карту?',
+  deleteConfirm: 'Удалить эту заметку?',
 };
 export default m;

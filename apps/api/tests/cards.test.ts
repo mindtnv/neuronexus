@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { buildApp } from '../src/app.ts';
-import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
+import {
+  callApp,
+  resetTestDb,
+  seedBasicCard,
+  seedNote,
+  signUpAndCookie,
+  uniqueEmail,
+} from './helpers.ts';
 
 const app = buildApp();
 
@@ -14,50 +21,43 @@ describe('cards', () => {
     await resetTestDb();
   });
 
-  test('POST /cards requires a deck that belongs to the user', async () => {
+  test('POST /notes requires a deck that belongs to the user', async () => {
     const { cookie: aCookie } = await signUpAndCookie(app, uniqueEmail('a'));
     const { cookie: bCookie } = await signUpAndCookie(app, uniqueEmail('b'));
     const bDeck = await freshDeck(bCookie, 'Bob');
-    const res = await callApp(app, 'POST', '/cards', {
-      cookie: aCookie,
-      body: { deckId: bDeck, front: 'x', back: 'y' },
-    });
-    expect(res.status).toBe(400);
+    // User A tries to create a note in user B's deck — rejected with 400.
+    await expect(
+      seedBasicCard(app, aCookie, { deckId: bDeck, front: 'x', back: 'y' }),
+    ).rejects.toThrow(/400/);
   });
 
-  test('new card starts in state=new with default fsrs counters', async () => {
+  test('generated card starts in state=new with default fsrs counters', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const deck = await freshDeck(cookie);
-    const res = await callApp(app, 'POST', '/cards', {
-      cookie,
-      body: { deckId: deck, front: 'Hund', back: 'dog', tags: ['a1', 'noun'] },
+    const { note, cards } = await seedNote(app, cookie, {
+      deckId: deck,
+      fields: { Front: 'Hund', Back: 'dog' },
+      tags: ['a1', 'noun'],
     });
-    expect(res.status).toBe(200);
-    const card = await res.json<{
-      state: string;
-      reps: number;
-      lapses: number;
-      suspended: boolean;
-      tags: string[];
-    }>();
+    expect(cards.length).toBe(1);
+    const card = cards[0]!;
     expect(card.state).toBe('new');
     expect(card.reps).toBe(0);
     expect(card.lapses).toBe(0);
     expect(card.suspended).toBe(false);
-    expect(card.tags).toEqual(['a1', 'noun']);
+    // Tags are NOTE-level now (Anki-correct), not on the card.
+    expect(note.tags).toEqual(['a1', 'noun']);
+    // The card carries the denormalized render plaintext + kind.
+    expect(card.renderFrontText).toBe('Hund');
+    expect(card.renderKind).toBe('basic');
   });
 
   test('suspended cards are hidden from default /cards, shown with includeSuspended', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const deck = await freshDeck(cookie);
-    const { id } = await (
-      await callApp(app, 'POST', '/cards', {
-        cookie,
-        body: { deckId: deck, front: 'a', back: 'b' },
-      })
-    ).json<{ id: string }>();
+    const card = await seedBasicCard(app, cookie, { deckId: deck, front: 'a', back: 'b' });
 
-    await callApp(app, 'PATCH', `/cards/${id}`, { cookie, body: { suspended: true } });
+    await callApp(app, 'PATCH', `/cards/${card.id}`, { cookie, body: { suspended: true } });
 
     const plain = await (await callApp(app, 'GET', '/cards', { cookie })).json<{
       items: unknown[];
@@ -69,7 +69,7 @@ describe('cards', () => {
     const withSuspended = await (
       await callApp(app, 'GET', '/cards?includeSuspended=true', { cookie })
     ).json<{ items: { id: string }[] }>();
-    expect(withSuspended.items.find((c) => c.id === id)).toBeTruthy();
+    expect(withSuspended.items.find((c) => c.id === card.id)).toBeTruthy();
   });
 
   test('/cards/queue returns due + capped new with suspended excluded', async () => {
@@ -79,12 +79,7 @@ describe('cards', () => {
     // 3 new cards
     const ids: string[] = [];
     for (let i = 0; i < 3; i++) {
-      const c = await (
-        await callApp(app, 'POST', '/cards', {
-          cookie,
-          body: { deckId: deck, front: `front-${i}`, back: `back-${i}` },
-        })
-      ).json<{ id: string }>();
+      const c = await seedBasicCard(app, cookie, { deckId: deck, front: `front-${i}`, back: `back-${i}` });
       ids.push(c.id);
     }
 
@@ -104,10 +99,7 @@ describe('cards', () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const deck = await freshDeck(cookie);
     for (let i = 0; i < 5; i++) {
-      await callApp(app, 'POST', '/cards', {
-        cookie,
-        body: { deckId: deck, front: `f${i}`, back: `b${i}` },
-      });
+      await seedBasicCard(app, cookie, { deckId: deck, front: `f${i}`, back: `b${i}` });
     }
     const q = await (
       await callApp(app, 'GET', '/cards/queue?newLimit=2', { cookie })
@@ -119,9 +111,7 @@ describe('cards', () => {
   test('DELETE /cards/:id removes the card and leaves the deck', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const deck = await freshDeck(cookie);
-    const c = await (
-      await callApp(app, 'POST', '/cards', { cookie, body: { deckId: deck, front: 'x', back: 'y' } })
-    ).json<{ id: string }>();
+    const c = await seedBasicCard(app, cookie, { deckId: deck, front: 'x', back: 'y' });
     const del = await callApp(app, 'DELETE', `/cards/${c.id}`, { cookie });
     expect(del.status).toBe(200);
     const decks = await (await callApp(app, 'GET', '/decks', { cookie })).json<unknown[]>();
@@ -137,16 +127,13 @@ describe('cards', () => {
     const deck = await freshDeck(cookie);
     // Create 5 cards. Server orders by createdAt DESC so card-4 is the newest.
     for (let i = 0; i < 5; i++) {
-      await callApp(app, 'POST', '/cards', {
-        cookie,
-        body: { deckId: deck, front: `f${i}`, back: `b${i}` },
-      });
+      await seedBasicCard(app, cookie, { deckId: deck, front: `f${i}`, back: `b${i}` });
     }
 
     // First page — 3 items, cursor set.
     const page1 = await (
       await callApp(app, 'GET', '/cards?limit=3', { cookie })
-    ).json<{ items: { front: string; createdAt: string }[]; nextCursor: string | null }>();
+    ).json<{ items: { renderFrontText: string; createdAt: string }[]; nextCursor: string | null }>();
     expect(page1.items.length).toBe(3);
     expect(page1.nextCursor).toBeTruthy();
 
@@ -155,13 +142,13 @@ describe('cards', () => {
       await callApp(app, 'GET', `/cards?limit=3&cursor=${encodeURIComponent(page1.nextCursor!)}`, {
         cookie,
       })
-    ).json<{ items: { front: string }[]; nextCursor: string | null }>();
+    ).json<{ items: { renderFrontText: string }[]; nextCursor: string | null }>();
     expect(page2.items.length).toBe(2);
     expect(page2.nextCursor).toBeNull();
 
     // No overlap between the two pages.
-    const fronts1 = new Set(page1.items.map((c) => c.front));
-    const overlap = page2.items.some((c) => fronts1.has(c.front));
+    const fronts1 = new Set(page1.items.map((c) => c.renderFrontText));
+    const overlap = page2.items.some((c) => fronts1.has(c.renderFrontText));
     expect(overlap).toBe(false);
   });
 
@@ -187,12 +174,7 @@ describe('cards', () => {
     const deckA = await freshDeck(cookie, 'Deck A');
     const deckB = await freshDeck(cookie, 'Deck B');
 
-    const card = await (
-      await callApp(app, 'POST', '/cards', {
-        cookie,
-        body: { deckId: deckA, front: 'front', back: 'back' },
-      })
-    ).json<{ id: string; deckId: string }>();
+    const card = await seedBasicCard(app, cookie, { deckId: deckA, front: 'front', back: 'back' });
     expect(card.deckId).toBe(deckA);
 
     const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
@@ -207,12 +189,7 @@ describe('cards', () => {
   test('PATCH /cards/:id returns 400 deck_not_found for a non-existent deck', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail('move-noexist'));
     const deckA = await freshDeck(cookie, 'Deck A');
-    const card = await (
-      await callApp(app, 'POST', '/cards', {
-        cookie,
-        body: { deckId: deckA, front: 'front', back: 'back' },
-      })
-    ).json<{ id: string }>();
+    const card = await seedBasicCard(app, cookie, { deckId: deckA, front: 'front', back: 'back' });
 
     const nonExistentDeckId = '00000000-0000-4000-8000-000000000000';
     const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
@@ -231,12 +208,7 @@ describe('cards', () => {
     const aDeck = await freshDeck(aCookie, 'A Deck');
     const bDeck = await freshDeck(bCookie, 'B Deck');
 
-    const card = await (
-      await callApp(app, 'POST', '/cards', {
-        cookie: aCookie,
-        body: { deckId: aDeck, front: 'front', back: 'back' },
-      })
-    ).json<{ id: string }>();
+    const card = await seedBasicCard(app, aCookie, { deckId: aDeck, front: 'front', back: 'back' });
 
     // User A tries to move their card into user B's deck — must be rejected.
     const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {

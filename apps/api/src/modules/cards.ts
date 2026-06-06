@@ -1,11 +1,90 @@
 import { Elysia, t } from 'elysia';
 import { and, asc, desc, eq, gt, inArray, lt, lte, ne, or, sql } from 'drizzle-orm';
-import { cards, db, decks } from '@neuronexus/db';
-import { newFsrsCard, parseCardQuery, CardQueryError, stateLabel } from '@neuronexus/shared';
+import { cards, db, decks, noteTypes, notes } from '@neuronexus/db';
+import { parseCardQuery, CardQueryError } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
 import { buildCardWhere } from './card-query-sql.ts';
 
-const cardVariantSchema = t.Union([t.Literal('basic'), t.Literal('cloze'), t.Literal('type')]);
+// ── Card read-payload enrichment (M1 Phase 5a) ────────────────────────────────
+//
+// The web review/browser screens render display HTML lazily from the note's
+// SANITIZED field values + the note-type template (then DOMPurify in the
+// browser). They consume CARD payloads, so the card read endpoints must embed,
+// per card, the minimal render descriptor:
+//   note:     { id, fieldValues, tags }
+//   noteType: { id, name, kind, templates, styling }
+// Field values are sanitized-at-save, so the payload HTML is safe-at-source; the
+// client still DOMPurifies (defense in depth). Plaintext render* columns stay on
+// the card row for SQL search + the browser table (no client render there).
+
+type CardRow = typeof cards.$inferSelect;
+type EnrichedCard = CardRow & {
+  note: { id: string; fieldValues: Record<string, string>; tags: string[] } | null;
+  noteType: {
+    id: string;
+    name: string;
+    kind: string;
+    templates: (typeof noteTypes.$inferSelect)['templates'];
+    styling: string;
+  } | null;
+};
+
+/**
+ * Attach `note` + `noteType` to a list of card rows in TWO batched queries
+ * (notes by id, then note-types by id). Returns the same rows in the same order
+ * with the embedded descriptors merged in — the card columns stay top-level so
+ * existing consumers (cursor logic, tests) are untouched.
+ */
+async function enrichCards(rows: CardRow[]): Promise<EnrichedCard[]> {
+  if (rows.length === 0) return [];
+  const noteIds = [...new Set(rows.map((r) => r.noteId))];
+  const noteRows = await db
+    .select({
+      id: notes.id,
+      fieldValues: notes.fieldValues,
+      tags: notes.tags,
+      noteTypeId: notes.noteTypeId,
+    })
+    .from(notes)
+    .where(inArray(notes.id, noteIds));
+  const noteById = new Map(noteRows.map((n) => [n.id, n]));
+
+  const noteTypeIds = [...new Set(noteRows.map((n) => n.noteTypeId))];
+  const noteTypeRows =
+    noteTypeIds.length > 0
+      ? await db
+          .select({
+            id: noteTypes.id,
+            name: noteTypes.name,
+            kind: noteTypes.kind,
+            templates: noteTypes.templates,
+            styling: noteTypes.styling,
+          })
+          .from(noteTypes)
+          .where(inArray(noteTypes.id, noteTypeIds))
+      : [];
+  const noteTypeById = new Map(noteTypeRows.map((nt) => [nt.id, nt]));
+
+  return rows.map((row) => {
+    const note = noteById.get(row.noteId);
+    const noteType = note ? noteTypeById.get(note.noteTypeId) : undefined;
+    return {
+      ...row,
+      note: note
+        ? { id: note.id, fieldValues: note.fieldValues, tags: note.tags }
+        : null,
+      noteType: noteType
+        ? {
+            id: noteType.id,
+            name: noteType.name,
+            kind: noteType.kind,
+            templates: noteType.templates,
+            styling: noteType.styling,
+          }
+        : null,
+    };
+  });
+}
 
 // Anki-style per-session caps. Reasonable starting point; we can expose them
 // in user preferences later.
@@ -27,7 +106,9 @@ const SORT_COLUMNS = {
   due: cards.due,
   lapses: cards.lapses,
   reps: cards.reps,
-  front: cards.front,
+  // `sort:front` is kept (C-7) but now targets the denormalized rendered front
+  // plaintext column (content lives on notes, the search cache on cards).
+  front: cards.renderFrontText,
 } as const;
 type SortField = keyof typeof SORT_COLUMNS;
 const SORT_FIELDS = new Set<string>(Object.keys(SORT_COLUMNS));
@@ -87,7 +168,7 @@ function encodeSortValue(field: SortField, row: typeof cards.$inferSelect): stri
     case 'reps':
       return row.reps;
     case 'front':
-      return row.front;
+      return row.renderFrontText;
   }
 }
 
@@ -198,7 +279,7 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         .limit(limit);
       const nextCursor =
         rows.length === limit ? rows[rows.length - 1]!.createdAt.toISOString() : null;
-      return { items: rows, nextCursor };
+      return { items: await enrichCards(rows), nextCursor };
     },
     {
       auth: true,
@@ -244,7 +325,15 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         .orderBy(asc(cards.createdAt))
         .limit(newLimit);
 
-      return { due, new: fresh, total: due.length + fresh.length };
+      const [dueEnriched, freshEnriched] = await Promise.all([
+        enrichCards(due),
+        enrichCards(fresh),
+      ]);
+      return {
+        due: dueEnriched,
+        new: freshEnriched,
+        total: dueEnriched.length + freshEnriched.length,
+      };
     },
     {
       auth: true,
@@ -339,7 +428,7 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         nextCursor = encodeCursor({ v: encodeSortValue(sortField, last), id: last.id });
       }
 
-      return { items: rows, nextCursor };
+      return { items: await enrichCards(rows), nextCursor };
     },
     {
       auth: true,
@@ -358,8 +447,9 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
   .get(
     '/tags',
     async ({ user }) => {
+      // Tags are note-level (Anki-correct). DISTINCT unnest over notes.tags.
       const rows = await db.execute<{ tag: string }>(
-        sql`SELECT DISTINCT unnest(${cards.tags}) AS tag FROM ${cards} WHERE ${cards.userId} = ${user.id} ORDER BY tag`,
+        sql`SELECT DISTINCT unnest(${notes.tags}) AS tag FROM ${notes} WHERE ${notes.userId} = ${user.id} ORDER BY tag`,
       );
       const list = rows as unknown as Array<{ tag: string }>;
       return { tags: list.map((r) => r.tag) };
@@ -411,23 +501,33 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         case 'addTag': {
           const tag = body.payload?.tag;
           if (!tag) return status(400, { error: 'tag_required' });
-          // array_append only where the tag isn't already present (dedup).
+          // Tags are note-level (Anki-correct): resolve the notes of the selected
+          // cards, then array_append where the tag isn't already present (dedup).
+          // Scoped to the user via the card ownership filter on the subquery.
+          const noteScope = sql`${notes.id} IN (SELECT ${cards.noteId} FROM ${cards} WHERE ${scope})`;
           const updated = await db
-            .update(cards)
-            .set({ tags: sql`array_append(${cards.tags}, ${tag})`, updatedAt: new Date() })
-            .where(and(scope, sql`NOT (${cards.tags} @> ARRAY[${tag}]::text[])`))
-            .returning({ id: cards.id });
+            .update(notes)
+            .set({ tags: sql`array_append(${notes.tags}, ${tag})`, updatedAt: new Date() })
+            .where(
+              and(
+                eq(notes.userId, user.id),
+                noteScope,
+                sql`NOT (${notes.tags} @> ARRAY[${tag}]::text[])`,
+              ),
+            )
+            .returning({ id: notes.id });
           return { updated: updated.length };
         }
 
         case 'removeTag': {
           const tag = body.payload?.tag;
           if (!tag) return status(400, { error: 'tag_required' });
+          const noteScope = sql`${notes.id} IN (SELECT ${cards.noteId} FROM ${cards} WHERE ${scope})`;
           const updated = await db
-            .update(cards)
-            .set({ tags: sql`array_remove(${cards.tags}, ${tag})`, updatedAt: new Date() })
-            .where(scope)
-            .returning({ id: cards.id });
+            .update(notes)
+            .set({ tags: sql`array_remove(${notes.tags}, ${tag})`, updatedAt: new Date() })
+            .where(and(eq(notes.userId, user.id), noteScope))
+            .returning({ id: notes.id });
           return { updated: updated.length };
         }
       }
@@ -453,53 +553,9 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       }),
     },
   )
-  .post(
-    '/',
-    async ({ user, body, status }) => {
-      // Authorize: deck must belong to this user.
-      const deck = await db
-        .select({ id: decks.id })
-        .from(decks)
-        .where(and(eq(decks.id, body.deckId), eq(decks.userId, user.id)))
-        .limit(1);
-      if (deck.length === 0) return status(400, { error: 'deck_not_found' });
-
-      const initial = newFsrsCard(new Date());
-      const [created] = await db
-        .insert(cards)
-        .values({
-          userId: user.id,
-          deckId: body.deckId,
-          variant: body.variant ?? 'basic',
-          front: body.front,
-          back: body.back,
-          clozeText: body.clozeText,
-          tags: body.tags ?? [],
-          due: new Date(initial.due),
-          stability: initial.stability,
-          difficulty: initial.difficulty,
-          elapsedDays: initial.elapsed_days,
-          scheduledDays: initial.scheduled_days,
-          learningSteps: initial.learning_steps,
-          reps: initial.reps,
-          lapses: initial.lapses,
-          state: stateLabel(initial.state),
-        })
-        .returning();
-      return created;
-    },
-    {
-      auth: true,
-      body: t.Object({
-        deckId: t.String({ format: 'uuid' }),
-        variant: t.Optional(cardVariantSchema),
-        front: t.String({ minLength: 1 }),
-        back: t.String({ minLength: 0 }),
-        clozeText: t.Optional(t.String()),
-        tags: t.Optional(t.Array(t.String())),
-      }),
-    },
-  )
+  // Card content is derived from notes (note-types model, M1). Card creation
+  // happens via POST /notes, not here. PATCH keeps only deck-move + suspend —
+  // the two card-level (not note-level) mutations.
   .patch(
     '/:id',
     async ({ user, params, body, status }) => {
@@ -527,11 +583,6 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       body: t.Partial(
         t.Object({
           deckId: t.String({ format: 'uuid' }),
-          variant: cardVariantSchema,
-          front: t.String({ minLength: 1 }),
-          back: t.String(),
-          clozeText: t.Union([t.String(), t.Null()]),
-          tags: t.Array(t.String()),
           suspended: t.Boolean(),
         }),
       ),

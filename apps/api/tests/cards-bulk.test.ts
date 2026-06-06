@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { buildApp } from '../src/app.ts';
-import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
+import {
+  callApp,
+  resetTestDb,
+  seedBasicCard,
+  signUpAndCookie,
+  uniqueEmail,
+} from './helpers.ts';
 
 const app = buildApp();
 
@@ -16,17 +22,30 @@ async function newCard(
   back = 'b',
   tags: string[] = [],
 ): Promise<string> {
-  const res = await callApp(app, 'POST', '/cards', {
-    cookie,
-    body: { deckId, front, back, tags },
-  });
-  return (await res.json<{ id: string }>()).id;
+  // Card content is derived from notes now: seed a Basic note → its single card.
+  const card = await seedBasicCard(app, cookie, { deckId, front, back, tags });
+  return card.id;
 }
 
 async function getCard(cookie: string, id: string): Promise<Record<string, unknown> | undefined> {
   const res = await callApp(app, 'GET', '/cards?includeSuspended=true&limit=1000', { cookie });
   const body = await res.json<{ items: Array<Record<string, unknown>> }>();
   return body.items.find((c) => c.id === id);
+}
+
+/** The distinct tag universe (note-level), via GET /cards/tags. */
+async function tagUniverse(cookie: string): Promise<string[]> {
+  const res = await callApp(app, 'GET', '/cards/tags', { cookie });
+  return (await res.json<{ tags: string[] }>()).tags;
+}
+
+/** Card ids matching a `tag:` search (tags resolve through the card's note). */
+async function searchTag(cookie: string, tag: string): Promise<string[]> {
+  const res = await callApp(app, 'GET', `/cards/search?limit=1000&q=${encodeURIComponent(`tag:${tag}`)}`, {
+    cookie,
+  });
+  const body = await res.json<{ items: Array<{ id: string }> }>();
+  return body.items.map((c) => c.id);
 }
 
 function bulk(cookie: string, body: unknown) {
@@ -107,7 +126,8 @@ describe('POST /cards/bulk', () => {
     expect((await getCard(cookie, c2))!.suspended).toBe(true);
   });
 
-  test('addTag dedups (only updates cards missing the tag)', async () => {
+  test('addTag lands the tag on the note (dedups already-tagged notes)', async () => {
+    // Each card is its own note. c1's note already has 'x'.
     const c1 = await newCard(cookie, deckA, 'f1', 'b1', ['x']);
     const c2 = await newCard(cookie, deckA, 'f2', 'b2', []);
 
@@ -117,10 +137,12 @@ describe('POST /cards/bulk', () => {
       payload: { tag: 'x' },
     });
     expect(res.status).toBe(200);
-    // c1 already has 'x' → skipped; only c2 updated.
+    // c1's note already has 'x' → skipped; only c2's note updated.
     expect((await res.json<{ updated: number }>()).updated).toBe(1);
-    expect((await getCard(cookie, c1))!.tags).toEqual(['x']); // no duplicate
-    expect((await getCard(cookie, c2))!.tags).toEqual(['x']);
+    // Both cards are now reachable via tag:x (the tag is on the note).
+    expect((await searchTag(cookie, 'x')).sort()).toEqual([c1, c2].sort());
+    // The tag universe (note-level distinct) lists 'x' once.
+    expect(await tagUniverse(cookie)).toEqual(['x']);
   });
 
   test('addTag requires a tag → 400', async () => {
@@ -130,7 +152,7 @@ describe('POST /cards/bulk', () => {
     expect((await res.json<{ error: string }>()).error).toBe('tag_required');
   });
 
-  test('removeTag strips the tag', async () => {
+  test('removeTag strips the tag from the notes', async () => {
     const c1 = await newCard(cookie, deckA, 'f1', 'b1', ['keep', 'drop']);
     const c2 = await newCard(cookie, deckA, 'f2', 'b2', ['drop']);
     const res = await bulk(cookie, {
@@ -140,8 +162,10 @@ describe('POST /cards/bulk', () => {
     });
     expect(res.status).toBe(200);
     expect((await res.json<{ updated: number }>()).updated).toBe(2);
-    expect((await getCard(cookie, c1))!.tags).toEqual(['keep']);
-    expect((await getCard(cookie, c2))!.tags).toEqual([]);
+    // 'drop' is gone from both notes; 'keep' survives on c1's note.
+    expect(await searchTag(cookie, 'drop')).toEqual([]);
+    expect(await searchTag(cookie, 'keep')).toEqual([c1]);
+    expect(await tagUniverse(cookie)).toEqual(['keep']);
   });
 
   test('ownership: foreign ids are silent no-ops (no leak, no error)', async () => {

@@ -6,6 +6,8 @@ import { dbPing } from '@neuronexus/db';
 import { authPlugin } from './auth-plugin.ts';
 import { decksModule } from './modules/decks.ts';
 import { cardsModule } from './modules/cards.ts';
+import { noteTypesModule } from './modules/note-types.ts';
+import { notesModule } from './modules/notes.ts';
 import { reviewsModule } from './modules/reviews.ts';
 import { profileModule } from './modules/profile.ts';
 import { AUTH_RATE_RULES, clientIpFromRequest, rateLimitCheck } from './rate-limit.ts';
@@ -16,7 +18,10 @@ import { pickRequestId, requestLogger, rootLogger } from './logger.ts';
  * lets tests call `app.handle(req)` directly against an in-process instance.
  */
 export function buildApp() {
-  return new Elysia()
+  // Global request body ceiling (DoS hardening): cap any single request body at
+  // 2 MiB. `serve.maxRequestBodySize` is the Bun.serve option Elysia forwards
+  // (Elysia 1.4 `ElysiaConfig.serve: Partial<Serve>` → Bun `Serve.Options`).
+  return new Elysia({ serve: { maxRequestBodySize: 2 * 1024 * 1024 } })
     .state('log', rootLogger)
     .use(
       cors({
@@ -95,6 +100,8 @@ export function buildApp() {
     })
     .use(profileModule)
     .use(decksModule)
+    .use(noteTypesModule)
+    .use(notesModule)
     .use(cardsModule)
     .use(reviewsModule);
 }

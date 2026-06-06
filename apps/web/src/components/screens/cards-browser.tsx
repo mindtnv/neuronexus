@@ -8,8 +8,8 @@ import {
   parseCardQuery,
   CardQueryError,
   stateLabel,
-  stripCloze,
   type CardLike,
+  type RenderKind,
 } from '@neuronexus/shared';
 import { NNBtn, NNBadge, NNTag, NNIcon, NNSkeleton } from '@/components/ui';
 import type { BadgeTone } from '@/components/ui';
@@ -64,10 +64,12 @@ const STATE_CHIPS: { value: string; labelKey: string }[] = [
   { value: 'is:suspended', labelKey: 'cards.states.suspended' },
 ];
 
-const variantTone: Record<Card['variant'], BadgeTone> = {
+// Note-type render-kind → badge tone (the "variant" column now shows the kind).
+const kindTone: Record<RenderKind, BadgeTone> = {
   basic: 'lime',
   cloze: 'violet',
-  type: 'amber',
+  typein: 'amber',
+  custom: 'sky',
 };
 
 const stateTone: Record<string, BadgeTone> = {
@@ -77,14 +79,22 @@ const stateTone: Record<string, BadgeTone> = {
   relearning: 'rose',
 };
 
-/** Build the structural CardLike the shared predicate operates over. */
+/**
+ * Build the structural CardLike the shared predicate operates over from the
+ * STORED server render columns + the embedded note/noteType (must-fix #5: the
+ * predicate consumes the server-rendered text VERBATIM and NEVER re-renders or
+ * re-strips cloze).
+ */
 function toCardLike(card: Card): CardLike {
   return {
-    front: card.front,
-    back: card.back,
-    clozeText: card.clozeText ?? null,
+    renderText: card.renderText,
+    renderFrontText: card.renderFrontText,
+    renderBackText: card.renderBackText,
+    fieldValues: card.note?.fieldValues ?? {},
+    noteTypeKind: card.renderKind,
+    noteTypeName: card.noteType?.name ?? card.renderKind,
+    templateOrd: card.templateOrd,
     tags: card.tags,
-    variant: card.variant,
     deckId: card.deckId,
     state: stateLabel(card.fsrs.state),
     suspended: card.suspended,
@@ -554,6 +564,16 @@ export const NNCardsBrowser = () => {
               {t('cards.search.help')}
             </span>
           )}
+          <NNBtn
+            size="sm"
+            variant="soft"
+            icon="grid"
+            onClick={() => router.push('/note-types')}
+            title={t('noteTypes.pageTitle')}
+            ariaLabel={t('noteTypes.pageTitle')}
+          >
+            {!isMobile ? t('noteTypes.pageTitle') : undefined}
+          </NNBtn>
         </div>
 
         {/* Status line: result count / provisional / error */}
@@ -660,8 +680,11 @@ export const NNCardsBrowser = () => {
               rows.map((card) => {
                 const isSel = selected.has(card.id);
                 const sLabel = stateLabel(card.fsrs.state);
-                const q = stripCloze(card.front || card.clozeText || '', 'prompt');
-                const a = stripCloze(card.back || card.clozeText || '', 'answer');
+                // Table reads the STORED server render columns (plaintext, tags +
+                // cloze already stripped) — NO client HTML render / re-strip here
+                // (perf + safety, must-fix #5).
+                const q = card.renderFrontText;
+                const a = card.renderBackText;
                 return (
                   <div
                     key={card.id}
@@ -709,7 +732,7 @@ export const NNCardsBrowser = () => {
                         {col.id === 'deck' && (
                           <span style={{ color: 'var(--text-muted)' }}>{deckPathLabel(decks, card.deckId) || '—'}</span>
                         )}
-                        {col.id === 'variant' && <NNBadge tone={variantTone[card.variant]} size="xs">{card.variant}</NNBadge>}
+                        {col.id === 'variant' && <NNBadge tone={kindTone[card.renderKind] ?? 'neutral'} size="xs">{card.renderKind}</NNBadge>}
                         {col.id === 'state' && (
                           <NNBadge tone={stateTone[sLabel] ?? 'neutral'} size="xs">{t(`cards.states.${sLabel}`)}</NNBadge>
                         )}
@@ -832,7 +855,7 @@ function sortCards(list: Card[], field: SortField, dir: SortDir): Card[] {
       case 'reps':
         return c.fsrs.reps ?? 0;
       case 'front':
-        return (c.front || c.clozeText || '').toLowerCase();
+        return c.renderFrontText.toLowerCase();
     }
   };
   return [...list].sort((a, b) => {

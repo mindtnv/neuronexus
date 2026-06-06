@@ -17,6 +17,8 @@ import { sql } from 'drizzle-orm';
 const TABLES = [
   'reviews',
   'cards',
+  'notes',
+  'note_types',
   'decks',
   'profile',
   'account',
@@ -115,4 +117,139 @@ export async function signUpAndCookie(
 
 export function uniqueEmail(prefix = 't'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.dev`;
+}
+
+// ── Note-types seeding (M1) ──────────────────────────────────────────────────
+//
+// In tests the global builtin note-types are NOT seeded (the DB is reset to bare
+// schema; only the seed script inserts builtins). `seedNote` therefore creates a
+// note-type matching the requested builtin `kind` (idempotently, once per cookie)
+// via `POST /note-types`, then creates a note via `POST /notes` which generates
+// the card(s). Tags are note-level (Anki-correct, C-7).
+
+import {
+  BASIC_NOTE_TYPE,
+  CLOZE_NOTE_TYPE,
+  TYPEIN_NOTE_TYPE,
+  type NoteTypeDef,
+} from '@neuronexus/shared';
+
+export type BuiltinKind = 'basic' | 'cloze' | 'typein';
+
+const NOTE_TYPE_DEF: Record<BuiltinKind, NoteTypeDef> = {
+  basic: BASIC_NOTE_TYPE,
+  cloze: CLOZE_NOTE_TYPE,
+  typein: TYPEIN_NOTE_TYPE,
+};
+
+// Cache note-type ids per (cookie, kind) so repeated `seedNote` calls in one test
+// reuse a single created note-type instead of spamming POST /note-types.
+const noteTypeCache = new Map<string, string>();
+
+/**
+ * Ensure a note-type matching `kind` exists for the caller, returning its id.
+ * Creates a user-owned copy of the matching builtin def (fields/templates/kind)
+ * — semantically equivalent to the global builtin for generation + render.
+ */
+export async function ensureNoteType(
+  app: { handle: (req: Request) => Promise<Response> },
+  cookie: string,
+  kind: BuiltinKind,
+): Promise<string> {
+  const key = `${cookie}::${kind}`;
+  const cached = noteTypeCache.get(key);
+  if (cached) return cached;
+
+  const def = NOTE_TYPE_DEF[kind];
+  const res = await callApp(app, 'POST', '/note-types', {
+    cookie,
+    body: {
+      name: def.name,
+      fields: def.fields,
+      templates: def.templates,
+      styling: def.styling,
+      kind: def.kind,
+    },
+  });
+  if (res.status !== 200) {
+    throw new Error(`create note-type failed: ${res.status} ${await res.text()}`);
+  }
+  const row = await res.json<{ id: string }>();
+  noteTypeCache.set(key, row.id);
+  return row.id;
+}
+
+export type SeededCard = {
+  id: string;
+  deckId: string;
+  noteId: string;
+  templateOrd: number;
+  renderText: string;
+  renderFrontText: string;
+  renderBackText: string;
+  renderKind: string;
+  state: string;
+  suspended: boolean;
+  [key: string]: unknown;
+};
+
+export type SeededNote = {
+  id: string;
+  noteTypeId: string;
+  fieldValues: Record<string, string>;
+  tags: string[];
+  [key: string]: unknown;
+};
+
+/**
+ * Create a note (and its generated cards) through the real API. Resolves the
+ * builtin note-type id for `kind`, then POSTs the note. Returns the created note
+ * + generated cards.
+ */
+export async function seedNote(
+  app: { handle: (req: Request) => Promise<Response> },
+  cookie: string,
+  opts: {
+    deckId: string;
+    fields: Record<string, string>;
+    kind?: BuiltinKind;
+    tags?: string[];
+  },
+): Promise<{ note: SeededNote; cards: SeededCard[] }> {
+  const kind = opts.kind ?? 'basic';
+  const noteTypeId = await ensureNoteType(app, cookie, kind);
+  const res = await callApp(app, 'POST', '/notes', {
+    cookie,
+    body: {
+      noteTypeId,
+      deckId: opts.deckId,
+      fieldValues: opts.fields,
+      tags: opts.tags ?? [],
+    },
+  });
+  if (res.status !== 200) {
+    throw new Error(`create note failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json<{ note: SeededNote; cards: SeededCard[] }>();
+}
+
+/**
+ * Convenience: seed a Basic note with Front/Back and return the single generated
+ * card. Throws if the note generated anything other than exactly one card.
+ */
+export async function seedBasicCard(
+  app: { handle: (req: Request) => Promise<Response> },
+  cookie: string,
+  opts: { deckId: string; front: string; back?: string; tags?: string[] },
+): Promise<SeededCard> {
+  const { cards } = await seedNote(app, cookie, {
+    kind: 'basic',
+    deckId: opts.deckId,
+    fields: { Front: opts.front, Back: opts.back ?? '' },
+    tags: opts.tags,
+  });
+  if (cards.length !== 1) {
+    throw new Error(`seedBasicCard expected 1 card, got ${cards.length}`);
+  }
+  return cards[0]!;
 }

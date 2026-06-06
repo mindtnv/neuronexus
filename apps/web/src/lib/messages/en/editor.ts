@@ -5,7 +5,15 @@ const m = {
   saving: 'Saving…',
   deckLabel: 'Deck',
   variantLabel: 'Variant',
+  noteTypeLabel: 'Note type',
+  manageNoteTypes: 'Manage / new type',
+  noNoteTypes: '(no note types)',
   noDecksYet: '(no decks yet)',
+  richText: {
+    bold: 'Bold',
+    italic: 'Italic',
+    bulletList: 'Bullet list',
+  },
   variants: {
     basic: 'Basic',
     cloze: 'Cloze',
@@ -48,10 +56,11 @@ const m = {
   stabilityDays: '{n}d',
   errors: {
     pickDeck: 'Pick a deck first.',
-    frontRequired: 'Front cannot be empty.',
+    pickNoteType: 'Pick a note type first.',
+    frontRequired: 'The first field cannot be empty.',
     saveFailed: 'Save failed.',
     deleteFailed: 'Delete failed.',
   },
-  deleteConfirm: 'Delete this card?',
+  deleteConfirm: 'Delete this note?',
 };
 export default m;

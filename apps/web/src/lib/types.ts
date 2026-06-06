@@ -1,8 +1,13 @@
 import type { Card as FsrsCard } from 'ts-fsrs';
+import type {
+  CardTemplate,
+  FieldValues,
+  NoteField,
+  RenderKind,
+} from '@neuronexus/shared';
 
 export type DeckColor = 'lime' | 'amber' | 'violet' | 'sky' | 'rose' | 'neutral';
 export type PlantSpecies = 'fern' | 'cactus' | 'succulent' | 'bonsai' | 'sakura' | 'mushroom';
-export type CardVariant = 'basic' | 'cloze' | 'type';
 
 export interface Deck {
   id: string;
@@ -15,18 +20,65 @@ export interface Deck {
   parentId?: string;
 }
 
+// ── Note-types model (M1) ─────────────────────────────────────────────────────
+
+/** A note-type the user can author against (own or a global builtin). */
+export interface NoteType {
+  id: string;
+  name: string;
+  fields: NoteField[];
+  templates: CardTemplate[];
+  styling: string;
+  kind: RenderKind;
+  isBuiltin: boolean;
+}
+
+/** A note — the user's content. Generates one-or-more cards via its note-type. */
+export interface Note {
+  id: string;
+  noteTypeId: string;
+  fieldValues: FieldValues;
+  tags: string[];
+  /** All cards of a note share one deck (Decision A1). */
+  deckId: string;
+}
+
+/**
+ * A card is one (note × template) pairing with its own FSRS state. Content is
+ * derived from its note via the note-type template. The `render*` columns are
+ * the server-rendered PLAINTEXT search cache (tags + cloze stripped); display
+ * HTML is rendered lazily from `note.fieldValues` + `noteType.templates`. The
+ * embedded `note`/`noteType` come from the enriched card read-payload.
+ */
 export interface Card {
   id: string;
   deckId: string;
-  variant: CardVariant;
-  front: string;
-  back: string;
-  clozeText?: string;
+  noteId: string;
+  templateOrd: number;
+  /** Server-rendered plaintext (front + back, search cache). */
+  renderText: string;
+  /** Server-rendered plaintext front (Browse "Question" column). */
+  renderFrontText: string;
+  /** Server-rendered plaintext back (Browse "Answer" column). */
+  renderBackText: string;
+  /** Render mode — picked from the payload with no extra fetch (C-5). */
+  renderKind: RenderKind;
+  /** Note-level tags (Anki-correct), surfaced from the embedded note. */
   tags: string[];
   suspended: boolean;
   createdAt: number;
   updatedAt: number;
   fsrs: FsrsCard;
+  /** Embedded note (id, sanitized field values, tags) for lazy HTML render. */
+  note?: { id: string; fieldValues: FieldValues; tags: string[] } | null;
+  /** Embedded note-type (name, kind, templates, styling) for lazy HTML render. */
+  noteType?: {
+    id: string;
+    name: string;
+    kind: RenderKind;
+    templates: CardTemplate[];
+    styling: string;
+  } | null;
 }
 
 export type Rating = 1 | 2 | 3 | 4;

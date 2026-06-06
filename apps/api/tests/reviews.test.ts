@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { buildApp } from '../src/app.ts';
-import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
+import { callApp, resetTestDb, seedBasicCard, signUpAndCookie, uniqueEmail } from './helpers.ts';
 
 const app = buildApp();
 
@@ -11,12 +11,12 @@ async function setupCard(): Promise<{ cookie: string; cardId: string; deckId: st
   const deck = await (
     await callApp(app, 'POST', '/decks', { cookie, body: { name: 'D' } })
   ).json<{ id: string }>();
-  const card = await (
-    await callApp(app, 'POST', '/cards', {
-      cookie,
-      body: { deckId: deck.id, front: 'der Hund', back: 'the dog' },
-    })
-  ).json<{ id: string }>();
+  // Card content is derived from a note now (note-types M1): seed a Basic note.
+  const card = await seedBasicCard(app, cookie, {
+    deckId: deck.id,
+    front: 'der Hund',
+    back: 'the dog',
+  });
   return { cookie, cardId: card.id, deckId: deck.id };
 }
 
@@ -77,12 +77,7 @@ describe('reviews', () => {
     const aDeck = await (
       await callApp(app, 'POST', '/decks', { cookie: aCookie, body: { name: 'A' } })
     ).json<{ id: string }>();
-    const aCard = await (
-      await callApp(app, 'POST', '/cards', {
-        cookie: aCookie,
-        body: { deckId: aDeck.id, front: 'x', back: 'y' },
-      })
-    ).json<{ id: string }>();
+    const aCard = await seedBasicCard(app, aCookie, { deckId: aDeck.id, front: 'x', back: 'y' });
     const res = await callApp(app, 'POST', '/reviews', {
       cookie: bCookie,
       body: { cardId: aCard.id, rating: 3 },

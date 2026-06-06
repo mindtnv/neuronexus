@@ -1,29 +1,32 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { NNBtn, NNBadge, NNTag, NNCard } from '@/components/ui';
 import { useNN } from '@/lib/store';
-import type { Card, CardVariant } from '@/lib/types';
+import type { Card, NoteType } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { buildDeckTree, deckPathLabel, flattenTree } from '@/lib/decks';
+import { renderCardHtml, SafeHtml } from '@/lib/render-card';
+import type { FieldValues } from '@neuronexus/shared';
 
 // ─────────────────────────────────────────────
-// Reusable card create/edit form
+// Note editor (Milestone 1, Phase 5a)
 //
-// Re-sync strategy (Critic C1 / Architect should-fix #8): this component keeps
-// an internal effect keyed on `card?.id` so its field state resets whenever the
-// selected card changes (e.g. the browser inline-panel prev/next that does NOT
-// re-mount). Consumers that drive selection by URL/router may ALSO mount with
-// `key={card?.id ?? 'new'}` for belt-and-braces — both paths are supported and
-// the effect alone is sufficient.
+// The card editor is now a NOTE editor: pick a note-type (own or builtin), fill
+// its DYNAMIC fields (one rich-text input per note-type field), see a live
+// per-card preview rendered from the note-type template + the field values
+// (DOMPurified via <SafeHtml>), then save → store.addNote / store.updateNote.
+//
+// Custom note-type AUTHORING (creating your own field/template sets) is Phase 5b
+// — here we only support creating/editing notes of the existing note-types.
+//
+// Re-sync strategy (Critic C1 / Architect should-fix #8): an effect keyed on
+// `card?.id` resets state whenever the selected card changes (browser inline
+// prev/next that does NOT re-mount). Consumers may ALSO mount with
+// `key={card?.id ?? 'new'}` — both paths are supported.
 // ─────────────────────────────────────────────
-
-const VARIANT_DEFS: { value: CardVariant; i18nKey: string; tone: 'lime' | 'violet' | 'amber' }[] = [
-  { value: 'basic', i18nKey: 'editor.variants.basic', tone: 'lime' },
-  { value: 'cloze', i18nKey: 'editor.variants.cloze', tone: 'violet' },
-  { value: 'type', i18nKey: 'editor.variants.type', tone: 'amber' },
-];
 
 const inputStyle: React.CSSProperties = {
   width: '100%',
@@ -38,44 +41,6 @@ const inputStyle: React.CSSProperties = {
   boxSizing: 'border-box',
 };
 
-const textareaStyle = (
-  opts: { size: 'front' | 'back' | 'cloze'; serif?: boolean; mobile?: boolean },
-): React.CSSProperties => {
-  const { size, serif, mobile } = opts;
-  const isFront = size === 'front';
-  const fontSize = isFront ? (mobile ? 22 : 28) : 15;
-  const minHeight =
-    isFront
-      ? (mobile ? 110 : 120)
-      : size === 'back'
-      ? (mobile ? 200 : 180)
-      : (mobile ? 160 : 140);
-  return {
-    width: '100%',
-    padding: isFront ? (mobile ? '16px 16px' : '20px 18px') : '14px 16px',
-    borderRadius: 10,
-    background: 'var(--surface)',
-    border: '1px solid var(--border)',
-    color: 'var(--text)',
-    fontFamily: serif ? 'var(--font-serif)' : 'var(--font-sans)',
-    fontSize,
-    lineHeight: 1.5,
-    resize: 'vertical',
-    minHeight,
-    outline: 'none',
-    boxSizing: 'border-box',
-    display: 'block',
-  };
-};
-
-// Keep textareas growing as the user types so long answers are fully visible.
-const autosize = (el: HTMLTextAreaElement | null) => {
-  if (!el) return;
-  el.style.height = 'auto';
-  const min = parseInt(getComputedStyle(el).minHeight) || 0;
-  el.style.height = `${Math.max(el.scrollHeight, min)}px`;
-};
-
 const labelStyle: React.CSSProperties = {
   fontSize: 11,
   color: 'var(--text-dim)',
@@ -87,18 +52,144 @@ const labelStyle: React.CSSProperties = {
   gap: 8,
 };
 
+// ── Rich-text field input ─────────────────────────────────────────────────────
+//
+// A contentEditable surface with a tiny toolbar (bold / italic / bullet list).
+// The HTML it emits is sanitized at the server save edge; the live preview
+// DOMPurifies it again. Uncontrolled (we read innerHTML on input + reset on
+// `resetKey` change) to avoid caret jumps mid-edit.
+
+const RichField = ({
+  value,
+  onChange,
+  placeholder,
+  serif,
+  minHeight,
+  autoFocus,
+  resetKey,
+}: {
+  value: string;
+  onChange: (html: string) => void;
+  placeholder?: string;
+  serif?: boolean;
+  minHeight: number;
+  autoFocus?: boolean;
+  resetKey: string;
+}) => {
+  const t = useT();
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  // Reset the DOM content when the edited entity changes (resetKey) — not on
+  // every keystroke (that would reset the caret).
+  useEffect(() => {
+    if (ref.current && ref.current.innerHTML !== value) {
+      ref.current.innerHTML = value;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetKey]);
+
+  useEffect(() => {
+    if (autoFocus) ref.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFocus, resetKey]);
+
+  const exec = (command: string) => {
+    ref.current?.focus();
+    // execCommand is deprecated but remains the simplest cross-browser inline
+    // rich-text primitive; the output HTML is sanitized at both edges.
+    document.execCommand(command, false);
+    if (ref.current) onChange(ref.current.innerHTML);
+  };
+
+  const btn = (cmd: string, label: string, title: string): React.ReactNode => (
+    <button
+      key={cmd}
+      type="button"
+      title={title}
+      onMouseDown={(e) => {
+        e.preventDefault();
+        exec(cmd);
+      }}
+      style={{
+        minWidth: 28,
+        height: 26,
+        padding: '0 7px',
+        borderRadius: 6,
+        background: 'var(--surface-2)',
+        border: '1px solid var(--border)',
+        color: 'var(--text-muted)',
+        fontFamily: 'var(--font-sans)',
+        fontSize: 13,
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  const isEmpty = !value || value === '<br>';
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+        {btn('bold', 'B', t('editor.richText.bold'))}
+        {btn('italic', 'I', t('editor.richText.italic'))}
+        {btn('insertUnorderedList', '•', t('editor.richText.bulletList'))}
+      </div>
+      <div style={{ position: 'relative' }}>
+        {isEmpty && placeholder && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 12,
+              left: 14,
+              color: 'var(--text-dim)',
+              fontFamily: serif ? 'var(--font-serif)' : 'var(--font-sans)',
+              fontSize: serif ? 18 : 14,
+              pointerEvents: 'none',
+            }}
+          >
+            {placeholder}
+          </div>
+        )}
+        <div
+          ref={ref}
+          contentEditable
+          suppressContentEditableWarning
+          onInput={(e) => onChange((e.currentTarget as HTMLDivElement).innerHTML)}
+          style={{
+            width: '100%',
+            minHeight,
+            padding: '12px 14px',
+            borderRadius: 10,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            color: 'var(--text)',
+            fontFamily: serif ? 'var(--font-serif)' : 'var(--font-sans)',
+            fontSize: serif ? 18 : 14,
+            lineHeight: 1.5,
+            outline: 'none',
+            boxSizing: 'border-box',
+            overflowWrap: 'anywhere',
+          }}
+        />
+      </div>
+    </div>
+  );
+};
+
 export interface NNCardFormProps {
-  /** The card to edit. Omit / null to create a new card. */
+  /** The card to edit. Omit / null to create a new note. */
   card?: Card | null;
-  /** Deck pre-selected when creating a new card. */
+  /** Deck pre-selected when creating a new note. */
   defaultDeckId?: string;
-  /** Called after a successful save (create or update) with the resulting card. */
+  /** Called after a successful save (create or update) with a resulting card. */
   onSaved?: (card: Card) => void;
   /** Called after a successful delete with the deleted card id. */
   onDeleted?: (id: string) => void;
   /** Render the read-only FSRS side panel. Default true. */
   showFsrsPanel?: boolean;
-  /** Auto-focus the front textarea when creating a new card. */
+  /** Auto-focus the first field when creating a new note. */
   autoFocusFront?: boolean;
   /** Extra controls rendered in the top action bar (e.g. prev/next). */
   footerExtra?: React.ReactNode;
@@ -114,15 +205,51 @@ export const NNCardForm = ({
   footerExtra,
 }: NNCardFormProps) => {
   const t = useT();
+  const router = useRouter();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
 
   const decks = useNN((s) => s.decks);
-  const addCard = useNN((s) => s.addCard);
-  const updateCard = useNN((s) => s.updateCard);
-  const deleteCard = useNN((s) => s.deleteCard);
+  const noteTypes = useNN((s) => s.noteTypes);
+  const addNote = useNN((s) => s.addNote);
+  const updateNote = useNN((s) => s.updateNote);
+  const deleteNote = useNN((s) => s.deleteNote);
 
   const editing = card ?? null;
+
+  // Default note-type: Basic if present, else the first available.
+  const defaultNoteType = useMemo<NoteType | undefined>(() => {
+    return noteTypes.find((nt) => nt.kind === 'basic') ?? noteTypes[0];
+  }, [noteTypes]);
+
+  // The note-type backing the form. When editing, prefer the card's embedded
+  // noteType (it carries the templates needed to preview); fall back to the
+  // store list by id.
+  const editingNoteTypeId = editing?.noteType?.id ?? null;
+  const editingNoteType = useMemo<NoteType | undefined>(() => {
+    if (!editing) return undefined;
+    const fromStore = editingNoteTypeId
+      ? noteTypes.find((nt) => nt.id === editingNoteTypeId)
+      : undefined;
+    if (fromStore) return fromStore;
+    // Synthesize from the embedded payload when the type isn't in the store.
+    if (editing.noteType) {
+      return {
+        id: editing.noteType.id,
+        name: editing.noteType.name || editing.noteType.kind,
+        fields: [],
+        templates: editing.noteType.templates,
+        styling: editing.noteType.styling,
+        kind: editing.noteType.kind,
+        isBuiltin: true,
+      };
+    }
+    return undefined;
+  }, [editing, editingNoteTypeId, noteTypes]);
+
+  const [noteTypeId, setNoteTypeId] = useState<string>(
+    editingNoteTypeId ?? defaultNoteType?.id ?? '',
+  );
 
   const resolvedDefaultDeckId = useMemo(() => {
     if (editing) return editing.deckId;
@@ -131,55 +258,48 @@ export const NNCardForm = ({
   }, [editing, defaultDeckId, decks]);
 
   const [deckId, setDeckId] = useState<string>(resolvedDefaultDeckId);
-  const [variant, setVariant] = useState<CardVariant>(editing?.variant ?? 'basic');
-  const [front, setFront] = useState<string>(editing?.front ?? '');
-  const [back, setBack] = useState<string>(editing?.back ?? '');
-  const [clozeText, setClozeText] = useState<string>(editing?.clozeText ?? '');
+  const [fieldValues, setFieldValues] = useState<FieldValues>({});
   const [tagsText, setTagsText] = useState<string>(editing?.tags?.join(', ') ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const frontRef = useRef<HTMLTextAreaElement | null>(null);
-  const backRef = useRef<HTMLTextAreaElement | null>(null);
-  const clozeRef = useRef<HTMLTextAreaElement | null>(null);
+  // The active note-type: the store entry for `noteTypeId`, or the editing one.
+  const activeNoteType = useMemo<NoteType | undefined>(() => {
+    return noteTypes.find((nt) => nt.id === noteTypeId) ?? editingNoteType;
+  }, [noteTypes, noteTypeId, editingNoteType]);
 
-  // Re-sync field state when the selected card changes (navigation inside the
-  // editor, or prev/next within the browser inline panel). Keyed on card?.id so
-  // it survives a non-remounting parent.
+  // The field set to render inputs for. When editing a synthesized type with no
+  // fields, fall back to the field names present in the note's values.
+  const fields = useMemo(() => {
+    if (activeNoteType && activeNoteType.fields.length > 0) {
+      return [...activeNoteType.fields].sort((a, b) => a.ord - b.ord);
+    }
+    const fv = editing?.note?.fieldValues ?? {};
+    return Object.keys(fv).map((name, ord) => ({ name, ord }));
+  }, [activeNoteType, editing]);
+
+  const isCloze = activeNoteType?.kind === 'cloze';
+
+  // Re-sync field state when the selected card / note-type changes.
   useEffect(() => {
     if (editing) {
       setDeckId(editing.deckId);
-      setVariant(editing.variant);
-      setFront(editing.front);
-      setBack(editing.back);
-      setClozeText(editing.clozeText ?? '');
+      setNoteTypeId(editing.noteType?.id ?? defaultNoteType?.id ?? '');
+      setFieldValues({ ...(editing.note?.fieldValues ?? {}) });
       setTagsText(editing.tags.join(', '));
     } else {
       setDeckId(resolvedDefaultDeckId);
-      setVariant('basic');
-      setFront('');
-      setBack('');
-      setClozeText('');
+      setNoteTypeId(defaultNoteType?.id ?? '');
+      setFieldValues({});
       setTagsText('');
     }
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing?.id, resolvedDefaultDeckId]);
+  }, [editing?.id, resolvedDefaultDeckId, defaultNoteType?.id]);
 
-  // Initial + content-driven auto-size for all textareas.
-  useEffect(() => {
-    autosize(frontRef.current);
-    autosize(backRef.current);
-    autosize(clozeRef.current);
-  }, [front, back, clozeText, variant, isMobile]);
-
-  // AC16: focus the front field when creating a new card.
-  useEffect(() => {
-    if (autoFocusFront && !editing) {
-      frontRef.current?.focus();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoFocusFront, editing?.id]);
+  const setField = useCallback((name: string, html: string) => {
+    setFieldValues((prev) => ({ ...prev, [name]: html }));
+  }, []);
 
   const tags = useMemo(
     () => tagsText.split(',').map((s) => s.trim()).filter(Boolean),
@@ -188,39 +308,51 @@ export const NNCardForm = ({
 
   const currentDeck = decks.find((d) => d.id === deckId);
 
+  // Live preview: render front + back HTML from the note-type template + the
+  // current field values. The FIRST field is the "front" reference for the
+  // required-field check. (Preview MUST still DOMPurify — shared only escapes.)
+  const preview = useMemo(() => {
+    if (!activeNoteType || activeNoteType.templates.length === 0) {
+      return { front: '', back: '' };
+    }
+    return {
+      front: renderCardHtml(activeNoteType, fieldValues, 'front'),
+      back: renderCardHtml(activeNoteType, fieldValues, 'back'),
+    };
+  }, [activeNoteType, fieldValues]);
+
   const handleSave = async () => {
     setError(null);
     if (!deckId) {
       setError(t('editor.errors.pickDeck'));
       return;
     }
-    if (!front.trim() && variant !== 'cloze') {
+    if (!activeNoteType) {
+      setError(t('editor.errors.pickNoteType'));
+      return;
+    }
+    // At least the first field must be non-empty (mirrors the empty-front skip:
+    // a note whose front renders empty generates no card).
+    const firstField = fields[0]?.name;
+    const firstValue = firstField ? (fieldValues[firstField] ?? '') : '';
+    if (!stripHtml(firstValue).trim()) {
       setError(t('editor.errors.frontRequired'));
       return;
     }
     setSaving(true);
     try {
       if (editing) {
-        await updateCard(editing.id, {
-          deckId, // moves the card to another deck (server verifies ownership)
-          variant,
-          front: front.trim(),
-          back: back.trim(),
-          clozeText: variant === 'cloze' ? clozeText.trim() : undefined,
-          tags,
-        });
-        const saved = useNN.getState().cards.find((c) => c.id === editing.id);
+        await updateNote(editing.noteId, { fieldValues, tags });
+        const saved = useNN.getState().cards.find((c) => c.noteId === editing.noteId);
         if (saved) onSaved?.(saved);
       } else {
-        const created = await addCard({
+        const created = await addNote({
+          noteTypeId: activeNoteType.id,
           deckId,
-          variant,
-          front: front.trim(),
-          back: back.trim(),
-          clozeText: variant === 'cloze' ? clozeText.trim() : undefined,
+          fieldValues,
           tags,
         });
-        onSaved?.(created);
+        if (created[0]) onSaved?.(created[0]);
       }
     } catch (err) {
       console.error('save failed', err);
@@ -234,15 +366,15 @@ export const NNCardForm = ({
     if (!editing) return;
     if (typeof window !== 'undefined' && !window.confirm(t('editor.deleteConfirm'))) return;
     try {
-      await deleteCard(editing.id);
+      await deleteNote(editing.noteId);
       onDeleted?.(editing.id);
     } catch (err) {
-      console.error('deleteCard failed', err);
+      console.error('deleteNote failed', err);
       setError(err instanceof Error ? err.message : t('editor.errors.deleteFailed'));
     }
   };
 
-  // AC16: ⌘/Ctrl+Enter triggers save.
+  // ⌘/Ctrl+Enter triggers save.
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -252,6 +384,10 @@ export const NNCardForm = ({
 
   const deckTone = (currentDeck?.color ?? 'neutral') as
     | 'neutral' | 'lime' | 'amber' | 'violet' | 'sky' | 'rose';
+
+  // Stable reset key for the rich-text fields — changes when the edited entity
+  // OR note-type changes (so inputs re-hydrate from `fieldValues`).
+  const resetKey = `${editing?.id ?? 'new'}::${noteTypeId}`;
 
   return (
     <div
@@ -281,7 +417,7 @@ export const NNCardForm = ({
           </NNBtn>
         </div>
 
-        {/* Deck + variant selectors */}
+        {/* Deck + note-type selectors */}
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 8 : 12, marginBottom: 16 }}>
           <div>
             <div style={labelStyle}><span>{t('editor.deckLabel')}</span></div>
@@ -307,78 +443,70 @@ export const NNCardForm = ({
             )}
           </div>
           <div>
-            <div style={labelStyle}><span>{t('editor.variantLabel')}</span></div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', height: 38 }}>
-              {VARIANT_DEFS.map((v) => {
-                const active = variant === v.value;
-                return (
-                  <button
-                    key={v.value}
-                    type="button"
-                    onClick={() => setVariant(v.value)}
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      padding: 0,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <NNBadge tone={active ? v.tone : 'neutral'} size="md">{t(v.i18nKey)}</NNBadge>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        {/* Fields */}
-        <div style={{ marginBottom: 14 }}>
-          <div style={labelStyle}><span>{t('editor.fields.front')}</span></div>
-          <textarea
-            ref={frontRef}
-            value={front}
-            onChange={(e) => setFront(e.target.value)}
-            onInput={(e) => autosize(e.currentTarget)}
-            placeholder={t('editor.fields.frontPlaceholder')}
-            style={textareaStyle({ size: 'front', serif: true, mobile: isMobile })}
-          />
-        </div>
-
-        <div style={{ marginBottom: 14 }}>
-          <div style={labelStyle}>
-            <span>{t('editor.fields.back')}</span>
-            <span style={{ textTransform: 'none', letterSpacing: 0, color: 'var(--text-dim)' }}>
-              {t(back.length === 1 ? 'editor.fields.backCharsSingular' : 'editor.fields.backCharsPlural', { n: back.length })}
-            </span>
-          </div>
-          <textarea
-            ref={backRef}
-            value={back}
-            onChange={(e) => setBack(e.target.value)}
-            onInput={(e) => autosize(e.currentTarget)}
-            placeholder={t('editor.fields.backPlaceholder')}
-            style={textareaStyle({ size: 'back', serif: true, mobile: isMobile })}
-          />
-        </div>
-
-        {variant === 'cloze' && (
-          <div style={{ marginBottom: 14 }}>
             <div style={labelStyle}>
-              <span>{t('editor.fields.clozeText')}</span>
-              <span style={{ textTransform: 'none', letterSpacing: 0, color: 'var(--text-dim)' }}>
-                {t('editor.fields.clozeHint', { syntax: '{{c1::…}}' })}
-              </span>
+              <span>{t('editor.noteTypeLabel')}</span>
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                onClick={() => router.push('/note-types')}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  padding: 0,
+                  color: 'var(--lime-400)',
+                  fontFamily: 'var(--font-sans)',
+                  fontSize: 11,
+                  letterSpacing: 0,
+                  textTransform: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                {t('editor.manageNoteTypes')}
+              </button>
             </div>
-            <textarea
-              ref={clozeRef}
-              value={clozeText}
-              onChange={(e) => setClozeText(e.target.value)}
-              onInput={(e) => autosize(e.currentTarget)}
-              placeholder={t('editor.fields.clozePlaceholder')}
-              style={textareaStyle({ size: 'cloze', mobile: isMobile })}
-            />
+            <select
+              value={noteTypeId}
+              onChange={(e) => setNoteTypeId(e.target.value)}
+              // Changing the note-type only matters for NEW notes (an existing
+              // note keeps its type; clone/convert is Phase 5b).
+              disabled={!!editing || noteTypes.length === 0}
+              style={{ ...inputStyle, opacity: editing ? 0.7 : 1 }}
+            >
+              {noteTypes.length === 0 && <option value="">{t('editor.noNoteTypes')}</option>}
+              {noteTypes.map((nt) => (
+                <option key={nt.id} value={nt.id}>
+                  {nt.name}
+                </option>
+              ))}
+            </select>
           </div>
-        )}
+        </div>
+
+        {/* Dynamic fields */}
+        {fields.map((field, i) => {
+          const isFront = i === 0;
+          return (
+            <div key={field.name} style={{ marginBottom: 14 }}>
+              <div style={labelStyle}>
+                <span>{field.name}</span>
+                {isCloze && isFront && (
+                  <span style={{ textTransform: 'none', letterSpacing: 0, color: 'var(--text-dim)' }}>
+                    {t('editor.fields.clozeHint', { syntax: '{{c1::…}}' })}
+                  </span>
+                )}
+              </div>
+              <RichField
+                value={fieldValues[field.name] ?? ''}
+                onChange={(html) => setField(field.name, html)}
+                placeholder={isFront ? t('editor.fields.frontPlaceholder') : undefined}
+                serif={isFront}
+                minHeight={isFront ? (isMobile ? 90 : 100) : isMobile ? 120 : 110}
+                autoFocus={autoFocusFront && !editing && isFront}
+                resetKey={resetKey}
+              />
+            </div>
+          );
+        })}
 
         {/* Tags */}
         <div style={{ marginTop: 16 }}>
@@ -412,7 +540,7 @@ export const NNCardForm = ({
           </div>
         )}
 
-        {/* Live preview */}
+        {/* Live preview (front + back, rendered from the template, DOMPurified) */}
         <div style={{ marginTop: 22 }}>
           <div style={labelStyle}><span>{t('editor.preview')}</span></div>
           <NNCard padding={0} style={{ overflow: 'hidden' }}>
@@ -423,46 +551,45 @@ export const NNCardForm = ({
               gap: isMobile ? 14 : 20,
             }}>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                <NNBadge size="xs" tone="neutral">{variant}</NNBadge>
+                <NNBadge size="xs" tone="neutral">{activeNoteType?.name ?? '—'}</NNBadge>
                 {tags.map((tag, i) => (
                   <NNTag key={`pv-${tag}-${i}`} color={deckTone === 'neutral' ? 'sky' : deckTone}>{tag}</NNTag>
                 ))}
               </div>
-              <div style={{
-                fontFamily: 'var(--font-serif)',
-                fontSize: isMobile ? 28 : 40,
-                lineHeight: 1.15,
-                letterSpacing: -1,
-                color: 'var(--text)',
-                fontWeight: 400,
-                wordBreak: 'break-word',
-              }}>
-                {front.trim() || <span style={{ color: 'var(--text-dim)' }}>{t('editor.frontPreview')}</span>}
-              </div>
+              {preview.front.trim() ? (
+                <SafeHtml
+                  html={preview.front}
+                  style={{
+                    fontFamily: 'var(--font-serif)',
+                    fontSize: isMobile ? 24 : 32,
+                    lineHeight: 1.2,
+                    letterSpacing: -0.5,
+                    color: 'var(--text)',
+                    fontWeight: 400,
+                    wordBreak: 'break-word',
+                  }}
+                />
+              ) : (
+                <div style={{ color: 'var(--text-dim)', fontFamily: 'var(--font-serif)', fontSize: isMobile ? 24 : 32 }}>
+                  {t('editor.frontPreview')}
+                </div>
+              )}
               <div style={{
                 height: 1,
                 background: 'linear-gradient(to right, transparent, var(--border-2), transparent)',
               }}/>
-              <div style={{
-                fontFamily: 'var(--font-sans)',
-                fontSize: 16,
-                color: 'var(--text-muted)',
-                lineHeight: 1.5,
-              }}>
-                {back.trim() || <span style={{ color: 'var(--text-dim)' }}>{t('editor.backPreview')}</span>}
-              </div>
-              {variant === 'cloze' && clozeText.trim() && (
-                <div style={{
-                  fontSize: 13,
-                  color: 'var(--text-dim)',
-                  fontFamily: 'var(--font-sans)',
-                  padding: '10px 12px',
-                  background: 'var(--surface-2)',
-                  borderRadius: 8,
-                  border: '1px solid var(--border)',
-                }}>
-                  {clozeText}
-                </div>
+              {preview.back.trim() ? (
+                <SafeHtml
+                  html={preview.back}
+                  style={{
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: 16,
+                    color: 'var(--text-muted)',
+                    lineHeight: 1.5,
+                  }}
+                />
+              ) : (
+                <div style={{ color: 'var(--text-dim)', fontSize: 16 }}>{t('editor.backPreview')}</div>
               )}
             </div>
           </NNCard>
@@ -518,3 +645,9 @@ export const NNCardForm = ({
     </div>
   );
 };
+
+// Strip HTML tags → plaintext (for the required-field emptiness check). Pure
+// string op; the actual sanitization happens at the save edge + render edge.
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ');
+}

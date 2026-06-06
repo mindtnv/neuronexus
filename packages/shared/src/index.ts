@@ -7,6 +7,9 @@ export * from './gamification.ts';
 export * from './card-query.ts';
 export * from './card-query-predicate.ts';
 export * from './card-query-match.ts';
+export * from './note-type.ts';
+export * from './template.ts';
+export * from './builtin-note-types.ts';
 
 export const CARD_RATINGS = [1, 2, 3, 4] as const;
 

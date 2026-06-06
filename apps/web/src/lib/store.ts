@@ -3,8 +3,15 @@
 import { create } from 'zustand';
 import { countDueCardsByDeck, getDueCards } from './cards';
 import { api, ok } from './api';
-import { cardFromApi, deckFromApi, profileFromApi, reviewFromApi } from './mappers';
-import type { Card, Deck, Profile, Rating, Review } from './types';
+import {
+  cardFromApi,
+  deckFromApi,
+  noteTypeFromApi,
+  profileFromApi,
+  reviewFromApi,
+} from './mappers';
+import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
+import type { Card, Deck, NoteType, Profile, Rating, Review } from './types';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
 // and profile — fetched at bootstrap, mutated optimistically-ish on each API
@@ -16,6 +23,7 @@ interface State {
   bootstrapped: boolean;
   decks: Deck[];
   cards: Card[];
+  noteTypes: NoteType[];
   profile: Profile | null;
   cardTags: string[];
 
@@ -26,9 +34,65 @@ interface State {
   updateDeck: (id: string, patch: Partial<Omit<Deck, 'id' | 'createdAt'>>) => Promise<void>;
   deleteDeck: (id: string) => Promise<void>;
 
-  addCard: (input: Omit<Card, 'id' | 'createdAt' | 'updatedAt' | 'fsrs' | 'suspended'>) => Promise<Card>;
-  updateCard: (id: string, patch: Partial<Omit<Card, 'id' | 'createdAt'>>) => Promise<void>;
+  /**
+   * Create a note (POST /notes). The server generates one-or-more cards from
+   * the note-type's templates; the response carries the note + the enriched
+   * cards which we merge into the mirror. Returns the generated cards.
+   */
+  addNote: (input: {
+    noteTypeId: string;
+    deckId: string;
+    fieldValues: FieldValues;
+    tags: string[];
+  }) => Promise<Card[]>;
+
+  /**
+   * Update a note (PATCH /notes/:id). The server re-generates cards (FSRS
+   * preserved on surviving template ords) and returns the note + cards; we
+   * replace this note's cards in the mirror.
+   */
+  updateNote: (
+    noteId: string,
+    patch: { fieldValues?: FieldValues; tags?: string[] },
+  ) => Promise<Card[]>;
+
+  /** Delete a note (DELETE /notes/:id). Cascades its cards via FK; mirror drops them. */
+  deleteNote: (noteId: string) => Promise<void>;
+
+  /** Delete a single card (DELETE /cards/:id). Card-level delete still exists. */
   deleteCard: (id: string) => Promise<void>;
+
+  /** Fetch own + builtin note-types (GET /note-types) into the store. */
+  getNoteTypes: () => Promise<NoteType[]>;
+
+  /** Create a user-owned note-type (POST /note-types). Appends to the mirror. */
+  addNoteType: (def: {
+    name: string;
+    fields: NoteField[];
+    templates: CardTemplate[];
+    styling?: string;
+    kind?: RenderKind;
+  }) => Promise<NoteType>;
+
+  /**
+   * Edit a note-type (PATCH /note-types/:id). CLONE-ON-EDIT: editing a global
+   * builtin makes the server return a NEW user-owned copy with a DIFFERENT id —
+   * we append the clone (the builtin stays in the list) and return it. Editing
+   * an owned type returns the same id and we replace it in the mirror.
+   */
+  updateNoteType: (
+    id: string,
+    patch: {
+      name?: string;
+      fields?: NoteField[];
+      templates?: CardTemplate[];
+      styling?: string;
+      kind?: RenderKind;
+    },
+  ) => Promise<NoteType>;
+
+  /** Delete an own note-type (DELETE /note-types/:id). Cascades notes+cards. */
+  deleteNoteType: (id: string) => Promise<void>;
 
   /**
    * Search cards via the server (GET /cards/search). Maps rows via cardFromApi,
@@ -64,6 +128,7 @@ export const useNN = create<State>()((set, get) => ({
   bootstrapped: false,
   decks: [],
   cards: [],
+  noteTypes: [],
   profile: null,
   cardTags: [],
 
@@ -71,11 +136,13 @@ export const useNN = create<State>()((set, get) => ({
     if (get().bootstrapped) return;
     // Parallel fetch of the user's snapshot. /cards is cursor-paginated;
     // bootstrap takes the first page (500 most recent cards). If the user has
-    // more, we load on-demand later — all current UI fits in one page.
-    const [profile, decks, cardsPage] = await Promise.all([
+    // more, we load on-demand later — all current UI fits in one page. Note-
+    // types (own + global builtins) load too so the note editor can pick one.
+    const [profile, decks, cardsPage, noteTypes] = await Promise.all([
       ok(await (api as any).profile.get()),
       ok(await (api as any).decks.get()),
       ok(await (api as any).cards.get()),
+      ok(await (api as any)['note-types'].get()),
     ]);
     const cardRows = Array.isArray(cardsPage)
       ? cardsPage
@@ -84,6 +151,7 @@ export const useNN = create<State>()((set, get) => ({
       profile: profileFromApi(profile),
       decks: (decks as any[]).map(deckFromApi),
       cards: (cardRows as any[]).map(cardFromApi),
+      noteTypes: (noteTypes as any[]).map(noteTypeFromApi),
       bootstrapped: true,
     });
   },
@@ -91,7 +159,7 @@ export const useNN = create<State>()((set, get) => ({
   reset() {
     // Server is source of truth — blow away the local mirror and let bootstrap
     // repopulate on next mount.
-    set({ decks: [], cards: [], profile: null, bootstrapped: false });
+    set({ decks: [], cards: [], noteTypes: [], profile: null, bootstrapped: false });
   },
 
   async addDeck(input) {
@@ -133,42 +201,96 @@ export const useNN = create<State>()((set, get) => ({
     }));
   },
 
-  async addCard(input) {
-    const created = cardFromApi(
-      await ok(
-        await (api as any).cards.post({
-          deckId: input.deckId,
-          variant: input.variant,
-          front: input.front,
-          back: input.back,
-          clozeText: input.clozeText,
-          tags: input.tags,
-        }),
-      ),
+  async addNote(input) {
+    // POST /notes → server generates cards from the note-type templates and
+    // returns the enriched cards (each carrying its embedded note + noteType).
+    const res: any = await ok(
+      await (api as any).notes.post({
+        noteTypeId: input.noteTypeId,
+        deckId: input.deckId,
+        fieldValues: input.fieldValues,
+        tags: input.tags,
+      }),
     );
-    set((s) => ({ cards: [...s.cards, created] }));
+    const created: Card[] = ((res.cards ?? []) as any[]).map(cardFromApi);
+    set((s) => ({ cards: [...s.cards, ...created] }));
     return created;
   },
 
-  async updateCard(id, patch) {
-    // Strip fields the server owns (fsrs, updatedAt) — only content + placement
-    // mutate here. `deckId` moves the card to another deck (server checks the
-    // target deck belongs to the user).
+  async updateNote(noteId, patch) {
     const body: any = {};
-    if (patch.deckId !== undefined) body.deckId = patch.deckId;
-    if (patch.variant !== undefined) body.variant = patch.variant;
-    if (patch.front !== undefined) body.front = patch.front;
-    if (patch.back !== undefined) body.back = patch.back;
-    if (patch.clozeText !== undefined) body.clozeText = patch.clozeText;
+    if (patch.fieldValues !== undefined) body.fieldValues = patch.fieldValues;
     if (patch.tags !== undefined) body.tags = patch.tags;
-    if (patch.suspended !== undefined) body.suspended = patch.suspended;
-    const updated = cardFromApi(await ok(await (api as any).cards({ id }).patch(body)));
-    set((s) => ({ cards: s.cards.map((c) => (c.id === id ? updated : c)) }));
+    const res: any = await ok(await (api as any).notes({ id: noteId }).patch(body));
+    const updated: Card[] = ((res.cards ?? []) as any[]).map(cardFromApi);
+    // Replace this note's cards in the mirror (regeneration may add/remove).
+    set((s) => {
+      const kept = s.cards.filter((c) => c.noteId !== noteId);
+      return { cards: [...kept, ...updated] };
+    });
+    return updated;
+  },
+
+  async deleteNote(noteId) {
+    await ok(await (api as any).notes({ id: noteId }).delete());
+    set((s) => ({ cards: s.cards.filter((c) => c.noteId !== noteId) }));
   },
 
   async deleteCard(id) {
     await ok(await (api as any).cards({ id }).delete());
     set((s) => ({ cards: s.cards.filter((c) => c.id !== id) }));
+  },
+
+  async getNoteTypes() {
+    const rows: any = await ok(await (api as any)['note-types'].get());
+    const list: NoteType[] = (rows as any[]).map(noteTypeFromApi);
+    set({ noteTypes: list });
+    return list;
+  },
+
+  async addNoteType(def) {
+    const created = noteTypeFromApi(
+      await ok(
+        await (api as any)['note-types'].post({
+          name: def.name,
+          fields: def.fields,
+          templates: def.templates,
+          styling: def.styling ?? '',
+          kind: def.kind ?? 'custom',
+        }),
+      ),
+    );
+    set((s) => ({ noteTypes: [...s.noteTypes, created] }));
+    return created;
+  },
+
+  async updateNoteType(id, patch) {
+    const body: any = {};
+    if (patch.name !== undefined) body.name = patch.name;
+    if (patch.fields !== undefined) body.fields = patch.fields;
+    if (patch.templates !== undefined) body.templates = patch.templates;
+    if (patch.styling !== undefined) body.styling = patch.styling;
+    if (patch.kind !== undefined) body.kind = patch.kind;
+    const updated = noteTypeFromApi(
+      await ok(await (api as any)['note-types']({ id }).patch(body)),
+    );
+    // Clone-on-edit: editing a global builtin returns a NEW id (a user-owned
+    // copy). The original builtin stays in the list; we append the clone.
+    // Editing an owned type returns the same id and we replace it in place.
+    set((s) => {
+      const exists = s.noteTypes.some((nt) => nt.id === updated.id);
+      return {
+        noteTypes: exists
+          ? s.noteTypes.map((nt) => (nt.id === updated.id ? updated : nt))
+          : [...s.noteTypes, updated],
+      };
+    });
+    return updated;
+  },
+
+  async deleteNoteType(id) {
+    await ok(await (api as any)['note-types']({ id }).delete());
+    set((s) => ({ noteTypes: s.noteTypes.filter((nt) => nt.id !== id) }));
   },
 
   async searchCards(q, opts) {
@@ -196,6 +318,12 @@ export const useNN = create<State>()((set, get) => ({
     await ok(await (api as any).cards.bulk.post({ action, cardIds, payload }));
     // Mirror the same mutation locally so the UI reflects immediately.
     const idSet = new Set(cardIds);
+    // Tags are NOTE-level: the server mutates notes.tags for the notes of the
+    // selected cards, so the mirror must update EVERY card sharing one of those
+    // notes (multi-template siblings), not just the selected card ids.
+    const noteIdSet = new Set(
+      get().cards.filter((c) => idSet.has(c.id)).map((c) => c.noteId),
+    );
     set((s) => {
       switch (action) {
         case 'move': {
@@ -220,7 +348,7 @@ export const useNN = create<State>()((set, get) => ({
           if (!tag) return s;
           return {
             cards: s.cards.map((c) =>
-              idSet.has(c.id) && !c.tags.includes(tag)
+              noteIdSet.has(c.noteId) && !c.tags.includes(tag)
                 ? { ...c, tags: [...c.tags, tag] }
                 : c,
             ),
@@ -231,7 +359,7 @@ export const useNN = create<State>()((set, get) => ({
           if (!tag) return s;
           return {
             cards: s.cards.map((c) =>
-              idSet.has(c.id) ? { ...c, tags: c.tags.filter((t) => t !== tag) } : c,
+              noteIdSet.has(c.noteId) ? { ...c, tags: c.tags.filter((t) => t !== tag) } : c,
             ),
           };
         }

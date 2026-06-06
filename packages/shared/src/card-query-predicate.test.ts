@@ -27,11 +27,14 @@ function ctx(overrides: Partial<PredicateContext> = {}): PredicateContext {
 
 function card(overrides: Partial<CardLike> = {}): CardLike {
   return {
-    front: 'front text',
-    back: 'back text',
-    clozeText: undefined,
+    renderText: 'front text back text',
+    renderFrontText: 'front text',
+    renderBackText: 'back text',
+    fieldValues: {},
+    noteTypeKind: 'basic',
+    noteTypeName: 'Basic',
+    templateOrd: 0,
     tags: [],
-    variant: 'basic',
     deckId: 's1',
     state: 'review',
     suspended: false,
@@ -52,35 +55,63 @@ function match(q: string, c: CardLike, c2 = ctx()): boolean {
 }
 
 describe('bareword / text', () => {
-  test('matches front, back, or clozeText (substring, case-insensitive)', () => {
+  test('matches the rendered plaintext (substring, case-insensitive)', () => {
     expect(match('FRONT', card())).toBe(true);
     expect(match('back', card())).toBe(true);
     expect(match('nope', card())).toBe(false);
-    expect(match('hidden', card({ clozeText: 'a HIDDEN thing' }))).toBe(true);
+    // cloze: aliases bareword — both read renderText verbatim.
+    expect(match('hidden', card({ renderText: 'a HIDDEN thing' }))).toBe(true);
+    expect(match('cloze:hidden', card({ renderText: 'a HIDDEN thing' }))).toBe(true);
   });
 });
 
 describe('field: matchers', () => {
-  test('front:/back:/cloze: substring', () => {
+  test('front:/back: substring over rendered plaintext', () => {
     expect(match('front:front', card())).toBe(true);
     expect(match('back:back', card())).toBe(true);
-    expect(match('cloze:x', card({ clozeText: 'xyz' }))).toBe(true);
   });
 
-  test('empty field: matches only an empty field', () => {
-    expect(match('back:', card({ back: '' }))).toBe(true);
-    expect(match('back:', card({ back: 'x' }))).toBe(false);
-    expect(match('cloze:', card({ clozeText: undefined }))).toBe(true);
+  test('empty front:/back: matches only an empty rendered column', () => {
+    expect(match('back:', card({ renderBackText: '' }))).toBe(true);
+    expect(match('back:', card({ renderBackText: 'x' }))).toBe(false);
   });
 
   test('wildcard * (multi) and _ (single)', () => {
-    expect(match('front:fr*t', card({ front: 'front' }))).toBe(true);
-    expect(match('front:fr_nt', card({ front: 'front' }))).toBe(true);
-    expect(match('front:fr_nt', card({ front: 'frnt' }))).toBe(false);
+    expect(match('front:fr*t', card({ renderFrontText: 'front' }))).toBe(true);
+    expect(match('front:fr_nt', card({ renderFrontText: 'front' }))).toBe(true);
+    expect(match('front:fr_nt', card({ renderFrontText: 'frnt' }))).toBe(false);
   });
 
   test('case-insensitivity on field matches', () => {
-    expect(match('front:FRONT', card({ front: 'front text' }))).toBe(true);
+    expect(match('front:FRONT', card({ renderFrontText: 'front text' }))).toBe(true);
+  });
+});
+
+describe('field:Name=X — note field values', () => {
+  test('matches the note field value (substring, case-insensitive)', () => {
+    expect(match('field:Front=Hund', card({ fieldValues: { Front: 'Der Hund' } }))).toBe(true);
+    expect(match('field:Front=Katze', card({ fieldValues: { Front: 'Der Hund' } }))).toBe(false);
+  });
+
+  test('unknown field name matches nothing', () => {
+    expect(match('field:Nope=x', card({ fieldValues: { Front: 'Hund' } }))).toBe(false);
+  });
+
+  test('bare field:Name → field non-empty', () => {
+    expect(match('field:Extra', card({ fieldValues: { Extra: 'note' } }))).toBe(true);
+    expect(match('field:Extra', card({ fieldValues: { Extra: '' } }))).toBe(false);
+  });
+});
+
+describe('note: / template:', () => {
+  test('note: substring over note-type name', () => {
+    expect(match('note:Basic', card({ noteTypeName: 'Basic' }))).toBe(true);
+    expect(match('note:Cloze', card({ noteTypeName: 'Basic' }))).toBe(false);
+  });
+
+  test('template: matches the template ordinal', () => {
+    expect(match('template:0', card({ templateOrd: 0 }))).toBe(true);
+    expect(match('template:1', card({ templateOrd: 0 }))).toBe(false);
   });
 });
 
@@ -138,9 +169,11 @@ describe('is:', () => {
 });
 
 describe('variant:', () => {
-  test('exact variant match', () => {
-    expect(match('variant:cloze', card({ variant: 'cloze' }))).toBe(true);
-    expect(match('variant:basic', card({ variant: 'cloze' }))).toBe(false);
+  test('builtin-kind alias match', () => {
+    expect(match('variant:cloze', card({ noteTypeKind: 'cloze' }))).toBe(true);
+    expect(match('variant:basic', card({ noteTypeKind: 'cloze' }))).toBe(false);
+    // legacy `type` aliases the `typein` kind.
+    expect(match('variant:type', card({ noteTypeKind: 'typein' }))).toBe(true);
   });
 });
 

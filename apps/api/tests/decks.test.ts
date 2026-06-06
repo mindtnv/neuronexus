@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { buildApp } from '../src/app.ts';
-import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
+import { callApp, resetTestDb, seedBasicCard, signUpAndCookie, uniqueEmail } from './helpers.ts';
 
 const app = buildApp();
 
@@ -55,12 +55,13 @@ describe('decks', () => {
         body: { name: 'German', parentId: parent.id },
       })
     ).json<{ id: string }>();
-    const card = await (
-      await callApp(app, 'POST', '/cards', {
-        cookie,
-        body: { deckId: child.id, front: 'Hund', back: 'dog' },
-      })
-    ).json<{ id: string }>();
+    // Card content is derived from a note now: seed a Basic note in the child
+    // deck. Deleting the root cascades decks → notes' cards (FK ON DELETE CASCADE).
+    const card = await seedBasicCard(app, cookie, {
+      deckId: child.id,
+      front: 'Hund',
+      back: 'dog',
+    });
 
     // Sanity
     expect(parent.id).toBeTruthy();

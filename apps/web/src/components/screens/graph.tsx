@@ -383,8 +383,8 @@ export const NNGraphForce = () => {
       if (!query.trim()) return true;
       const q = query.trim().toLowerCase();
       return (
-        n.card.front.toLowerCase().includes(q) ||
-        n.card.back.toLowerCase().includes(q) ||
+        n.card.renderFrontText.toLowerCase().includes(q) ||
+        n.card.renderBackText.toLowerCase().includes(q) ||
         n.card.tags.some((t) => t.toLowerCase().includes(q))
       );
     },
@@ -411,7 +411,7 @@ export const NNGraphForce = () => {
       if (!otherId) continue;
       const other = nodesById.get(otherId);
       if (!other) continue;
-      out.push({ id: other.id, front: other.card.front, shared: e.weight, color: other.color });
+      out.push({ id: other.id, front: other.card.renderFrontText, shared: e.weight, color: other.color });
     }
     return out.sort((x, y) => y.shared - x.shared).slice(0, 8);
   }, [selectedNode, built.edges, nodesById]);
@@ -1028,10 +1028,10 @@ const NodeDetail = ({
           {t('graph.detail.selected')}
         </div>
         <div style={{ fontFamily: 'var(--font-serif)', fontSize: 26, color: 'var(--text)', letterSpacing: -0.5, lineHeight: 1.2 }}>
-          {card.front}
+          {card.renderFrontText}
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6 }}>
-          {card.back}
+          {card.renderBackText}
         </div>
         <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
           <NNBadge tone={tone} size="sm">{deckName}</NNBadge>

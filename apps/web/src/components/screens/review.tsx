@@ -4,10 +4,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNKbd, NNSkeleton, NNTag } from '@/components/ui';
-import { CLOZE_RE, previewGrades, xpForRating } from '@neuronexus/shared';
+import { previewGrades, xpForRating } from '@neuronexus/shared';
 import { humanInterval } from '@/lib/fsrs';
 import { api, ok } from '@/lib/api';
 import { cardFromApi } from '@/lib/mappers';
+import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -33,65 +34,7 @@ export const NNReview = ({ variant: _variant = 'classic' }: { variant?: 'classic
   return <NNReviewClassic />;
 };
 
-// ─────────────────────────────────────────────
-// Cloze helpers — the regex source comes from the shared CLOZE_RE
-// (@neuronexus/shared); the JSX rendering stays local (DOM-specific).
-// ─────────────────────────────────────────────
-const renderClozePrompt = (text: string): React.ReactNode[] => {
-  const out: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let key = 0;
-  let m: RegExpExecArray | null;
-  const re = new RegExp(CLOZE_RE.source, 'g');
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > lastIndex) {
-      out.push(<span key={`t-${key++}`}>{text.slice(lastIndex, m.index)}</span>);
-    }
-    out.push(
-      <span
-        key={`b-${key++}`}
-        style={{
-          padding: '0 14px',
-          borderBottom: '2px dashed var(--lime-400)',
-          minWidth: 80,
-          display: 'inline-block',
-        }}
-      >
-        &nbsp;
-      </span>,
-    );
-    lastIndex = m.index + m[0].length;
-  }
-  if (lastIndex < text.length) {
-    out.push(<span key={`t-${key++}`}>{text.slice(lastIndex)}</span>);
-  }
-  return out;
-};
-
-const renderClozeRevealed = (text: string): React.ReactNode[] => {
-  const out: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let key = 0;
-  let m: RegExpExecArray | null;
-  const re = new RegExp(CLOZE_RE.source, 'g');
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > lastIndex) {
-      out.push(<span key={`t-${key++}`}>{text.slice(lastIndex, m.index)}</span>);
-    }
-    out.push(
-      <span key={`f-${key++}`} style={{ color: 'var(--lime-400)', fontWeight: 600 }}>
-        {m[1]}
-      </span>,
-    );
-    lastIndex = m.index + m[0].length;
-  }
-  if (lastIndex < text.length) {
-    out.push(<span key={`t-${key++}`}>{text.slice(lastIndex)}</span>);
-  }
-  return out;
-};
-
-// Type variant char-by-char diff
+// Type-in char-by-char diff
 type DiffToken = { ch: string; kind: 'match' | 'extra' | 'missing' };
 
 const diffAnswer = (userRaw: string, targetRaw: string): DiffToken[] => {
@@ -147,6 +90,7 @@ export const NNReviewClassic = () => {
   const isMobile = bp === 'mobile';
   const bootstrapped = useNN((s) => s.bootstrapped);
   const decks = useNN((s) => s.decks);
+  const noteTypes = useNN((s) => s.noteTypes);
   const profile = useNN((s) => s.profile);
   const grade = useNN((s) => s.gradeCard);
 
@@ -223,19 +167,19 @@ export const NNReviewClassic = () => {
     setRevealed(false);
   }, [current?.id]);
 
-  // Autofocus input for type variant
+  // Autofocus input for the type-in render kind
   useEffect(() => {
-    if (current?.variant === 'type' && !submitted) {
+    if (current?.renderKind === 'typein' && !submitted) {
       const t = setTimeout(() => inputRef.current?.focus(), 0);
       return () => clearTimeout(t);
     }
-  }, [current?.id, current?.variant, submitted]);
+  }, [current?.id, current?.renderKind, submitted]);
 
   const handleGrade = useCallback(
     async (rating: Rating) => {
       if (!current || lockRef.current) return;
-      // Type variant: don't allow grading before submission
-      if (current.variant === 'type' && !submitted) return;
+      // Type-in: don't allow grading before submission
+      if (current.renderKind === 'typein' && !submitted) return;
       lockRef.current = true;
       const duration = Date.now() - startedAt;
       try {
@@ -256,7 +200,7 @@ export const NNReviewClassic = () => {
   );
 
   const handleTypeSubmit = useCallback(() => {
-    if (!current || current.variant !== 'type' || submitted) return;
+    if (!current || current.renderKind !== 'typein' || submitted) return;
     setSubmitted(true);
     setRevealed(true);
   }, [current, submitted]);
@@ -292,10 +236,12 @@ export const NNReviewClassic = () => {
         setTypedAnswer('');
         return;
       }
-      // Skip forward
+      // Skip forward — clamp to the LAST card (queue.length - 1) so the cursor
+      // can't run off the end (one-past-last) and trip premature SessionDone +
+      // session save without grading.
       if (e.key === 'k' && !inInput) {
         e.preventDefault();
-        setIndex((i) => Math.min(queue.length, i + 1));
+        setIndex((i) => Math.min(queue.length - 1, i + 1));
         setRevealed(false);
         setSubmitted(false);
         setTypedAnswer('');
@@ -304,7 +250,7 @@ export const NNReviewClassic = () => {
 
       // Space — flip / submit
       if (e.code === 'Space') {
-        if (current.variant === 'type') {
+        if (current.renderKind === 'typein') {
           if (submitted) return; // noop — answer already visible
           if (inInput) return; // let user type spaces in the input
           e.preventDefault();
@@ -319,7 +265,7 @@ export const NNReviewClassic = () => {
 
       // Grade keys
       if (!revealed) return;
-      if (current.variant === 'type' && !submitted) return;
+      if (current.renderKind === 'typein' && !submitted) return;
       if (inInput) return;
       if (e.key === '1') handleGrade(1);
       else if (e.key === '2') handleGrade(2);
@@ -400,16 +346,45 @@ export const NNReviewClassic = () => {
     ? Math.max(0, Math.floor((Date.now() - new Date(fsrsState.last_review).getTime()) / (1000 * 60 * 60 * 24)))
     : null;
 
-  const clozeSource =
-    current.variant === 'cloze' ? (current.clozeText ?? current.front) : '';
+  const renderKind = current.renderKind;
+  const isCloze = renderKind === 'cloze';
+  const isTypein = renderKind === 'typein';
+
+  // Lazy HTML render from the note-type template + the note's sanitized field
+  // values, DOMPurified at the SafeHtml edge. cloze front = prompt (blanks),
+  // back = revealed. The queue payload embeds note + noteType (C-5), so render
+  // mode + content come from the payload with no extra fetch.
+  const renderNoteType = current.noteType ?? null;
+  const renderFieldValues = current.note?.fieldValues ?? {};
+  const frontHtml = renderNoteType
+    ? renderCardHtml(renderNoteType, renderFieldValues, 'front', current.templateOrd)
+    : '';
+  const backHtml = renderNoteType
+    ? renderCardHtml(renderNoteType, renderFieldValues, 'back', current.templateOrd)
+    : '';
+  // Type-in compares the typed answer against the note-type's ANSWER field — the
+  // LAST field by ordinal (Anki convention; "Back" for the builtin Type-in, but
+  // works for renamed-field clones too). Resolve the full note-type from the
+  // store by id (the embedded payload carries no field list); fall back to the
+  // raw "Back" value, then the server-rendered back plaintext.
+  const typeinNoteType = renderNoteType
+    ? noteTypes.find((nt) => nt.id === renderNoteType.id)
+    : undefined;
+  const typeinTargetField =
+    typeinNoteType && typeinNoteType.fields.length > 0
+      ? [...typeinNoteType.fields].sort((a, b) => a.ord - b.ord).at(-1)?.name
+      : undefined;
+  const typeinTarget =
+    (typeinTargetField ? renderFieldValues[typeinTargetField] : undefined) ??
+    renderFieldValues['Back'] ??
+    current.renderBackText;
 
   const frontFontSize = isMobile
-    ? (current.variant === 'cloze' ? 28 : 32)
-    : (current.variant === 'cloze' ? 36 : 48);
+    ? (isCloze ? 28 : 32)
+    : (isCloze ? 36 : 48);
 
-  // Which section controls reveal/ratings visibility per-variant
-  const showAnswerSection =
-    current.variant === 'type' ? submitted : revealed;
+  // Which section controls reveal/ratings visibility per render kind.
+  const showAnswerSection = isTypein ? submitted : revealed;
   const showRatings = showAnswerSection;
 
   // Reserve space at the bottom of the scroll area so the fixed rating bar
@@ -472,7 +447,7 @@ export const NNReviewClassic = () => {
             t.closest('a')
           )
             return;
-          if (current.variant === 'type' && !submitted) return;
+          if (isTypein && !submitted) return;
           setRevealed((v) => !v);
         }}
         style={{
@@ -484,7 +459,7 @@ export const NNReviewClassic = () => {
           border: '1px solid var(--border)',
           flexShrink: 0,
           padding: isMobile ? '20px 18px' : '36px 44px',
-          cursor: current.variant === 'type' && !submitted ? 'default' : 'pointer',
+          cursor: isTypein && !submitted ? 'default' : 'pointer',
           display: 'flex',
           flexDirection: 'column',
           position: 'relative',
@@ -496,7 +471,7 @@ export const NNReviewClassic = () => {
       >
         <div style={{ display: 'flex', gap: 8, marginBottom: 28, flexWrap: 'wrap', alignItems: 'center' }}>
           <NNBadge size="xs" tone="neutral">
-            {current.variant}
+            {renderKind}
           </NNBadge>
           {current.tags.map((t) => (
             <NNTag key={t} color={deck?.color === 'neutral' ? 'sky' : deck?.color ?? 'sky'}>
@@ -505,8 +480,11 @@ export const NNReviewClassic = () => {
           ))}
         </div>
 
-        {/* Front / prompt */}
-        <div
+        {/* Front / prompt — rendered from the note-type template + field values,
+            DOMPurified via SafeHtml. Cloze shows blanks on the front; once
+            revealed it shows the answer side (the cloze "back" template). */}
+        <SafeHtml
+          html={isCloze ? (revealed ? backHtml : frontHtml) : frontHtml}
           style={{
             fontFamily: 'var(--font-serif)',
             fontSize: frontFontSize,
@@ -516,20 +494,10 @@ export const NNReviewClassic = () => {
             fontWeight: 400,
             wordBreak: 'break-word',
           }}
-        >
-          {current.variant === 'cloze' ? (
-            revealed ? (
-              <>{renderClozeRevealed(clozeSource)}</>
-            ) : (
-              <>{renderClozePrompt(clozeSource)}</>
-            )
-          ) : (
-            current.front
-          )}
-        </div>
+        />
 
         {/* Type input */}
-        {current.variant === 'type' && (
+        {isTypein && (
           <div style={{ marginTop: 28, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <input
               ref={inputRef}
@@ -581,7 +549,7 @@ export const NNReviewClassic = () => {
                 }}
                 className="mono"
               >
-                {diffAnswer(typedAnswer, current.back).map((tok, i) => {
+                {diffAnswer(typedAnswer, typeinTarget).map((tok, i) => {
                   if (tok.kind === 'match') {
                     return (
                       <span key={i} style={{ color: 'var(--text)' }}>
@@ -638,8 +606,9 @@ export const NNReviewClassic = () => {
             minHeight: 40,
           }}
         >
-          {showAnswerSection && (
-            <div
+          {showAnswerSection && !isCloze && (
+            <SafeHtml
+              html={backHtml}
               style={{
                 fontSize: 28,
                 fontWeight: 500,
@@ -648,34 +617,13 @@ export const NNReviewClassic = () => {
                 fontFamily: 'var(--font-serif)',
                 lineHeight: 1.35,
               }}
-            >
-              {current.variant === 'cloze' ? (
-                <>
-                  <div>{renderClozeRevealed(clozeSource)}</div>
-                  {current.back && (
-                    <div
-                      style={{
-                        marginTop: 14,
-                        fontSize: 15,
-                        fontFamily: 'var(--font-sans)',
-                        fontWeight: 400,
-                        color: 'var(--text-muted)',
-                        letterSpacing: 0,
-                        lineHeight: 1.5,
-                      }}
-                    >
-                      {current.back}
-                    </div>
-                  )}
-                </>
-              ) : (
-                current.back
-              )}
-            </div>
+            />
           )}
+          {/* Cloze reveal is shown by the front area flipping to the answer
+              side; the answer block stays empty for cloze to avoid duplication. */}
         </div>
 
-        {!showAnswerSection && current.variant !== 'type' && (
+        {!showAnswerSection && !isTypein && (
           <div
             style={{
               fontSize: 14,
@@ -785,7 +733,7 @@ export const NNReviewClassic = () => {
                 );
               })}
             </div>
-          ) : current.variant !== 'type' ? (
+          ) : !isTypein ? (
             <NNBtn size="lg" variant="soft" onClick={() => setRevealed(true)} block>
               {t('review.showAnswer')}
             </NNBtn>

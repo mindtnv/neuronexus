@@ -45,19 +45,28 @@ export type CompareOp = '=' | '!=' | '<' | '>' | '<=' | '>=';
 
 /**
  * A leaf term. `field` is the normalized key (`'text'` for a bareword that
- * matches front ∥ back ∥ clozeText). `op` is only present for `prop:` terms.
+ * matches the rendered card text). `op` is only present for `prop:` terms.
  * `value` is the raw (unquoted, comparator-stripped) string operand.
+ *
+ * Note-types model (M1): content operators target the DENORMALIZED rendered
+ * plaintext columns on the card (`front`→renderFrontText, `back`→renderBackText,
+ * bareword/`cloze`→renderText) and, cross-table, the note's field values
+ * (`field:Name=X`) and the note-type identity (`variant`/`note`/`template`).
  */
 export interface TermNode {
   kind: 'term';
   /**
    * Normalized term field:
-   *  - 'text'    bareword / quoted bareword → substring over front∥back∥cloze
-   *  - 'front' | 'back' | 'cloze'           → substring on that text field
+   *  - 'text'    bareword / quoted bareword → substring over renderText
+   *  - 'front' | 'back'                     → substring on rendered front/back text
+   *  - 'cloze'                              → alias to bareword (renderText)
+   *  - 'field'                              → note field value (`field:Name=X`)
+   *  - 'note'                               → note-type name
+   *  - 'template'                           → card template name / ordinal
    *  - 'deck'                               → deck name (resolved to ids in ctx)
    *  - 'tag'                                → tag membership (`none`, prefix `foo*`)
    *  - 'is'                                 → new|learn|review|due|suspended
-   *  - 'variant'                            → basic|cloze|type
+   *  - 'variant'                            → builtin note-type kind / name alias
    *  - 'added' | 'edited'                   → N (days)
    *  - 'prop'                               → reps|lapses|due|s|d|ivl (+ op)
    */
@@ -66,6 +75,9 @@ export interface TermNode {
     | 'front'
     | 'back'
     | 'cloze'
+    | 'field'
+    | 'note'
+    | 'template'
     | 'deck'
     | 'tag'
     | 'is'
@@ -78,6 +90,12 @@ export interface TermNode {
   op?: CompareOp;
   /** For `prop:` terms, which numeric field is being compared. */
   prop?: PropField;
+  /**
+   * For `field:Name=X` terms: the note field NAME (`Name`). The `value` holds the
+   * operand (`X`). A `field:Name` form with no `=value` matches "field exists and
+   * is non-empty" (value === '').
+   */
+  fieldName?: string;
   /**
    * True when `deck:`/`tag:`/`text` value was supplied quoted (spaces preserved,
    * no implicit AND split). Informational; semantics don't depend on it today.
@@ -132,6 +150,9 @@ const KNOWN_KEYS = new Set([
   'front',
   'back',
   'cloze',
+  'field',
+  'note',
+  'template',
   'deck',
   'tag',
   'is',
@@ -422,6 +443,27 @@ function buildKeyedTerm(key: string, value: string, quoted: boolean): TermNode {
     case 'back':
     case 'cloze':
       return { kind: 'term', field: key, value, quoted };
+
+    case 'note':
+    case 'template':
+      return { kind: 'term', field: key, value, quoted };
+
+    case 'field': {
+      // `field:Name=X` → { fieldName: 'Name', value: 'X' }. Split on the FIRST
+      // `=`. A bare `field:Name` (no `=`) means "field Name is non-empty"
+      // (value === '' but fieldName set — distinct from text-empty matching).
+      const eq = value.indexOf('=');
+      if (eq >= 0) {
+        return {
+          kind: 'term',
+          field: 'field',
+          fieldName: value.slice(0, eq),
+          value: value.slice(eq + 1),
+          quoted,
+        };
+      }
+      return { kind: 'term', field: 'field', fieldName: value, value: '', quoted };
+    }
 
     case 'deck': {
       // AC7: the plain `deck:` form already resolves to the subtree (descendants

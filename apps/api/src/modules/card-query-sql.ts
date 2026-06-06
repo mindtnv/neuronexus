@@ -31,7 +31,7 @@ import {
   type SQL,
   sql,
 } from 'drizzle-orm';
-import { cards } from '@neuronexus/db';
+import { cards, noteTypes, notes } from '@neuronexus/db';
 import {
   wildcardToSqlLike,
   type CardQueryNode,
@@ -109,23 +109,27 @@ function translate(node: CardQueryNode, opts: CardWhereOptions): SQL | undefined
 
 function translateTerm(term: TermNode, opts: CardWhereOptions): SQL {
   switch (term.field) {
-    case 'text': {
-      // bareword → substring match over front ∥ back ∥ clozeText.
-      const pat = substringPattern(term.value);
-      return or(
-        ilike(cards.front, pat),
-        ilike(cards.back, pat),
-        // clozeText is nullable; ILIKE on NULL is NULL (not matched) — fine.
-        ilike(cards.clozeText, pat),
-      )!;
-    }
+    case 'text':
+    case 'cloze':
+      // bareword / `cloze:` (aliased) → substring over the denormalized
+      // renderText (plaintext search cache). `cloze:` is no longer a distinct
+      // column — it reads the same rendered plaintext as a bareword (C1).
+      return ilike(cards.renderText, substringPattern(term.value));
 
     case 'front':
-      return fieldMatch(cards.front, term.value);
+      return fieldMatch(cards.renderFrontText, term.value);
     case 'back':
-      return fieldMatch(cards.back, term.value);
-    case 'cloze':
-      return clozeFieldMatch(term.value);
+      return fieldMatch(cards.renderBackText, term.value);
+
+    case 'field':
+      return fieldValueMatch(term.fieldName ?? '', term.value);
+
+    case 'note':
+      // `note:` → note-type name (substring), cross-table via EXISTS.
+      return noteTypeMatch(sql`nt.name ILIKE ${substringPattern(term.value)}`);
+
+    case 'template':
+      return templateMatch(term.value);
 
     case 'deck': {
       const ids = opts.resolveDeckIds(term.value, term.nested ?? true);
@@ -140,11 +144,7 @@ function translateTerm(term: TermNode, opts: CardWhereOptions): SQL {
       return isMatch(term.value, opts.now);
 
     case 'variant':
-      // Unknown variant → matches nothing (consistent with the predicate's eq).
-      if (term.value !== 'basic' && term.value !== 'cloze' && term.value !== 'type') {
-        return sql`false`;
-      }
-      return eq(cards.variant, term.value);
+      return variantMatch(term.value);
 
     case 'added':
       return withinDays(cards.createdAt, term.value, opts.now);
@@ -154,6 +154,56 @@ function translateTerm(term: TermNode, opts: CardWhereOptions): SQL {
     case 'prop':
       return propMatch(term, opts.now);
   }
+}
+
+// ── cross-table (EXISTS) matchers ─────────────────────────────────────────────
+//
+// Cross-table operators (C-1) emit a correlated `EXISTS (... WHERE n.id =
+// cards.note_id AND <predicate>)` so `buildCardWhere` stays a SINGLE-table
+// predicate over `cards` and the tuple-keyset `(sortCol, cards.id)` pagination is
+// untouched. Every literal stays a bound parameter.
+
+/** `EXISTS (SELECT 1 FROM notes n WHERE n.id = cards.note_id AND <inner>)`. */
+function noteExists(inner: SQL): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${notes} n WHERE n.id = ${cards.noteId} AND ${inner})`;
+}
+
+/**
+ * `EXISTS (SELECT 1 FROM notes n JOIN note_types nt ... AND <inner>)`. The inner
+ * predicate may reference `n.` and `nt.`.
+ */
+function noteTypeMatch(inner: SQL): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${notes} n JOIN ${noteTypes} nt ON nt.id = n.note_type_id WHERE n.id = ${cards.noteId} AND ${inner})`;
+}
+
+/**
+ * `field:Name=X` → the note's `field_values->>'Name'` matched with substring /
+ * wildcard semantics (mirrors the client `fieldValueMatch`). A bare `field:Name`
+ * (value === '') → the field exists and is non-empty.
+ */
+function fieldValueMatch(name: string, value: string): SQL {
+  if (name === '') return sql`false`;
+  if (value === '') {
+    return noteExists(sql`btrim(n.field_values->>${name}) <> '' AND n.field_values->>${name} IS NOT NULL`);
+  }
+  return noteExists(sql`n.field_values->>${name} ILIKE ${substringPattern(value)}`);
+}
+
+/** `template:N` → the card's template ordinal. Non-numeric → matches nothing. */
+function templateMatch(value: string): SQL {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return sql`false`;
+  return eq(cards.templateOrd, n);
+}
+
+/**
+ * `variant:` is a builtin note-type alias. Legacy `basic`/`cloze`/`type` map to
+ * the note-type KIND (`type`→`typein`); other values compare against the kind
+ * directly. Cross-table via the note-type join.
+ */
+function variantMatch(value: string): SQL {
+  const target = value === 'type' ? 'typein' : value;
+  return noteTypeMatch(sql`nt.kind = ${target}`);
 }
 
 // ── text matching ─────────────────────────────────────────────────────────────
@@ -174,35 +224,31 @@ function fieldMatch(col: Column, value: string): SQL {
   return ilike(col, substringPattern(value));
 }
 
-/**
- * `cloze:` matches against the nullable cloze_text column. An empty value means
- * "cloze field is empty" — for a NULL column we treat NULL as empty too, so an
- * empty `cloze:` matches NULL or '' (consistent with the predicate which reads
- * `clozeText ?? ''`).
- */
-function clozeFieldMatch(value: string): SQL {
-  if (value === '') {
-    return or(sql`${cards.clozeText} IS NULL`, eq(cards.clozeText, ''))!;
-  }
-  return ilike(cards.clozeText, substringPattern(value));
-}
-
-// ── tags ──────────────────────────────────────────────────────────────────────
+// ── tags (note-level, cross-table via EXISTS) ────────────────────────────────
+//
+// Tags moved from cards to notes (Anki tags are note-level). `tag:` resolves
+// through the note row: `EXISTS (SELECT 1 FROM notes n WHERE n.id = cards.note_id
+// AND <tags predicate>)`. Preserves case-insensitive exact + wildcard + `tag:none`
+// (mirrors the old cards.tags unnest logic, retargeted to notes.tags).
 
 function tagMatch(value: string): SQL {
   if (value === 'none') {
-    return sql`array_length(${cards.tags}, 1) IS NULL`;
+    return noteExists(sql`array_length(n.tags, 1) IS NULL`);
   }
   if (value.includes('*') || value.includes('_')) {
     // Prefix / wildcard tag: ILIKE each element via unnest. wildcardToSqlLike is
     // an anchored full-pattern match (no implicit wrap) — matches the client
     // predicate's `likeToRegex(value)` over each tag.
     const pat = wildcardToSqlLike(value);
-    return sql`EXISTS (SELECT 1 FROM unnest(${cards.tags}) AS t WHERE t ILIKE ${pat})`;
+    return noteExists(
+      sql`EXISTS (SELECT 1 FROM unnest(n.tags) AS tg WHERE tg ILIKE ${pat})`,
+    );
   }
   // Exact (case-INSENSITIVE) membership — matches the client predicate's
   // `t.toLowerCase() === value.toLowerCase()`. Value stays a bound parameter.
-  return sql`EXISTS (SELECT 1 FROM unnest(${cards.tags}) AS t WHERE lower(t) = lower(${value}))`;
+  return noteExists(
+    sql`EXISTS (SELECT 1 FROM unnest(n.tags) AS tg WHERE lower(tg) = lower(${value}))`,
+  );
 }
 
 // ── is: ───────────────────────────────────────────────────────────────────────

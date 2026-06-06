@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { buildApp } from '../src/app.ts';
-import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
+import { callApp, resetTestDb, seedBasicCard, signUpAndCookie, uniqueEmail } from './helpers.ts';
 
 const app = buildApp();
 
@@ -16,10 +16,9 @@ describe('profile GDPR', () => {
     const deck = await (
       await callApp(app, 'POST', '/decks', { cookie, body: { name: 'D' } })
     ).json<{ id: string }>();
-    await callApp(app, 'POST', '/cards', {
-      cookie,
-      body: { deckId: deck.id, front: 'hi', back: 'hola' },
-    });
+    // Card content is derived from a note now (note-types M1). Seeding a Basic
+    // note also creates the user's Basic note-type → both appear in the export.
+    await seedBasicCard(app, cookie, { deckId: deck.id, front: 'hi', back: 'hola' });
 
     const res = await callApp(app, 'GET', '/profile/export', { cookie });
     expect(res.status).toBe(200);
@@ -28,6 +27,8 @@ describe('profile GDPR', () => {
       user: { email: string };
       profile: unknown;
       decks: unknown[];
+      noteTypes: unknown[];
+      notes: unknown[];
       cards: unknown[];
       reviews: unknown[];
     }>();
@@ -35,6 +36,9 @@ describe('profile GDPR', () => {
     expect(body.user.email).toBe(email);
     expect(body.profile).toBeTruthy();
     expect(body.decks.length).toBe(1);
+    // The export now includes the note-types model (notes + note-types).
+    expect(body.noteTypes.length).toBe(1);
+    expect(body.notes.length).toBe(1);
     expect(body.cards.length).toBe(1);
     expect(Array.isArray(body.reviews)).toBe(true);
   });
@@ -58,10 +62,7 @@ describe('profile GDPR', () => {
     const deck = await (
       await callApp(app, 'POST', '/decks', { cookie, body: { name: 'D' } })
     ).json<{ id: string }>();
-    await callApp(app, 'POST', '/cards', {
-      cookie,
-      body: { deckId: deck.id, front: 'a', back: 'b' },
-    });
+    await seedBasicCard(app, cookie, { deckId: deck.id, front: 'a', back: 'b' });
 
     const del = await callApp(app, 'DELETE', '/profile', {
       cookie,

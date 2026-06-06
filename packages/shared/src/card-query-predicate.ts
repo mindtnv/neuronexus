@@ -23,17 +23,34 @@ import type {
  * Minimal structural shape a card must satisfy to be filtered. Built from the UI
  * `Card` (or a server row) by the caller. Timestamps are epoch milliseconds.
  *
+ * Note-types model (M1, plan Principle 1): the content fields are the SERVER-
+ * RENDERED plaintext columns (`renderText`/`renderFrontText`/`renderBackText`) —
+ * the predicate consumes them VERBATIM and NEVER re-renders or re-strips cloze.
+ * Cross-note operators read `fieldValues` (the note's sanitized field values),
+ * `noteTypeKind`/`noteTypeName` (note-type identity) and `templateOrd`.
+ *
  * Adapter note: `scheduledDays` must come from the FSRS scheduled interval
  * (`card.fsrs.scheduled_days`, snake_case in ts-fsrs / `mappers.ts:49`) — that
  * is what `prop:ivl` reads. `state` is the lowercase label
  * (`new|learning|review|relearning`), matching the DB column and the server.
  */
 export interface CardLike {
-  front: string;
-  back: string;
-  clozeText?: string | null;
+  /** Server-rendered plaintext (bareword / `cloze:` target). VERBATIM, never re-rendered. */
+  renderText: string;
+  /** Server-rendered plaintext front (`front:` target). */
+  renderFrontText: string;
+  /** Server-rendered plaintext back (`back:` target). */
+  renderBackText: string;
+  /** Note field values keyed by field name (`field:Name=X` target). */
+  fieldValues: Record<string, string>;
+  /** Note-type render kind — `variant:` builtin alias target. */
+  noteTypeKind: 'basic' | 'cloze' | 'typein' | 'custom';
+  /** Note-type display name — `note:` target. */
+  noteTypeName: string;
+  /** Template ordinal — `template:` numeric-ordinal target. */
+  templateOrd: number;
+  /** Note-level tags (`tag:` target). */
   tags: string[];
-  variant: 'basic' | 'cloze' | 'type';
   deckId: string;
   state: CardState;
   suspended: boolean;
@@ -99,18 +116,24 @@ function evalNode(node: CardQueryNode, card: CardLike, ctx: PredicateContext): b
 function evalTerm(term: TermNode, card: CardLike, ctx: PredicateContext): boolean {
   switch (term.field) {
     case 'text':
-      return (
-        substringMatch(card.front, term.value) ||
-        substringMatch(card.back, term.value) ||
-        substringMatch(card.clozeText ?? '', term.value)
-      );
+    case 'cloze':
+      // bareword / `cloze:` → substring over the server-rendered plaintext.
+      return substringMatch(card.renderText, term.value);
 
     case 'front':
-      return fieldMatch(card.front, term.value);
+      return fieldMatch(card.renderFrontText, term.value);
     case 'back':
-      return fieldMatch(card.back, term.value);
-    case 'cloze':
-      return fieldMatch(card.clozeText ?? '', term.value);
+      return fieldMatch(card.renderBackText, term.value);
+
+    case 'field':
+      return fieldValueMatch(card.fieldValues, term.fieldName ?? '', term.value);
+
+    case 'note':
+      // `note:` → note-type name (substring, case-insensitive).
+      return substringMatch(card.noteTypeName, term.value);
+
+    case 'template':
+      return templateMatch(card, term.value);
 
     case 'deck': {
       const ids = ctx.resolveDeckIds(term.value, term.nested ?? true);
@@ -124,7 +147,7 @@ function evalTerm(term: TermNode, card: CardLike, ctx: PredicateContext): boolea
       return isMatch(term.value, card, ctx.now);
 
     case 'variant':
-      return card.variant === term.value;
+      return variantMatch(card, term.value);
 
     case 'added':
       return withinDays(card.createdAt, term.value, ctx.now);
@@ -134,6 +157,44 @@ function evalTerm(term: TermNode, card: CardLike, ctx: PredicateContext): boolea
     case 'prop':
       return propMatch(term, card, ctx.now);
   }
+}
+
+/**
+ * `field:Name=X` matching. The note field VALUE is HTML — we match the raw value
+ * with substring/wildcard semantics, mirroring the server's `field_values->>Name
+ * ILIKE`. A bare `field:Name` (value === '' with fieldName set) means "field
+ * exists and is non-empty".
+ */
+function fieldValueMatch(
+  fieldValues: Record<string, string>,
+  name: string,
+  value: string,
+): boolean {
+  if (name === '') return false;
+  const v = fieldValues[name];
+  if (v === undefined) return false;
+  if (value === '') return v.trim() !== '';
+  return fieldMatch(v, value);
+}
+
+/**
+ * `variant:` is a builtin note-type alias. The legacy values `basic`/`cloze`/
+ * `type` map to the note-type KIND (`type`→`typein`). Otherwise compare against
+ * the kind directly (so `variant:custom` works too).
+ */
+function variantMatch(card: CardLike, value: string): boolean {
+  const target = value === 'type' ? 'typein' : value;
+  return card.noteTypeKind === target;
+}
+
+/**
+ * `template:` matches a card template by ordinal (numeric value) — mirrors the
+ * server's `cards.template_ord = N`. A non-numeric value matches nothing.
+ */
+function templateMatch(card: CardLike, value: string): boolean {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return false;
+  return card.templateOrd === n;
 }
 
 // ── text matching ─────────────────────────────────────────────────────────────
@@ -150,17 +211,14 @@ function substringMatch(haystack: string, value: string): boolean {
 }
 
 /**
- * `field:value` matching. Empty value (`front:`) → field must be empty (AC7). If
- * the value contains an explicit wildcard, it is treated as a full-pattern match
- * over the field; otherwise it is a substring match.
+ * `field:value` matching. Empty value (`front:`) → field must be empty (AC7).
+ * Otherwise substring semantics: wrap the value in implicit `*…*` so both literal
+ * and explicit-wildcard patterns match anywhere (the old wildcard branch was
+ * behaviorally identical to this `substringMatch` fallthrough). Mirrors the
+ * server's `fieldMatch` (`ilike(col, *value*)`).
  */
 function fieldMatch(fieldValue: string, value: string): boolean {
   if (value === '') return fieldValue === '';
-  if (value.includes('*') || value.includes('_')) {
-    // Explicit pattern. Substring semantics: allow the pattern to match anywhere
-    // by wrapping with implicit `*` on both sides.
-    return likeToRegex(`*${value}*`).test(fieldValue);
-  }
   return substringMatch(fieldValue, value);
 }
 

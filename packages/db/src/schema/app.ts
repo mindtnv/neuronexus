@@ -4,12 +4,14 @@ import {
   doublePrecision,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
   timestamp,
   uuid,
 } from 'drizzle-orm/pg-core';
+import type { CardTemplate, FieldValues, NoteField } from '@neuronexus/shared';
 import { user } from './auth.ts';
 
 // Catalog of plant species. All species are available to every user (the
@@ -35,7 +37,6 @@ export const deckColor = pgEnum('deck_color', [
   'neutral',
 ]);
 export const plantSpecies = pgEnum('plant_species', plantSpeciesEnum);
-export const cardVariant = pgEnum('card_variant', ['basic', 'cloze', 'type']);
 export const cardState = pgEnum('card_state', ['new', 'learning', 'review', 'relearning']);
 
 // ── profile ─────────────────────────────────────────────────────────────────
@@ -101,7 +102,68 @@ export const decks = pgTable(
   ],
 );
 
+// ── note_types ────────────────────────────────────────────────────────────────
+// Anki-style note-type definitions (Milestone 1, Decision B1 + C-4). A note-type
+// owns a set of fields + card templates + styling. `userId` is NULLABLE: a NULL
+// owner means a GLOBAL built-in (visible to every user), seeded once with
+// `isBuiltin = true`. User-created / cloned types carry `userId = <owner>`.
+// `fields` / `templates` are typed JSON (NoteField[] / CardTemplate[] from
+// @neuronexus/shared). `kind` is the RenderKind denormalized for fast render-mode
+// selection.
+
+export const noteTypes = pgTable(
+  'note_types',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // NULLABLE → global builtin (C-4). No ON DELETE needed for NULL rows; user
+    // rows cascade when the user is deleted.
+    userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    fields: jsonb('fields').notNull().$type<NoteField[]>(),
+    templates: jsonb('templates').notNull().$type<CardTemplate[]>(),
+    styling: text('styling').notNull().default(''),
+    kind: text('kind').notNull().default('custom'),
+    isBuiltin: boolean('is_builtin').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('note_types_user_idx').on(t.userId)],
+);
+
+// ── notes ─────────────────────────────────────────────────────────────────────
+// A note is the user's content: field values keyed by field name (already
+// sanitized at the save edge) + note-level tags (Anki tags are note-level). Each
+// note generates one-or-more `cards` via the note-type's templates.
+
+export const notes = pgTable(
+  'notes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    noteTypeId: uuid('note_type_id')
+      .notNull()
+      .references(() => noteTypes.id, { onDelete: 'cascade' }),
+    fieldValues: jsonb('field_values').notNull().$type<FieldValues>(),
+    tags: text('tags').array().notNull().default(sql`ARRAY[]::text[]`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('notes_user_idx').on(t.userId),
+    // GIN on tags (re-homed from cards) powers `tag:` array containment.
+    index('notes_tags_gin_idx').using('gin', t.tags),
+    index('notes_user_created_idx').on(t.userId, t.createdAt),
+  ],
+);
+
 // ── cards ───────────────────────────────────────────────────────────────────
+// A card is one (note × template) pairing carrying its own FSRS state. Content
+// is derived from its note via the note-type template; the `render*` columns
+// denormalize PLAINTEXT (tags + cloze stripped) for SQL search only — display
+// HTML is rendered lazily from sanitized field values. `renderKind` lets
+// `/cards/queue` + review pick a render mode with no extra fetch/join.
 // FSRS state is flattened into dedicated columns so `due` can be indexed for
 // cheap "what's due now" queries.
 
@@ -115,11 +177,15 @@ export const cards = pgTable(
     deckId: uuid('deck_id')
       .notNull()
       .references(() => decks.id, { onDelete: 'cascade' }),
-    variant: cardVariant('variant').notNull().default('basic'),
-    front: text('front').notNull(),
-    back: text('back').notNull(),
-    clozeText: text('cloze_text'),
-    tags: text('tags').array().notNull().default(sql`ARRAY[]::text[]`),
+    noteId: uuid('note_id')
+      .notNull()
+      .references(() => notes.id, { onDelete: 'cascade' }),
+    templateOrd: integer('template_ord').notNull().default(0),
+    // Denormalized plaintext (search cache, NOT a security artifact).
+    renderText: text('render_text').notNull().default(''),
+    renderFrontText: text('render_front_text').notNull().default(''),
+    renderBackText: text('render_back_text').notNull().default(''),
+    renderKind: text('render_kind').notNull().default('basic'),
     // FSRS state
     due: timestamp('due', { withTimezone: true }).notNull().defaultNow(),
     stability: doublePrecision('stability').notNull().default(0),
@@ -140,11 +206,11 @@ export const cards = pgTable(
     index('cards_user_idx').on(t.userId),
     index('cards_deck_idx').on(t.deckId),
     index('cards_due_idx').on(t.userId, t.due),
+    index('cards_note_idx').on(t.noteId),
     // Card-database (Browse) query paths:
-    //  - GIN on tags powers `tag:` array containment (`tags @> ARRAY[...]`).
     //  - (user_id, state) and (user_id, created_at) match the hot filter+sort
     //    paths of GET /cards/search (is:/state filters, default created sort).
-    index('cards_tags_gin_idx').using('gin', t.tags),
+    //  - tag: now resolves via notes.tags GIN (notes_tags_gin_idx).
     index('cards_user_state_idx').on(t.userId, t.state),
     index('cards_user_created_idx').on(t.userId, t.createdAt),
   ],
@@ -196,9 +262,21 @@ export const decksRelations = relations(decks, ({ one, many }) => ({
   cards: many(cards),
 }));
 
+export const noteTypesRelations = relations(noteTypes, ({ one, many }) => ({
+  user: one(user, { fields: [noteTypes.userId], references: [user.id] }),
+  notes: many(notes),
+}));
+
+export const notesRelations = relations(notes, ({ one, many }) => ({
+  user: one(user, { fields: [notes.userId], references: [user.id] }),
+  noteType: one(noteTypes, { fields: [notes.noteTypeId], references: [noteTypes.id] }),
+  cards: many(cards),
+}));
+
 export const cardsRelations = relations(cards, ({ one, many }) => ({
   user: one(user, { fields: [cards.userId], references: [user.id] }),
   deck: one(decks, { fields: [cards.deckId], references: [decks.id] }),
+  note: one(notes, { fields: [cards.noteId], references: [notes.id] }),
   reviews: many(reviews),
 }));
 
@@ -214,6 +292,10 @@ export type Profile = typeof profile.$inferSelect;
 export type NewProfile = typeof profile.$inferInsert;
 export type Deck = typeof decks.$inferSelect;
 export type NewDeck = typeof decks.$inferInsert;
+export type NoteType = typeof noteTypes.$inferSelect;
+export type NewNoteType = typeof noteTypes.$inferInsert;
+export type Note = typeof notes.$inferSelect;
+export type NewNote = typeof notes.$inferInsert;
 export type Card = typeof cards.$inferSelect;
 export type NewCard = typeof cards.$inferInsert;
 export type Review = typeof reviews.$inferSelect;

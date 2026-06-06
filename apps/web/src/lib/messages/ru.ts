@@ -11,6 +11,7 @@ import overlays from './ru/overlays';
 import graph from './ru/graph';
 import empty from './ru/empty';
 import sessionComplete from './ru/session-complete';
+import noteTypes from './ru/note-types';
 
 const messages = {
   ...common,
@@ -26,6 +27,7 @@ const messages = {
   graph,
   empty,
   session: sessionComplete,
+  noteTypes,
 };
 
 export default messages;
