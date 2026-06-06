@@ -3,11 +3,16 @@
 // the 3 global builtin note-types exist, then wipes the user's existing decks /
 // notes / cards / reviews (cascade handles the rest) and rebuilds.
 //
-//   bun run db:seed -- --email mindtnv@gmail.com
+//   bun run db:seed                                   # default demo user
+//   bun run db:seed -- --email mindtnv@gmail.com      # explicit email
 //
 // or set the email via env:
 //
 //   SEED_USER_EMAIL=mindtnv@gmail.com bun run db:seed
+//
+// With no email given it targets the local demo account
+// (demo@neuronexus.local / demodemo123), creating it via BetterAuth on first
+// run so you can sign in immediately without going through the sign-up flow.
 //
 // Each seed entry is a NOTE referencing a builtin note-type. The seeder runs
 // `generateCards(noteType, fieldValues)` to produce one-or-more `cards` rows
@@ -28,11 +33,18 @@ import {
   type NoteTypeDef,
   type Rating,
 } from '@neuronexus/shared';
+import { auth } from '@neuronexus/auth/server';
 import { db } from './client.ts';
 import { cards, decks, notes, noteTypes, profile, reviews, user } from './schema/index.ts';
 import { SEED_DECKS, type DeckSeed, type NoteSeed } from './seed-data.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Local demo account used when no --email / SEED_USER_EMAIL is given. Created
+// on first run via BetterAuth so the credentials work in the web sign-in form.
+const DEMO_EMAIL = 'demo@neuronexus.local';
+const DEMO_PASSWORD = 'demodemo123';
+const DEMO_NAME = 'Demo';
 
 function parseEmail(): string {
   const args = process.argv.slice(2);
@@ -40,9 +52,33 @@ function parseEmail(): string {
   if (idx >= 0 && args[idx + 1]) return args[idx + 1]!;
   const envEmail = process.env.SEED_USER_EMAIL;
   if (envEmail) return envEmail;
-  throw new Error(
-    'No email provided. Usage: bun run db:seed -- --email you@example.com  (or SEED_USER_EMAIL env)',
-  );
+  // No email given → fall back to the local demo account.
+  return DEMO_EMAIL;
+}
+
+/**
+ * Look up the seed target by email. If it doesn't exist AND it's the demo
+ * account, create it through BetterAuth (so the password hash matches what the
+ * sign-in verifier expects). For any other email we refuse to auto-create — the
+ * caller is expected to have signed up in the web app first.
+ */
+async function resolveTargetUser(email: string): Promise<{ id: string; email: string }> {
+  const [existing] = await db.select().from(user).where(eq(user.email, email));
+  if (existing) return existing;
+
+  if (email !== DEMO_EMAIL) {
+    throw new Error(`User ${email} not found. Sign up in the web app first.`);
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`[seed] demo user ${email} not found — creating via BetterAuth`);
+  await auth.api.signUpEmail({
+    body: { email, password: DEMO_PASSWORD, name: DEMO_NAME },
+  });
+
+  const [created] = await db.select().from(user).where(eq(user.email, email));
+  if (!created) throw new Error(`failed to create demo user ${email}`);
+  return created;
 }
 
 /**
@@ -316,10 +352,7 @@ async function bumpProfile(userId: string, totalReviews: number) {
 
 async function main() {
   const email = parseEmail();
-  const [u] = await db.select().from(user).where(eq(user.email, email));
-  if (!u) {
-    throw new Error(`User ${email} not found. Sign up in the web app first.`);
-  }
+  const u = await resolveTargetUser(email);
   // eslint-disable-next-line no-console
   console.log(`[seed] target user: ${u.email} (${u.id})`);
 
