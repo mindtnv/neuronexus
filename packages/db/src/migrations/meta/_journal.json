@@ -43,6 +43,13 @@
       "when": 1780770809315,
       "tag": "0005_little_meltdown",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780777930150,
+      "tag": "0006_icy_nuke",
+      "breakpoints": true
     }
   ]
 }

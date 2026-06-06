@@ -22,6 +22,7 @@ import {
   type Card as FsrsCard,
   type FSRS,
   type Grade,
+  type Steps,
 } from 'ts-fsrs';
 
 export { State, FsrsRating };
@@ -47,6 +48,12 @@ const ratingMap: Record<Rating, Grade> = {
 // ── defaults ────────────────────────────────────────────────────────────────
 // These match Anki's out-of-the-box settings for a new user. Override
 // per-user by passing `{ requestRetention, enableFuzz }` into `getScheduler`.
+
+// Single source for the desired-retention clamp bounds. Used by
+// `clampRetention` (the scheduler-side clamp) AND by preset/profile write-time
+// validation (apps/api) so the accepted range can't drift from the clamp.
+export const MIN_RETENTION = 0.7;
+export const MAX_RETENTION = 0.99;
 
 export const ANKI_DEFAULTS = {
   requestRetention: 0.9,
@@ -74,6 +81,22 @@ export interface SchedulerOptions {
    * exercising the fuzz code path.
    */
   deterministicSeedCardId?: string;
+  /**
+   * Per-deck learning steps (e.g. `['1m','10m']` or `['1d','3d']`). Threaded
+   * from the resolved deck config. Defaults to `ANKI_DEFAULTS.learningSteps`.
+   * Distinct step sets get distinct memoized schedulers via the cache key.
+   */
+  learningSteps?: readonly string[];
+  /**
+   * Per-deck relearning steps. Threaded from the resolved deck config.
+   * Defaults to `ANKI_DEFAULTS.relearningSteps`.
+   */
+  relearningSteps?: readonly string[];
+  /**
+   * Per-deck maximum interval cap (days). Defaults to
+   * `ANKI_DEFAULTS.maximumInterval` (36500 ≈ 100y).
+   */
+  maximumInterval?: number;
 }
 
 const schedulerCache = new Map<string, FSRS>();
@@ -82,12 +105,20 @@ function cacheKey(opts: SchedulerOptions): string {
   const retention = clampRetention(opts.requestRetention ?? ANKI_DEFAULTS.requestRetention);
   const fuzz = opts.enableFuzz ?? ANKI_DEFAULTS.enableFuzz;
   const seed = opts.deterministicSeedCardId ?? '';
-  return `${retention.toFixed(3)}|${fuzz ? 1 : 0}|${seed}`;
+  const learning = (opts.learningSteps ?? ANKI_DEFAULTS.learningSteps).join(',');
+  const relearning = (opts.relearningSteps ?? ANKI_DEFAULTS.relearningSteps).join(',');
+  const maxIvl = opts.maximumInterval ?? ANKI_DEFAULTS.maximumInterval;
+  // `enable_short_term` is deliberately NOT in the key: it is an invariant
+  // (always `ANKI_DEFAULTS.enableShortTerm`) and never varies per-deck, so the
+  // key is complete without it. If it ever became a preset field, the key
+  // would mis-memoize across decks that share retention/fuzz/seed/steps but
+  // differ on short-term clamping — so it is pinned invariant on purpose.
+  return `${retention.toFixed(3)}|${fuzz ? 1 : 0}|${seed}|${learning}|${relearning}|${maxIvl}`;
 }
 
 function clampRetention(v: number): number {
   if (!Number.isFinite(v)) return ANKI_DEFAULTS.requestRetention;
-  return Math.min(0.99, Math.max(0.7, v));
+  return Math.min(MAX_RETENTION, Math.max(MIN_RETENTION, v));
 }
 
 export function getScheduler(opts: SchedulerOptions = {}): FSRS {
@@ -97,11 +128,15 @@ export function getScheduler(opts: SchedulerOptions = {}): FSRS {
 
   const params = generatorParameters({
     request_retention: clampRetention(opts.requestRetention ?? ANKI_DEFAULTS.requestRetention),
-    maximum_interval: ANKI_DEFAULTS.maximumInterval,
+    maximum_interval: opts.maximumInterval ?? ANKI_DEFAULTS.maximumInterval,
     enable_fuzz: opts.enableFuzz ?? ANKI_DEFAULTS.enableFuzz,
+    // Invariant — never sourced from opts (Principle 2); see cacheKey().
     enable_short_term: ANKI_DEFAULTS.enableShortTerm,
-    learning_steps: [...ANKI_DEFAULTS.learningSteps],
-    relearning_steps: [...ANKI_DEFAULTS.relearningSteps],
+    // Per-deck preset steps arrive as plain `string[]` (stored as `text[]`,
+    // grammar-validated upstream by the resolver); ts-fsrs types steps as a
+    // `StepUnit` template-literal union, so cast at this boundary.
+    learning_steps: [...(opts.learningSteps ?? ANKI_DEFAULTS.learningSteps)] as unknown as Steps,
+    relearning_steps: [...(opts.relearningSteps ?? ANKI_DEFAULTS.relearningSteps)] as unknown as Steps,
   });
   const scheduler = fsrs(params);
 

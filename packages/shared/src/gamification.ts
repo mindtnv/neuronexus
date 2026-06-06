@@ -97,6 +97,41 @@ export function nextTodayMinutes(opts: {
 }
 
 /**
+ * Advance the GLOBAL per-day new-card / review counters for one regular grade.
+ * Mirrors `nextTodayMinutes`'s calendar-day reset (UTC, ISO `yyyy-mm-dd`):
+ *
+ *   - same day (`previousDate === today`) → bump the lane the grade belongs to
+ *     (`introducedNew` ? new : review), the other lane unchanged
+ *   - new day (or null `previousDate`)     → reset both, set the chosen lane to
+ *     1, stamp today
+ *
+ * `introducedNew` is the card's PRE-grade `state === 'new'` — a "first
+ * introduction" counts toward the new lane, every other grade (incl. relearning
+ * reps) counts toward the review lane. Pure: no clock, no DB.
+ */
+export function nextDailyCounts(opts: {
+  previousNew: number;
+  previousReviews: number;
+  previousDate: string | null | undefined;
+  today: string;
+  introducedNew: boolean;
+}): { newIntroducedToday: number; reviewsDoneToday: number; date: string } {
+  const { previousNew, previousReviews, previousDate, today, introducedNew } = opts;
+  if (previousDate === today) {
+    return {
+      newIntroducedToday: previousNew + (introducedNew ? 1 : 0),
+      reviewsDoneToday: previousReviews + (introducedNew ? 0 : 1),
+      date: today,
+    };
+  }
+  return {
+    newIntroducedToday: introducedNew ? 1 : 0,
+    reviewsDoneToday: introducedNew ? 0 : 1,
+    date: today,
+  };
+}
+
+/**
  * Mark the daily goal "met" for today (idempotent within a single day). If
  * the user passed the threshold, this is the first time in this session that
  * they've crossed it, and we haven't already credited today — increment

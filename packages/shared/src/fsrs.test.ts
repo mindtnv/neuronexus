@@ -86,6 +86,144 @@ describe('gradeFsrs', () => {
   });
 });
 
+describe('per-deck steps + maxInterval threading (Phase 2)', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+
+  // Each set pairs a learning + relearning step set. Per the Phase-0 caveat:
+  // under the invariant `enable_short_term:true`, day-scale cards may graduate
+  // to Review earlier than a naive step-walk — so we assert on the configured
+  // `due` VALUE (which tracks the first step), NOT on `state`.
+  const STEP_SETS = [
+    { learningSteps: ['1m', '10m'], relearningSteps: ['10m'] },
+    { learningSteps: ['1m', '5m', '30m'], relearningSteps: ['5m'] },
+    { learningSteps: ['1d'], relearningSteps: ['1d'] },
+    { learningSteps: ['1d', '3d'], relearningSteps: ['1d'] },
+  ] as const;
+
+  test('four step-sets each produce a distinct first-grade due for Rating.Good', () => {
+    const dues = STEP_SETS.map((set) => {
+      const card = newFsrsCard(now);
+      const { card: next } = gradeFsrs(card, 3, now, { enableFuzz: false, ...set });
+      return next.due.getTime();
+    });
+    // All four due values must be distinct (no cross-contamination between
+    // step sets via the shared scheduler cache).
+    expect(new Set(dues).size).toBe(STEP_SETS.length);
+  });
+
+  test('first-grade due tracks the configured first learning step', () => {
+    // `['1m', ...]` → first Good step ≈ +10m (second step); `['1d', ...]` →
+    // first Good step ≈ +1 day. The day-scale set must schedule far further out
+    // than the sub-day set regardless of state under enable_short_term.
+    const subDay = gradeFsrs(newFsrsCard(now), 3, now, {
+      enableFuzz: false,
+      learningSteps: ['1m', '10m'],
+      relearningSteps: ['10m'],
+    }).card;
+    const dayScale = gradeFsrs(newFsrsCard(now), 3, now, {
+      enableFuzz: false,
+      learningSteps: ['1d'],
+      relearningSteps: ['1d'],
+    }).card;
+    expect(dayScale.due.getTime()).toBeGreaterThan(subDay.due.getTime());
+    // Sub-day: due lands within the same calendar day (well under 24h).
+    expect(subDay.due.getTime() - now.getTime()).toBeLessThan(24 * 60 * 60 * 1000);
+    // Day-scale: due lands at least ~a day out.
+    expect(dayScale.due.getTime() - now.getTime()).toBeGreaterThanOrEqual(20 * 60 * 60 * 1000);
+  });
+
+  test('cache: identical opts produce identical due sequences (cache hit)', () => {
+    const opts = {
+      enableFuzz: false,
+      learningSteps: ['1m', '5m', '30m'],
+      relearningSteps: ['5m'],
+    } as const;
+    const a = gradeFsrs(newFsrsCard(now), 3, now, opts).card.due.getTime();
+    const b = gradeFsrs(newFsrsCard(now), 3, now, opts).card.due.getTime();
+    expect(a).toBe(b);
+  });
+
+  test('cache: distinct step-sets do NOT contaminate each other', () => {
+    const setA = {
+      enableFuzz: false,
+      learningSteps: ['1m', '10m'],
+      relearningSteps: ['10m'],
+    } as const;
+    const setB = {
+      enableFuzz: false,
+      learningSteps: ['1d', '3d'],
+      relearningSteps: ['1d'],
+    } as const;
+    // Grade A, then B, then A again — A's result must be stable (B did not
+    // overwrite A's memoized scheduler).
+    const a1 = gradeFsrs(newFsrsCard(now), 3, now, setA).card.due.getTime();
+    gradeFsrs(newFsrsCard(now), 3, now, setB);
+    const a2 = gradeFsrs(newFsrsCard(now), 3, now, setA).card.due.getTime();
+    expect(a1).toBe(a2);
+  });
+
+  test('maximumInterval clamps the first matured interval and suppresses growth', () => {
+    // An Easy grade graduates a new card straight to Review with a scheduled
+    // interval. A small `maximumInterval` clamps that first interval exactly to
+    // the cap; an uncapped scheduler schedules far further out. Driving several
+    // more Easy grades, the capped interval plateaus while the uncapped one
+    // explodes — proving maxInterval reaches the scheduler via the cache key.
+    function intervals(maximumInterval: number): number[] {
+      let card = newFsrsCard(now);
+      let at = now;
+      const out: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        const res = gradeFsrs(card, 4, at, { enableFuzz: false, maximumInterval });
+        card = res.card;
+        out.push(card.scheduled_days);
+        at = new Date(card.due.getTime() + 1_000);
+      }
+      return out;
+    }
+    const capped = intervals(5); // 5-day cap
+    const uncapped = intervals(ANKI_DEFAULTS.maximumInterval);
+    // First graduated interval is clamped exactly to the cap.
+    expect(capped[0]).toBe(5);
+    // Capped run plateaus low; uncapped run grows far past it.
+    expect(Math.max(...capped)).toBeLessThan(20);
+    expect(uncapped[uncapped.length - 1]).toBeGreaterThan(Math.max(...capped));
+  });
+});
+
+describe('default-path determinism regression (Phase 2 guard)', () => {
+  // Guards that the existing apps/api reviews/cards exact-`due` assertions
+  // won't regress: the default call (no steps) must be byte-identical to an
+  // explicit call with the ANKI_DEFAULTS step set + maxInterval.
+  test('no-opts grade equals explicit ANKI_DEFAULTS grade (byte-identical due)', () => {
+    const now = new Date('2026-01-01T00:00:00Z');
+    const implicit = gradeFsrs(newFsrsCard(now), 3, now, { enableFuzz: false }).card;
+    const explicit = gradeFsrs(newFsrsCard(now), 3, now, {
+      enableFuzz: false,
+      learningSteps: ANKI_DEFAULTS.learningSteps,
+      relearningSteps: ANKI_DEFAULTS.relearningSteps,
+      maximumInterval: ANKI_DEFAULTS.maximumInterval,
+    }).card;
+    expect(implicit.due.getTime()).toBe(explicit.due.getTime());
+    expect(implicit.stability).toBe(explicit.stability);
+    expect(implicit.difficulty).toBe(explicit.difficulty);
+    expect(implicit.scheduled_days).toBe(explicit.scheduled_days);
+  });
+
+  test('all four ratings: no-opts equals explicit ANKI_DEFAULTS (regression guard)', () => {
+    const now = new Date('2026-01-01T00:00:00Z');
+    for (const rating of [1, 2, 3, 4] as const) {
+      const implicit = gradeFsrs(newFsrsCard(now), rating, now, { enableFuzz: false }).card;
+      const explicit = gradeFsrs(newFsrsCard(now), rating, now, {
+        enableFuzz: false,
+        learningSteps: ANKI_DEFAULTS.learningSteps,
+        relearningSteps: ANKI_DEFAULTS.relearningSteps,
+        maximumInterval: ANKI_DEFAULTS.maximumInterval,
+      }).card;
+      expect(implicit.due.getTime()).toBe(explicit.due.getTime());
+    }
+  });
+});
+
 describe('previewGrades', () => {
   test('returns four distinct cards, one per rating', () => {
     const now = new Date('2026-01-01T00:00:00Z');

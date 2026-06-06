@@ -65,6 +65,11 @@ export const profile = pgTable('profile', {
   dailyGoalMetCount: integer('daily_goal_met_count').notNull().default(0),
   dailyGoalMetDate: text('daily_goal_met_date'),
   dailyGoalMinutes: integer('daily_goal_minutes').notNull().default(15),
+  // Per-day new-card + review counters. Reset when `dailyCountsDate` (ISO
+  // yyyy-mm-dd) differs from today — same pattern as `todayMinutes` ledger.
+  newIntroducedToday: integer('new_introduced_today').notNull().default(0),
+  reviewsDoneToday: integer('reviews_done_today').notNull().default(0),
+  dailyCountsDate: text('daily_counts_date'),
   desiredRetention: doublePrecision('desired_retention'),
   plantSpecies: plantSpecies('plant_species').notNull().default('fern'),
   plantStage: integer('plant_stage').notNull().default(0),
@@ -75,6 +80,39 @@ export const profile = pgTable('profile', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── deck_options_preset ──────────────────────────────────────────────────────
+// Named FSRS / scheduling preset that can be attached to one or more decks.
+// When a deck's `presetId` is set, its FSRS parameters (steps, retention,
+// limits) are resolved from the preset instead of the user's global profile.
+// `desiredRetention` is NULLABLE — when NULL, falls back to profile-level.
+
+export const deckOptionsPreset = pgTable(
+  'deck_options_preset',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    newPerDay: integer('new_per_day').notNull().default(20),
+    reviewsPerDay: integer('reviews_per_day').notNull().default(200),
+    learningSteps: text('learning_steps')
+      .array()
+      .notNull()
+      .default(sql`ARRAY['1m','10m']::text[]`),
+    relearningSteps: text('relearning_steps')
+      .array()
+      .notNull()
+      .default(sql`ARRAY['10m']::text[]`),
+    desiredRetention: doublePrecision('desired_retention'),
+    leechThreshold: integer('leech_threshold').notNull().default(8),
+    maximumInterval: integer('maximum_interval').notNull().default(36500),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('deck_options_preset_user_idx').on(t.userId)],
+);
 
 // ── decks ───────────────────────────────────────────────────────────────────
 // Self-referential parent for Anki-style nested decks. ON DELETE CASCADE at the
@@ -94,11 +132,17 @@ export const decks = pgTable(
     color: deckColor('color').notNull().default('lime'),
     icon: text('icon'),
     species: plantSpecies('species').notNull().default('fern'),
+    // Optional binding to a named FSRS preset. ON DELETE SET NULL so deleting a
+    // preset unbinds decks automatically rather than cascading the deck delete.
+    presetId: uuid('preset_id').references(() => deckOptionsPreset.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('decks_user_idx').on(t.userId),
     index('decks_parent_idx').on(t.parentId),
+    index('decks_preset_idx').on(t.presetId),
   ],
 );
 
@@ -279,10 +323,39 @@ export const media = pgTable(
   (t) => [index('media_user_idx').on(t.userId)],
 );
 
+// ── filtered_deck ────────────────────────────────────────────────────────────
+// A filtered (cram) deck: a saved query + scheduling policy that pulls cards
+// matching arbitrary criteria into a temporary study session without moving
+// them out of their home decks permanently. `sort_order` and `card_limit` use
+// explicit column names to avoid SQL reserved words `order`/`limit`.
+
+export const filteredDeck = pgTable(
+  'filtered_deck',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    query: text('query').notNull(),
+    sortOrder: text('sort_order').notNull().default('due'),
+    cardLimit: integer('card_limit').notNull().default(50),
+    includeSuspended: boolean('include_suspended').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('filtered_deck_user_idx').on(t.userId)],
+);
+
 // ── relations ──────────────────────────────────────────────────────────────
 
 export const profileRelations = relations(profile, ({ one }) => ({
   user: one(user, { fields: [profile.userId], references: [user.id] }),
+}));
+
+export const deckOptionsPresetRelations = relations(deckOptionsPreset, ({ one, many }) => ({
+  user: one(user, { fields: [deckOptionsPreset.userId], references: [user.id] }),
+  decks: many(decks),
 }));
 
 export const decksRelations = relations(decks, ({ one, many }) => ({
@@ -293,6 +366,7 @@ export const decksRelations = relations(decks, ({ one, many }) => ({
     relationName: 'deck_parent',
   }),
   children: many(decks, { relationName: 'deck_parent' }),
+  preset: one(deckOptionsPreset, { fields: [decks.presetId], references: [deckOptionsPreset.id] }),
   cards: many(cards),
 }));
 
@@ -324,6 +398,10 @@ export const mediaRelations = relations(media, ({ one }) => ({
   user: one(user, { fields: [media.userId], references: [user.id] }),
 }));
 
+export const filteredDeckRelations = relations(filteredDeck, ({ one }) => ({
+  user: one(user, { fields: [filteredDeck.userId], references: [user.id] }),
+}));
+
 // ── inferred types ─────────────────────────────────────────────────────────
 
 export type Profile = typeof profile.$inferSelect;
@@ -340,3 +418,7 @@ export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type Media = typeof media.$inferSelect;
 export type NewMedia = typeof media.$inferInsert;
+export type DeckOptionsPreset = typeof deckOptionsPreset.$inferSelect;
+export type NewDeckOptionsPreset = typeof deckOptionsPreset.$inferInsert;
+export type FilteredDeck = typeof filteredDeck.$inferSelect;
+export type NewFilteredDeck = typeof filteredDeck.$inferInsert;

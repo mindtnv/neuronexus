@@ -5,6 +5,7 @@ import {
   clampFreezes,
   maybeStampDailyGoal,
   MAX_STREAK_FREEZES,
+  nextDailyCounts,
   nextTodayMinutes,
 } from './gamification.ts';
 
@@ -124,6 +125,76 @@ describe('nextTodayMinutes', () => {
       deltaMs: 0,
     });
     expect(r.minutes).toBe(10);
+  });
+});
+
+// ── daily counts (new / review per-day counters) ────────────────────────────
+
+describe('nextDailyCounts', () => {
+  test('same day, new-card grade — new +1, reviews unchanged', () => {
+    const r = nextDailyCounts({
+      previousNew: 4,
+      previousReviews: 17,
+      previousDate: '2026-04-18',
+      today: '2026-04-18',
+      introducedNew: true,
+    });
+    expect(r).toEqual({ newIntroducedToday: 5, reviewsDoneToday: 17, date: '2026-04-18' });
+  });
+
+  test('same day, review grade — reviews +1, new unchanged', () => {
+    const r = nextDailyCounts({
+      previousNew: 4,
+      previousReviews: 17,
+      previousDate: '2026-04-18',
+      today: '2026-04-18',
+      introducedNew: false,
+    });
+    expect(r).toEqual({ newIntroducedToday: 4, reviewsDoneToday: 18, date: '2026-04-18' });
+  });
+
+  test('new day, new-card grade — both reset, new lane = 1, date stamped', () => {
+    const r = nextDailyCounts({
+      previousNew: 19,
+      previousReviews: 150,
+      previousDate: '2026-04-17',
+      today: '2026-04-18',
+      introducedNew: true,
+    });
+    expect(r).toEqual({ newIntroducedToday: 1, reviewsDoneToday: 0, date: '2026-04-18' });
+  });
+
+  test('new day, review grade — both reset, review lane = 1, date stamped', () => {
+    const r = nextDailyCounts({
+      previousNew: 19,
+      previousReviews: 150,
+      previousDate: '2026-04-17',
+      today: '2026-04-18',
+      introducedNew: false,
+    });
+    expect(r).toEqual({ newIntroducedToday: 0, reviewsDoneToday: 1, date: '2026-04-18' });
+  });
+
+  test('null previous date, new-card grade — initializes to new lane = 1', () => {
+    const r = nextDailyCounts({
+      previousNew: 0,
+      previousReviews: 0,
+      previousDate: null,
+      today: '2026-04-18',
+      introducedNew: true,
+    });
+    expect(r).toEqual({ newIntroducedToday: 1, reviewsDoneToday: 0, date: '2026-04-18' });
+  });
+
+  test('null previous date, review grade — initializes to review lane = 1', () => {
+    const r = nextDailyCounts({
+      previousNew: 0,
+      previousReviews: 0,
+      previousDate: null,
+      today: '2026-04-18',
+      introducedNew: false,
+    });
+    expect(r).toEqual({ newIntroducedToday: 0, reviewsDoneToday: 1, date: '2026-04-18' });
   });
 });
 
