@@ -3,11 +3,12 @@
 import React, { CSSProperties, ReactNode, useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { NNBtn, NNIcon, NNKbd, NNLogo } from './ui';
+import { NNBtn, NNIcon, NNLogo } from './ui';
 import { APP_NAV, NAV_SECTIONS, NAV_SECTION_LABEL, SETTINGS_NAV, getActiveNavId, type AppNavItem } from './nav-config';
 import { countDueCards } from '@/lib/cards';
 import { signOut } from '@/lib/auth';
 import { useNN } from '@/lib/store';
+import { useUI, useDisplayMode } from '@/lib/ui-store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { LocaleToggle } from './locale-toggle';
@@ -368,22 +369,60 @@ export const NNTopbar = ({
 }) => {
   const bp = useBreakpoint();
   const t = useT();
+  const zenMode = useUI((s) => s.zenMode);
+  const toggleSidebar = useUI((s) => s.toggleSidebar);
+  const displayMode = useDisplayMode();
   const isDesktop = bp === 'desktop';
   const isMobile = bp === 'mobile';
+
+  // Zen (focus) mode hides the whole chrome — the per-page topbar disappears.
+  // Zen is only ever true on /review (guarded in app-shell), so this is safe.
+  if (zenMode) return null;
+
   return (
     <header
       className="nn-chrome"
       style={{
-        height: isMobile ? 54 : 61,
+        height: isMobile ? 48 : 44,
         padding: isMobile ? '0 12px' : '0 24px',
         borderBottom: '1px solid var(--border)',
         display: 'flex',
         alignItems: 'center',
         gap: isMobile ? 8 : 16,
-        background: 'var(--bg)',
+        background: 'var(--surface)',
+        backdropFilter: 'blur(18px)',
+        WebkitBackdropFilter: 'blur(18px)',
+        // Standalone PWA only: pad past the device top inset. A normal browser
+        // tab already places the status/URL bar inside that inset, so padding it
+        // unconditionally on mobile would double-pad.
+        paddingTop: displayMode === 'standalone' ? 'env(safe-area-inset-top, 0px)' : undefined,
+        boxSizing: 'content-box',
         flexShrink: 0,
       }}
     >
+      {isDesktop && (
+        <button
+          type="button"
+          aria-label={t('chrome.toggleSidebar')}
+          title={`${t('chrome.toggleSidebar')} (⌘B)`}
+          onClick={() => toggleSidebar()}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 9,
+            background: 'transparent',
+            border: '1px solid var(--border)',
+            color: 'var(--text)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          <NNIcon name="stack" size={16} color="var(--text)" />
+        </button>
+      )}
       {!isDesktop && (
         <button
           type="button"
@@ -410,9 +449,9 @@ export const NNTopbar = ({
         <h1
           style={{
             margin: 0,
-            fontSize: isMobile ? 15 : 18,
-            fontWeight: 600,
-            letterSpacing: -0.3,
+            fontSize: isMobile ? 13 : 14,
+            fontWeight: isMobile ? 600 : 500,
+            letterSpacing: 0,
             color: 'var(--text)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -425,13 +464,12 @@ export const NNTopbar = ({
         </h1>
         {subtitle && (
           <span
+            className="mono"
             style={{
-              fontSize: isMobile ? 11 : 13,
-              color: 'var(--text-muted)',
+              fontSize: 11,
+              color: 'var(--text-dim)',
               whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              maxWidth: '100%',
+              flexShrink: 0,
               alignSelf: isMobile ? 'flex-start' : undefined,
             }}
           >
@@ -439,56 +477,38 @@ export const NNTopbar = ({
           </span>
         )}
       </div>
-      {isDesktop ? (
-        <button
-          type="button"
-          onClick={() => window.dispatchEvent(new CustomEvent('nn:open-palette'))}
-          style={{
-            height: 34,
-            minWidth: 260,
-            padding: '0 12px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            background: 'var(--surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 9,
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-          }}
-        >
-          <NNIcon name="search" size={14} color="var(--text-dim)" />
-          <span style={{ fontSize: 13, color: 'var(--text-dim)', flex: 1, textAlign: 'left' }}>{t('topbar.searchPlaceholder')}</span>
-          <NNKbd>⌘K</NNKbd>
-        </button>
-      ) : (
-        <button
-          type="button"
-          aria-label={t('topbar.searchLabel')}
-          onClick={() => window.dispatchEvent(new CustomEvent('nn:open-palette'))}
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 9,
-            background: 'transparent',
-            border: '1px solid var(--border)',
-            color: 'var(--text)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
-        >
-          <NNIcon name="search" size={16} color="var(--text)" />
-        </button>
-      )}
+      <button
+        type="button"
+        aria-label={t('topbar.searchLabel')}
+        title={t('topbar.searchPlaceholder')}
+        onClick={() => window.dispatchEvent(new CustomEvent('nn:open-palette'))}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 9,
+          background: 'transparent',
+          border: '1px solid var(--border)',
+          color: 'var(--text)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          flexShrink: 0,
+        }}
+      >
+        <NNIcon name="search" size={16} color="var(--text)" />
+      </button>
       {isDesktop && actions}
       {isDesktop ? (
-        <Link href="/editor">
-          <NNBtn size="md" variant="primary" icon="plus">
-            {t('topbar.newCard')}
-          </NNBtn>
+        <Link href="/editor" style={{ display: 'inline-flex' }}>
+          <NNBtn
+            size="md"
+            variant="soft"
+            icon="plus"
+            title={t('topbar.newCard')}
+            ariaLabel={t('topbar.newCard')}
+            style={{ width: 36, padding: 0 }}
+          />
         </Link>
       ) : (
         <Link href="/editor" aria-label={t('topbar.newCardLabel')} style={{ display: 'inline-flex' }}>

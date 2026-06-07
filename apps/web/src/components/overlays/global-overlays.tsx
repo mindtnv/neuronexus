@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { CommandPalette } from './command-palette';
 import { KbdCheatsheet } from './cheatsheet';
+import { useUI } from '@/lib/ui-store';
 
 // NeuroNexus — Global overlay controller
 // Mounts invisibly at the top of the (app) route tree and opens
@@ -31,6 +32,23 @@ export const GlobalOverlays = () => {
         e.preventDefault();
         setCheatsheetOpen(false);
         setPaletteOpen((v) => !v);
+        return;
+      }
+
+      // ⌘B / Ctrl+B — toggle the desktop sidebar (skip while typing).
+      if ((e.metaKey || e.ctrlKey) && (key === 'b' || key === 'B')) {
+        const target = e.target as HTMLElement | null;
+        const tag = target?.tagName;
+        const editable =
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          (target?.isContentEditable ?? false);
+        if (editable) return;
+        // Desktop-only: tablet/mobile keep their drawer/rail behavior (spec).
+        if (window.innerWidth < 1100) return;
+        e.preventDefault();
+        useUI.getState().toggleSidebar();
         return;
       }
 

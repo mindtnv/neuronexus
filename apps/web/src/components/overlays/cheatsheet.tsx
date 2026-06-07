@@ -29,6 +29,7 @@ const buildKbdGroups: KbdGroupsBuilder = (t) => [
       { keys: ['J'],         desc: t('overlays.cheatsheet.review.skip') },
       { keys: ['E'],         desc: t('overlays.cheatsheet.review.edit') },
       { keys: ['⌘', 'Z'],   desc: t('overlays.cheatsheet.review.undo') },
+      { keys: ['F'],         desc: t('overlays.cheatsheet.review.focus') },
     ],
   },
   {
@@ -46,6 +47,7 @@ const buildKbdGroups: KbdGroupsBuilder = (t) => [
     color: 'neutral',
     shortcuts: [
       { keys: ['⌘', 'K'],   desc: t('overlays.cheatsheet.global.palette') },
+      { keys: ['⌘', 'B'],   desc: t('overlays.cheatsheet.global.sidebar') },
       { keys: ['?'],         desc: t('overlays.cheatsheet.global.cheat') },
     ],
   },

@@ -730,6 +730,23 @@ export const NNCardsBrowser = () => {
                   <div
                     key={card.id}
                     onClick={(e) => onRowSelect(card.id, e)}
+                    onMouseEnter={(e) => {
+                      if (!isSel) (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-2)';
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLDivElement).style.background = isSel ? 'var(--surface-3)' : 'transparent';
+                    }}
+                    onMouseDown={(e) => {
+                      // Pressed tint is the same for selected + unselected rows.
+                      // React re-applies the `style` prop each render, so this imperative
+                      // background is reset on the next render (e.g. selection change).
+                      (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-3)';
+                      (e.currentTarget as HTMLDivElement).style.transform = 'translateY(0.5px)';
+                    }}
+                    onMouseUp={(e) => {
+                      (e.currentTarget as HTMLDivElement).style.background = isSel ? 'var(--surface-3)' : 'var(--surface-2)';
+                      (e.currentTarget as HTMLDivElement).style.transform = '';
+                    }}
                     style={{
                       display: 'grid',
                       gridTemplateColumns: gridTemplate,

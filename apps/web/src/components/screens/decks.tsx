@@ -9,7 +9,7 @@ import type { DeckColor } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
-import { aggregateCounts, buildDeckTree, flattenTree, deckPathLabel, DeckNode } from '@/lib/decks';
+import { aggregateCounts, buildDeckTree, flattenTree, deckPathLabel, deckRowTarget, DeckNode } from '@/lib/decks';
 
 // ─────────────────────────────────────────────
 // Decks screen — nested tree view
@@ -151,6 +151,14 @@ export const NNDecks = () => {
     }
   };
 
+  // Whole-row tap: parent → toggle collapse, leaf → open cards browser
+  // filtered to the deck. Pure routing decision lives in deckRowTarget.
+  const handleRowTap = (node: DeckNode) => {
+    const target = deckRowTarget(node);
+    if (target.kind === 'toggle') toggleCollapsed(node.deck.id);
+    else router.push(`/cards?q=${target.query}`);
+  };
+
   const parentLabel = newParentId ? deckPathLabel(decks, newParentId) : null;
 
   return (
@@ -228,6 +236,25 @@ export const NNDecks = () => {
         </NNCard>
       )}
 
+      {rows.length > 0 && (
+        <div
+          style={{
+            marginBottom: 14,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            color: 'var(--text-dim)',
+            fontSize: 11,
+          }}
+        >
+          <NNPlant stage={Math.min(5, Math.floor(cards.length / 10))} size={isMobile ? 34 : 40} />
+          <div>
+            <div style={{ color: 'var(--text-muted)' }}>{t('decks.totalCards', { n: cards.length })}</div>
+            <div>{t('decks.gardenHint')}</div>
+          </div>
+        </div>
+      )}
+
       {decks.length === 0 && !creating ? (
         <NNCard style={{ textAlign: 'center', padding: 40, color: 'var(--text-dim)' }}>
           <div style={{ fontSize: 14, marginBottom: 8 }}>{t('decks.emptyTitle')}</div>
@@ -235,28 +262,6 @@ export const NNDecks = () => {
         </NNCard>
       ) : (
         <NNCard padding={0} style={{ overflow: 'visible' }}>
-          {/* header row */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: isMobile ? '1fr 80px 48px' : '1fr 90px 90px 170px 40px',
-              padding: isMobile ? '10px 14px' : '10px 16px',
-              borderBottom: '1px solid var(--border)',
-              fontSize: 10.5,
-              fontWeight: 600,
-              color: 'var(--text-dim)',
-              textTransform: 'uppercase',
-              letterSpacing: 0.8,
-              gap: 10,
-            }}
-          >
-            <span>{t('decks.columns.name')}</span>
-            <span style={{ textAlign: 'right' }}>{isMobile ? t('decks.columns.due') : t('decks.columns.cards')}</span>
-            {!isMobile && <span style={{ textAlign: 'right' }}>{t('decks.columns.due')}</span>}
-            {!isMobile && <span style={{ textAlign: 'right' }}>{t('decks.columns.actions')}</span>}
-            <span />
-          </div>
-
           {rows.map((node) => {
             const d = node.deck;
             const agg = aggregate.get(d.id) ?? { total: 0, due: 0 };
@@ -268,21 +273,45 @@ export const NNDecks = () => {
             return (
               <div
                 key={d.id}
+                className="nn-deck-row"
+                onClick={() => handleRowTap(node)}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-3)';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.background = 'transparent';
+                }}
+                onMouseDown={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.transform = 'translateY(0.5px)';
+                }}
+                onMouseUp={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.transform = '';
+                }}
                 style={{
-                  display: 'grid',
-                  gridTemplateColumns: isMobile ? '1fr 80px 48px' : '1fr 90px 90px 170px 40px',
-                  padding: isMobile ? '10px 14px' : '12px 16px',
-                  borderBottom: '1px solid var(--border)',
+                  display: 'flex',
                   alignItems: 'center',
                   gap: 10,
+                  padding: isMobile ? '10px 14px' : '12px 16px',
+                  borderBottom: '1px solid var(--border)',
                   position: 'relative',
+                  cursor: 'pointer',
+                  background: 'transparent',
+                  transition: 'background 120ms ease',
                 }}
               >
-                {/* name + disclosure + dot */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, paddingLeft: indentPx }}>
+                {/* name + disclosure + dot — takes the freed space */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1, paddingLeft: indentPx }}>
                   <button
                     type="button"
-                    onClick={() => hasChildren && toggleCollapsed(d.id)}
+                    onClick={(e) => {
+                      // Only intercept the row tap when the chevron is actionable.
+                      // For leaf rows the (invisible) chevron lets the click bubble to
+                      // handleRowTap → opens the deck's cards, avoiding a dead-zone.
+                      if (hasChildren) {
+                        e.stopPropagation();
+                        toggleCollapsed(d.id);
+                      }
+                    }}
                     aria-label={hasChildren ? (isCollapsed ? t('decks.expand') : t('decks.collapse')) : undefined}
                     style={{
                       width: 18,
@@ -337,56 +366,90 @@ export const NNDecks = () => {
                       </NNBadge>
                     ) : null;
                   })()}
+                  {/* demoted total — desktop only; carries the (own.total) parenthetical */}
+                  {!isMobile && (
+                    <span className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0, marginLeft: 2 }}>
+                      {agg.total}
+                      {hasChildren && own.total > 0 && <span> ({own.total})</span>}
+                    </span>
+                  )}
                 </div>
 
-                {/* cards / due on mobile shows due only */}
-                {isMobile ? (
+                {/* hover-revealed icon actions (desktop only) */}
+                {!isMobile && (
+                  <div className="nn-deck-row-actions" style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    <Link
+                      href={`/editor?deck=${encodeURIComponent(d.id)}`}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={t('decks.addCard')}
+                      title={t('decks.addCard')}
+                      style={iconActionStyle}
+                    >
+                      <NNIcon name="plus" size={14} />
+                    </Link>
+                    {agg.due > 0 && (
+                      <Link
+                        href={`/review?deck=${encodeURIComponent(d.id)}`}
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label={t('decks.review')}
+                        title={t('decks.review')}
+                        style={{ ...iconActionStyle, color: 'var(--lime-400)' }}
+                      >
+                        <NNIcon name="bolt" size={14} />
+                      </Link>
+                    )}
+                  </div>
+                )}
+
+                {/* due-pill */}
+                {agg.due > 0 ? (
+                  <Link
+                    href={`/review?deck=${encodeURIComponent(d.id)}`}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={t('decks.review')}
+                    title={t('decks.review')}
+                    className="mono"
+                    style={{
+                      flexShrink: 0,
+                      minWidth: 36,
+                      textAlign: 'center',
+                      padding: '3px 9px',
+                      borderRadius: 999,
+                      background: 'var(--lime-500)',
+                      color: 'var(--ink-900)',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      textDecoration: 'none',
+                    }}
+                  >
+                    {agg.due}
+                  </Link>
+                ) : (
                   <span
                     className="mono"
                     style={{
-                      fontSize: 13,
-                      color: agg.due > 0 ? 'var(--lime-400)' : 'var(--text-dim)',
-                      textAlign: 'right',
+                      flexShrink: 0,
+                      minWidth: 36,
+                      textAlign: 'center',
+                      padding: '3px 9px',
+                      borderRadius: 999,
+                      background: 'var(--surface-3)',
+                      color: 'var(--text-dim)',
+                      fontSize: 12,
                     }}
                   >
                     {agg.due}
                   </span>
-                ) : (
-                  <>
-                    <span className="mono" style={{ fontSize: 13, color: 'var(--text)', textAlign: 'right' }}>
-                      {agg.total}
-                      {hasChildren && own.total > 0 && (
-                        <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}> ({own.total})</span>
-                      )}
-                    </span>
-                    <span
-                      className="mono"
-                      style={{ fontSize: 13, color: agg.due > 0 ? 'var(--lime-400)' : 'var(--text-dim)', textAlign: 'right' }}
-                    >
-                      {agg.due}
-                    </span>
-                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                      <Link href={`/editor?deck=${encodeURIComponent(d.id)}`} style={{ textDecoration: 'none' }}>
-                        <NNBtn size="sm" variant="ghost" icon="plus">
-                          {t('decks.addCard')}
-                        </NNBtn>
-                      </Link>
-                      {agg.due > 0 && (
-                        <Link href={`/review?deck=${encodeURIComponent(d.id)}`} style={{ textDecoration: 'none' }}>
-                          <NNBtn size="sm" variant="soft" icon="bolt">
-                            {t('decks.review')}
-                          </NNBtn>
-                        </Link>
-                      )}
-                    </div>
-                  </>
                 )}
 
                 {/* menu */}
-                <div style={{ position: 'relative', justifySelf: 'end' }}>
+                <div style={{ position: 'relative', flexShrink: 0 }}>
                   <button
                     type="button"
-                    onClick={() => setOpenMenuId(menuOpen ? null : d.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpenMenuId(menuOpen ? null : d.id);
+                    }}
                     aria-label={t('decks.deckMenu')}
                     style={{
                       width: 28,
@@ -405,6 +468,7 @@ export const NNDecks = () => {
                   </button>
                   {menuOpen && (
                     <div
+                      onClick={(e) => e.stopPropagation()}
                       style={{
                         position: 'absolute',
                         top: 30,
@@ -549,16 +613,6 @@ export const NNDecks = () => {
           })}
         </NNCard>
       )}
-
-      {!isMobile && rows.length > 0 && (
-        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12, color: 'var(--text-dim)', fontSize: 11 }}>
-          <NNPlant stage={Math.min(5, Math.floor(cards.length / 10))} size={40} />
-          <div>
-            <div style={{ color: 'var(--text-muted)' }}>{t('decks.totalCards', { n: cards.length })}</div>
-            <div>{t('decks.gardenHint')}</div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
@@ -573,6 +627,18 @@ const inputStyle: React.CSSProperties = {
   fontFamily: 'var(--font-sans)',
   fontSize: 14,
   outline: 'none',
+};
+
+const iconActionStyle: React.CSSProperties = {
+  width: 28,
+  height: 28,
+  borderRadius: 6,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: 'var(--surface-3)',
+  color: 'var(--text-muted)',
+  textDecoration: 'none',
 };
 
 const labelStyle: React.CSSProperties = {

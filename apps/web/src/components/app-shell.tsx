@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useNN } from '@/lib/store';
+import { useUI, readSidebarCollapsed } from '@/lib/ui-store';
 import { NNSidebar } from './shell';
 import { BottomTabs } from './bottom-tabs';
 import GlobalOverlays from './overlays/global-overlays';
@@ -14,10 +15,27 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
   const bootstrapped = useNN((s) => s.bootstrapped);
+  const sidebarCollapsed = useUI((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useUI((s) => s.setSidebarCollapsed);
+  const zenMode = useUI((s) => s.zenMode);
+  const setZen = useUI((s) => s.setZen);
 
   // Track the previous pathname so we can detect real route changes (not first mount)
   const prevPathnameRef = useRef<string | null>(null);
   const [fadeKey, setFadeKey] = useState(0);
+
+  // Hydrate the persisted sidebar preference on mount (client-only) so SSR/first
+  // paint always renders the default (false) and we never get a hydration
+  // mismatch. readSidebarCollapsed is try/catch-guarded → no-throw.
+  useEffect(() => {
+    const persisted = readSidebarCollapsed();
+    if (persisted !== null) setSidebarCollapsed(persisted);
+  }, [setSidebarCollapsed]);
+
+  // Zen is /review-only: leaving /review (route change) auto-exits focus mode.
+  useEffect(() => {
+    if (zenMode && pathname !== '/review') setZen(false);
+  }, [pathname, zenMode, setZen]);
 
   // Listen for global "open drawer" event so the mobile topbar can trigger it without prop drilling
   useEffect(() => {
@@ -53,10 +71,12 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
     }
   }, [pathname, bootstrapped]);
 
-  // D1: tablet (720–1100px) gets the inline sidebar in collapsed (60px) mode
-  const showSidebarInline = bp !== 'mobile';
+  // D1: tablet (720–1100px) gets the inline sidebar in collapsed (60px) mode.
+  // Sidebar is fully hidden in zen mode or when the user collapsed it (desktop
+  // toggle / ⌘B) — content reflows to full width (the content div is already flex:1).
+  const showSidebarInline = bp !== 'mobile' && !zenMode && !sidebarCollapsed;
   const showDrawer = bp === 'mobile' && drawerOpen;
-  const showBottomTabs = bp === 'mobile';
+  const showBottomTabs = bp === 'mobile' && !zenMode;
 
   return (
     <div

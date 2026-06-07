@@ -8,7 +8,7 @@ import { useT } from '@/lib/i18n';
 export default function Page() {
   const t = useT();
   return (
-    <NNAppPage title={t('noteTypes.pageTitle')} subtitle={t('noteTypes.pageSubtitle')}>
+    <NNAppPage title={t('noteTypes.pageTitle')}>
       <Suspense fallback={null}>
         <NNNoteTypeEditor />
       </Suspense>

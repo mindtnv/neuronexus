@@ -11,7 +11,7 @@ function ReviewPageInner() {
   const t = useT();
   const due = useNN((s) => countDueCards(s.cards));
   return (
-    <NNAppPage title={t('nav.review')} subtitle={t('review.pageSubtitle', { due })}>
+    <NNAppPage title={t('nav.review')} subtitle={due > 0 ? `· ${due}` : undefined}>
       <NNReview variant="classic" />
     </NNAppPage>
   );

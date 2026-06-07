@@ -12,6 +12,8 @@ const m = {
   answerLabel: 'Answer',
   queueFallback: 'Queue',
   mixedQueue: 'Mixed queue',
+  focusMode: 'Focus mode',
+  exitFocus: 'Exit focus',
   loading: {
     subtitle: 'Opening your library.',
   },

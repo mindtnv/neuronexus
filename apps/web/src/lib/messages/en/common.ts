@@ -81,6 +81,9 @@ const common = {
     signOut: 'Sign out',
     signingOut: 'Signing out…',
   },
+  chrome: {
+    toggleSidebar: 'Toggle sidebar',
+  },
   states: {
     loading: 'Loading…',
     noData: 'No data',

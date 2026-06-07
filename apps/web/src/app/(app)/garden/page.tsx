@@ -9,9 +9,8 @@ export default function Page() {
   const t = useT();
   const profile = useNN((s) => s.profile);
   const level = profile?.level ?? 1;
-  const streak = profile?.streakDays ?? 0;
   return (
-    <NNAppPage title={t('nav.garden')} subtitle={t('garden.pageSubtitle', { level, streak })}>
+    <NNAppPage title={t('nav.garden')} subtitle={`· L${level}`}>
       <NNGarden variant="terrarium" />
     </NNAppPage>
   );

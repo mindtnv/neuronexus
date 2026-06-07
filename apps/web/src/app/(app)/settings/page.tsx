@@ -7,7 +7,7 @@ import { useT } from '@/lib/i18n';
 export default function Page() {
   const t = useT();
   return (
-    <NNAppPage title={t('nav.settings')} subtitle={t('settings.pageSubtitle')}>
+    <NNAppPage title={t('nav.settings')}>
       <NNSettings />
     </NNAppPage>
   );

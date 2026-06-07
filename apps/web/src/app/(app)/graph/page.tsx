@@ -13,10 +13,7 @@ export default function Page() {
   const decks = useNN((s) => s.decks);
   const summary = getGraphSummary(cards, decks);
   return (
-    <NNAppPage
-        title={t('nav.graph')}
-        subtitle={t('graph.pageSubtitle', summary)}
-      >
+    <NNAppPage title={t('nav.graph')} subtitle={summary.nodes > 0 ? `· ${summary.nodes}` : undefined}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
         <CardsViewSwitcher />
       </div>

@@ -12,6 +12,8 @@ const m = {
   answerLabel: 'Ответ',
   queueFallback: 'Очередь',
   mixedQueue: 'Смешанная очередь',
+  focusMode: 'Фокус-режим',
+  exitFocus: 'Выйти из фокуса',
   loading: {
     subtitle: 'Открываем твою библиотеку.',
   },

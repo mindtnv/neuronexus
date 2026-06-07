@@ -98,6 +98,7 @@ const m = {
       skip: 'Skip card (bury)',
       edit: 'Edit current card',
       undo: 'Undo last rating',
+      focus: 'Toggle focus (zen) mode',
     },
     navigation: {
       home: 'Go to Home',
@@ -127,6 +128,7 @@ const m = {
     global: {
       palette: 'Command palette',
       cheat: 'This cheatsheet',
+      sidebar: 'Toggle sidebar',
       toggleShortcuts: 'Toggle shortcuts',
       settings: 'Open settings',
       newCard: 'New card',

@@ -11,6 +11,7 @@ import { cardFromApi } from '@/lib/mappers';
 import { RichCard } from '@/components/rich-card';
 import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
+import { useUI } from '@/lib/ui-store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { resolveDeckConfigClient } from '@/lib/deck-config';
@@ -120,6 +121,14 @@ export const NNReviewClassic = () => {
   const profile = useNN((s) => s.profile);
   const grade = useNN((s) => s.gradeCard);
   const undoLastReview = useNN((s) => s.undoLastReview);
+  const zenMode = useUI((s) => s.zenMode);
+  const toggleZen = useUI((s) => s.toggleZen);
+  const setZen = useUI((s) => s.setZen);
+
+  // Always exit zen when /review unmounts (route change away). app-shell also
+  // guards this by pathname, but the local cleanup makes it robust to direct
+  // unmounts and keeps re-entry non-zen.
+  useEffect(() => () => setZen(false), [setZen]);
 
   // Freeze the queue for this session so newly-rescheduled cards don't jump back in
   const [queue, setQueue] = useState<Card[]>([]);
@@ -310,10 +319,24 @@ export const NNReviewClassic = () => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       const inInput = tag === 'INPUT' || tag === 'TEXTAREA';
 
-      // Escape always exits to home
+      // Escape: in zen mode it exits focus (does NOT navigate home); otherwise
+      // it exits the reviewer to home as before.
       if (e.key === 'Escape') {
+        if (zenMode) {
+          e.preventDefault();
+          setZen(false);
+          return;
+        }
         e.preventDefault();
         router.push('/');
+        return;
+      }
+
+      // f / F — toggle zen (focus) mode. Outside inputs only so typing an 'f'
+      // in the type-in field doesn't flip focus mode.
+      if ((e.key === 'f' || e.key === 'F') && !inInput && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        toggleZen();
         return;
       }
 
@@ -382,7 +405,7 @@ export const NNReviewClassic = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [revealed, current, handleGrade, handleUndo, router, queue.length, submitted, handleTypeSubmit]);
+  }, [revealed, current, handleGrade, handleUndo, router, queue.length, submitted, handleTypeSubmit, zenMode, toggleZen, setZen]);
 
   // Save session when queue exhausted
   useEffect(() => {
@@ -511,7 +534,42 @@ export const NNReviewClassic = () => {
         position: 'relative',
       }}
     >
-      {/* progress — deck badge · slim bar · count+XP · undo */}
+      {/* Zen mode: subtle floating exit affordance — the topbar is hidden, so
+          this keeps the exit discoverable. Calm, top-right, never competes. */}
+      {zenMode && (
+        <button
+          type="button"
+          onClick={() => setZen(false)}
+          title={`${t('review.exitFocus')} · Esc`}
+          aria-label={t('review.exitFocus')}
+          style={{
+            position: 'absolute',
+            top: isMobile ? 10 : 18,
+            right: isMobile ? 12 : 24,
+            zIndex: 30,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '6px 10px',
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 9,
+            color: 'var(--text-muted)',
+            fontSize: 11.5,
+            fontFamily: 'inherit',
+            cursor: 'pointer',
+            opacity: 0.7,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
+          onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
+        >
+          <NNIcon name="x" size={12} color="var(--text-muted)" />
+          <span>{t('review.exitFocus')}</span>
+          <NNKbd>Esc</NNKbd>
+        </button>
+      )}
+
+      {/* progress — deck badge · slim bar · count+XP · undo · focus */}
       <div
         style={{
           width: '100%',
@@ -572,6 +630,14 @@ export const NNReviewClassic = () => {
             {!isMobile && t('editor.review.undo.button')}
           </NNBtn>
         )}
+        <NNBtn
+          size="sm"
+          variant="ghost"
+          icon={zenMode ? 'x' : 'target'}
+          onClick={() => toggleZen()}
+          title={`${zenMode ? t('review.exitFocus') : t('review.focusMode')} (f)`}
+          ariaLabel={zenMode ? t('review.exitFocus') : t('review.focusMode')}
+        />
       </div>
 
       {/* Card */}

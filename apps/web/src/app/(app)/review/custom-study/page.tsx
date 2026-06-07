@@ -7,7 +7,7 @@ import { useT } from '@/lib/i18n';
 export default function Page() {
   const t = useT();
   return (
-    <NNAppPage title={t('review.customStudy.title')} subtitle={t('review.customStudy.subtitle')}>
+    <NNAppPage title={t('review.customStudy.title')}>
       <NNCustomStudy />
     </NNAppPage>
   );

@@ -90,3 +90,15 @@ export function deckPathLabel(decks: Deck[], deckId: string | undefined, sep = '
     .map((d) => d.name)
     .join(sep);
 }
+
+/**
+ * Decide what a whole-row tap on the decks launcher should do.
+ * Parent-with-children → toggle collapse; leaf → open the cards browser
+ * pre-filtered to this deck (quoting the name + escaping embedded quotes so
+ * names with spaces parse as one `deck:` term). Mirrors decks.tsx escaping.
+ */
+export function deckRowTarget(node: DeckNode): { kind: 'toggle' } | { kind: 'cards'; query: string } {
+  if (node.children.length > 0) return { kind: 'toggle' };
+  const escaped = node.deck.name.replace(/"/g, '\\"');
+  return { kind: 'cards', query: encodeURIComponent(`deck:"${escaped}"`) };
+}

@@ -81,6 +81,9 @@ const common = {
     signOut: 'Выйти',
     signingOut: 'Выходим…',
   },
+  chrome: {
+    toggleSidebar: 'Скрыть/показать панель',
+  },
   states: {
     loading: 'Загрузка…',
     noData: 'Нет данных',

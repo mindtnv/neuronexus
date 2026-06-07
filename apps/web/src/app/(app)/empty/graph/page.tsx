@@ -7,7 +7,7 @@ import { useT } from '@/lib/i18n';
 export default function Page() {
   const t = useT();
   return (
-    <NNAppPage title={t('nav.graph')} subtitle={t('empty.graph.pageSubtitle')}>
+    <NNAppPage title={t('nav.graph')}>
       <NNEmpty kind="graph" />
     </NNAppPage>
   );

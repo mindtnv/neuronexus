@@ -7,7 +7,7 @@ import { useT } from '@/lib/i18n';
 export default function Page() {
   const t = useT();
   return (
-    <NNAppPage title={t('nav.home')} subtitle={t('empty.firstRun.pageSubtitle')}>
+    <NNAppPage title={t('nav.home')}>
       <NNEmpty kind="first-run" />
     </NNAppPage>
   );
