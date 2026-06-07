@@ -34,7 +34,7 @@ export const NNEditor = () => {
       key={editing?.id ?? 'new'}
       card={editing}
       defaultDeckId={defaultDeckId}
-      showFsrsPanel
+      showFsrsHeader
       autoFocusFront
       onSaved={(c) => router.replace(`/editor?card=${encodeURIComponent(c.id)}`)}
       onDeleted={() => router.push('/decks')}

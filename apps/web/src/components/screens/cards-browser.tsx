@@ -19,6 +19,7 @@ import { useNN } from '@/lib/store';
 import type { Card } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT, useDateLocale } from '@/lib/i18n';
+import { useDialog } from '@/components/dialog';
 import {
   buildDeckTree,
   deckPathLabel,
@@ -116,6 +117,7 @@ function truncate(s: string, n = 90): string {
 
 export const NNCardsBrowser = () => {
   const t = useT();
+  const { confirm, prompt, select } = useDialog();
   const dateLocale = useDateLocale();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
@@ -128,6 +130,8 @@ export const NNCardsBrowser = () => {
   const bootstrapped = useNN((s) => s.bootstrapped);
   const searchCards = useNN((s) => s.searchCards);
   const bulkCards = useNN((s) => s.bulkCards);
+  const forgetCard = useNN((s) => s.forgetCard);
+  const setCardDue = useNN((s) => s.setCardDue);
   const getCardTags = useNN((s) => s.getCardTags);
 
   // Query string: URL `?q=` is the source of truth, mirrored into local state
@@ -416,22 +420,21 @@ export const NNCardsBrowser = () => {
     if (ids.length === 0) return;
     try {
       if (action === 'delete') {
-        if (typeof window !== 'undefined' && !window.confirm(t('cards.bulk.deleteConfirm', { n: ids.length }))) return;
+        if (!(await confirm({ title: t('cards.bulk.deleteConfirm', { n: ids.length }), danger: true }))) return;
         await bulkCards('delete', ids);
         setSelected(new Set());
       } else if (action === 'move') {
-        const target = typeof window !== 'undefined' ? window.prompt(t('cards.bulk.movePrompt')) : null;
-        const name = target?.trim();
-        if (!name) return;
-        const deck = decks.find(
-          (d) =>
-            d.name.toLowerCase() === name.toLowerCase() ||
-            deckPathLabel(decks, d.id).toLowerCase() === name.toLowerCase(),
-        );
-        if (!deck) return;
-        await bulkCards('move', ids, { deckId: deck.id });
+        const deckId = await select<string>({
+          title: t('cards.bulk.movePrompt'),
+          options: decks.map((d) => ({
+            value: d.id,
+            label: deckPathLabel(decks, d.id),
+          })),
+        });
+        if (!deckId) return;
+        await bulkCards('move', ids, { deckId });
       } else if (action === 'addTag' || action === 'removeTag') {
-        const tag = typeof window !== 'undefined' ? window.prompt(t('cards.bulk.tagPrompt')) : null;
+        const tag = await prompt({ title: t('cards.bulk.tagPrompt') });
         const clean = tag?.trim();
         if (!clean) return;
         await bulkCards(action, ids, { tag: clean });
@@ -443,6 +446,44 @@ export const NNCardsBrowser = () => {
       if (!queryError && serverQ === query) void runServerSearch(query);
     } catch (err) {
       console.error('bulk action failed', err);
+      setServerError(true);
+    }
+  };
+
+  // Manual scheduling control. forget resets each selected card to "new";
+  // setDue picks a single date applied to every selected card. Both are
+  // single-card PATCHes looped over the selection (no bulk endpoint).
+  const runForget = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    if (!(await confirm({ title: t('cards.actions.forgetConfirm', { n: ids.length }), danger: true }))) return;
+    try {
+      for (const id of ids) await forgetCard(id);
+      if (!queryError && serverQ === query) void runServerSearch(query);
+    } catch (err) {
+      console.error('forget failed', err);
+      setServerError(true);
+    }
+  };
+
+  const runSetDue = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const value = await prompt({
+      title: t('cards.actions.setDueTitle'),
+      defaultValue: today,
+      placeholder: 'YYYY-MM-DD',
+      validate: (v) => (Number.isNaN(new Date(v).getTime()) ? t('cards.actions.invalidDate') : null),
+    });
+    const clean = value?.trim();
+    if (!clean) return;
+    const iso = new Date(clean).toISOString();
+    try {
+      for (const id of ids) await setCardDue(id, iso);
+      if (!queryError && serverQ === query) void runServerSearch(query);
+    } catch (err) {
+      console.error('set-due failed', err);
       setServerError(true);
     }
   };
@@ -800,7 +841,7 @@ export const NNCardsBrowser = () => {
                 <NNCardForm
                   key={singleSelected.id}
                   card={singleSelected}
-                  showFsrsPanel={false}
+                  showFsrsHeader={false}
                   onDeleted={() => setSelected(new Set())}
                 />
               </div>
@@ -829,6 +870,8 @@ export const NNCardsBrowser = () => {
             <NNBtn size="sm" variant="soft" icon="x" onClick={() => runBulk('removeTag')}>{t('cards.bulk.removeTag')}</NNBtn>
             <NNBtn size="sm" variant="soft" icon="pause" onClick={() => runBulk('suspend')}>{t('cards.bulk.suspend')}</NNBtn>
             <NNBtn size="sm" variant="soft" icon="play" onClick={() => runBulk('unsuspend')}>{t('cards.bulk.unsuspend')}</NNBtn>
+            <NNBtn size="sm" variant="soft" icon="clock" onClick={() => void runSetDue()}>{t('cards.actions.setDue')}</NNBtn>
+            <NNBtn size="sm" variant="soft" icon="sync" onClick={() => void runForget()}>{t('cards.actions.forget')}</NNBtn>
             <NNBtn size="sm" variant="danger" icon="x" onClick={() => runBulk('delete')}>{t('cards.bulk.delete')}</NNBtn>
             <NNBtn size="sm" variant="ghost" onClick={() => setSelected(new Set())}>{t('cards.bulk.clear')}</NNBtn>
           </div>

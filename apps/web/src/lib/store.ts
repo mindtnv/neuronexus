@@ -66,6 +66,20 @@ interface State {
   /** Delete a single card (DELETE /cards/:id). Card-level delete still exists. */
   deleteCard: (id: string) => Promise<void>;
 
+  /**
+   * Reset a card's FSRS schedule to "new" (PATCH /cards/:id `{ forget: true }`).
+   * Server zeroes reps/lapses, sets due=now, state="new". The returned card is
+   * merged into the mirror.
+   */
+  forgetCard: (id: string) => Promise<void>;
+
+  /**
+   * Set a card's due date to a specific instant (PATCH /cards/:id
+   * `{ setDue }`). `iso` is an ISO-8601 string; the server 400s on an invalid
+   * date. The returned card is merged into the mirror.
+   */
+  setCardDue: (id: string, iso: string) => Promise<void>;
+
   /** Fetch own + builtin note-types (GET /note-types) into the store. */
   getNoteTypes: () => Promise<NoteType[]>;
 
@@ -125,6 +139,14 @@ interface State {
   getCardTags: () => Promise<string[]>;
 
   gradeCard: (cardId: string, rating: Rating, durationMs: number, source?: 'regular' | 'filtered') => Promise<Review>;
+
+  /**
+   * Undo the user's most recent grade (POST /reviews/undo). Restores the card +
+   * profile in the in-memory mirror to their pre-grade state. Returns the
+   * restored card id on success; throws on 404 (nothing to undo) / 409 (card
+   * modified since the grade) so callers can surface the right toast.
+   */
+  undoLastReview: () => Promise<{ cardId: string }>;
   updateProfile: (patch: Partial<Omit<Profile, 'id'>>) => Promise<void>;
 
   /** Create a preset (POST /deck-options). Appends to the mirror. */
@@ -324,6 +346,16 @@ export const useNN = create<State>()((set, get) => ({
     set((s) => ({ cards: s.cards.filter((c) => c.id !== id) }));
   },
 
+  async forgetCard(id) {
+    const updated = cardFromApi(await ok(await (api as any).cards({ id }).patch({ forget: true })));
+    set((s) => ({ cards: s.cards.map((c) => (c.id === updated.id ? updated : c)) }));
+  },
+
+  async setCardDue(id, iso) {
+    const updated = cardFromApi(await ok(await (api as any).cards({ id }).patch({ setDue: iso })));
+    set((s) => ({ cards: s.cards.map((c) => (c.id === updated.id ? updated : c)) }));
+  },
+
   async getNoteTypes() {
     const rows: any = await ok(await (api as any)['note-types'].get());
     const list: NoteType[] = (rows as any[]).map(noteTypeFromApi);
@@ -512,6 +544,28 @@ export const useNN = create<State>()((set, get) => ({
     }
 
     return review;
+  },
+
+  async undoLastReview() {
+    // Don't go through `ok()` — we want the HTTP status to distinguish 404
+    // (nothing to undo) from 409 (card modified since the grade) so the UI can
+    // pick the right toast. The thrown error carries `.code` for the caller.
+    const { data, error }: any = await (api as any).reviews.undo.post();
+    if (error) {
+      const err = new Error(
+        error.value?.error ?? `undo_failed_${error.status ?? ''}`,
+      ) as Error & { code?: string; status?: number };
+      err.code = error.value?.error;
+      err.status = error.status;
+      throw err;
+    }
+    const restoredCard = cardFromApi(data.card);
+    const nextProfile = data.profile ? profileFromApi(data.profile) : null;
+    set((s) => ({
+      cards: s.cards.map((c) => (c.id === restoredCard.id ? restoredCard : c)),
+      profile: nextProfile ?? s.profile,
+    }));
+    return { cardId: restoredCard.id };
   },
 
   async updateProfile(patch) {

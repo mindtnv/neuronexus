@@ -12,9 +12,13 @@ const m = {
   richText: {
     bold: 'Жирный',
     italic: 'Курсив',
+    inlineCode: 'Моноширинный код',
+    heading: 'Заголовок',
     bulletList: 'Маркированный список',
     image: 'Вставить изображение',
     math: 'Вставить формулу (LaTeX)',
+    markdownMode: 'Поддерживается Markdown (#, **жирный**, списки, таблицы, `код`)',
+    mermaidError: 'Не удалось отрисовать диаграмму',
   },
   media: {
     uploading: 'Загрузка…',
@@ -42,9 +46,19 @@ const m = {
   tagsPlaceholder: 'теги, через, запятую',
   noTags: 'тегов пока нет',
   preview: 'Предпросмотр',
+  previewToggle: 'Предпросмотр',
+  flipHint: 'Клик или Пробел — показать ответ',
   frontPreview: 'Превью лица…',
   backPreview: 'Превью оборота…',
   todo: 'TODO',
+  review: {
+    undo: {
+      button: 'Отменить',
+      toast: 'Последняя оценка отменена.',
+      empty: 'Нечего отменять.',
+      modified: 'Карта изменилась после оценки — отмена невозможна.',
+    },
+  },
   ai: {
     mnemonic: 'Сгенерировать мнемонику',
     links: 'Предложить связи',

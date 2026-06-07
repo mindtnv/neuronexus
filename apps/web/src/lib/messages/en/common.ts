@@ -45,6 +45,7 @@ const common = {
     confirm: 'Confirm',
     edit: 'Edit',
     add: 'Add',
+    ok: 'OK',
   },
   units: {
     card: 'card',
@@ -85,6 +86,8 @@ const common = {
     noData: 'No data',
     todo: 'TODO',
   },
+  selectSearch: 'Search…',
+  noResults: 'No results',
   toasts: {
     freeze: {
       title: 'Streak saved',

@@ -8,7 +8,7 @@ import { previewGrades, xpForRating } from '@neuronexus/shared';
 import { humanInterval } from '@/lib/fsrs';
 import { api, ok } from '@/lib/api';
 import { cardFromApi } from '@/lib/mappers';
-import { renderCardHtml, SafeHtml } from '@/lib/render-card';
+import { RichCard } from '@/components/rich-card';
 import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -22,14 +22,33 @@ type RatingMeta = {
   tone: 'rose' | 'amber' | 'lime' | 'sky';
   hue: string;
   bg: string;
+  bgHover: string;
 };
 
+// Subtle tonal градация — each rating carries its semantic hue only on the
+// keycap chip + the interval, with a near-invisible tinted surface that lifts on
+// hover. No acid fills; the row reads as one calm control strip, not four loud
+// buttons.
 const RATINGS: RatingMeta[] = [
-  { k: 1, labelKey: 'review.ratings.again', tone: 'rose', hue: 'var(--rose-500)', bg: 'rgba(232,120,138,0.12)' },
-  { k: 2, labelKey: 'review.ratings.hard', tone: 'amber', hue: 'var(--amber-500)', bg: 'rgba(243,182,85,0.12)' },
-  { k: 3, labelKey: 'review.ratings.good', tone: 'lime', hue: 'var(--lime-500)', bg: 'rgba(154,209,85,0.12)' },
-  { k: 4, labelKey: 'review.ratings.easy', tone: 'sky', hue: 'var(--sky-500)', bg: 'rgba(85,196,214,0.12)' },
+  { k: 1, labelKey: 'review.ratings.again', tone: 'rose', hue: 'var(--rose-400)', bg: 'rgba(232,120,138,0.05)', bgHover: 'rgba(232,120,138,0.12)' },
+  { k: 2, labelKey: 'review.ratings.hard', tone: 'amber', hue: 'var(--amber-400)', bg: 'rgba(243,182,85,0.05)', bgHover: 'rgba(243,182,85,0.12)' },
+  { k: 3, labelKey: 'review.ratings.good', tone: 'lime', hue: 'var(--lime-400)', bg: 'rgba(154,209,85,0.05)', bgHover: 'rgba(154,209,85,0.12)' },
+  { k: 4, labelKey: 'review.ratings.easy', tone: 'sky', hue: 'var(--sky-400)', bg: 'rgba(85,196,214,0.05)', bgHover: 'rgba(85,196,214,0.12)' },
 ];
+
+// Friendly label for the render-kind eyebrow (was a raw English token like
+// "typein" sitting next to the tags — looked like a debug badge). Falls back to
+// the kind string for any future render kinds.
+const renderKindLabel = (kind: string, t: (k: string) => string): string => {
+  switch (kind) {
+    case 'cloze':
+      return t('editor.variants.cloze');
+    case 'typein':
+      return t('editor.variants.type');
+    default:
+      return t('editor.variants.basic');
+  }
+};
 
 export const NNReview = ({ variant: _variant = 'classic' }: { variant?: 'classic' }) => {
   return <NNReviewClassic />;
@@ -100,6 +119,7 @@ export const NNReviewClassic = () => {
   const presets = useNN((s) => s.presets);
   const profile = useNN((s) => s.profile);
   const grade = useNN((s) => s.gradeCard);
+  const undoLastReview = useNN((s) => s.undoLastReview);
 
   // Freeze the queue for this session so newly-rescheduled cards don't jump back in
   const [queue, setQueue] = useState<Card[]>([]);
@@ -121,6 +141,9 @@ export const NNReviewClassic = () => {
   const [glow, setGlow] = useState(false);
 
   const lockRef = useRef(false);
+  // Remember the last rating so undo can rewind the session XP / grade tallies
+  // by the exact amount the grade added.
+  const lastGradeRef = useRef<Rating | null>(null);
   const sessionStartRef = useRef<number>(Date.now());
   const sessionSavedRef = useRef(false);
   const sessionStartedRef = useRef(false);
@@ -215,6 +238,7 @@ export const NNReviewClassic = () => {
         // the global daily counters (plan Decision 2 / Must-Fix #5).
         const source = sessionMode === 'filtered' ? 'filtered' as const : undefined;
         await grade(current.id, rating, duration, source);
+        lastGradeRef.current = rating;
         setCompleted((c) => c + 1);
         setXpGained((x) => x + xpForRating(rating));
         setGradeCounts((g) => ({ ...g, [rating]: g[rating] + 1 }));
@@ -229,6 +253,50 @@ export const NNReviewClassic = () => {
     },
     [current, grade, sessionMode, startedAt, submitted],
   );
+
+  // Undo the most recent grade. Restores the card + profile server-side (and in
+  // the store mirror), steps the in-session queue back one card so the user can
+  // re-grade, and rewinds the session XP/count tallies. 404 (nothing to undo) /
+  // 409 (card modified) are surfaced as toasts. ⌘Z / Ctrl+Z or the button.
+  const handleUndo = useCallback(async () => {
+    if (lockRef.current) return;
+    lockRef.current = true;
+    const toast = (description: string) =>
+      window.dispatchEvent(
+        new CustomEvent('nn:toast', { detail: { kind: 'info', description } }),
+      );
+    try {
+      await undoLastReview();
+      // Rewind the in-session tallies + step back to the just-graded card.
+      setCompleted((c) => Math.max(0, c - 1));
+      setXpGained((x) => {
+        const last = lastGradeRef.current;
+        return last ? Math.max(0, x - xpForRating(last)) : x;
+      });
+      setGradeCounts((g) => {
+        const last = lastGradeRef.current;
+        if (!last) return g;
+        return { ...g, [last]: Math.max(0, g[last] - 1) };
+      });
+      lastGradeRef.current = null;
+      setIndex((i) => Math.max(0, i - 1));
+      setRevealed(false);
+      setSubmitted(false);
+      setTypedAnswer('');
+      setStartedAt(Date.now());
+      toast(t('editor.review.undo.toast'));
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code === 'card_modified_since_review') {
+        toast(t('editor.review.undo.modified'));
+      } else {
+        // 'nothing_to_undo' (404) or any other failure.
+        toast(t('editor.review.undo.empty'));
+      }
+    } finally {
+      lockRef.current = false;
+    }
+  }, [undoLastReview, t]);
 
   const handleTypeSubmit = useCallback(() => {
     if (!current || current.renderKind !== 'typein' || submitted) return;
@@ -246,6 +314,15 @@ export const NNReviewClassic = () => {
       if (e.key === 'Escape') {
         e.preventDefault();
         router.push('/');
+        return;
+      }
+
+      // Undo last grade — ⌘Z / Ctrl+Z. Works outside inputs only (don't steal
+      // the native undo while typing). Available even on the done screen so the
+      // user can still revert the final grade.
+      if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey) && !e.shiftKey && !inInput) {
+        e.preventDefault();
+        handleUndo();
         return;
       }
 
@@ -305,7 +382,7 @@ export const NNReviewClassic = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [revealed, current, handleGrade, router, queue.length, submitted, handleTypeSubmit]);
+  }, [revealed, current, handleGrade, handleUndo, router, queue.length, submitted, handleTypeSubmit]);
 
   // Save session when queue exhausted
   useEffect(() => {
@@ -384,17 +461,15 @@ export const NNReviewClassic = () => {
   const isTypein = renderKind === 'typein';
 
   // Lazy HTML render from the note-type template + the note's sanitized field
-  // values, DOMPurified at the SafeHtml edge. cloze front = prompt (blanks),
-  // back = revealed. The queue payload embeds note + noteType (C-5), so render
-  // mode + content come from the payload with no extra fetch.
+  // values, via <RichCard> (markdown + math + code + async mermaid → DOMPurified
+  // at the single SafeHtml edge it wraps). cloze front = prompt (blanks), back =
+  // revealed. The queue payload embeds note + noteType (C-5), so render mode +
+  // content come from the payload with no extra fetch.
   const renderNoteType = current.noteType ?? null;
   const renderFieldValues = current.note?.fieldValues ?? {};
-  const frontHtml = renderNoteType
-    ? renderCardHtml(renderNoteType, renderFieldValues, 'front', current.templateOrd)
-    : '';
-  const backHtml = renderNoteType
-    ? renderCardHtml(renderNoteType, renderFieldValues, 'back', current.templateOrd)
-    : '';
+  // For cloze, the FRONT card area flips between the prompt (front) and the
+  // revealed answer (back) by switching the rendered SIDE.
+  const promptSide: 'front' | 'back' = isCloze ? (revealed ? 'back' : 'front') : 'front';
   // Type-in compares the typed answer against the note-type's ANSWER field — the
   // LAST field by ordinal (Anki convention; "Back" for the builtin Type-in, but
   // works for renamed-field clones too). Resolve the full note-type from the
@@ -436,12 +511,12 @@ export const NNReviewClassic = () => {
         position: 'relative',
       }}
     >
-      {/* progress */}
+      {/* progress — deck badge · slim bar · count+XP · undo */}
       <div
         style={{
           width: '100%',
           maxWidth: 760,
-          padding: isMobile ? '12px 0 16px' : '18px 0 24px',
+          padding: isMobile ? '12px 0 18px' : '20px 0 28px',
           display: 'flex',
           alignItems: 'center',
           gap: isMobile ? 10 : 16,
@@ -459,17 +534,44 @@ export const NNReviewClassic = () => {
         <div
           style={{
             flex: 1,
-            height: 6,
+            height: 5,
             background: 'var(--surface-3)',
-            borderRadius: 3,
+            borderRadius: 'var(--r-pill)',
             overflow: 'hidden',
+            position: 'relative',
           }}
         >
-          <div style={{ width: `${progress}%`, height: '100%', background: 'var(--lime-500)', transition: 'width 200ms ease' }} />
+          <div
+            style={{
+              width: `${progress}%`,
+              height: '100%',
+              borderRadius: 'var(--r-pill)',
+              background: 'linear-gradient(90deg, var(--lime-600), var(--lime-400))',
+              transition: 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)',
+            }}
+          />
         </div>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }} className="mono">
-          {index} / {total} · <span style={{ color: 'var(--lime-400)' }}>+{xpGained} XP</span>
+        <span
+          style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'baseline', gap: 6 }}
+          className="mono"
+        >
+          <span>
+            <span style={{ color: 'var(--text)' }}>{index}</span>
+            <span style={{ opacity: 0.55 }}> / {total}</span>
+          </span>
+          <span style={{ color: 'var(--lime-400)', fontWeight: 600 }}>+{xpGained} XP</span>
         </span>
+        {completed > 0 && (
+          <NNBtn
+            size="sm"
+            variant="ghost"
+            icon="sync"
+            onClick={handleUndo}
+            title={`${t('editor.review.undo.button')} (⌘Z)`}
+          >
+            {!isMobile && t('editor.review.undo.button')}
+          </NNBtn>
+        )}
       </div>
 
       {/* Card */}
@@ -492,24 +594,26 @@ export const NNReviewClassic = () => {
           width: '100%',
           maxWidth: 760,
           minHeight: isMobile ? 280 : 380,
-          borderRadius: 18,
+          borderRadius: 'var(--r-xl)',
           background: 'var(--surface)',
           border: '1px solid var(--border)',
           flexShrink: 0,
-          padding: isMobile ? '20px 18px' : '36px 44px',
+          padding: isMobile ? '22px 20px' : '40px 48px',
           cursor: isTypein && !submitted ? 'default' : 'pointer',
           display: 'flex',
           flexDirection: 'column',
           position: 'relative',
+          overflow: 'hidden',
           boxShadow: glow
-            ? '0 0 0 2px rgba(154,209,85,0.35), var(--shadow-lg)'
+            ? '0 0 0 1px rgba(154,209,85,0.30), var(--shadow-lg)'
             : 'var(--shadow-lg)',
           transition: 'box-shadow 220ms ease, transform 220ms ease',
         }}
       >
-        <div style={{ display: 'flex', gap: 8, marginBottom: 28, flexWrap: 'wrap', alignItems: 'center' }}>
+        {/* Card meta row — friendly kind chip + tags */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: isMobile ? 22 : 30, flexWrap: 'wrap', alignItems: 'center' }}>
           <NNBadge size="xs" tone="neutral">
-            {renderKind}
+            {renderKindLabel(renderKind, t)}
           </NNBadge>
           {current.tags.map((t) => (
             <NNTag key={t} color={deck?.color === 'neutral' ? 'sky' : deck?.color ?? 'sky'}>
@@ -518,21 +622,41 @@ export const NNReviewClassic = () => {
           ))}
         </div>
 
-        {/* Front / prompt — rendered from the note-type template + field values,
-            DOMPurified via SafeHtml. Cloze shows blanks on the front; once
-            revealed it shows the answer side (the cloze "back" template). */}
-        <SafeHtml
-          html={isCloze ? (revealed ? backHtml : frontHtml) : frontHtml}
+        {/* Question eyebrow — explicit hierarchy label */}
+        <div
           style={{
-            fontFamily: 'var(--font-serif)',
-            fontSize: frontFontSize,
-            lineHeight: 1.15,
-            letterSpacing: -1,
-            color: 'var(--text)',
-            fontWeight: 400,
-            wordBreak: 'break-word',
+            fontSize: 10.5,
+            fontWeight: 600,
+            letterSpacing: 1.6,
+            textTransform: 'uppercase',
+            color: 'var(--text-dim)',
+            fontFamily: 'var(--font-sans)',
+            marginBottom: 12,
           }}
-        />
+        >
+          {isCloze && revealed ? t('review.answerLabel') : t('review.questionLabel')}
+        </div>
+
+        {/* Front / prompt — rendered from the note-type template + field values
+            via RichCard (single SafeHtml sink + async mermaid). Cloze shows
+            blanks on the front; once revealed it switches to the answer side. */}
+        {renderNoteType && (
+          <RichCard
+            noteType={renderNoteType}
+            fieldValues={renderFieldValues}
+            side={promptSide}
+            templateOrd={current.templateOrd}
+            style={{
+              fontFamily: 'var(--font-serif)',
+              fontSize: frontFontSize,
+              lineHeight: 1.15,
+              letterSpacing: -1,
+              color: 'var(--text)',
+              fontWeight: 400,
+              wordBreak: 'break-word',
+            }}
+          />
+        )}
 
         {/* Type input */}
         {isTypein && (
@@ -556,11 +680,17 @@ export const NNReviewClassic = () => {
                 padding: '14px 16px',
                 fontSize: 18,
                 fontFamily: 'var(--font-sans)',
-                borderRadius: 10,
+                borderRadius: 'var(--r-md)',
                 border: '1px solid var(--border-2)',
                 background: 'var(--surface-2)',
                 color: 'var(--text)',
                 outline: 'none',
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.borderColor = 'var(--lime-500)';
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.borderColor = 'var(--border-2)';
               }}
             />
             {!submitted && (
@@ -577,7 +707,7 @@ export const NNReviewClassic = () => {
               <div
                 style={{
                   padding: '12px 14px',
-                  borderRadius: 10,
+                  borderRadius: 'var(--r-md)',
                   background: 'var(--surface-2)',
                   border: '1px solid var(--border)',
                   fontSize: 16,
@@ -626,90 +756,125 @@ export const NNReviewClassic = () => {
           </div>
         )}
 
-        <div
-          style={{
-            margin: '28px 0',
-            height: 1,
-            background: 'linear-gradient(to right, transparent, var(--border-2), transparent)',
-          }}
-        />
-
-        {/* Answer / reveal area (animated opacity + translate) */}
-        <div
-          style={{
-            opacity: showAnswerSection ? 1 : 0,
-            transform: showAnswerSection ? 'translateY(0)' : 'translateY(6px)',
-            transition: 'opacity 200ms ease, transform 200ms ease',
-            pointerEvents: showAnswerSection ? 'auto' : 'none',
-            minHeight: 40,
-          }}
-        >
-          {showAnswerSection && !isCloze && (
-            <SafeHtml
-              html={backHtml}
+        {/* Divider + answer block — hidden for cloze (the prompt area itself
+            flips to the answer side; rendering it here too would duplicate).
+            For non-cloze, the answer is a quiet reveal: an "Answer" eyebrow, a
+            thin accent rule on the left, and calm --text serif (NOT lime). */}
+        {!isCloze && (
+          <>
+            <div
               style={{
-                fontSize: 28,
-                fontWeight: 500,
-                color: 'var(--lime-400)',
-                letterSpacing: -0.4,
-                fontFamily: 'var(--font-serif)',
-                lineHeight: 1.35,
+                margin: isMobile ? '26px 0 0' : '34px 0 0',
+                height: 1,
+                background: 'linear-gradient(to right, var(--border-2), transparent)',
               }}
             />
-          )}
-          {/* Cloze reveal is shown by the front area flipping to the answer
-              side; the answer block stays empty for cloze to avoid duplication. */}
-        </div>
+            <div
+              style={{
+                opacity: showAnswerSection ? 1 : 0,
+                transform: showAnswerSection ? 'translateY(0)' : 'translateY(8px)',
+                transition: 'opacity 240ms ease, transform 240ms ease',
+                pointerEvents: showAnswerSection ? 'auto' : 'none',
+                minHeight: showAnswerSection ? 40 : 0,
+                marginTop: showAnswerSection ? (isMobile ? 22 : 28) : 0,
+              }}
+            >
+              {showAnswerSection && renderNoteType && (
+                <>
+                  <div
+                    style={{
+                      fontSize: 10.5,
+                      fontWeight: 600,
+                      letterSpacing: 1.6,
+                      textTransform: 'uppercase',
+                      color: 'var(--lime-400)',
+                      fontFamily: 'var(--font-sans)',
+                      marginBottom: 12,
+                    }}
+                  >
+                    {t('review.answerLabel')}
+                  </div>
+                  <div
+                    style={{
+                      borderLeft: '2px solid var(--lime-500)',
+                      paddingLeft: isMobile ? 14 : 18,
+                    }}
+                  >
+                    <RichCard
+                      noteType={renderNoteType}
+                      fieldValues={renderFieldValues}
+                      side="back"
+                      templateOrd={current.templateOrd}
+                      style={{
+                        fontSize: isMobile ? 21 : 24,
+                        fontWeight: 400,
+                        color: 'var(--text)',
+                        letterSpacing: -0.3,
+                        fontFamily: 'var(--font-serif)',
+                        lineHeight: 1.45,
+                        wordBreak: 'break-word',
+                      }}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        )}
 
         {!showAnswerSection && !isTypein && (
           <div
             style={{
-              fontSize: 14,
+              fontSize: 13.5,
               color: 'var(--text-dim)',
               display: 'flex',
               alignItems: 'center',
               gap: 8,
+              marginTop: isMobile ? 22 : 28,
             }}
           >
             <NNKbd>Space</NNKbd> {t('review.toRevealAnswer')}
           </div>
         )}
 
-        <div style={{ flex: 1, minHeight: 20 }} />
-        <div
-          style={{
-            paddingTop: 20,
-            marginTop: 20,
-            borderTop: '1px solid var(--border)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 16,
-            fontSize: 11.5,
-            color: 'var(--text-dim)',
-            flexWrap: 'wrap',
-          }}
-        >
-          <span className="mono">
-            {elapsed != null ? t('review.meta.lastAgo', { n: elapsed }) : t('review.meta.newCard')}
-            {' · '}
-            stability {fsrsState.stability.toFixed(1)}
-          </span>
-          <span>·</span>
-          <span className="mono">
-            reps {fsrsState.reps} · lapses {fsrsState.lapses}
-          </span>
-          <div style={{ flex: 1 }} />
+        <div style={{ flex: 1, minHeight: 16 }} />
+      </div>
+
+      {/* Quiet meta + hotkey strip — moved OUT of the card so the card holds only
+          the question/answer. FSRS stats left, navigation hints right, edit at
+          the far end. Mono + dim, never competes with the content. */}
+      <div
+        style={{
+          width: '100%',
+          maxWidth: 760,
+          marginTop: 14,
+          display: 'flex',
+          alignItems: 'center',
+          gap: isMobile ? 10 : 16,
+          fontSize: 11.5,
+          color: 'var(--text-dim)',
+          flexWrap: 'wrap',
+          flexShrink: 0,
+        }}
+      >
+        <span className="mono">
+          {elapsed != null ? t('review.meta.lastAgo', { n: elapsed }) : t('review.meta.newCard')}
+          {' · '}
+          stability {fsrsState.stability.toFixed(1)} · reps {fsrsState.reps} · lapses {fsrsState.lapses}
+        </span>
+        <div style={{ flex: 1 }} />
+        {!isMobile && (
           <span className="mono" style={{ opacity: 0.7, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <NNKbd>J</NNKbd> {t('review.hints.prev')} · <NNKbd>K</NNKbd> {t('review.hints.skip')} · <NNKbd>E</NNKbd> {t('review.hints.edit')} · <NNKbd>Esc</NNKbd> {t('review.hints.home')}
           </span>
-          <Link
-            href={`/editor?card=${current.id}`}
-            onClick={(e) => e.stopPropagation()}
-            style={{ color: 'inherit', display: 'inline-flex' }}
-          >
-            <NNBtn size="sm" variant="ghost" icon="edit" />
-          </Link>
-        </div>
+        )}
+        <Link
+          href={`/editor?card=${current.id}`}
+          onClick={(e) => e.stopPropagation()}
+          style={{ color: 'inherit', display: 'inline-flex' }}
+        >
+          <NNBtn size="sm" variant="ghost" icon="edit" />
+        </Link>
       </div>
 
       <div
@@ -742,29 +907,63 @@ export const NNReviewClassic = () => {
                   <button
                     key={r.k}
                     onClick={() => handleGrade(r.k)}
+                    title={`${t(r.labelKey)} · ${r.k}`}
                     style={{
-                      padding: isMobile ? '10px 6px' : '14px 12px',
-                      borderRadius: 12,
+                      padding: isMobile ? '9px 8px' : '12px 14px',
+                      borderRadius: 'var(--r-lg)',
                       cursor: 'pointer',
                       background: r.bg,
-                      border: `1px solid ${r.hue}`,
+                      border: `1px solid var(--border-2)`,
+                      borderTop: `2px solid ${r.hue}`,
                       color: 'var(--text)',
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'flex-start',
-                      gap: 3,
+                      gap: isMobile ? 3 : 5,
                       fontFamily: 'var(--font-sans)',
-                      transition: 'transform 120ms ease',
+                      transition: 'transform 120ms ease, background 140ms ease, border-color 140ms ease',
                     }}
-                    onMouseDown={(e) => (e.currentTarget.style.transform = 'scale(0.98)')}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = r.bgHover;
+                      e.currentTarget.style.borderColor = r.hue;
+                      e.currentTarget.style.borderTopColor = r.hue;
+                    }}
+                    onMouseDown={(e) => (e.currentTarget.style.transform = 'scale(0.97)')}
                     onMouseUp={(e) => (e.currentTarget.style.transform = 'scale(1)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.transform = 'scale(1)';
+                      e.currentTarget.style.background = r.bg;
+                      e.currentTarget.style.borderColor = 'var(--border-2)';
+                      e.currentTarget.style.borderTopColor = r.hue;
+                    }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 4 : 8, width: '100%' }}>
-                      <NNKbd>{r.k}</NNKbd>
-                      <span style={{ fontSize: isMobile ? 11 : 14, fontWeight: 600 }}>{t(r.labelKey)}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 5 : 8, width: '100%' }}>
+                      <span
+                        className="mono"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: 18,
+                          height: 18,
+                          borderRadius: 5,
+                          fontSize: 10.5,
+                          fontWeight: 600,
+                          color: r.hue,
+                          background: r.bgHover,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {r.k}
+                      </span>
+                      <span style={{ fontSize: isMobile ? 12 : 14, fontWeight: 600, letterSpacing: -0.2 }}>
+                        {t(r.labelKey)}
+                      </span>
                     </div>
-                    <div style={{ fontSize: isMobile ? 10 : 11.5, color: 'var(--text-muted)' }} className="mono">
+                    <div
+                      style={{ fontSize: isMobile ? 10 : 11.5, color: 'var(--text-muted)', paddingLeft: isMobile ? 0 : 26 }}
+                      className="mono"
+                    >
                       {humanInterval(preview, new Date())}
                     </div>
                   </button>

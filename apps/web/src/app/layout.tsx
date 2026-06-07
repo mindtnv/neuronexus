@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter_Tight, JetBrains_Mono, Instrument_Serif } from "next/font/google";
 import { Bootstrap } from "@/lib/bootstrap";
 import { I18nProvider } from "@/lib/i18n";
+import { DialogProvider } from "@/components/dialog";
 import "./globals.css";
 
 const interTight = Inter_Tight({
@@ -41,8 +42,10 @@ export default function RootLayout({
     >
       <body>
         <I18nProvider>
-          <Bootstrap />
-          {children}
+          <DialogProvider>
+            <Bootstrap />
+            {children}
+          </DialogProvider>
         </I18nProvider>
       </body>
     </html>

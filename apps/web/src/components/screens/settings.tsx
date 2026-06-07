@@ -10,6 +10,7 @@ import { useNN } from '@/lib/store';
 import type { DeckOptionsPreset } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
+import { useDialog } from '@/components/dialog';
 
 // ─────────────────────────────────────────────
 // SETTINGS — only the controls that are actually wired to the server.
@@ -39,6 +40,7 @@ function parseSteps(raw: string): string[] {
 
 export const NNSettings = () => {
   const t = useT();
+  const { confirm } = useDialog();
   const router = useRouter();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
@@ -145,13 +147,12 @@ export const NNSettings = () => {
   };
 
   const handleDeletePreset = async (p: DeckOptionsPreset) => {
-    if (typeof window === 'undefined') return;
     const deckCount = decks.filter((d) => d.presetId === p.id).length;
     const affectedNote = deckCount > 0
       ? t('settings.deckOptions.deleteAffected', { n: deckCount })
       : t('settings.deckOptions.deleteZeroAffected');
     const msg = t('settings.deckOptions.deleteConfirm', { name: p.name, affected: affectedNote });
-    if (!window.confirm(msg)) return;
+    if (!(await confirm({ title: msg, danger: true }))) return;
     setPresetDeleteError('');
     try {
       await deletePreset(p.id);

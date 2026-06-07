@@ -8,6 +8,7 @@ import { useNN } from '@/lib/store';
 import type { DeckColor } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
+import { useDialog } from '@/components/dialog';
 import { aggregateCounts, buildDeckTree, flattenTree, deckPathLabel, DeckNode } from '@/lib/decks';
 
 // ─────────────────────────────────────────────
@@ -19,6 +20,7 @@ const EXPANDED_KEY = 'nn:decks:collapsed';
 
 export const NNDecks = () => {
   const t = useT();
+  const { confirm, prompt, select } = useDialog();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
 
@@ -141,7 +143,7 @@ export const NNDecks = () => {
 
   const handleDelete = async (id: string, name: string) => {
     setOpenMenuId(null);
-    if (typeof window !== 'undefined' && !window.confirm(t('decks.deleteConfirm', { name }))) return;
+    if (!(await confirm({ title: t('decks.deleteConfirm', { name }), danger: true }))) return;
     try {
       await deleteDeck(id);
     } catch (err) {
@@ -462,8 +464,7 @@ export const NNDecks = () => {
                         type="button"
                         onClick={async () => {
                           setOpenMenuId(null);
-                          if (typeof window === 'undefined') return;
-                          const next = window.prompt(t('decks.renamePrompt'), d.name)?.trim();
+                          const next = (await prompt({ title: t('decks.renamePrompt'), defaultValue: d.name }))?.trim();
                           if (next && next !== d.name) {
                             try {
                               await updateDeck(d.id, { name: next });
@@ -481,10 +482,15 @@ export const NNDecks = () => {
                         type="button"
                         onClick={async () => {
                           setOpenMenuId(null);
-                          const choice = typeof window !== 'undefined'
-                            ? window.prompt(t('decks.recolorPrompt', { options: COLOR_OPTIONS.join('/') }), d.color)
-                            : null;
-                          const next = choice?.trim() as DeckColor | undefined;
+                          const next = await select<DeckColor>({
+                            title: t('actions.recolor'),
+                            value: d.color as DeckColor,
+                            options: COLOR_OPTIONS.map((c) => ({
+                              value: c,
+                              label: t(`decks.colors.${c}`),
+                              swatch: c === 'neutral' ? 'var(--surface-3)' : `var(--${c}-500)`,
+                            })),
+                          });
                           if (next && COLOR_OPTIONS.includes(next) && next !== d.color) {
                             try {
                               await updateDeck(d.id, { color: next });
@@ -502,16 +508,19 @@ export const NNDecks = () => {
                         type="button"
                         onClick={async () => {
                           setOpenMenuId(null);
-                          if (typeof window === 'undefined') return;
-                          const options = [t('decks.presetPickNone'), ...presets.map((p) => p.name)];
-                          const optionsStr = options.map((o, i) => `${i === 0 ? '0' : i}. ${o}`).join('\n');
-                          const picked = window.prompt(
-                            `${t('decks.presetPickTitle', { deck: d.name })}\n\n${optionsStr}`,
-                          );
+                          // Sentinel for "no preset" (unbind) — distinguishes the None
+                          // choice from a cancelled dialog (which resolves to null).
+                          const NONE = '__none__';
+                          const picked = await select<string>({
+                            title: t('decks.presetPickTitle', { deck: d.name }),
+                            value: d.presetId ?? NONE,
+                            options: [
+                              { value: NONE, label: t('decks.presetPickNone') },
+                              ...presets.map((p) => ({ value: p.id, label: p.name })),
+                            ],
+                          });
                           if (picked === null) return;
-                          const idx = parseInt(picked.trim(), 10);
-                          if (Number.isNaN(idx) || idx < 0 || idx > presets.length) return;
-                          const presetId = idx === 0 ? null : (presets[idx - 1]?.id ?? null);
+                          const presetId = picked === NONE ? null : picked;
                           try {
                             await bindDeckPreset(d.id, presetId);
                           } catch (err) {

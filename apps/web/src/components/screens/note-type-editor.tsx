@@ -7,7 +7,9 @@ import { useNN } from '@/lib/store';
 import type { NoteType } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
-import { renderCardHtml, SafeHtml } from '@/lib/render-card';
+import { useDialog } from '@/components/dialog';
+import { renderCardHtml } from '@/lib/render-card';
+import { RichCard } from '@/components/rich-card';
 import type { CardTemplate, FieldValues, NoteField } from '@neuronexus/shared';
 
 // ─────────────────────────────────────────────
@@ -398,8 +400,11 @@ const TemplatePreview = ({
         <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <div style={labelStyle}><span>{t('noteTypes.preview.front')}</span></div>
-            <SafeHtml
-              html={front}
+            <RichCard
+              noteType={def}
+              fieldValues={sample}
+              side="front"
+              templateOrd={template.ord}
               style={{ fontFamily: 'var(--font-serif)', fontSize: 22, lineHeight: 1.3, color: 'var(--text)', wordBreak: 'break-word' }}
             />
           </div>
@@ -407,8 +412,11 @@ const TemplatePreview = ({
           <div>
             <div style={labelStyle}><span>{t('noteTypes.preview.back')}</span></div>
             {back.trim() ? (
-              <SafeHtml
-                html={back}
+              <RichCard
+                noteType={def}
+                fieldValues={sample}
+                side="back"
+                templateOrd={template.ord}
                 style={{ fontFamily: 'var(--font-sans)', fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.5, wordBreak: 'break-word' }}
               />
             ) : (
@@ -740,6 +748,7 @@ const NoteTypeForm = ({
 
 export const NNNoteTypeEditor = () => {
   const t = useT();
+  const { confirm, alert } = useDialog();
   const router = useRouter();
   const searchParams = useSearchParams();
   const editId = searchParams?.get('edit') ?? null;
@@ -762,17 +771,17 @@ export const NNNoteTypeEditor = () => {
 
   const handleDelete = useCallback(
     async (nt: NoteType) => {
-      if (typeof window !== 'undefined' && !window.confirm(t('noteTypes.deleteConfirm', { name: nt.name }))) {
+      if (!(await confirm({ title: t('noteTypes.deleteConfirm', { name: nt.name }), danger: true }))) {
         return;
       }
       try {
         await deleteNoteType(nt.id);
       } catch (err) {
         console.error('deleteNoteType failed', err);
-        if (typeof window !== 'undefined') window.alert(t('noteTypes.errors.deleteFailed'));
+        await alert({ title: t('noteTypes.errors.deleteFailed') });
       }
     },
-    [deleteNoteType, t],
+    [deleteNoteType, t, confirm, alert],
   );
 
   // Form mode: explicit ?new=1 OR ?edit=<id> resolving to a known type.

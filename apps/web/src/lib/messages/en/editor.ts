@@ -12,9 +12,13 @@ const m = {
   richText: {
     bold: 'Bold',
     italic: 'Italic',
+    inlineCode: 'Inline code',
+    heading: 'Heading',
     bulletList: 'Bullet list',
     image: 'Insert image',
     math: 'Insert math (LaTeX)',
+    markdownMode: 'Markdown supported (#, **bold**, lists, tables, `code`)',
+    mermaidError: 'Diagram could not be rendered',
   },
   media: {
     uploading: 'Uploading…',
@@ -42,9 +46,19 @@ const m = {
   tagsPlaceholder: 'comma, separated, tags',
   noTags: 'no tags yet',
   preview: 'Preview',
+  previewToggle: 'Preview',
+  flipHint: 'Click or Space to reveal the answer',
   frontPreview: 'Front preview…',
   backPreview: 'Back preview…',
   todo: 'TODO',
+  review: {
+    undo: {
+      button: 'Undo',
+      toast: 'Last grade undone.',
+      empty: 'Nothing to undo.',
+      modified: 'Card changed since the grade — can’t undo.',
+    },
+  },
   ai: {
     mnemonic: 'Generate mnemonic',
     links: 'Suggest links',

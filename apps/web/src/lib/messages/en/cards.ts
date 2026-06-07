@@ -56,6 +56,13 @@ const m = {
     deleteConfirm: 'Delete {n} cards? This cannot be undone.',
     clear: 'Clear selection',
   },
+  actions: {
+    forget: 'Forget',
+    forgetConfirm: 'Reset {n} cards to new? Their study progress will be cleared.',
+    setDue: 'Set due',
+    setDueTitle: 'Set due date',
+    invalidDate: 'Enter a valid date',
+  },
   panel: {
     prev: 'Previous card',
     next: 'Next card',

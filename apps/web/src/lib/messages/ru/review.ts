@@ -8,6 +8,8 @@ const m = {
   },
   showAnswer: 'Показать ответ · Space',
   toRevealAnswer: '— показать ответ',
+  questionLabel: 'Вопрос',
+  answerLabel: 'Ответ',
   queueFallback: 'Очередь',
   mixedQueue: 'Смешанная очередь',
   loading: {

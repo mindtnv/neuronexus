@@ -114,3 +114,123 @@ a { color: inherit; text-decoration: none; }
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+@keyframes nn-select-in {
+  from { opacity: 0; transform: scaleY(.97) translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Shared rendered-card display CSS — applied via `nn-rendered` on every SafeHtml
+   sink (editor preview, review, note-type preview, browser). Image sizing rides
+   the `width` attribute (the only size carrier that survives BOTH sanitizer
+   edges); `max-width:100%` caps it to the field/card width and `height:auto`
+   keeps the aspect ratio, which also rescues old oversized class-less images. */
+.nn-rendered img { max-width: 100%; height: auto; }
+
+/* Inline code: span.class survives both edges, so `nn-code` is the code carrier
+   (real <code> tags are dropped by the allowlist). */
+.nn-rendered .nn-code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0.1em 0.35em;
+}
+
+/* Forward-compat size presets (harmless even though the server drops img.class —
+   client keeps it, so live editor preview can echo a chosen preset). */
+.nn-rendered img.nn-img-s { max-width: 200px; }
+.nn-rendered img.nn-img-m { max-width: 320px; }
+.nn-rendered img.nn-img-l { max-width: 480px; }
+
+/* Fenced code block (Step 6a). markdown-it emits `<pre><code …>` for fenced
+   blocks; highlight.js wraps tokens in `<span class="hljs-*">` (class-based,
+   NEVER inline style). The container reads as a code surface; the token theme
+   below is built ENTIRELY from the design tokens (dark by default; the light
+   override rides the same `--ink-*`/`--surface-*` vars). */
+.nn-rendered pre {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 0.85em 1em;
+  margin: 0.6em 0;
+  overflow-x: auto;
+}
+.nn-rendered pre code,
+.nn-rendered code.hljs {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  line-height: 1.55;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--ink-100);
+  display: block;
+  white-space: pre;
+}
+
+/* highlight.js class-based token theme — mapped onto the NeuroNexus palette.
+   No inline styles anywhere; everything is a `.hljs-*` class rule. */
+.nn-rendered .hljs { color: var(--ink-100); }
+.nn-rendered .hljs-comment,
+.nn-rendered .hljs-quote { color: var(--ink-400); font-style: italic; }
+.nn-rendered .hljs-keyword,
+.nn-rendered .hljs-selector-tag,
+.nn-rendered .hljs-literal,
+.nn-rendered .hljs-section,
+.nn-rendered .hljs-doctag,
+.nn-rendered .hljs-type,
+.nn-rendered .hljs-name,
+.nn-rendered .hljs-strong { color: var(--lime-400); }
+.nn-rendered .hljs-string,
+.nn-rendered .hljs-regexp,
+.nn-rendered .hljs-addition,
+.nn-rendered .hljs-symbol,
+.nn-rendered .hljs-bullet { color: var(--lime-300); }
+.nn-rendered .hljs-number,
+.nn-rendered .hljs-built_in,
+.nn-rendered .hljs-builtin-name,
+.nn-rendered .hljs-meta,
+.nn-rendered .hljs-link { color: #6cb6e8; }
+.nn-rendered .hljs-title,
+.nn-rendered .hljs-function .hljs-title,
+.nn-rendered .hljs-class .hljs-title,
+.nn-rendered .hljs-selector-id,
+.nn-rendered .hljs-selector-class { color: #e8c46c; }
+.nn-rendered .hljs-attr,
+.nn-rendered .hljs-attribute,
+.nn-rendered .hljs-variable,
+.nn-rendered .hljs-template-variable,
+.nn-rendered .hljs-property { color: var(--ink-200); }
+.nn-rendered .hljs-tag { color: var(--ink-300); }
+.nn-rendered .hljs-deletion { color: #e06c75; }
+.nn-rendered .hljs-emphasis { font-style: italic; }
+
+/* Mermaid diagram island (Step 6b). The SVG is produced + DOMPurified by the
+   dedicated mermaid sink and substituted into the single SafeHtml node AFTER the
+   main sanitize. The container centers + caps the diagram and gives it a code-
+   surface backdrop, matching the fenced-code block. mermaid's `theme:'dark'` is
+   set in `initialize`; this only frames + scales the result. No inline styles. */
+.nn-rendered .nn-mermaid {
+  display: flex;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 0.85em 1em;
+  margin: 0.6em 0;
+  overflow-x: auto;
+}
+.nn-rendered .nn-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+.nn-rendered .nn-mermaid-error {
+  display: block;
+  color: var(--ink-400);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  font-style: italic;
+  text-align: center;
+}

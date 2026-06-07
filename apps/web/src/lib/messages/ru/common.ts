@@ -45,6 +45,7 @@ const common = {
     confirm: 'Подтвердить',
     edit: 'Редактировать',
     add: 'Добавить',
+    ok: 'ОК',
   },
   units: {
     card: 'карта',
@@ -85,6 +86,8 @@ const common = {
     noData: 'Нет данных',
     todo: 'TODO',
   },
+  selectSearch: 'Поиск…',
+  noResults: 'Ничего не найдено',
   toasts: {
     freeze: {
       title: 'Стрик сохранён',

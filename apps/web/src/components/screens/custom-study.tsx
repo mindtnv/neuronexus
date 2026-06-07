@@ -1,11 +1,13 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { parseCardQuery, CardQueryError } from '@neuronexus/shared';
 import { NNBtn, NNBadge, NNIcon } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { useT } from '@/lib/i18n';
+import { useDialog } from '@/components/dialog';
+import { NNSelect, type NNSelectOption } from '@/components/nn-select';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import type { FilteredDeck, FilteredDeckSortOrder } from '@/lib/types';
 
@@ -100,6 +102,15 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
   const [queryError, setQueryError] = useState<string | null>(null);
 
   const isEdit = !!initial?.id;
+
+  const sortOrderOptions = useMemo<NNSelectOption<FilteredDeckSortOrder>[]>(
+    () =>
+      SORT_ORDER_VALUES.map((val) => ({
+        value: val,
+        label: t(`review.customStudy.sortOrders.${val}`),
+      })),
+    [t],
+  );
 
   const handleSave = useCallback(async () => {
     setSaveError(null);
@@ -199,17 +210,12 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
       {/* Sort order */}
       <div>
         <label style={labelStyle}>{t('review.customStudy.fieldSortOrder')}</label>
-        <select
-          style={{ ...inputStyle, cursor: 'pointer' }}
+        <NNSelect<FilteredDeckSortOrder>
           value={sortOrder}
-          onChange={(e) => setSortOrder(e.target.value as FilteredDeckSortOrder)}
-        >
-          {SORT_ORDER_VALUES.map((val) => (
-            <option key={val} value={val}>
-              {t(`review.customStudy.sortOrders.${val}`)}
-            </option>
-          ))}
-        </select>
+          onChange={setSortOrder}
+          options={sortOrderOptions}
+          ariaLabel={t('review.customStudy.fieldSortOrder')}
+        />
       </div>
 
       {/* Card limit */}
@@ -289,6 +295,7 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
 
 export const NNCustomStudy = () => {
   const t = useT();
+  const { confirm } = useDialog();
   const router = useRouter();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
@@ -332,7 +339,7 @@ export const NNCustomStudy = () => {
 
   const handleDelete = useCallback(
     async (fd: FilteredDeck) => {
-      if (!window.confirm(t('review.customStudy.deleteConfirm', { name: fd.name }))) return;
+      if (!(await confirm({ title: t('review.customStudy.deleteConfirm', { name: fd.name }), danger: true }))) return;
       setDeletingId(fd.id);
       setDeleteError(null);
       try {
@@ -343,7 +350,7 @@ export const NNCustomStudy = () => {
         setDeletingId(null);
       }
     },
-    [deleteFilteredDeck, t],
+    [deleteFilteredDeck, t, confirm],
   );
 
   const handleQuickAction = useCallback(
