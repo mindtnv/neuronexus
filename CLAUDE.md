@@ -167,7 +167,57 @@ Streak / XP / plant-stage helpers (`nextStreak`, `xpForRating`, `levelFromXp`, `
 - **Test database:** `TEST_DATABASE_URL` points at `neuronexus_test`, created by `docker/postgres-init.sh` on first container boot. `packages/db/src/env.ts` switches to it automatically when `NODE_ENV=test`, so there's no way to accidentally hit the dev DB from tests.
 - **Integration pattern:** tests import `buildApp()` from `apps/api/src/app.ts` and call `app.handle(new Request(...))` — no network, no port binding. Helpers in `apps/api/tests/helpers.ts` wrap body/cookie serialization (`callApp`), cookie extraction (`extractCookie`), and sign-up (`signUpAndCookie`). Every `beforeEach` calls `resetTestDb()` which `TRUNCATE … RESTART IDENTITY CASCADE`s the full domain + auth table set (refuses to run unless the URL contains "test").
 - **FSRS tests use `{ enableFuzz: false }`** to make `due` assertions stable. If you need fuzz on in a specific test (e.g., testing the fuzz bounds), pass `deterministicSeedCardId` to pin the RNG.
-- Current suite (gamification + prod hardening): **92 tests / 389 expects** (50 unit + 42 integration — auth, decks, cards, reviews, achievements, GDPR, rate-limit). Run one file: `NODE_ENV=test bun --env-file=./.env test apps/api/tests/reviews.test.ts`.
+- Current suite: **599 tests passing** (unit + integration — auth, decks, cards, reviews, achievements, GDPR, rate-limit, note-types, undo, rich-content). Run one file: `NODE_ENV=test bun --env-file=./.env test apps/api/tests/reviews.test.ts`.
+
+## Builtin note types
+
+Migration `packages/db/src/migrations/0007_builtin_note_types.sql` seeds the three system note types (Basic, Cloze, Type-in) on every fresh database via a partial unique index `note_types_builtin_uq` + `INSERT … ON CONFLICT DO NOTHING`. This replaced the old seed-only path that made note-type creation impossible on prod without a manual seed run.
+
+`ensureBuiltins()` from `@neuronexus/db` (`packages/db/src/ensure-builtins.ts`) is the test/startup contract — call it in `beforeEach` helpers and at API startup to guarantee the three rows exist before any note-type-dependent operation. Stable UUID literals are exported as `BUILTIN_NOTE_TYPES` from the same module; use those constants instead of querying by name.
+
+## Undo (POST /reviews/undo)
+
+`POST /reviews/undo` atomically reverts the most recent grade for the authenticated user. The grade handler stores a `undo_snapshot` JSONB column (migration `0008_undo_snapshot.sql`) on the `reviews` row at write time, capturing the exact pre-grade card + profile fields. Undo reads the snapshot and restores those fields — including `updatedAt` — in a single transaction.
+
+Error boundaries:
+- Double-undo → 404 (snapshot cleared after first undo)
+- NULL snapshot (legacy row) → 404
+- Card mutated after the grade via `forget` or `setDue` → 409 (guards against restoring stale FSRS state)
+- Suspended/leeched card — undo still works; leech state is part of the snapshot
+
+Side-effect: restoring pre-grade `updatedAt` means the card won't appear at the top of `edited:` / `sort:updated` queries after an undo — this is intentional (it wasn't edited, it was reverted).
+
+UI surface: `⌘Z` keyboard shortcut + explicit undo button inside the reviewer. Both dispatch the same store action.
+
+## Forget / set-due (PATCH /cards/:id)
+
+`PATCH /cards/:id` accepts two new optional fields alongside the existing patch surface:
+
+- `forget: true` — resets the card to a fresh FSRS state via `fsrsResetColumns` (stability/difficulty/interval zeroed, state=New, lapses unchanged). Clears `suspended`.
+- `setDue: <ISO string>` — overrides the `due` timestamp without touching any other FSRS field.
+- Combining both in one request → 400.
+- Invalid ISO date for `setDue` → 400.
+
+The handler uses **explicit field mapping**, not a body spread, so unknown fields are silently ignored rather than applied to the row. Add new patchable fields to the explicit map if needed — never destructure the whole body into the update.
+
+## Rich card content
+
+Card fields are rendered as Markdown using `markdown-it` (`{ html: false, linkify: false }`) on the client, field-by-field inside `apps/web/src/components/render-card.tsx`. Syntax highlighting uses highlight.js in class-based mode (no inline styles); the theme lives in `apps/web/src/app/globals.css`. Mermaid diagrams are rendered asynchronously via the `RichCard` component (`apps/web/src/components/rich-card.tsx`) which uses a dedicated `MERMAID_DOMPURIFY_CONFIG` allow-list to permit SVG output.
+
+**`RichCard` is the single card-render component** — used in the reviewer, card-form, note-type editor, and the cards browser. Never render raw field HTML outside of it.
+
+Render pipeline order matters:
+1. Math placeholders are substituted **before** markdown parsing (prevents `$…$` from being mangled by markdown-it).
+2. Main DOMPurify sanitization runs on the markdown output.
+3. Mermaid SVG islands are injected **after** main sanitization via a single `inject-node` pass (they cannot pass through the main sanitizer).
+
+## Sanitizer (DOMPurify allow-list)
+
+The main sanitizer allow-list was extended to cover rich Markdown output: `h1`–`h6`, `blockquote`, `pre`, `code`, `a`, `table`, `thead`, `tbody`, `tr`, `th`, `td`. The extension is symmetric — both the card-render edge and the note-type-editor preview edge use the same config, pinned by a bypass corpus in the test suite.
+
+`<a href>` whitelisting is enforced via a `uponSanitizeAttribute` hook that permits only `https?:` and `mailto:` schemes. The previous `ALLOWED_URI_REGEXP` approach was removed in favour of the hook — do not re-introduce the regexp.
+
+`style` attributes remain **blocked** in the main sanitizer. KaTeX and Mermaid output passes through isolated sink configs that allow `style` only for their respective output nodes (`KATEX_DOMPURIFY_CONFIG`, `MERMAID_DOMPURIFY_CONFIG`). `MEDIA_TOKEN_RE` is unchanged.
 
 ## Nested decks
 
