@@ -1,4 +1,3 @@
-import type { Metadata } from "next";
 import { Inter_Tight, JetBrains_Mono, Instrument_Serif } from "next/font/google";
 import { Bootstrap } from "@/lib/bootstrap";
 import { I18nProvider } from "@/lib/i18n";
@@ -27,10 +26,7 @@ const instrumentSerif = Instrument_Serif({
   display: "swap",
 });
 
-export const metadata: Metadata = {
-  title: "NeuroNexus",
-  description: "Anki reimagined — graph, garden, AI.",
-};
+export { metadata, viewport } from "./layout.metadata";
 
 export default function RootLayout({
   children,

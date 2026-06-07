@@ -109,6 +109,14 @@ const m = {
     deleting: 'Deleting…',
     deleteError: 'Deletion failed. Please try again.',
   },
+  notifications: {
+    title: 'Notifications',
+    subtitle: 'Get a nudge when cards are due. Delivered on app open only — no background alerts.',
+    enable: 'Enable notifications',
+    enableDesc: 'Show a notification when you open the app and cards are due. Also enables the app badge on supported platforms (iOS requires this permission).',
+    denied: 'Permission denied by your browser. Enable notifications in system settings to use this feature.',
+    unavailable: 'Notifications are not supported in this browser or context.',
+  },
   deckOptions: {
     title: 'Deck Options',
     subtitle: 'Named presets for FSRS scheduling — bind each preset to one or more decks.',

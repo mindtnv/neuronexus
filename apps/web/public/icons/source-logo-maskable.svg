@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NeuroNexus maskable PWA icon source (512x512 target).
+  Same NNLogo geometry as source-logo.svg, but the art is inset into the inner
+  80% safe-zone (scale 0.8 about center) on a fully-filled #0a0b0d square, so
+  Android adaptive-icon masks never clip the logo. Rasterize:
+
+    rsvg-convert -w 512 -h 512 source-logo-maskable.svg -o icon-512-maskable.png
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="nn-logo-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9ad155" />
+      <stop offset="1" stop-color="#8457e8" />
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="32" height="32" fill="#0a0b0d" />
+  <g transform="translate(16,16) scale(0.8) translate(-16,-16)">
+    <path d="M8 9 L16 22 M24 9 L16 22 M8 9 L6 22" stroke="#5a6070" stroke-width="1.1" fill="none" stroke-linecap="round" />
+    <circle cx="8" cy="9" r="3" fill="url(#nn-logo-g)" />
+    <circle cx="24" cy="9" r="2.2" fill="#e89a2b" />
+    <circle cx="16" cy="22" r="2.8" fill="#a788ff" />
+    <circle cx="6" cy="22" r="1.8" fill="#55c4d6" />
+  </g>
+</svg>

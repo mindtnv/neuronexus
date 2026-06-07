@@ -1,7 +1,9 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { useBreakpoint } from '@/lib/use-breakpoint';
+import { useNN } from '@/lib/store';
 import { NNSidebar } from './shell';
 import { BottomTabs } from './bottom-tabs';
 import GlobalOverlays from './overlays/global-overlays';
@@ -10,6 +12,12 @@ import { ToastsStack } from './toasts';
 export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => {
   const bp = useBreakpoint();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const pathname = usePathname();
+  const bootstrapped = useNN((s) => s.bootstrapped);
+
+  // Track the previous pathname so we can detect real route changes (not first mount)
+  const prevPathnameRef = useRef<string | null>(null);
+  const [fadeKey, setFadeKey] = useState(0);
 
   // Listen for global "open drawer" event so the mobile topbar can trigger it without prop drilling
   useEffect(() => {
@@ -23,13 +31,31 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
     };
   }, []);
 
-  // Close drawer when breakpoint returns to desktop or pathname changes effectively
+  // Close drawer when breakpoint returns to non-mobile (D1: tablet gets inline sidebar)
   useEffect(() => {
-    if (bp === 'desktop') setDrawerOpen(false);
+    if (bp !== 'mobile') setDrawerOpen(false);
   }, [bp]);
 
-  const showSidebarInline = bp === 'desktop';
-  const showDrawer = bp !== 'desktop' && drawerOpen;
+  // D2: trigger crossfade only after bootstrap + on actual pathname changes
+  useEffect(() => {
+    if (!bootstrapped) {
+      // Record current pathname so the first post-bootstrap navigation can compare
+      prevPathnameRef.current = pathname;
+      return;
+    }
+    if (prevPathnameRef.current === null) {
+      prevPathnameRef.current = pathname;
+      return;
+    }
+    if (prevPathnameRef.current !== pathname) {
+      prevPathnameRef.current = pathname;
+      setFadeKey((k) => k + 1);
+    }
+  }, [pathname, bootstrapped]);
+
+  // D1: tablet (720–1100px) gets the inline sidebar in collapsed (60px) mode
+  const showSidebarInline = bp !== 'mobile';
+  const showDrawer = bp === 'mobile' && drawerOpen;
   const showBottomTabs = bp === 'mobile';
 
   return (
@@ -43,9 +69,11 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
         position: 'relative',
       }}
     >
-      {showSidebarInline && <NNSidebar />}
+      {showSidebarInline && <NNSidebar collapsed={bp === 'tablet'} />}
 
+      {/* D2: opacity-only crossfade on route change, gated behind bootstrapped */}
       <div
+        key={bootstrapped ? fadeKey : 'skeleton'}
         style={{
           flex: 1,
           display: 'flex',
@@ -53,6 +81,7 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
           minWidth: 0,
           overflow: 'hidden',
           paddingBottom: showBottomTabs ? 68 : 0,
+          animation: bootstrapped && fadeKey > 0 ? 'nn-page-fade 150ms ease' : undefined,
         }}
       >
         {children}
@@ -94,6 +123,7 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
       <style>{`
         @keyframes nn-fade-in { from { opacity: 0; } to { opacity: 1; } }
         @keyframes nn-slide-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+        @keyframes nn-page-fade { from { opacity: 0; } to { opacity: 1; } }
       `}</style>
     </div>
   );

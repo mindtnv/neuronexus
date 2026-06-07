@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NeuroNexus PWA icon source — standalone extraction of the NNLogo geometry
+  (apps/web/src/components/ui.tsx, NNLogo component, ~lines 393-405):
+  4 circles + 1 connector path, gradient #9ad155 -> #8457e8, on a #0a0b0d tile.
+
+  This SVG is the authoritative source; the committed PNGs in this directory are
+  rasterized from it. To regenerate them (one-time dev step, NO build/runtime dep):
+
+    cd apps/web/public/icons
+    rsvg-convert -w 192 -h 192 source-logo.svg            -o icon-192.png
+    rsvg-convert -w 512 -h 512 source-logo.svg            -o icon-512.png
+    rsvg-convert -w 512 -h 512 source-logo-maskable.svg   -o icon-512-maskable.png
+    rsvg-convert -w 180 -h 180 source-logo-apple.svg      -o ../../src/app/apple-icon.png
+
+  (Alternatives if rsvg-convert is unavailable: `npx -y @resvg/resvg-js-cli`,
+   or `npx -y sharp-cli`. Do NOT add any image dependency to package.json.)
+
+  The logo art occupies the full 0..32 viewBox here (standard icon). The
+  maskable + apple variants are separate files that inset the art into the safe
+  zone / drop transparency respectively.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="nn-logo-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9ad155" />
+      <stop offset="1" stop-color="#8457e8" />
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="32" height="32" fill="#0a0b0d" />
+  <path d="M8 9 L16 22 M24 9 L16 22 M8 9 L6 22" stroke="#5a6070" stroke-width="1.1" fill="none" stroke-linecap="round" />
+  <circle cx="8" cy="9" r="3" fill="url(#nn-logo-g)" />
+  <circle cx="24" cy="9" r="2.2" fill="#e89a2b" />
+  <circle cx="16" cy="22" r="2.8" fill="#a788ff" />
+  <circle cx="6" cy="22" r="1.8" fill="#55c4d6" />
+</svg>

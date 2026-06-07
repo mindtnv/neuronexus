@@ -142,6 +142,7 @@ export const NNSidebar = ({
 
   return (
     <aside
+      className="nn-chrome"
       style={{
         width: fullWidth ? '100%' : collapsed ? 60 : 232,
         flexShrink: 0,
@@ -371,6 +372,7 @@ export const NNTopbar = ({
   const isMobile = bp === 'mobile';
   return (
     <header
+      className="nn-chrome"
       style={{
         height: isMobile ? 54 : 61,
         padding: isMobile ? '0 12px' : '0 24px',

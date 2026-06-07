@@ -16,6 +16,7 @@ export const BottomTabs = () => {
 
   return (
     <nav
+      className="nn-chrome"
       style={{
         position: 'fixed',
         bottom: 0,

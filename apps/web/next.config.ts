@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next';
+import withSerwistInit from '@serwist/next';
 
 const nextConfig: NextConfig = {
   transpilePackages: ['@neuronexus/auth', '@neuronexus/shared', '@neuronexus/api'],
@@ -68,4 +69,26 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+// Inert PWA service worker for cross-engine install insurance (ralplan Phase B).
+// CACHES NOTHING by design (server-of-truth, P2). @serwist/next auto-precaches
+// the Next build output (/_next/static/* chunks + prerendered *.html); leaving
+// that on would re-introduce PM-1 stale-JS risk. globPublicPatterns:[] only
+// governs public/, NOT the build chunks — so we additionally force the precache
+// manifest empty via a manifestTransform that drops every entry. This runs
+// before serwist's internal URL-rewrite transform, which then maps over an
+// empty array => self.__SW_MANIFEST === []. src/app/sw.ts adds no
+// runtimeCaching / defaultCache. Disabled in dev so `next dev` is unaffected.
+// NOTE: @serwist/next@9 ships only a webpack plugin (no Turbopack support yet),
+// so the web `build`/`dev` scripts pin `--webpack` (Next 16 defaults to
+// Turbopack). Revisit if/when serwist gains a Turbopack plugin.
+const withSerwist = withSerwistInit({
+  swSrc: 'src/app/sw.ts',
+  swDest: 'public/sw.js',
+  globPublicPatterns: [],
+  // Force an empty precache manifest (caches nothing — strongest P2 defense).
+  manifestTransforms: [() => ({ manifest: [], warnings: [] })],
+  reloadOnOnline: false,
+  disable: process.env.NODE_ENV === 'development',
+});
+
+export default withSerwist(nextConfig);
