@@ -9,10 +9,15 @@
 // search cache, NOT a security artifact. Display HTML is re-sanitized in the
 // browser before DOM injection (defense in depth).
 //
-// Allowlist (M1 narrow set + M2 img):
+// Allowlist (M1 narrow set + M2 img + rich-content A4):
 //   tags:    b i em strong u ul ol li br hr p span div img
-//   attrs:   span/div → class only; img → src alt width height
-//   NO:      script style iframe on* (event handlers), javascript: URLs
+//            h1-h6 blockquote pre code a table thead tbody tr th td
+//   attrs:   span/div/code/pre → class only; img → src alt width height;
+//            a → href (http/https/mailto only)
+//   NO:      script style iframe on* (event handlers), javascript:/data: URLs,
+//            th/td colspan/rowspan
+//   <a>:     invalid-scheme href is DROPPED (attribute), the bare <a> tag is
+//            KEPT (sanitize-html default) — the client edge mirrors this.
 //   img:     allowed ONLY as the relative token `/m/<uuid>` (M2 Phase 3, plan
 //            amendments A1 + C-6). The `src` must match the STRICT canonical
 //            UUID token regex below; everything else (absolute URLs,
@@ -39,7 +44,17 @@ export const MEDIA_TOKEN_RE =
  * (Phase 5) can reference the same shape / derive a matching DOMPurify config.
  */
 export const SANITIZE_CONFIG: sanitizeHtml.IOptions = {
-  allowedTags: ['b', 'i', 'em', 'strong', 'u', 'ul', 'ol', 'li', 'br', 'hr', 'p', 'span', 'div', 'img'],
+  // Rich-content allow-list (plan A4/B3): the M1+M2 narrow set PLUS the
+  // markdown-generated block/inline tags (h1-h6, blockquote, pre, code, a,
+  // table…). This set is BYTE-IDENTICAL to the client edge's ALLOWED_TAGS
+  // (apps/web/src/lib/render-card.tsx) — a cross-edge equality test pins it.
+  // NO `th/td colspan/rowspan` (markdown tables don't emit them — narrower
+  // surface).
+  allowedTags: [
+    'b', 'i', 'em', 'strong', 'u', 'ul', 'ol', 'li', 'br', 'hr', 'p', 'span', 'div', 'img',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'code', 'a',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+  ],
   allowedAttributes: {
     span: ['class'],
     div: ['class'],
@@ -47,13 +62,23 @@ export const SANITIZE_CONFIG: sanitizeHtml.IOptions = {
     // relative media token by `imgExclusiveFilter` (below). width/height are
     // clamped to digits-only by `transformTags` so no non-numeric injection.
     img: ['src', 'alt', 'width', 'height'],
+    // code/pre carry `class` for highlight.js token classes (`hljs-*`,
+    // `language-*`) — class only, no url-bearing attribute.
+    code: ['class'],
+    pre: ['class'],
+    // <a> carries `href` only, gated to http/https/mailto by
+    // allowedSchemesByTag.a below. An invalid scheme drops the attribute and
+    // keeps the bare tag (sanitize-html default — the client mirror matches).
+    a: ['href'],
   },
   // No schemes are needed for the M1 tags. img is explicitly schemeless
   // (`allowedSchemesByTag.img = []`) — its only legal src is a scheme-LESS
-  // relative token. Pin an explicit safe set so a future tag addition can't
-  // silently enable javascript:.
+  // relative token. `<a href>` is restricted to http/https/mailto via
+  // allowedSchemesByTag.a (mailto rides there, not in the global allowedSchemes).
+  // Pin an explicit safe set so a future tag addition can't silently enable
+  // javascript:.
   allowedSchemes: ['http', 'https'],
-  allowedSchemesByTag: { img: [] },
+  allowedSchemesByTag: { img: [], a: ['http', 'https', 'mailto'] },
   // Block `//host` protocol-relative URLs from ever passing as a valid src
   // (defense in depth — the exclusiveFilter already rejects them).
   allowProtocolRelative: false,

@@ -50,6 +50,27 @@
       "when": 1780777930150,
       "tag": "0006_icy_nuke",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1780833285174,
+      "tag": "0007_builtin_note_types",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1780833981068,
+      "tag": "0008_review_undo_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1780851510371,
+      "tag": "0009_builtin_back_templates",
+      "breakpoints": true
     }
   ]
 }

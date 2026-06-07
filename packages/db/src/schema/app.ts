@@ -9,6 +9,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import type { CardTemplate, FieldValues, NoteField } from '@neuronexus/shared';
@@ -171,7 +172,17 @@ export const noteTypes = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('note_types_user_idx').on(t.userId)],
+  (t) => [
+    index('note_types_user_idx').on(t.userId),
+    // Partial unique index over global builtins (userId NULL, isBuiltin true) so
+    // `ensureBuiltins()` / migration 0007 can `ON CONFLICT (name) WHERE
+    // is_builtin AND user_id IS NULL DO NOTHING` — idempotent + concurrency-safe.
+    // User-owned rows (userId set) are excluded, so a user may freely name a
+    // type "Basic" without clashing with the global builtin.
+    uniqueIndex('note_types_builtin_uq')
+      .on(t.name)
+      .where(sql`is_builtin AND user_id IS NULL`),
+  ],
 );
 
 // ── notes ─────────────────────────────────────────────────────────────────────
@@ -263,6 +274,44 @@ export const cards = pgTable(
 // ── reviews ─────────────────────────────────────────────────────────────────
 // Append-only history of every grade. Useful for stats, heatmap, FSRS retuning.
 
+// Pre-grade snapshot stored on the review row that created the grade. Holds the
+// EXACT mutate-set of the grade transaction (card columns mutated at the FSRS
+// step + profile columns mutated by the gamification rollup), so undo restores
+// byte-identically. Date columns are serialized to ISO strings for JSONB.
+export interface UndoSnapshot {
+  card: {
+    due: string; // ISO
+    stability: number;
+    difficulty: number;
+    elapsedDays: number;
+    scheduledDays: number;
+    learningSteps: number;
+    reps: number;
+    lapses: number;
+    state: 'new' | 'learning' | 'review' | 'relearning';
+    lastReview: string | null; // ISO | null
+    suspended: boolean;
+    updatedAt: string; // ISO
+  };
+  // Null when the user had no profile row at grade time (rollup was skipped).
+  profile: {
+    streakDays: number;
+    streakFreezes: number;
+    lastReviewDate: string | null;
+    todayMinutes: number;
+    todayMinutesDate: string | null;
+    dailyGoalMetCount: number;
+    dailyGoalMetDate: string | null;
+    xp: number;
+    level: number;
+    plantStage: number;
+    newIntroducedToday: number;
+    reviewsDoneToday: number;
+    dailyCountsDate: string | null;
+    updatedAt: string; // ISO
+  } | null;
+}
+
 export const reviews = pgTable(
   'reviews',
   {
@@ -282,6 +331,13 @@ export const reviews = pgTable(
     nextDue: timestamp('next_due', { withTimezone: true }).notNull(),
     nextStability: doublePrecision('next_stability').notNull(),
     nextDifficulty: doublePrecision('next_difficulty').notNull(),
+    // Pre-grade snapshot of the card + profile mutate-set, written when this
+    // review row is created. `POST /reviews/undo` restores the card + profile
+    // from this snapshot and deletes the row — atomic, byte-identical rollback
+    // of exactly the fields the grade transaction mutates. NULL on legacy rows
+    // (pre-0008) or rows that have already been undone (the row is deleted).
+    // Date fields are stored as ISO strings (reconstructed via `new Date(...)`).
+    undoSnapshot: jsonb('undo_snapshot').$type<UndoSnapshot>(),
   },
   (t) => [
     index('reviews_user_idx').on(t.userId, t.reviewedAt),

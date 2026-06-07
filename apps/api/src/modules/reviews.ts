@@ -1,6 +1,14 @@
 import { Elysia, t } from 'elysia';
-import { and, count, desc, eq, gte } from 'drizzle-orm';
-import { cards, db, deckOptionsPreset, decks, profile, reviews } from '@neuronexus/db';
+import { and, count, desc, eq, gte, isNotNull } from 'drizzle-orm';
+import {
+  cards,
+  db,
+  deckOptionsPreset,
+  decks,
+  profile,
+  reviews,
+  type UndoSnapshot,
+} from '@neuronexus/db';
 import {
   applyGradeRollup,
   gradeFsrs,
@@ -71,6 +79,47 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
           .from(profile)
           .where(eq(profile.userId, user.id))
           .limit(1);
+
+        // Pre-grade snapshot (Principle 4 / B5). Captures the EXACT mutate-set
+        // BEFORE the FSRS step + rollup touch the card / profile, so undo can
+        // restore byte-identically. Dates → ISO strings for JSONB; rebuilt via
+        // `new Date(...)` in the undo handler. For `source:'filtered'` grades
+        // the daily counters aren't mutated, so their pre-values == post-values
+        // and restore is a no-op — correct by construction.
+        const undoSnapshot: UndoSnapshot = {
+          card: {
+            due: card.due.toISOString(),
+            stability: card.stability,
+            difficulty: card.difficulty,
+            elapsedDays: card.elapsedDays,
+            scheduledDays: card.scheduledDays,
+            learningSteps: card.learningSteps,
+            reps: card.reps,
+            lapses: card.lapses,
+            state: card.state,
+            lastReview: card.lastReview ? card.lastReview.toISOString() : null,
+            suspended: card.suspended,
+            updatedAt: card.updatedAt.toISOString(),
+          },
+          profile: existingProfile
+            ? {
+                streakDays: existingProfile.streakDays,
+                streakFreezes: existingProfile.streakFreezes,
+                lastReviewDate: existingProfile.lastReviewDate,
+                todayMinutes: existingProfile.todayMinutes,
+                todayMinutesDate: existingProfile.todayMinutesDate,
+                dailyGoalMetCount: existingProfile.dailyGoalMetCount,
+                dailyGoalMetDate: existingProfile.dailyGoalMetDate,
+                xp: existingProfile.xp,
+                level: existingProfile.level,
+                plantStage: existingProfile.plantStage,
+                newIntroducedToday: existingProfile.newIntroducedToday,
+                reviewsDoneToday: existingProfile.reviewsDoneToday,
+                dailyCountsDate: existingProfile.dailyCountsDate,
+                updatedAt: existingProfile.updatedAt.toISOString(),
+              }
+            : null,
+        };
 
         // Snapshot for the per-deck config resolver (Principle 1): two batched
         // reads — the user's decks + presets — so `resolveDeckConfig` runs
@@ -146,6 +195,7 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
             nextDue: new Date(res.card.due),
             nextStability: res.card.stability,
             nextDifficulty: res.card.difficulty,
+            undoSnapshot,
           })
           .returning();
 
@@ -241,4 +291,103 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
         source: t.Optional(t.Union([t.Literal('regular'), t.Literal('filtered')])),
       }),
     },
+  )
+  // Undo the user's most recent grade. Atomically restores the card + profile
+  // to the exact pre-grade state from the snapshot stored on the review row,
+  // then deletes that row (A5a-i / B5 / M-misc). Restores EXACTLY the grade's
+  // mutate-set incl. `updatedAt` → undo is "as if the grade never happened".
+  .post(
+    '/undo',
+    async ({ user, status }) => {
+      return await db.transaction(async (tx) => {
+        // Most recent undoable review. Tie-break on `id DESC` so two grades in
+        // the same `reviewedAt` instant undo the genuinely-last one first.
+        const [review] = await tx
+          .select()
+          .from(reviews)
+          .where(and(eq(reviews.userId, user.id), isNotNull(reviews.undoSnapshot)))
+          .orderBy(desc(reviews.reviewedAt), desc(reviews.id))
+          .limit(1);
+
+        if (!review || !review.undoSnapshot) {
+          return status(404, { error: 'nothing_to_undo' });
+        }
+
+        const snapshot = review.undoSnapshot;
+
+        // Stale-guard (M-misc): a manual mutation (forget / setDue, Step 3)
+        // bumps `cards.updatedAt` AFTER the grade. Undoing on top of that would
+        // silently clobber the manual change, so block it.
+        const [currentCard] = await tx
+          .select({ id: cards.id, updatedAt: cards.updatedAt })
+          .from(cards)
+          .where(and(eq(cards.id, review.cardId), eq(cards.userId, user.id)))
+          .limit(1);
+        if (!currentCard) {
+          return status(404, { error: 'nothing_to_undo' });
+        }
+        if (currentCard.updatedAt.getTime() > review.reviewedAt.getTime()) {
+          return status(409, { error: 'card_modified_since_review' });
+        }
+
+        // Restore the card to its pre-grade state (all snapshot fields).
+        const [restoredCard] = await tx
+          .update(cards)
+          .set({
+            due: new Date(snapshot.card.due),
+            stability: snapshot.card.stability,
+            difficulty: snapshot.card.difficulty,
+            elapsedDays: snapshot.card.elapsedDays,
+            scheduledDays: snapshot.card.scheduledDays,
+            learningSteps: snapshot.card.learningSteps,
+            reps: snapshot.card.reps,
+            lapses: snapshot.card.lapses,
+            state: snapshot.card.state,
+            lastReview: snapshot.card.lastReview ? new Date(snapshot.card.lastReview) : null,
+            suspended: snapshot.card.suspended,
+            updatedAt: new Date(snapshot.card.updatedAt),
+          })
+          .where(eq(cards.id, review.cardId))
+          .returning();
+
+        // Restore the profile if the grade rolled one up.
+        let restoredProfile = null;
+        if (snapshot.profile) {
+          const [saved] = await tx
+            .update(profile)
+            .set({
+              streakDays: snapshot.profile.streakDays,
+              streakFreezes: snapshot.profile.streakFreezes,
+              lastReviewDate: snapshot.profile.lastReviewDate,
+              todayMinutes: snapshot.profile.todayMinutes,
+              todayMinutesDate: snapshot.profile.todayMinutesDate,
+              dailyGoalMetCount: snapshot.profile.dailyGoalMetCount,
+              dailyGoalMetDate: snapshot.profile.dailyGoalMetDate,
+              xp: snapshot.profile.xp,
+              level: snapshot.profile.level,
+              plantStage: snapshot.profile.plantStage,
+              newIntroducedToday: snapshot.profile.newIntroducedToday,
+              reviewsDoneToday: snapshot.profile.reviewsDoneToday,
+              dailyCountsDate: snapshot.profile.dailyCountsDate,
+              updatedAt: new Date(snapshot.profile.updatedAt),
+            })
+            .where(eq(profile.userId, user.id))
+            .returning();
+          restoredProfile = saved ?? null;
+        } else {
+          const [existing] = await tx
+            .select()
+            .from(profile)
+            .where(eq(profile.userId, user.id))
+            .limit(1);
+          restoredProfile = existing ?? null;
+        }
+
+        // Drop the review row — the grade is gone.
+        await tx.delete(reviews).where(eq(reviews.id, review.id));
+
+        return { card: restoredCard, profile: restoredProfile };
+      });
+    },
+    { auth: true },
   );

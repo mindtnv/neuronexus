@@ -10,7 +10,7 @@ import {
   notes,
   profile,
 } from '@neuronexus/db';
-import { parseCardQuery, CardQueryError, todayISO } from '@neuronexus/shared';
+import { parseCardQuery, CardQueryError, fsrsResetColumns, todayISO } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
 import { buildCardWhere } from './card-query-sql.ts';
 import { resolveDeckConfig } from './deck-config.ts';
@@ -705,11 +705,27 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
     },
   )
   // Card content is derived from notes (note-types model, M1). Card creation
-  // happens via POST /notes, not here. PATCH keeps only deck-move + suspend —
-  // the two card-level (not note-level) mutations.
+  // happens via POST /notes, not here. PATCH keeps card-level (not note-level)
+  // mutations: deck-move, suspend, and manual scheduling control —
+  //   - `forget`  → reset FSRS state to "new" (Anki "Forget").
+  //   - `setDue`  → set the due date to a specific instant (Anki "Set Due Date").
+  // Control fields are mapped EXPLICITLY (no `...body` spread) so a malicious /
+  // mistyped key can never reach the column set, and forget/setDue can't smuggle
+  // arbitrary FSRS columns. `forget` + `setDue` are mutually exclusive (forget
+  // resets due to now, setDue picks a specific instant — conflicting intents).
+  // Manual schedule changes bump `updatedAt`, which is what trips the undo
+  // stale-guard (`POST /reviews/undo` refuses once a card was modified after its
+  // last grade) — that's intentional. render* cache is NOT touched (scheduling
+  // doesn't change content).
   .patch(
     '/:id',
     async ({ user, params, body, status }) => {
+      if (body.forget === true && body.setDue !== undefined) {
+        return status(400, { error: 'forget_and_setdue_exclusive' });
+      }
+
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+
       // If moving the card to a different deck, verify ownership of the target deck.
       if (body.deckId !== undefined) {
         const deck = await db
@@ -718,11 +734,26 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
           .where(and(eq(decks.id, body.deckId), eq(decks.userId, user.id)))
           .limit(1);
         if (deck.length === 0) return status(400, { error: 'deck_not_found' });
+        patch.deckId = body.deckId;
+      }
+
+      if (body.suspended !== undefined) patch.suspended = body.suspended;
+
+      if (body.forget === true) {
+        // Reuse the shared FSRS defaults — no hard-coded magic. Resets state to
+        // "new" with zeroed reps/lapses, due=now, lastReview=null.
+        Object.assign(patch, fsrsResetColumns());
+      }
+
+      if (body.setDue !== undefined) {
+        const d = new Date(body.setDue);
+        if (Number.isNaN(d.getTime())) return status(400, { error: 'invalid_date' });
+        patch.due = d;
       }
 
       const [updated] = await db
         .update(cards)
-        .set({ ...body, updatedAt: new Date() })
+        .set(patch)
         .where(and(eq(cards.id, params.id), eq(cards.userId, user.id)))
         .returning();
       if (!updated) return status(404, { error: 'not_found' });
@@ -735,6 +766,8 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         t.Object({
           deckId: t.String({ format: 'uuid' }),
           suspended: t.Boolean(),
+          forget: t.Boolean(),
+          setDue: t.String(),
         }),
       ),
     },

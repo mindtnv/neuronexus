@@ -159,6 +159,39 @@ export function newFsrsCard(now: Date = new Date()): FsrsCard {
   return createEmptyCard(now);
 }
 
+/**
+ * FSRS column values for a card reset to "new" (manual Forget). Maps a fresh
+ * `newFsrsCard()` onto the flat Drizzle `cards` columns (camelCase), so the
+ * defaults stay sourced from ts-fsrs — no hard-coded magic. `lastReview` is
+ * explicitly nulled (the column is nullable; a never-reviewed card has none).
+ */
+export function fsrsResetColumns(now: Date = new Date()): {
+  state: 'new';
+  due: Date;
+  stability: number;
+  difficulty: number;
+  elapsedDays: number;
+  scheduledDays: number;
+  learningSteps: number;
+  reps: number;
+  lapses: number;
+  lastReview: null;
+} {
+  const fresh = newFsrsCard(now);
+  return {
+    state: 'new',
+    due: new Date(fresh.due),
+    stability: fresh.stability,
+    difficulty: fresh.difficulty,
+    elapsedDays: fresh.elapsed_days,
+    scheduledDays: fresh.scheduled_days,
+    learningSteps: fresh.learning_steps,
+    reps: fresh.reps,
+    lapses: fresh.lapses,
+    lastReview: null,
+  };
+}
+
 export function previewGrades(card: FsrsCard, now: Date = new Date(), opts: SchedulerOptions = {}) {
   const all = getScheduler(opts).repeat(card, now);
   return {

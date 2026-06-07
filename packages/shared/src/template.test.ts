@@ -223,6 +223,61 @@ describe('renderTextFor — plaintext extraction', () => {
   });
 });
 
+// ── Step 5 (plan H5): markdown plaintext strip for the search-text cache.
+// Field values are MARKDOWN source; `renderTextFor` must strip the common
+// markdown markers so search matches the PROSE, not the punctuation. This is a
+// BEST-EFFORT regex approximation (NOT the client markdown-it AST) — a search
+// heuristic, not a security artifact (plan H5).
+describe('renderTextFor — markdown plaintext strip (Step 5 / H5)', () => {
+  test('strips an ATX heading marker', () => {
+    const r = renderTextFor(basicType, { Front: '# Big Title', Back: '' });
+    expect(r.renderFrontText).toBe('Big Title');
+  });
+
+  test('strips emphasis / strong markers (keeps the words)', () => {
+    const r = renderTextFor(basicType, { Front: 'a **bold** and *em* word', Back: '' });
+    expect(r.renderFrontText).toBe('a bold and em word');
+  });
+
+  test('strips list bullets / ordered markers', () => {
+    const bullet = renderTextFor(basicType, { Front: '- apple\n- pear', Back: '' });
+    expect(bullet.renderFrontText).toBe('apple pear');
+    const ordered = renderTextFor(basicType, { Front: '1. first\n2. second', Back: '' });
+    expect(ordered.renderFrontText).toBe('first second');
+  });
+
+  test('strips a blockquote marker', () => {
+    const r = renderTextFor(basicType, { Front: '> quoted line', Back: '' });
+    expect(r.renderFrontText).toBe('quoted line');
+  });
+
+  test('flattens a markdown table (pipes + separator row → words only)', () => {
+    const r = renderTextFor(basicType, {
+      Front: '| Head A | Head B |\n| --- | --- |\n| cell 1 | cell 2 |',
+      Back: '',
+    });
+    expect(r.renderFrontText).toBe('Head A Head B cell 1 cell 2');
+  });
+
+  // THE pinned H5 invariant: a pipe `|` INSIDE inline code must SURVIVE in the
+  // search text — it is code, not a table-cell separator. The strip stashes inline
+  // code content before the table-pipe pass, so `a|b` stays intact.
+  test('a pipe inside inline code survives (NOT eaten by the table-pipe strip)', () => {
+    const r = renderTextFor(basicType, { Front: 'run `a|b` now', Back: '' });
+    expect(r.renderFrontText).toBe('run a|b now');
+  });
+
+  test('inline code content is preserved verbatim (backticks removed)', () => {
+    const r = renderTextFor(basicType, { Front: 'use `const x = 1` here', Back: '' });
+    expect(r.renderFrontText).toBe('use const x = 1 here');
+  });
+
+  test('markdown + math coexist in the search text', () => {
+    const r = renderTextFor(basicType, { Front: '## Energy\n\n\\(E=mc^2\\) is **key**', Back: '' });
+    expect(r.renderFrontText).toBe('Energy E=mc^2 is key');
+  });
+});
+
 describe('generateCards', () => {
   const twoTemplate: NoteTypeDef = {
     name: 'Basic (and reversed)',

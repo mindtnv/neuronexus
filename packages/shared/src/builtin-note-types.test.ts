@@ -19,10 +19,27 @@ describe('BUILTIN_NOTE_TYPES catalog', () => {
     expect(BUILTIN_NOTE_TYPES).toHaveLength(3);
   });
 
-  it('all builtins have isBuiltin=true and no id', () => {
+  it('all builtins have isBuiltin=true and a stable UUID id', () => {
+    // Stable id literals (B8) are the single source of truth for migration 0007
+    // and ensureBuiltins — they must be present and valid v4 UUIDs.
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const ids = new Set<string>();
     for (const nt of BUILTIN_NOTE_TYPES) {
       expect(nt.isBuiltin).toBe(true);
-      expect(nt.id).toBeUndefined();
+      expect(nt.id).toMatch(uuidRe);
+      ids.add(nt.id!);
+    }
+    // ids are distinct across the 3 builtins.
+    expect(ids.size).toBe(BUILTIN_NOTE_TYPES.length);
+  });
+
+  it('builtin id literals match the migration 0007 INSERT (cross-edge pin)', async () => {
+    // Scrape the committed migration SQL and confirm each builtin id appears in
+    // it — the migration and BUILTIN_NOTE_TYPES must never drift.
+    const url = new URL('../../db/src/migrations/0007_builtin_note_types.sql', import.meta.url);
+    const sqlText = await Bun.file(url).text();
+    for (const nt of BUILTIN_NOTE_TYPES) {
+      expect(sqlText).toContain(nt.id!);
     }
   });
 
@@ -31,6 +48,16 @@ describe('BUILTIN_NOTE_TYPES catalog', () => {
     expect(BUILTIN_BY_KIND.cloze).toBe(CLOZE_NOTE_TYPE);
     expect(BUILTIN_BY_KIND.typein).toBe(TYPEIN_NOTE_TYPE);
     expect(BUILTIN_BY_KIND.custom).toBeUndefined();
+  });
+
+  it('back-template contract: Basic/Type-in answer-only, Cloze unchanged', () => {
+    // Basic + Type-in render the answer ONLY (no `{{Front}}<hr>` echo) — the
+    // reviewer pins the question above, so echoing the front would duplicate it.
+    expect(BASIC_NOTE_TYPE.templates[0].backTemplate).toBe('{{Back}}');
+    expect(TYPEIN_NOTE_TYPE.templates[0].backTemplate).toBe('{{Back}}');
+    // Cloze MUST stay `{{Text}}<hr>{{Extra}}` — its front is the blanks, its back is
+    // the filled-in text, so there is no duplication to remove.
+    expect(CLOZE_NOTE_TYPE.templates[0].backTemplate).toBe('{{Text}}<hr>{{Extra}}');
   });
 });
 
@@ -63,11 +90,16 @@ describe('BASIC_NOTE_TYPE', () => {
     expect(cards[0].renderFrontText).toBe('What is the capital of France?');
   });
 
-  it('renderBackText contains both front and back field values', () => {
+  it('renderBackText contains only the back field value (no front echo)', () => {
     const cards = generateCards(BASIC_NOTE_TYPE, fields);
-    // back template = {{Front}}<hr>{{Back}} → stripped → "What is the capital of France? Paris"
+    // back template = {{Back}} → answer only; the reviewer pins the question above
+    // so echoing the front would duplicate it.
     expect(cards[0].renderBackText).toContain('Paris');
-    expect(cards[0].renderBackText).toContain('What is the capital of France?');
+    expect(cards[0].renderBackText).not.toContain('What is the capital of France?');
+  });
+
+  it('back template is {{Back}} (answer only, no front echo / hr)', () => {
+    expect(BASIC_NOTE_TYPE.templates[0].backTemplate).toBe('{{Back}}');
   });
 
   it('renderText is non-empty', () => {
@@ -86,10 +118,10 @@ describe('BASIC_NOTE_TYPE', () => {
     expect(result).toBe('What is the capital of France?');
   });
 
-  it('back template renders Front + hr + Back', () => {
+  it('back template renders Back only (no front echo)', () => {
     const tpl = BASIC_NOTE_TYPE.templates[0];
     const result = renderTemplate(tpl.backTemplate, fields);
-    expect(result).toBe('What is the capital of France?<hr>Paris');
+    expect(result).toBe('Paris');
   });
 });
 
@@ -191,10 +223,14 @@ describe('TYPEIN_NOTE_TYPE', () => {
     expect(cards[0].renderFrontText).toBe('Translate: Hello');
   });
 
-  it('renderBackText contains both front and back (same template shape as Basic)', () => {
+  it('renderBackText contains only the back field (no front echo, same as Basic)', () => {
     const cards = generateCards(TYPEIN_NOTE_TYPE, fields);
     expect(cards[0].renderBackText).toContain('Hola');
-    expect(cards[0].renderBackText).toContain('Translate: Hello');
+    expect(cards[0].renderBackText).not.toContain('Translate: Hello');
+  });
+
+  it('back template is {{Back}} (answer only, no front echo / hr)', () => {
+    expect(TYPEIN_NOTE_TYPE.templates[0].backTemplate).toBe('{{Back}}');
   });
 
   it('renderText is non-empty', () => {

@@ -256,6 +256,142 @@ describe('cards', () => {
     expect(body.error).toBe('deck_not_found');
   });
 
+  // ── Step 3: manual scheduling control (forget / set-due) ────────────────────
+
+  type FullCard = {
+    id: string;
+    state: string;
+    reps: number;
+    lapses: number;
+    due: string;
+    lastReview: string | null;
+    suspended: boolean;
+    [key: string]: unknown;
+  };
+
+  // No GET /cards/:id endpoint — fetch the full row via the list endpoint
+  // (includeSuspended covers suspended cards too) and pick it by id.
+  const getCardById = async (cookie: string, id: string): Promise<FullCard> => {
+    const body = await (
+      await callApp(app, 'GET', '/cards?includeSuspended=true', { cookie })
+    ).json<{ items: FullCard[] }>();
+    const found = body.items.find((c) => c.id === id);
+    if (!found) throw new Error(`card ${id} not found in /cards`);
+    return found;
+  };
+
+  test('PATCH /cards/:id forget resets FSRS state to new (reps/lapses 0, due≈now, lastReview null)', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('forget'));
+    const deck = await freshDeck(cookie);
+    const card = await seedBasicCard(app, cookie, { deckId: deck, front: 'f', back: 'b' });
+
+    // Grade the card so it leaves "new" with non-zero reps + a lastReview.
+    const graded = await callApp(app, 'POST', '/reviews', {
+      cookie,
+      body: { cardId: card.id, rating: 3 },
+    });
+    expect(graded.status).toBe(200);
+
+    const beforeForget = await getCardById(cookie, card.id);
+    expect(beforeForget.state).not.toBe('new');
+    expect(beforeForget.reps).toBeGreaterThan(0);
+
+    const before = Date.now();
+    const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
+      cookie,
+      body: { forget: true },
+    });
+    expect(res.status).toBe(200);
+    const updated = await res.json<FullCard>();
+    expect(updated.state).toBe('new');
+    expect(updated.reps).toBe(0);
+    expect(updated.lapses).toBe(0);
+    expect(updated.lastReview).toBeNull();
+    // due reset to ~now (within a generous window for test execution time).
+    const dueMs = new Date(updated.due).getTime();
+    expect(dueMs).toBeGreaterThanOrEqual(before - 5000);
+    expect(dueMs).toBeLessThanOrEqual(Date.now() + 5000);
+  });
+
+  test('PATCH /cards/:id setDue sets due to the given date', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('setdue'));
+    const deck = await freshDeck(cookie);
+    const card = await seedBasicCard(app, cookie, { deckId: deck, front: 'f', back: 'b' });
+
+    const target = '2030-01-15T00:00:00.000Z';
+    const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
+      cookie,
+      body: { setDue: target },
+    });
+    expect(res.status).toBe(200);
+    const updated = await res.json<FullCard>();
+    expect(new Date(updated.due).getTime()).toBe(new Date(target).getTime());
+  });
+
+  test('PATCH /cards/:id forget returns 404 for a card owned by another user', async () => {
+    const { cookie: aCookie } = await signUpAndCookie(app, uniqueEmail('forget-a'));
+    const { cookie: bCookie } = await signUpAndCookie(app, uniqueEmail('forget-b'));
+    const aDeck = await freshDeck(aCookie);
+    const card = await seedBasicCard(app, aCookie, { deckId: aDeck, front: 'f', back: 'b' });
+
+    const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
+      cookie: bCookie,
+      body: { forget: true },
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json<{ error: string }>();
+    expect(body.error).toBe('not_found');
+  });
+
+  test('PATCH /cards/:id setDue returns 400 invalid_date for an unparseable date', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('setdue-bad'));
+    const deck = await freshDeck(cookie);
+    const card = await seedBasicCard(app, cookie, { deckId: deck, front: 'f', back: 'b' });
+
+    const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
+      cookie,
+      body: { setDue: 'not-a-date' },
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json<{ error: string }>();
+    expect(body.error).toBe('invalid_date');
+  });
+
+  test('PATCH /cards/:id returns 400 when forget and setDue are combined', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('combo'));
+    const deck = await freshDeck(cookie);
+    const card = await seedBasicCard(app, cookie, { deckId: deck, front: 'f', back: 'b' });
+
+    const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
+      cookie,
+      body: { forget: true, setDue: '2030-01-15T00:00:00.000Z' },
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json<{ error: string }>();
+    expect(body.error).toBe('forget_and_setdue_exclusive');
+  });
+
+  test('PATCH /cards/:id still toggles suspended without touching FSRS state (regression)', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('suspend-regress'));
+    const deck = await freshDeck(cookie);
+    const card = await seedBasicCard(app, cookie, { deckId: deck, front: 'f', back: 'b' });
+
+    // Grade to move off "new" so we can prove suspend doesn't reset FSRS.
+    await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: card.id, rating: 3 } });
+    const before = await getCardById(cookie, card.id);
+
+    const res = await callApp(app, 'PATCH', `/cards/${card.id}`, {
+      cookie,
+      body: { suspended: true },
+    });
+    expect(res.status).toBe(200);
+    const updated = await res.json<FullCard>();
+    expect(updated.suspended).toBe(true);
+    // FSRS untouched: state + reps stay as graded (not reset to new).
+    expect(updated.state).toBe(before.state);
+    expect(updated.reps).toBe(before.reps);
+  });
+
   // ── M3 Phase 4: regular queue config + subtree + global daily-remaining ──────
 
   test('/cards/queue honors a bound preset newPerDay/reviewsPerDay over the 20/200 defaults', async () => {

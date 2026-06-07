@@ -22,7 +22,7 @@
 // so stats/heatmap look lived-in. Review dates are spread across the past ~21
 // days. Deterministic except for the small per-review time jitter.
 
-import { and, count, eq, isNull } from 'drizzle-orm';
+import { count, eq } from 'drizzle-orm';
 import {
   BUILTIN_NOTE_TYPES,
   BUILTIN_BY_KIND,
@@ -35,7 +35,8 @@ import {
 } from '@neuronexus/shared';
 import { auth } from '@neuronexus/auth/server';
 import { db } from './client.ts';
-import { cards, decks, notes, noteTypes, profile, reviews, user } from './schema/index.ts';
+import { ensureBuiltins } from './ensure-builtins.ts';
+import { cards, decks, notes, profile, reviews, user } from './schema/index.ts';
 import { SEED_DECKS, type DeckSeed, type NoteSeed } from './seed-data.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -82,50 +83,18 @@ async function resolveTargetUser(email: string): Promise<{ id: string; email: st
 }
 
 /**
- * Ensure the 3 global builtin note-types exist (userId NULL, isBuiltin true).
- * Builtins are shared across every user (Phase 0 decision C-4). Upsert by
- * (name, isBuiltin, userId IS NULL): insert if missing, refresh fields /
- * templates / styling / kind if present so the row tracks the shared catalog.
- * Returns the persisted note-type id keyed by builtin name.
+ * Ensure the 3 global builtin note-types exist (userId NULL, isBuiltin true) via
+ * the shared `ensureBuiltins()` writer (idempotent + concurrency-safe, targeted
+ * ON CONFLICT on the partial unique index). Then build a name → def map keyed by
+ * the STABLE builtin ids from `BUILTIN_NOTE_TYPES` (the same literals
+ * `ensureBuiltins` persists) for the downstream note inserts.
  */
 async function ensureBuiltinNoteTypes(): Promise<Map<string, NoteTypeDef & { id: string }>> {
+  await ensureBuiltins(db);
   const byName = new Map<string, NoteTypeDef & { id: string }>();
   for (const def of BUILTIN_NOTE_TYPES) {
-    const [existing] = await db
-      .select()
-      .from(noteTypes)
-      .where(and(eq(noteTypes.name, def.name), eq(noteTypes.isBuiltin, true), isNull(noteTypes.userId)))
-      .limit(1);
-
-    if (existing) {
-      await db
-        .update(noteTypes)
-        .set({
-          fields: def.fields,
-          templates: def.templates,
-          styling: def.styling,
-          kind: def.kind,
-          updatedAt: new Date(),
-        })
-        .where(eq(noteTypes.id, existing.id));
-      byName.set(def.name, { ...def, id: existing.id });
-      continue;
-    }
-
-    const [created] = await db
-      .insert(noteTypes)
-      .values({
-        userId: null,
-        name: def.name,
-        fields: def.fields,
-        templates: def.templates,
-        styling: def.styling,
-        kind: def.kind,
-        isBuiltin: true,
-      })
-      .returning();
-    if (!created) throw new Error(`failed to insert builtin note-type ${def.name}`);
-    byName.set(def.name, { ...def, id: created.id });
+    if (!def.id) throw new Error(`builtin note-type ${def.name} is missing a stable id`);
+    byName.set(def.name, { ...def, id: def.id });
   }
   return byName;
 }

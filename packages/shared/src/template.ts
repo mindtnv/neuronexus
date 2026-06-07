@@ -236,13 +236,69 @@ export function renderTemplate(
 const IMG_TAG_RE = /<img\b[^>]*>/gi;
 const IMG_ALT_RE = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
 
-// Strip HTML tags → plaintext for the search-text path (never the display path).
-// Order matters (M2 Phase 5):
+// ── Markdown plaintext strip (Step 5, plan H5) ───────────────────────────────
+//
+// Field values are stored as MARKDOWN SOURCE and rendered to HTML client-side
+// (`apps/web/src/lib/render-card.tsx`). For the search-text cache we strip the
+// markdown markup here too, so a card whose body is `# Title` / `**bold**` /
+// `- item` / a `| table |` is searchable by its WORDS, not its punctuation.
+//
+// HONEST CAVEAT (plan H5): this is a BEST-EFFORT REGEX APPROXIMATION, NOT the
+// same AST the client markdown-it renderer uses. It is a search-cache heuristic,
+// NOT a security artifact and NOT a "single-source" client/server contract. It
+// only needs to remove the COMMON markers so search matches the prose.
+//
+// CRITICAL ORDERING (the one pinned invariant, plan H5 test vector): an inline
+// code span `` `a|b` `` must keep its `|` in the search text — the pipe lives
+// inside code, not a table cell. So inline-code CONTENT is stashed behind a
+// pipe-free sentinel BEFORE the table-pipe strip runs, then restored after. This
+// keeps `code` searchable verbatim while still flattening real markdown tables.
+const INLINE_CODE_RE = /`([^`\n]+)`/g;
+
+function stripMarkdown(s: string): string {
+  // 1. Stash inline-code CONTENT so its inner punctuation (notably `|`) survives
+  //    the table-pipe strip below. Sentinel is digit-only + NUL-free → no markdown
+  //    syntax, no table pipe, restored 1:1 afterwards.
+  const code: string[] = [];
+  let out = s.replace(INLINE_CODE_RE, (_full, inner: string) => {
+    const key = `nncode${code.length}`;
+    code.push(inner);
+    return key;
+  });
+  out = out
+    // 2. Fenced-code fences (``` / ~~~, with optional language) → drop the fence
+    //    line marker, keep the code body text.
+    .replace(/^[ \t]*(?:```|~~~)[^\n]*$/gm, '')
+    // 3. ATX heading markers at line start: `### Title` → `Title`.
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
+    // 4. Blockquote markers at line start: `> quote` → `quote`.
+    .replace(/^[ \t]*>[ \t]?/gm, '')
+    // 5. List bullets / ordered markers at line start: `- a`, `* a`, `1. a`.
+    .replace(/^[ \t]*(?:[-*+]|\d+\.)[ \t]+/gm, '')
+    // 6. Table separator rows (`|---|:--:|`) → drop entirely.
+    .replace(/^[ \t]*\|?[ \t]*:?-{2,}:?(?:[ \t]*\|[ \t]*:?-{2,}:?)*[ \t]*\|?[ \t]*$/gm, '')
+    // 7. Remaining table cell pipes → space (inline code is stashed, so a `|`
+    //    inside code is NOT touched here).
+    .replace(/\|/g, ' ')
+    // 8. Emphasis / strong markers (`**x**`, `__x__`, `*x*`, `_x_`) → drop the
+    //    markers, keep the text. Run strong (doubled) before emphasis (single).
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/\*([^*\n]+)\*/g, '$1')
+    .replace(/_([^_\n]+)_/g, '$1');
+  // 9. Restore inline-code content verbatim (pipe and all).
+  return out.replace(/nncode(\d+)/g, (_m, i: string) => code[Number(i)] ?? '');
+}
+
+// Strip HTML tags + markdown → plaintext for the search-text path (never the
+// display path). Order matters (M2 Phase 5 + Step 5):
 //   1. `<img>` → its `alt` text (extract before the tag is deleted; drop if no
 //      alt) so an image is searchable by its description.
 //   2. remaining HTML tags → space.
 //   3. math `\(…\)`/`\[…\]` → its formula SOURCE (delimiters removed) so a
 //      `field:`/bareword search on `\(x^2\)` matches `x^2`.
+//   4. markdown markers (headings/lists/blockquote/emphasis/tables) → stripped,
+//      best-effort (plan H5 — NOT the client AST; a search-cache heuristic).
 // Steps 1+3 keep media + math discoverable with ZERO query-structure change
 // (one-AST-two-consumers). Pure string ops; DOM-free.
 //
@@ -253,7 +309,7 @@ const IMG_ALT_RE = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
 const SEARCH_TEXT_CAP = 32_768;
 function stripTags(html: string): string {
   const capped = html.length > SEARCH_TEXT_CAP ? html.slice(0, SEARCH_TEXT_CAP) : html;
-  return capped
+  const noTags = capped
     .replace(IMG_TAG_RE, (tag) => {
       const m = IMG_ALT_RE.exec(tag);
       const alt = m ? (m[1] ?? m[2] ?? '') : '';
@@ -262,7 +318,8 @@ function stripTags(html: string): string {
     .replace(/<[^>]*>/g, ' ')
     .replace(MATH_RE, (full, disp: string | undefined, inline: string | undefined) =>
       disp !== undefined ? disp : inline !== undefined ? inline : full,
-    )
+    );
+  return stripMarkdown(noTags)
     .replace(/\s+/g, ' ')
     .trim();
 }

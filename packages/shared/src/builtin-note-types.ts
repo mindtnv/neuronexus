@@ -5,8 +5,9 @@
 //   - Cloze   — cloze blanks/reveal via `CLOZE_RE` (current `variant==='cloze'`)
 //   - Type-in — typed-answer LCS diff vs Back (current `variant==='type'`)
 //
-// These are pure data (no id — the DB migration / seed assigns UUIDs). They are
-// consumed by:
+// These carry STABLE `id` UUID literals — the single source of truth for the
+// builtin primary keys, shared by migration 0007 (raw INSERT) and
+// `ensureBuiltins()` (ORM upsert). They are consumed by:
 //   - the seed script (packages/db, Phase 1 reseed),
 //   - the API note-type bootstrap / GET /note-types (Phase 4),
 //   - any code that needs to identify a builtin by kind.
@@ -25,11 +26,14 @@ import type { NoteTypeDef, RenderKind } from './note-type.ts';
 // ── Basic ─────────────────────────────────────────────────────────────────────
 //
 // Front = {{Front}}
-// Back  = {{Front}}<hr>{{Back}}
+// Back  = {{Back}}
 //
-// Reproduces the "basic flip" branch in review.tsx.
+// Reproduces the "basic flip" branch in review.tsx. The back template renders the
+// answer ONLY — no `{{Front}}<hr>` echo — because the reviewer keeps the question
+// pinned above the answer the whole time, so echoing the front would duplicate it.
 
 export const BASIC_NOTE_TYPE: NoteTypeDef = {
+  id: '96bb6f6a-ad97-4e2d-9044-78a173d3df51',
   name: 'Basic',
   kind: 'basic',
   isBuiltin: true,
@@ -43,7 +47,7 @@ export const BASIC_NOTE_TYPE: NoteTypeDef = {
       name: 'Card 1',
       ord: 0,
       frontTemplate: '{{Front}}',
-      backTemplate: '{{Front}}<hr>{{Back}}',
+      backTemplate: '{{Back}}',
     },
   ],
 };
@@ -61,6 +65,7 @@ export const BASIC_NOTE_TYPE: NoteTypeDef = {
 // Reproduces `renderClozePrompt` / `renderClozeRevealed` in review.tsx.
 
 export const CLOZE_NOTE_TYPE: NoteTypeDef = {
+  id: 'a42316eb-6a7c-46ec-a7c2-2b15492385f2',
   name: 'Cloze',
   kind: 'cloze',
   isBuiltin: true,
@@ -85,9 +90,13 @@ export const CLOZE_NOTE_TYPE: NoteTypeDef = {
 // review UI checks (via `card.renderKind`) to show the typed-answer LCS diff
 // (`diffAnswer`) against the Back field.
 //
+// Back = {{Back}} (answer only — no `{{Front}}<hr>` echo, same rationale as Basic:
+// the reviewer keeps the question pinned, so echoing the front would duplicate it).
+//
 // Reproduces `variant === 'type'` / `diffAnswer` in review.tsx.
 
 export const TYPEIN_NOTE_TYPE: NoteTypeDef = {
+  id: '023045f3-da60-4fd3-89c9-582a148064d5',
   name: 'Type-in',
   kind: 'typein',
   isBuiltin: true,
@@ -101,7 +110,7 @@ export const TYPEIN_NOTE_TYPE: NoteTypeDef = {
       name: 'Card 1',
       ord: 0,
       frontTemplate: '{{Front}}',
-      backTemplate: '{{Front}}<hr>{{Back}}',
+      backTemplate: '{{Back}}',
     },
   ],
 };

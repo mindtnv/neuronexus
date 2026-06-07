@@ -12,7 +12,7 @@
 // reps > 3. The executor replays the ratings through ts-fsrs and also inserts
 // matching rows into `reviews` so heatmap/retention/forecast look alive.
 
-import { escapeHtml, type Rating, type RenderKind } from '@neuronexus/shared';
+import { type Rating, type RenderKind } from '@neuronexus/shared';
 
 export type DeckColor = 'lime' | 'amber' | 'violet' | 'sky' | 'rose' | 'neutral';
 
@@ -21,8 +21,8 @@ export interface NoteSeed {
   kind?: Extract<RenderKind, 'basic' | 'cloze' | 'typein'>;
   /**
    * Field values keyed by field name (Basic/Type-in: Front/Back; Cloze:
-   * Text/Extra). Plain strings — sanitization is a save-edge concern (Phase 4),
-   * not the seed's.
+   * Text/Extra). MARKDOWN source strings — markdown→HTML→sanitize happens at the
+   * render edge, not the seed's.
    */
   fields: Record<string, string>;
   tags?: string[];
@@ -38,11 +38,13 @@ export interface DeckSeed {
 }
 
 // Build a Basic note from a front/back pair — keeps the bulk of the catalog
-// terse while moving it onto the note model. The catalog is authored as PLAIN
-// TEXT, but field values are HTML at render time, so angle brackets etc. are
-// HTML-escaped here — exactly what the Phase 4 server save edge does for
-// user-entered content. (Without this, a front like `<T>` would be stripped to
-// the empty string by the engine's plaintext extraction and the card skipped.)
+// terse while moving it onto the note model. Field values are now MARKDOWN
+// SOURCE (rendered markdown→HTML→sanitize at the render edge), so the strings are
+// stored verbatim — no HTML escaping. Code-ish tokens with angle brackets (TS/C#
+// generics like `<T>`) are written wrapped in markdown inline-code backticks
+// (`` `<T>` ``) so they (a) display as literal text via markdown, and (b) survive
+// the engine's plaintext extraction — a bare `<T>` would be stripped to the empty
+// string and the card skipped.
 function basic(
   front: string,
   back: string,
@@ -50,7 +52,7 @@ function basic(
 ): NoteSeed {
   return {
     kind: 'basic',
-    fields: { Front: escapeHtml(front), Back: escapeHtml(back) },
+    fields: { Front: front, Back: back },
     tags: opts.tags,
     ratings: opts.ratings,
   };
@@ -87,7 +89,7 @@ export const SEED_DECKS: DeckSeed[] = [
           basic('nullable reference types (NRT)', '`#nullable enable` — компилятор отличает string от string?, требует явных проверок перед dereference.', { tags: ['csharp'], ratings: STUDIED }),
           basic('IDisposable / using', 'Release unmanaged resources. `using var x = new Foo();` автоматически Dispose в конце scope. Для async — IAsyncDisposable + `await using`.', { tags: ['csharp'], ratings: MATURE }),
           basic('ref / out / in', 'ref — передача по ссылке (read/write). out — обязан присвоить в методе. in — readonly ref, избегает копии struct.', { tags: ['csharp'], ratings: ROUGH }),
-          basic('Span<T> / Memory<T>', 'Zero-allocation slice над массивом/строкой/stackalloc. Span — stack-only (ref struct), Memory — можно hold на heap.', { tags: ['csharp', 'perf'], ratings: LEARNING }),
+          basic('`Span<T>` / `Memory<T>`', 'Zero-allocation slice над массивом/строкой/stackalloc. Span — stack-only (ref struct), Memory — можно hold на heap.', { tags: ['csharp', 'perf'], ratings: LEARNING }),
           basic('delegate vs event', 'delegate — функциональный тип. event — delegate с ограничением: только += / -= снаружи, invoke только изнутри owner-класса.', { tags: ['csharp'], ratings: STUDIED }),
           basic('extension method', '`public static string Upper(this string s) …`. Добавляет метод к чужому типу без наследования.', { tags: ['csharp'], ratings: STUDIED }),
           basic('readonly struct', 'Все поля readonly, компилятор не делает defensive copy при вызове members. Меньше аллокаций.', { tags: ['csharp', 'perf'], ratings: NEW }),
@@ -101,7 +103,7 @@ export const SEED_DECKS: DeckSeed[] = [
           basic('middleware pipeline', 'Ordered chain `app.Use(...)` — каждый middleware решает, передать управление `next()` или short-circuit. Порядок имеет значение (Auth перед Authorization).', { tags: ['aspnet'], ratings: MATURE }),
           basic('AddSingleton vs AddScoped vs AddTransient', 'Singleton — один на приложение. Scoped — один на request. Transient — новый при каждом resolve.', { tags: ['aspnet', 'di'], ratings: MATURE }),
           basic('Minimal API vs Controllers', 'Minimal — `app.MapGet(...)`, меньше церемоний, быстрый старт. Controllers — атрибутный роутинг, filters, model binding из коробки, удобнее в больших проектах.', { tags: ['aspnet'], ratings: STUDIED }),
-          basic('IOptions<T> / IOptionsMonitor<T>', 'IOptions — snapshot на старте. IOptionsSnapshot — per-scope, обновляется при перезагрузке конфига. IOptionsMonitor — подписка на изменения в runtime.', { tags: ['aspnet', 'config'], ratings: LEARNING }),
+          basic('`IOptions<T>` / `IOptionsMonitor<T>`', 'IOptions — snapshot на старте. IOptionsSnapshot — per-scope, обновляется при перезагрузке конфига. IOptionsMonitor — подписка на изменения в runtime.', { tags: ['aspnet', 'config'], ratings: LEARNING }),
           basic('IHostedService / BackgroundService', 'Long-running background задачи — запускаются с host`ом. BackgroundService — удобный base class с ExecuteAsync.', { tags: ['aspnet'], ratings: STUDIED }),
           basic('Authentication vs Authorization', 'Auth**N** — кто ты (cookie, JWT, OAuth). Auth**Z** — что тебе можно (policy, role, claim).', { tags: ['aspnet', 'security'], ratings: MATURE }),
           basic('Model Binding', 'Маппинг HTTP request → параметры экшена. Источники: route / query / body / header / form. [FromBody] — только один на action.', { tags: ['aspnet'], ratings: STUDIED }),
@@ -181,20 +183,20 @@ export const SEED_DECKS: DeckSeed[] = [
         name: 'TypeScript',
         color: 'sky',
         notes: [
-          basic('<T>', 'Обобщённый параметр типа. `function id<T>(x: T): T { return x }`', { tags: ['ts', 'generic'], ratings: MATURE }),
-          basic('<T extends U>', 'Ограничение: T должен быть подтипом U.', { tags: ['ts', 'generic'], ratings: STUDIED }),
+          basic('`<T>`', 'Обобщённый параметр типа. `function id<T>(x: T): T { return x }`', { tags: ['ts', 'generic'], ratings: MATURE }),
+          basic('`<T extends U>`', 'Ограничение: T должен быть подтипом U.', { tags: ['ts', 'generic'], ratings: STUDIED }),
           basic('keyof T', 'Union всех ключей типа T.', { tags: ['ts'], ratings: MATURE }),
           basic('T[K]', 'Lookup type — тип значения T по ключу K.', { tags: ['ts'], ratings: LEARNING }),
-          basic('Partial<T>', 'Все поля T становятся опциональными.', { tags: ['ts', 'utility'], ratings: MATURE }),
-          basic('Pick<T, K> / Omit<T, K>', 'Pick оставляет ключи K из T, Omit — убирает.', { tags: ['ts', 'utility'], ratings: STUDIED }),
-          basic('Record<K, V>', 'Объект с ключами K и значениями V. Record<string, number> ≈ { [k: string]: number }.', { tags: ['ts', 'utility'], ratings: MATURE }),
-          basic('ReturnType<F> / Parameters<F>', 'Извлечение типа возврата и параметров функции.', { tags: ['ts', 'utility'], ratings: STUDIED }),
+          basic('`Partial<T>`', 'Все поля T становятся опциональными.', { tags: ['ts', 'utility'], ratings: MATURE }),
+          basic('`Pick<T, K>` / `Omit<T, K>`', 'Pick оставляет ключи K из T, Omit — убирает.', { tags: ['ts', 'utility'], ratings: STUDIED }),
+          basic('`Record<K, V>`', 'Объект с ключами K и значениями V. `Record<string, number>` ≈ `{ [k: string]: number }`.', { tags: ['ts', 'utility'], ratings: MATURE }),
+          basic('`ReturnType<F>` / `Parameters<F>`', 'Извлечение типа возврата и параметров функции.', { tags: ['ts', 'utility'], ratings: STUDIED }),
           basic('discriminated union', 'Union с общим литеральным полем-дискриминатором. `{ kind: "ok", value } | { kind: "err", error }`. TypeScript сужает по kind.', { tags: ['ts'], ratings: STUDIED }),
           basic('type guard', 'Функция `x is T` — сужает тип в теле if. Например `function isString(x): x is string { return typeof x === "string" }`.', { tags: ['ts'], ratings: LEARNING }),
           basic('infer U', 'Внутри conditional type захватывает выведенный тип: `type Ret<F> = F extends (...a) => infer R ? R : never`.', { tags: ['ts'], ratings: ROUGH }),
           basic('as const', 'Превращает литералы в readonly + сужает до литеральных типов.', { tags: ['ts'], ratings: STUDIED }),
           basic('satisfies', 'Проверяет соответствие типу, но сохраняет narrow-тип значения. Лучше чем `as` — не затирает выведенные литералы.', { tags: ['ts'], ratings: NEW }),
-          basic('NonNullable<T>', 'Убирает null и undefined из T.', { tags: ['ts', 'utility'], ratings: LEARNING }),
+          basic('`NonNullable<T>`', 'Убирает null и undefined из T.', { tags: ['ts', 'utility'], ratings: LEARNING }),
         ],
       },
       {
@@ -359,11 +361,10 @@ export const SEED_DECKS: DeckSeed[] = [
           {
             kind: 'cloze',
             fields: {
-              // Cloze markup (`{{c1::…}}`) survives escapeHtml untouched ({}/:: are
-              // not HTML-special); only the surrounding text gets escaped.
-              Text: escapeHtml('The HTTP status code for "Not Found" is ') + '{{c1::404}}' +
-                escapeHtml(', and "Internal Server Error" is ') + '{{c2::500}}' + escapeHtml('.'),
-              Extra: escapeHtml('Both are common to see in API logs.'),
+              // Markdown source: the cloze markup (`{{c1::…}}`) and surrounding text
+              // are stored verbatim; the render edge runs markdown→HTML→sanitize.
+              Text: 'The HTTP status code for "Not Found" is {{c1::404}}, and "Internal Server Error" is {{c2::500}}.',
+              Extra: 'Both are common to see in API logs.',
             },
             tags: ['http', 'cloze'],
             ratings: STUDIED,
@@ -371,8 +372,7 @@ export const SEED_DECKS: DeckSeed[] = [
           {
             kind: 'cloze',
             fields: {
-              Text: escapeHtml('In Big-O, binary search is ') + '{{c1::O(log n)}}' +
-                escapeHtml(' and a naive nested loop is ') + '{{c2::O(n²)}}' + escapeHtml('.'),
+              Text: 'In Big-O, binary search is {{c1::O(log n)}} and a naive nested loop is {{c2::O(n²)}}.',
               Extra: '',
             },
             tags: ['algo', 'cloze'],
@@ -381,8 +381,8 @@ export const SEED_DECKS: DeckSeed[] = [
           {
             kind: 'typein',
             fields: {
-              Front: escapeHtml('Type the HTTP verb used to fully replace a resource.'),
-              Back: escapeHtml('PUT'),
+              Front: 'Type the HTTP verb used to fully replace a resource.',
+              Back: 'PUT',
             },
             tags: ['http', 'typein'],
             ratings: NEW,
@@ -390,8 +390,8 @@ export const SEED_DECKS: DeckSeed[] = [
           {
             kind: 'typein',
             fields: {
-              Front: escapeHtml('Type the SQL keyword that removes duplicate rows from a result set.'),
-              Back: escapeHtml('DISTINCT'),
+              Front: 'Type the SQL keyword that removes duplicate rows from a result set.',
+              Back: 'DISTINCT',
             },
             tags: ['sql', 'typein'],
             ratings: EASY,
