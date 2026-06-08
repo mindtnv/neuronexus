@@ -328,7 +328,7 @@ describe('chat (Slice 4)', () => {
 
     // The empty-context branch sent the NOT_FOUND system prompt.
     const promptText = JSON.stringify(capturedChatMessages);
-    expect(promptText).toContain('No card context was found');
+    expect(promptText).toContain('No relevant cards were found');
   });
 
   // ── Disabled gate ───────────────────────────────────────────────────────────

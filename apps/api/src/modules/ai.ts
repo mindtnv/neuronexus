@@ -41,8 +41,9 @@ import {
 import { retrieve, type RankedChunk } from '../ai/retrieve.ts';
 import { rootLogger } from '../logger.ts';
 
-// Retrieval top-k for a chat turn.
-const RETRIEVE_K = 10;
+// Retrieval tuning for a chat turn (env-configurable — see env.ts ai block).
+const RETRIEVE_K = env.ai.RETRIEVE_K;
+const RETRIEVE_MIN_SCORE = env.ai.RETRIEVE_MIN_SCORE;
 // Snippet length stored on each Citation (for the client's hover/preview).
 const SNIPPET_LEN = 240;
 
@@ -236,7 +237,12 @@ export const chatModule = new Elysia({ prefix: '/chat' })
             const [queryEmbedding] = await embed([userQuery]);
             const hits =
               queryEmbedding && queryEmbedding.length > 0
-                ? await retrieve({ userId: user.id, queryEmbedding, k: RETRIEVE_K })
+                ? await retrieve({
+                    userId: user.id,
+                    queryEmbedding,
+                    k: RETRIEVE_K,
+                    minScore: RETRIEVE_MIN_SCORE,
+                  })
                 : [];
 
             // 2) Resolve citations + prompt context.

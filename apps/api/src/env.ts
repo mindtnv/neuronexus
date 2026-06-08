@@ -45,6 +45,15 @@ export const env = {
     CHAT_API_KEY: process.env.CHAT_API_KEY,
     // Lets ops pause indexing independently of chat (default on).
     INDEXING_ENABLED: process.env.INDEXING_ENABLED ?? 'true',
+    // Retrieval tuning (chat grounding):
+    //  * RETRIEVE_K — max card chunks pulled per turn (a topic with more relevant
+    //    cards than this is capped here).
+    //  * RETRIEVE_MIN_SCORE — minimum cosine similarity (0..1) a chunk must clear.
+    //    Below it the chunk is dropped, so an off-topic message (a greeting) pulls
+    //    0 cards instead of k irrelevant ones. Calibrated for text-embedding-3-small
+    //    (unrelated ≲0.27, relevant ≳0.35); lower it to be more inclusive.
+    RETRIEVE_K: Number(process.env.RETRIEVE_K ?? 12),
+    RETRIEVE_MIN_SCORE: Number(process.env.RETRIEVE_MIN_SCORE ?? 0.32),
   },
 };
 
@@ -53,6 +62,13 @@ export const env = {
 // the SSE stream endpoint. They are INDEPENDENT so indexing can be paused
 // without breaking thread reads, and chat works (degraded retrieval) even when
 // indexing is off, and vice-versa. `GET /ai/status` reports both.
+// Under NODE_ENV=test the flags are FORCED off so the suite's baseline is
+// "AI unconfigured" REGARDLESS of what's in the loaded .env (the dev .env may
+// hold real keys). Tests enable AI exclusively via the injected fake client
+// (`__setAiClientForTests`), and `isEmbeddingEnabled`/`isChatEnabled` OR these
+// env flags with the injected client — so forcing false here means the test
+// effective-flag is injection-driven, and no test path can make a real API call.
+const aiEnvDisabled = env.NODE_ENV === 'test';
 export const embeddingEnabled =
-  Boolean(env.ai.OPENAI_API_KEY) && env.ai.INDEXING_ENABLED !== 'false';
-export const chatEnabled = Boolean(env.ai.CHAT_API_KEY);
+  !aiEnvDisabled && Boolean(env.ai.OPENAI_API_KEY) && env.ai.INDEXING_ENABLED !== 'false';
+export const chatEnabled = !aiEnvDisabled && Boolean(env.ai.CHAT_API_KEY);

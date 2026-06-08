@@ -38,9 +38,11 @@ Rules you MUST follow:
 4. Cite the cards you draw on using the token [card:<cardId>] immediately after the relevant claim. Use the exact cardId from the context.
 5. Never fabricate card content. Only quote or paraphrase text that appears in the context below.`;
 
-const NOT_FOUND_SYSTEM = `You are a study assistant for a spaced-repetition flashcard app.
+const NOT_FOUND_SYSTEM = `You are a study assistant for a spaced-repetition flashcard app. No relevant cards were found for this message.
 
-No card context was found for this query. You MUST respond with exactly: "This information is not in your cards." Do not attempt to answer from general knowledge.`;
+Decide what kind of message this is:
+- If the user is greeting you, thanking you, saying goodbye, or making small talk, respond briefly and naturally (in the user's language) and invite them to ask about their cards. Do NOT say "not in your cards" for small talk.
+- If the user asked a factual or study question and no card covers it, respond with exactly: "This information is not in your cards." Do NOT answer factual questions from outside knowledge, and NEVER fabricate card content.`;
 
 // ── Context block builder ───────────────────────────────────────────────────
 

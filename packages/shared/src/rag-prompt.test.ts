@@ -87,7 +87,15 @@ describe('buildRagPrompt — empty context branch', () => {
   });
 
   test('not-found system prompt tells model not to use general knowledge', () => {
-    expect(result.system.toLowerCase()).toMatch(/not.*in your cards|general knowledge/);
+    expect(result.system.toLowerCase()).toMatch(/not.*in your cards|general knowledge|outside knowledge/);
+  });
+
+  test('not-found system prompt allows natural small-talk replies (no robotic "not in cards" for greetings)', () => {
+    expect(result.system.toLowerCase()).toMatch(/small talk|greeting/);
+  });
+
+  test('not-found system prompt still forbids fabricating card content', () => {
+    expect(result.system.toLowerCase()).toMatch(/fabricate|outside knowledge|not answer factual/);
   });
 
   test('no card-context block injected when chunks is empty', () => {

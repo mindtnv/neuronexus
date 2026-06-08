@@ -190,6 +190,50 @@ describe('retrieve (Slice 4)', () => {
     expect(hits).toEqual([]);
   });
 
+  // ── Relevance threshold (minScore) — the off-topic "always returns k" fix ────
+  test('minScore gates weak matches (off-topic query → fewer/zero chunks)', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+    const card = await seedBasicCard(app, cookie, {
+      deckId,
+      front: 'What is photosynthesis?',
+      back: 'Plants converting light into energy',
+    });
+    await drainIndexQueue({ timeoutMs: 5000 });
+    const [chunk] = await db
+      .select({ text: kbChunk.text })
+      .from(kbChunk)
+      .where(and(eq(kbChunk.cardId, card.id), eq(kbChunk.position, 0)))
+      .limit(1);
+
+    // An exact-match query (score ≈ 1) clears a moderate threshold.
+    const pass = await retrieve({
+      userId,
+      queryEmbedding: queryEmbeddingForChunkText(chunk!.text),
+      k: 10,
+      minScore: 0.5,
+    });
+    expect(pass.map((h) => h.cardId)).toContain(card.id);
+
+    // An impossible threshold (>1) prunes everything in SQL — even the exact match.
+    const none = await retrieve({
+      userId,
+      queryEmbedding: queryEmbeddingForChunkText(chunk!.text),
+      k: 10,
+      minScore: 1.01,
+    });
+    expect(none).toEqual([]);
+
+    // WITHOUT a threshold, an unrelated query STILL returns the card — this is the
+    // naive "top-k always fires" behavior the minScore gate exists to fix.
+    const unrelatedNoGate = await retrieve({
+      userId,
+      queryEmbedding: vectorFor('zzz totally unrelated qqq'),
+      k: 10,
+    });
+    expect(unrelatedNoGate.length).toBeGreaterThan(0);
+  });
+
   // ── Cross-user isolation (SHOULD-FIX #11, CRITICAL) ─────────────────────────
   test('cross-user isolation: A and B index identical topics; retrieve as A leaks none of B', async () => {
     const a = await signUpAndCookie(app, uniqueEmail('a'));
