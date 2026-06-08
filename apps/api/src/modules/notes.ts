@@ -26,6 +26,21 @@ import { authPlugin } from '../auth-plugin.ts';
 import { rootLogger } from '../logger.ts';
 import { sanitizeFieldValues } from '../sanitize.ts';
 import { defFromRow } from './note-types.ts';
+import { enqueueIndex } from '../ai/index-queue.ts';
+
+/**
+ * Fire-and-forget RAG index enqueue for created/updated cards. Runs AFTER the
+ * note transaction commits; `enqueueIndex` is sync + non-blocking (and a no-op
+ * when embeddings are disabled), so a queue error can never affect the HTTP
+ * response. Wrapped defensively all the same.
+ */
+function enqueueCardsForIndex(cardIds: Array<string | undefined>): void {
+  try {
+    for (const id of cardIds) if (id) enqueueIndex(id);
+  } catch (err) {
+    rootLogger.warn({ err }, 'ai.index.enqueue_failed');
+  }
+}
 
 // Size caps (DoS hardening): bound field-name length, per-value HTML length, and
 // the number of fields a single note may carry.
@@ -119,6 +134,9 @@ export const notesModule = new Elysia({ prefix: '/notes' })
         },
         'note.create',
       );
+
+      // RAG index hook (Slice 3): enqueue each generated card after commit.
+      enqueueCardsForIndex(result.cards.map((c) => c?.id));
 
       return result;
     },
@@ -246,6 +264,10 @@ export const notesModule = new Elysia({ prefix: '/notes' })
         },
         'note.update',
       );
+
+      // RAG index hook (Slice 3): re-enqueue surviving + new cards after commit.
+      // The sourceHash skip means an unchanged render_text costs nothing.
+      enqueueCardsForIndex(result.cards.map((c) => c.id));
 
       return { note: result.note, cards: result.cards };
     },

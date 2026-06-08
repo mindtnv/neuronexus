@@ -15,6 +15,8 @@ import { authPlugin } from '../auth-plugin.ts';
 import { buildCardWhere } from './card-query-sql.ts';
 import { resolveDeckConfig } from './deck-config.ts';
 import { SORT_ORDERS, type SortOrder } from './filtered-decks.ts';
+import { enqueueIndex } from '../ai/index-queue.ts';
+import { rootLogger } from '../logger.ts';
 
 // ── Card read-payload enrichment (M1 Phase 5a) ────────────────────────────────
 //
@@ -95,6 +97,26 @@ async function enrichCards(rows: CardRow[]): Promise<EnrichedCard[]> {
         : null,
     };
   });
+}
+
+/**
+ * Resolve the card ids belonging to a set of notes and enqueue each for a RAG
+ * index meta-refresh (fire-and-forget). Used by the bulk tag ops — only the tag
+ * `meta` moved, render_text is unchanged so the sourceHash skip makes this a
+ * meta-only refresh (no paid re-embed). A queue/lookup error never affects the
+ * HTTP response.
+ */
+async function enqueueCardsOfNotes(noteIds: string[]): Promise<void> {
+  if (noteIds.length === 0) return;
+  try {
+    const affected = await db
+      .select({ id: cards.id })
+      .from(cards)
+      .where(inArray(cards.noteId, noteIds));
+    for (const { id } of affected) enqueueIndex(id);
+  } catch (err) {
+    rootLogger.warn({ err }, 'ai.index.enqueue_failed');
+  }
 }
 
 // Pagination defaults for GET /cards. The hard ceiling protects us against
@@ -667,6 +689,11 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
               ),
             )
             .returning({ id: notes.id });
+          // RAG index hook (Slice 3, SHOULD-FIX #6): the chunk stores note tags
+          // in its meta for tag-filtered retrieval — refresh the affected cards
+          // (render_text unchanged → sourceHash skip → meta-only refresh, no
+          // paid re-embed).
+          await enqueueCardsOfNotes(updated.map((n) => n.id));
           return { updated: updated.length };
         }
 
@@ -679,6 +706,8 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
             .set({ tags: sql`array_remove(${notes.tags}, ${tag})`, updatedAt: new Date() })
             .where(and(eq(notes.userId, user.id), noteScope))
             .returning({ id: notes.id });
+          // RAG index hook (Slice 3): refresh chunk meta tags for affected cards.
+          await enqueueCardsOfNotes(updated.map((n) => n.id));
           return { updated: updated.length };
         }
       }
