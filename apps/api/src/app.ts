@@ -13,7 +13,7 @@ import { notesModule } from './modules/notes.ts';
 import { reviewsModule } from './modules/reviews.ts';
 import { profileModule } from './modules/profile.ts';
 import { mediaModule } from './modules/media.ts';
-import { aiModule } from './modules/ai.ts';
+import { aiModule, chatModule } from './modules/ai.ts';
 import { AUTH_RATE_RULES, clientIpFromRequest, rateLimitCheck } from './rate-limit.ts';
 import { pickRequestId, requestLogger, rootLogger } from './logger.ts';
 
@@ -111,7 +111,8 @@ export function buildApp() {
     .use(filteredDecksModule)
     .use(reviewsModule)
     .use(mediaModule)
-    .use(aiModule);
+    .use(aiModule)
+    .use(chatModule);
 }
 
 export type App = ReturnType<typeof buildApp>;

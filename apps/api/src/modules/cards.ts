@@ -629,6 +629,24 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
     },
     { auth: true },
   )
+  // Single card by id (auth, user-scoped). 404 on a foreign/missing id.
+  // Returns the enriched card (note + noteType descriptors merged in) so the
+  // chat screen can resolve a CITED card for `RichCard` rendering when that card
+  // is outside the ≤500-row bootstrap mirror (SHOULD-FIX #4). Eden-typed.
+  .get(
+    '/:id',
+    async ({ user, params, status }) => {
+      const [row] = await db
+        .select()
+        .from(cards)
+        .where(and(eq(cards.id, params.id), eq(cards.userId, user.id)))
+        .limit(1);
+      if (!row) return status(404, { error: 'not_found' });
+      const [enriched] = await enrichCards([row]);
+      return enriched!;
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
   // Bulk operations over a set of card ids. All ops are scoped to the caller
   // (`user_id = $user AND id = ANY($cardIds)`), so foreign ids are silent
   // no-ops, never leaks or errors.
