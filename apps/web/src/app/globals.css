@@ -157,6 +157,23 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   padding: 0.1em 0.35em;
 }
 
+/* Real inline <code> (markdown `code` now survives the allow-list — `code` is an
+   allowed tag). The size is a FIXED rem, NOT em: the rendered subtree inherits
+   the card's prose font-size (the question is ~28px, the answer ~17px), so an
+   em-based code size ballooned inline code to title-size monospace. rem is
+   relative to the root (16px), so inline code stays compact everywhere. The
+   `pre code` rule below resets bg/border/padding for block code (higher
+   specificity), so this only paints true INLINE code. */
+.nn-rendered code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0.12em 0.36em;
+  word-break: break-word;
+}
+
 /* Forward-compat size presets (harmless even though the server drops img.class —
    client keeps it, so live editor preview can echo a chosen preset). */
 .nn-rendered img.nn-img-s { max-width: 200px; }
@@ -179,7 +196,9 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-rendered pre code,
 .nn-rendered code.hljs {
   font-family: var(--font-mono);
-  font-size: 0.88em;
+  /* Fixed rem (not em): block code must not scale with the card's prose size
+     (~28px question / ~17px answer) or long lines balloon and clip. */
+  font-size: 0.8125rem;
   line-height: 1.55;
   background: none;
   border: none;
@@ -226,14 +245,46 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-rendered .hljs-deletion { color: #e06c75; }
 .nn-rendered .hljs-emphasis { font-style: italic; }
 
+/* Markdown pipe tables (table/thead/tbody/tr/th/td — all allow-listed at both
+   sanitizer edges). Without these rules the browser UA default rendered borderless
+   cells with collapsed spacing, so comparison columns ran together. Fixed rem size
+   (decoupled from the prose em-base); collapsed borders read as a real grid. The
+   table is a scrollable block so a wide comparison table never clips the card. */
+.nn-rendered table {
+  border-collapse: collapse;
+  margin: 0.7em 0;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.nn-rendered th,
+.nn-rendered td {
+  border: 1px solid var(--border);
+  padding: 6px 11px;
+  text-align: left;
+  vertical-align: top;
+}
+.nn-rendered th {
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
 /* Mermaid diagram island (Step 6b). The SVG is produced + DOMPurified by the
    dedicated mermaid sink and substituted into the single SafeHtml node AFTER the
    main sanitize. The container centers + caps the diagram and gives it a code-
    surface backdrop, matching the fenced-code block. mermaid's `theme:'dark'` is
    set in `initialize`; this only frames + scales the result. No inline styles. */
 .nn-rendered .nn-mermaid {
-  display: flex;
-  justify-content: center;
+  /* NOT display:flex. mermaid (useMaxWidth) emits the SVG with width="100%" +
+     viewBox + NO height attr. As a flex item under the default align-items:stretch
+     that mis-sizes — the diagram collapsed to a thin strip in a tall box. Plain
+     block flow with a centered inline-block svg lets the browser derive the height
+     from the viewBox aspect ratio reliably. */
+  display: block;
+  text-align: center;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -242,6 +293,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   overflow-x: auto;
 }
 .nn-rendered .nn-mermaid svg {
+  display: inline-block;
   max-width: 100%;
   height: auto;
 }

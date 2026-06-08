@@ -88,6 +88,14 @@ export const RichCard = ({
           startOnLoad: false,
           securityLevel: 'strict',
           theme: 'dark',
+          // Render labels as native SVG `<text>`, NOT as HTML inside
+          // `<foreignObject>` (the SVG→HTML XSS escape hatch the mermaid sink
+          // forbids — see MERMAID_DOMPURIFY_CONFIG). Without this, flowchart /
+          // state labels live in foreignObject and get stripped → blank nodes.
+          // Root-level `htmlLabels` is the canonical v11 setting (it supersedes
+          // the deprecated per-diagram `flowchart.htmlLabels`) and applies across
+          // flowchart / class / state diagrams.
+          htmlLabels: false,
         });
       } catch (err) {
         // The whole mermaid module failed to load — render error islands for all.

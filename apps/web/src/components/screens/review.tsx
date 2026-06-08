@@ -510,9 +510,13 @@ export const NNReviewClassic = () => {
     renderFieldValues['Back'] ??
     current.renderBackText;
 
+  // Sans (not display-serif) at a sane scale — the old 48px serif both read as
+  // "местами очень большой шрифт" and, being the em-base for the whole rendered
+  // subtree, ballooned inline code / tables. Question stays the largest element
+  // but no longer dominates; cloze a touch smaller (the prompt carries blanks).
   const frontFontSize = isMobile
-    ? (isCloze ? 28 : 32)
-    : (isCloze ? 36 : 48);
+    ? (isCloze ? 22 : 24)
+    : (isCloze ? 26 : 28);
 
   // Which section controls reveal/ratings visibility per render kind.
   const showAnswerSection = isTypein ? submitted : revealed;
@@ -659,12 +663,14 @@ export const NNReviewClassic = () => {
         style={{
           width: '100%',
           maxWidth: 760,
-          minHeight: isMobile ? 280 : 380,
+          // Modest floor so a one-line card has presence, then the card HUGS its
+          // content (the flex spacer that forced 380px of emptiness is gone).
+          minHeight: isMobile ? 160 : 200,
           borderRadius: 'var(--r-xl)',
           background: 'var(--surface)',
           border: '1px solid var(--border)',
           flexShrink: 0,
-          padding: isMobile ? '22px 20px' : '40px 48px',
+          padding: isMobile ? '20px 18px' : '28px 32px',
           cursor: isTypein && !submitted ? 'default' : 'pointer',
           display: 'flex',
           flexDirection: 'column',
@@ -677,7 +683,7 @@ export const NNReviewClassic = () => {
         }}
       >
         {/* Card meta row — friendly kind chip + tags */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: isMobile ? 22 : 30, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: isMobile ? 16 : 18, flexWrap: 'wrap', alignItems: 'center' }}>
           <NNBadge size="xs" tone="neutral">
             {renderKindLabel(renderKind, t)}
           </NNBadge>
@@ -713,12 +719,12 @@ export const NNReviewClassic = () => {
             side={promptSide}
             templateOrd={current.templateOrd}
             style={{
-              fontFamily: 'var(--font-serif)',
+              fontFamily: 'var(--font-sans)',
               fontSize: frontFontSize,
-              lineHeight: 1.15,
-              letterSpacing: -1,
+              lineHeight: 1.3,
+              letterSpacing: -0.3,
               color: 'var(--text)',
-              fontWeight: 400,
+              fontWeight: 600,
               wordBreak: 'break-word',
             }}
           />
@@ -830,7 +836,7 @@ export const NNReviewClassic = () => {
           <>
             <div
               style={{
-                margin: isMobile ? '26px 0 0' : '34px 0 0',
+                margin: isMobile ? '20px 0 0' : '24px 0 0',
                 height: 1,
                 background: 'linear-gradient(to right, var(--border-2), transparent)',
               }}
@@ -842,7 +848,7 @@ export const NNReviewClassic = () => {
                 transition: 'opacity 240ms ease, transform 240ms ease',
                 pointerEvents: showAnswerSection ? 'auto' : 'none',
                 minHeight: showAnswerSection ? 40 : 0,
-                marginTop: showAnswerSection ? (isMobile ? 22 : 28) : 0,
+                marginTop: showAnswerSection ? (isMobile ? 18 : 22) : 0,
               }}
             >
               {showAnswerSection && renderNoteType && (
@@ -872,12 +878,12 @@ export const NNReviewClassic = () => {
                       side="back"
                       templateOrd={current.templateOrd}
                       style={{
-                        fontSize: isMobile ? 21 : 24,
+                        fontSize: isMobile ? 16 : 17,
                         fontWeight: 400,
                         color: 'var(--text)',
-                        letterSpacing: -0.3,
-                        fontFamily: 'var(--font-serif)',
-                        lineHeight: 1.45,
+                        letterSpacing: 0,
+                        fontFamily: 'var(--font-sans)',
+                        lineHeight: 1.6,
                         wordBreak: 'break-word',
                       }}
                     />
@@ -896,14 +902,13 @@ export const NNReviewClassic = () => {
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              marginTop: isMobile ? 22 : 28,
+              marginTop: isMobile ? 18 : 20,
             }}
           >
             <NNKbd>Space</NNKbd> {t('review.toRevealAnswer')}
           </div>
         )}
 
-        <div style={{ flex: 1, minHeight: 16 }} />
       </div>
 
       {/* Quiet meta + hotkey strip — moved OUT of the card so the card holds only

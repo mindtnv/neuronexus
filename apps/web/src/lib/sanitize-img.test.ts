@@ -253,10 +253,17 @@ describe('Step 4 rich-content allow-list (client edge)', () => {
 // ── Step 6b — mermaid SVG sink (CLIENT edge). The dedicated
 // `MERMAID_DOMPURIFY_CONFIG` (via `sanitizeMermaidSvg`) is INTENTIONALLY isolated
 // from the main allow-list: it turns on the SVG namespace but forbids the SVG→
-// HTML escape hatches (foreignObject/script/style/a), external links
-// (xlink:href / `url(http…)` / `javascript:` / `data:`), and keeps ONLY local
-// `url(#id)` fragment refs (arrowheads). These EXECUTE the real client DOMPurify
-// under happy-dom, proving the security drops AND the N5 correctness KEEP.
+// HTML escape hatches (foreignObject/script/a), external links (xlink:href via
+// FORBID_ATTR), and clamps url-bearing presentation attrs (marker-end / fill /
+// stroke / …) to a LOCAL `url(#id)` fragment via the `SVG_URL_REF_ATTRS` hook —
+// this REPLACED the old `ALLOWED_URI_REGEXP`, which matched EVERY attribute and so
+// stripped all SVG GEOMETRY (viewBox/width/x/y) and collapsed the diagram. The
+// geometry-preservation test below pins that regression. `<style>` is PERMITTED (mermaid v11 emits
+// its dark theme as a scoped `<style>` INSIDE the SVG — node/edge/label fill +
+// stroke — and forbidding it rendered an invisible diagram); DOMPurify's built-in
+// CSS sanitizer still neutralizes the dangerous at-rules (`@import`, external
+// `url(http…)`). These EXECUTE the real client DOMPurify under happy-dom, proving
+// the security drops AND the N5 + theme correctness KEEPs.
 describe('Step 6b mermaid SVG sink (MERMAID_DOMPURIFY_CONFIG, client edge)', () => {
   // foreignObject is the SVG→HTML escape hatch — it AND any script inside it must
   // be dropped whole.
@@ -284,14 +291,48 @@ describe('Step 6b mermaid SVG sink (MERMAID_DOMPURIFY_CONFIG, client edge)', () 
     expect(out.toLowerCase()).not.toContain('alert');
   });
 
-  // An inner <style>@import url(evil)</style> (the theme is class-based instead)
-  // is dropped whole — the @import never reaches the DOM.
-  test('drops an inner <style> with @import', () => {
+  // `<style>` is now PERMITTED (mermaid theme lives there), but a <style> whose
+  // content is a dangerous `@import url(http…)` must still be neutralized — the
+  // @import / external host never reaches the DOM (DOMPurify CSS sanitizer).
+  test('neutralizes a dangerous @import inside <style>', () => {
     const out = sanitizeMermaidSvg(
       '<svg xmlns="http://www.w3.org/2000/svg"><style>@import url(http://evil.test/x.css)</style><g><rect/></g></svg>',
     );
-    expect(out.toLowerCase()).not.toContain('<style');
     expect(out.toLowerCase()).not.toContain('@import');
+    expect(out.toLowerCase()).not.toContain('evil.test');
+  });
+
+  // KEEP (CORRECTNESS) — theme survival is verified at RUNTIME, not here: `<style>`
+  // is in DOMPurify's `svg` tag profile (purify svg allow-list), so a real browser
+  // keeps the mermaid `theme:'dark'` `<style>` block (node/edge/label colors) and
+  // the diagram renders visibly. happy-dom (this runner's DOM) cannot model an SVG
+  // `<style>` sibling — it empties the whole <svg> body on serialize (the SAME
+  // documented quirk family as the `<script>`-sibling test above), so a unit
+  // assertion that the benign <style> survives is impossible in this environment.
+  // The security side (the @import test above) is what we pin here.
+
+  // KEEP (CORRECTNESS, regression for the collapsed-diagram bug): the SVG root
+  // GEOMETRY (viewBox / width / x / y) MUST survive. The old ALLOWED_URI_REGEXP
+  // matched every attribute value and dropped all of these (none look like
+  // `url(#…)`), leaving the diagram with no coordinate system → it rendered as a
+  // 300×150 strip. happy-dom faithfully reproduces this (a plain geometry svg has
+  // no <style>-sibling quirk), so it is a reliable oracle here.
+  test('KEEPS svg geometry (viewBox/width/x/y) — collapsed-diagram regression', () => {
+    const out = sanitizeMermaidSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 240 140"><g><rect x="1" y="2" width="40" height="20"/></g></svg>',
+    );
+    expect(out).toContain('viewBox="0 0 240 140"');
+    expect(out).toContain('width="100%"');
+    expect(out).toContain('x="1"');
+    expect(out).toContain('y="2"');
+  });
+
+  // A url-bearing presentation attr (fill) with an EXTERNAL url() is dropped by the
+  // SVG_URL_REF_ATTRS hook — while geometry (above) is untouched.
+  test('drops fill="url(http://…)" (external paint ref)', () => {
+    const out = sanitizeMermaidSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(http://evil.test/x)"/></svg>',
+    );
     expect(out.toLowerCase()).not.toContain('evil.test');
   });
 

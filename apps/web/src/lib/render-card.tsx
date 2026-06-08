@@ -234,6 +234,37 @@ if (typeof DOMPurify.addHook === 'function' && !(DOMPurify as AttrHookFlaggedDOM
   (DOMPurify as AttrHookFlaggedDOMPurify)[NN_ATTR_HOOK] = true;
 }
 
+// Register the SVG url-reference clamp hook ONCE (guarded like the hooks above).
+// This REPLACES the declarative `ALLOWED_URI_REGEXP: /^(?:#|url\(#)/` that USED to
+// live on `MERMAID_DOMPURIFY_CONFIG`. That regex was the right INTENT (a functional
+// `url(...)` ref may only point at a LOCAL fragment — arrowhead markers / gradients
+// — never `url(http…)` / `javascript:` / `data:`) but the WRONG mechanism: DOMPurify
+// matches `ALLOWED_URI_REGEXP` against EVERY attribute value, so it silently dropped
+// all SVG GEOMETRY (`viewBox`, `width="100%"`, `x`/`y`/`width`/`height`, `d`,
+// `transform`, …) — none of which look like `url(#…)`. A geometry-less SVG has no
+// coordinate system, so mermaid diagrams collapsed to the 300×150 default and
+// rendered as a thin strip. Scoping the clamp to the url-BEARING attribute NAMES
+// keeps geometry intact while preserving the local-only `url()` guarantee. The hook
+// is global but no-ops for every non-SVG sink (the main card + KaTeX configs never
+// emit these attribute names). `xlink:href` stays handled by `FORBID_ATTR`.
+const SVG_URL_REF_ATTRS = new Set([
+  'marker-start', 'marker-mid', 'marker-end',
+  'fill', 'stroke', 'clip-path', 'mask', 'filter', 'cursor',
+]);
+const LOCAL_URL_REF_RE = /^url\(\s*['"]?#[^)'"]*['"]?\s*\)$/i;
+const NN_SVG_URL_HOOK = '__nnSvgUrlRefHookRegistered';
+type SvgUrlHookFlaggedDOMPurify = typeof DOMPurify & { [NN_SVG_URL_HOOK]?: boolean };
+if (typeof DOMPurify.addHook === 'function' && !(DOMPurify as SvgUrlHookFlaggedDOMPurify)[NN_SVG_URL_HOOK]) {
+  DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+    if (!SVG_URL_REF_ATTRS.has(data.attrName)) return;
+    const v = (data.attrValue ?? '').trim();
+    // A functional `url(...)` reference is allowed ONLY if it points at a local
+    // fragment; a plain value (color `#eaeaea`, `none`, a paint keyword) is fine.
+    if (/url\(/i.test(v) && !LOCAL_URL_REF_RE.test(v)) data.keepAttr = false;
+  });
+  (DOMPurify as SvgUrlHookFlaggedDOMPurify)[NN_SVG_URL_HOOK] = true;
+}
+
 // ── KaTeX math render (M2 Phase 5, plan A3/A4/C-5 + Principle 5) ─────────────
 //
 // KaTeX output is UNTRUSTED HTML and is DOMPurified before injection. This config
@@ -264,27 +295,39 @@ const KATEX_DOMPURIFY_CONFIG: Config = {
 //   * `USE_PROFILES: { svg, svgFilters }` — turns on the SVG element/attr
 //     namespace (the main config is HTML-only). svgFilters keeps `<filter>`/
 //     `<feGaussianBlur>` etc. that mermaid uses for shadows.
-//   * `FORBID_TAGS: foreignObject/script/style/a` — `foreignObject` is the SVG→
-//     HTML escape hatch (XSS), `script`/`style` are obvious sinks, and a bare
-//     `<a>` inside a diagram is dropped (no in-diagram navigation surface). The
-//     mermaid THEME is driven by the `.nn-mermaid` CSS classes in globals.css,
-//     NOT by an inner `<style>` block — so forbidding `style` costs nothing.
+//   * `FORBID_TAGS: foreignObject/script/a` — `foreignObject` is the SVG→HTML
+//     escape hatch (XSS) and `script` is an obvious sink (both also live in
+//     DOMPurify's `svgDisallowed` set), and a bare `<a>` inside a diagram is
+//     dropped (no in-diagram navigation surface). `<style>` is DELIBERATELY NOT
+//     forbidden: mermaid v11 emits the whole diagram THEME (node/edge/label
+//     fill + stroke + text color) as a scoped `<style>#<id>{…}</style>` block
+//     INSIDE the SVG — forbidding it stripped every color and rendered an
+//     invisible diagram (empty box). `style` is in DOMPurify's `svg` tag profile,
+//     so simply NOT listing it here is enough to keep it; DOMPurify's built-in CSS
+//     sanitizer still neutralizes the dangerous primitives (`@import`,
+//     `url(http…)`, `expression(...)`, `position:fixed`) inside the block, so the
+//     scoped theme is safe. Diagram LABELS stay native SVG `<text>` (never
+//     `foreignObject`) because the `RichCard` wrapper initializes mermaid with
+//     `htmlLabels:false` — so forbidding `foreignObject` no longer drops text.
 //   * `FORBID_ATTR: xlink:href` — kills external/`javascript:` links riding the
 //     legacy xlink namespace.
-//   * `ALLOWED_URI_REGEXP: /^(?:#|url\(#)/` — a url-ish attribute (e.g.
-//     `marker-end`) may ONLY reference a LOCAL fragment (`#id` / `url(#id)`);
-//     `url(http…)`/`javascript:`/`data:` are dropped. Arrowheads survive, remote
-//     fetches do not.
+//   * NO `ALLOWED_URI_REGEXP` — DOMPurify matches it against EVERY attribute
+//     value, so a `url(#…)`-only regex stripped all SVG GEOMETRY (`viewBox`,
+//     `width="100%"`, `x`/`y`/`width`/`height`, `d`, `transform`) and collapsed
+//     every diagram to the 300×150 default (rendered as a thin strip). The
+//     local-only `url()` clamp now lives in the scoped `SVG_URL_REF_ATTRS` hook
+//     above — applied by attribute NAME, so geometry is untouched. Without a
+//     custom regex DOMPurify's DEFAULT URI check applies, which does NOT catch
+//     `marker-end="url(javascript:…)"`; that is exactly what the hook covers.
 //   * `ADD_ATTR: marker-start/marker-end` — DOMPurify's stock SVG profile does
 //     NOT allow-list these presentation-marker attributes, so without this the
 //     CORRECTNESS gate `marker-end="url(#arrow)"` would be dropped and every
 //     arrowed diagram would lose its arrowheads (plan N5 fallback). They stay
-//     clamped to local `url(#id)` by ALLOWED_URI_REGEXP above.
+//     clamped to local `url(#id)` by the SVG_URL_REF_ATTRS hook above.
 const MERMAID_DOMPURIFY_CONFIG: Config = {
   USE_PROFILES: { svg: true, svgFilters: true },
-  FORBID_TAGS: ['foreignObject', 'script', 'style', 'a'],
+  FORBID_TAGS: ['foreignObject', 'script', 'a'],
   FORBID_ATTR: ['xlink:href'],
-  ALLOWED_URI_REGEXP: /^(?:#|url\(#)/,
   ADD_ATTR: ['marker-end', 'marker-start'],
   RETURN_DOM: false,
   RETURN_DOM_FRAGMENT: false,
