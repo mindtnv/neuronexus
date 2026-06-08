@@ -113,7 +113,9 @@ export async function embed(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
 
   const apiKey = env.ai.OPENAI_API_KEY!;
-  const url = `${env.ai.CHAT_BASE_URL.replace(/\/$/, '')}/embeddings`;
+  // Embeddings hit EMBEDDING_BASE_URL (default OpenAI), NOT CHAT_BASE_URL — the
+  // embedder and the chat gateway may be different hosts/providers.
+  const url = `${env.ai.EMBEDDING_BASE_URL.replace(/\/$/, '')}/embeddings`;
   const log = rootLogger;
   const started = performance.now();
 

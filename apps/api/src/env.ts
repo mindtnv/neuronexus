@@ -30,6 +30,10 @@ export const env = {
   ai: {
     // Embeddings (indexing side).
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    // Embeddings base URL — SEPARATE from CHAT_BASE_URL: the embedder may run on
+    // a different host/provider than the chat gateway (e.g. OpenAI embeddings +
+    // a self-hosted OpenAI-compatible chat gateway). Defaults to OpenAI.
+    EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL ?? 'https://api.openai.com/v1',
     EMBEDDING_MODEL: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small',
     // Baked into the kb_chunk.embedding column dimension via the migration —
     // must match the embedding model. Changing it requires the reindex-on-
