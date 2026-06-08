@@ -69,6 +69,7 @@ const m = {
     close: 'Close panel',
     editing: 'Editing card',
     empty: 'Select a card to edit',
+    resize: 'Resize panel',
   },
   openCards: 'Browse cards',
   view: {

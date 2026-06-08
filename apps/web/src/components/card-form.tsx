@@ -368,6 +368,12 @@ export interface NNCardFormProps {
   autoFocusFront?: boolean;
   /** Extra controls rendered in the top action bar (e.g. prev/next). */
   footerExtra?: React.ReactNode;
+  /**
+   * Layout hint. `'panel'` (default) is the tall side/standalone form; `'dock'`
+   * lays the dynamic fields out in two columns on non-mobile to suit the
+   * wide-short bottom dock in the cards browser.
+   */
+  layout?: 'panel' | 'dock';
 }
 
 export const NNCardForm = ({
@@ -378,6 +384,7 @@ export const NNCardForm = ({
   showFsrsHeader = true,
   autoFocusFront = false,
   footerExtra,
+  layout = 'panel',
 }: NNCardFormProps) => {
   const t = useT();
   const { confirm } = useDialog();
@@ -691,12 +698,20 @@ export const NNCardForm = ({
 
         {/* Dynamic fields. `data-nn-fields` marks the Tab-navigation ring: the
             RichField keydown handler walks the `textarea[data-nn-field]` siblings
-            inside it. */}
-        <div data-nn-fields>
+            inside it. In the `dock` layout (wide-short bottom panel) the fields
+            sit in two columns on non-mobile to use the horizontal space. */}
+        <div
+          data-nn-fields
+          style={
+            layout === 'dock' && !isMobile
+              ? { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'start' }
+              : undefined
+          }
+        >
           {fields.map((field, i) => {
             const isFront = i === 0;
             return (
-              <div key={field.name} style={{ marginBottom: 14 }}>
+              <div key={field.name} style={{ marginBottom: layout === 'dock' && !isMobile ? 0 : 14 }}>
                 <div style={labelStyle}>
                   <span>{field.name}</span>
                   {isCloze && isFront && (

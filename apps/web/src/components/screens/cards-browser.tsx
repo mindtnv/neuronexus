@@ -151,9 +151,23 @@ export const NNCardsBrowser = () => {
   // Surface transport failures instead of silently sitting on stale local rows.
   const [serverError, setServerError] = useState(false);
 
-  // Selection (set of card ids) + the row anchor for shift-range select.
+  // Two decoupled intents (must-fix: stop conflating look / edit-one / bulk):
+  //  • `selected` (checkboxes / Ctrl+Shift-click) → drives ONLY the floating bulk bar.
+  //  • `focusedId` (plain row click) → the single card shown in the bottom edit dock.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const lastClickedRef = useRef<string | null>(null);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+
+  // Bottom dock height, persisted across sessions. Clamped on read so a stale /
+  // hand-edited value can't blow past the viewport.
+  const [dockHeight, setDockHeight] = useState<number>(() => {
+    if (typeof window === 'undefined') return 320;
+    const raw = window.localStorage.getItem('nn:cards:dockHeight');
+    const parsed = raw ? Number(raw) : NaN;
+    const max = window.innerHeight * 0.7;
+    if (!Number.isFinite(parsed)) return Math.min(320, max);
+    return Math.max(160, Math.min(parsed, max));
+  });
 
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
 
@@ -358,27 +372,34 @@ export const NNCardsBrowser = () => {
     setServerError(false);
   };
 
-  // Row selection with Ctrl/Shift modifiers.
+  // Row click. Three distinct intents:
+  //  • Shift+click   → range-add to `selected` (bulk), leaves the dock untouched.
+  //  • Ctrl/Cmd+click → toggle `id` in `selected` (bulk), leaves the dock untouched.
+  //  • plain click   → open the bottom dock on this card (`focusedId`); never
+  //                    touches `selected`, so a single look never raises the bulk bar.
   const onRowSelect = (id: string, e: React.MouseEvent) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (e.shiftKey && lastClickedRef.current) {
+    if (e.shiftKey && lastClickedRef.current) {
+      setSelected((prev) => {
+        const next = new Set(prev);
         const ids = rows.map((c) => c.id);
-        const a = ids.indexOf(lastClickedRef.current);
+        const a = ids.indexOf(lastClickedRef.current!);
         const b = ids.indexOf(id);
         if (a !== -1 && b !== -1) {
           const [lo, hi] = a < b ? [a, b] : [b, a];
           for (let i = lo; i <= hi; i++) next.add(ids[i]!);
         }
-      } else if (e.metaKey || e.ctrlKey) {
+        return next;
+      });
+    } else if (e.metaKey || e.ctrlKey) {
+      setSelected((prev) => {
+        const next = new Set(prev);
         if (next.has(id)) next.delete(id);
         else next.add(id);
-      } else {
-        next.clear();
-        next.add(id);
-      }
-      return next;
-    });
+        return next;
+      });
+    } else {
+      setFocusedId(id);
+    }
     lastClickedRef.current = id;
   };
 
@@ -392,24 +413,74 @@ export const NNCardsBrowser = () => {
     lastClickedRef.current = id;
   };
 
-  // The single selected card drives the inline edit panel.
-  const selectedIds = useMemo(() => [...selected], [selected]);
-  const singleSelected = useMemo(
-    () => (selectedIds.length === 1 ? cards.find((c) => c.id === selectedIds[0]) ?? null : null),
-    [selectedIds, cards],
+  // The focused card drives the bottom edit dock (resolved from the live mirror
+  // so saves/edits reflect without a manual refetch).
+  const focusedCard = useMemo(
+    () => (focusedId ? cards.find((c) => c.id === focusedId) ?? null : null),
+    [focusedId, cards],
   );
 
-  // prev/next walk the CURRENT filtered+sorted result list.
+  // prev/next walk the CURRENT filtered+sorted result list, moving the dock focus.
   const movePanel = (delta: 1 | -1) => {
-    if (!singleSelected) return;
+    if (!focusedCard) return;
     const ids = rows.map((c) => c.id);
-    const idx = ids.indexOf(singleSelected.id);
+    const idx = ids.indexOf(focusedCard.id);
     if (idx === -1) return;
     const nextIdx = idx + delta;
     if (nextIdx < 0 || nextIdx >= ids.length) return;
     const nextId = ids[nextIdx]!;
-    setSelected(new Set([nextId]));
+    setFocusedId(nextId);
     lastClickedRef.current = nextId;
+  };
+
+  // Close the dock with Escape (only while it's open). Bound globally so it works
+  // regardless of where focus sits inside the dock.
+  useEffect(() => {
+    if (!focusedId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // A dialog / command-palette / cheatsheet that consumed Escape calls
+      // preventDefault — don't also tear down the dock behind it.
+      if (e.defaultPrevented) return;
+      // Escape inside a dock field should not nuke an in-progress edit.
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+      setFocusedId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [focusedId]);
+
+  // Hand-rolled vertical resize for the dock: drag the top edge. Dragging UP makes
+  // the dock taller (startHeight + (startY - clientY)), clamped to [160, 70vh].
+  // The committed height is persisted on pointer-up.
+  // `latest` tracks the live committed height so pointer-up persists the exact
+  // final value rather than a possibly-stale `dockHeight` from the render closure.
+  const dockDragRef = useRef<{ startY: number; startHeight: number; latest: number } | null>(null);
+  const onDockResizeDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    dockDragRef.current = { startY: e.clientY, startHeight: dockHeight, latest: dockHeight };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onDockResizeMove = (e: React.PointerEvent) => {
+    const drag = dockDragRef.current;
+    if (!drag) return;
+    const max = window.innerHeight * 0.7;
+    const next = Math.max(160, Math.min(drag.startHeight + (drag.startY - e.clientY), max));
+    drag.latest = next;
+    setDockHeight(next);
+  };
+  const onDockResizeUp = (e: React.PointerEvent) => {
+    const drag = dockDragRef.current;
+    if (!drag) return;
+    dockDragRef.current = null;
+    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    try {
+      window.localStorage.setItem('nn:cards:dockHeight', String(Math.round(drag.latest)));
+    } catch {
+      /* localStorage unavailable (private mode / SSR) — height stays in-memory. */
+    }
   };
 
   // Bulk actions.
@@ -651,8 +722,9 @@ export const NNCardsBrowser = () => {
           )}
         </div>
 
-        {/* Body: table + (optional) inline panel */}
-        <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, flexDirection: isMobile ? 'column' : 'row' }}>
+        {/* Body: the table ALWAYS spans the full width — neither the bottom edit
+            dock nor the floating bulk pill reformats or clips it. */}
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, flexDirection: 'column' }}>
           {/* Table */}
           <div style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
             {/* Header */}
@@ -719,7 +791,17 @@ export const NNCardsBrowser = () => {
               </div>
             ) : (
               rows.map((card) => {
-                const isSel = selected.has(card.id);
+                // Two independent visual states: `isFocused` = open in the dock
+                // (strong cue + left accent); `isChecked` = in the bulk selection
+                // (subtle tint). They can coexist.
+                const isFocused = focusedId === card.id;
+                const isChecked = selected.has(card.id);
+                // Resting background precedence: focused > checked > none.
+                const restBg = isFocused
+                  ? 'var(--surface-3)'
+                  : isChecked
+                    ? 'var(--surface-2)'
+                    : 'transparent';
                 const sLabel = stateLabel(card.fsrs.state);
                 // Table reads the STORED server render columns (plaintext, tags +
                 // cloze already stripped) — NO client HTML render / re-strip here
@@ -731,20 +813,20 @@ export const NNCardsBrowser = () => {
                     key={card.id}
                     onClick={(e) => onRowSelect(card.id, e)}
                     onMouseEnter={(e) => {
-                      if (!isSel) (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-2)';
+                      if (!isFocused) (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-2)';
                     }}
                     onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLDivElement).style.background = isSel ? 'var(--surface-3)' : 'transparent';
+                      (e.currentTarget as HTMLDivElement).style.background = restBg;
                     }}
                     onMouseDown={(e) => {
-                      // Pressed tint is the same for selected + unselected rows.
-                      // React re-applies the `style` prop each render, so this imperative
-                      // background is reset on the next render (e.g. selection change).
+                      // Pressed tint is uniform across rows. React re-applies the
+                      // `style` prop each render, so this imperative background is
+                      // reset on the next render (e.g. focus / selection change).
                       (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-3)';
                       (e.currentTarget as HTMLDivElement).style.transform = 'translateY(0.5px)';
                     }}
                     onMouseUp={(e) => {
-                      (e.currentTarget as HTMLDivElement).style.background = isSel ? 'var(--surface-3)' : 'var(--surface-2)';
+                      (e.currentTarget as HTMLDivElement).style.background = isFocused ? 'var(--surface-3)' : 'var(--surface-2)';
                       (e.currentTarget as HTMLDivElement).style.transform = '';
                     }}
                     style={{
@@ -755,7 +837,9 @@ export const NNCardsBrowser = () => {
                       borderBottom: '1px solid var(--border)',
                       alignItems: 'center',
                       cursor: 'pointer',
-                      background: isSel ? 'var(--surface-3)' : 'transparent',
+                      background: restBg,
+                      // Strong left accent marks the card currently open in the dock.
+                      boxShadow: isFocused ? 'inset 2px 0 0 var(--lime-500)' : undefined,
                       opacity: card.suspended ? 0.55 : 1,
                       fontSize: 12.5,
                     }}
@@ -763,7 +847,7 @@ export const NNCardsBrowser = () => {
                     <span onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center' }}>
                       <input
                         type="checkbox"
-                        checked={isSel}
+                        checked={isChecked}
                         onChange={() => toggleCheckbox(card.id)}
                         style={{ cursor: 'pointer' }}
                       />
@@ -822,66 +906,106 @@ export const NNCardsBrowser = () => {
               </div>
             )}
           </div>
-
-          {/* Inline edit panel — single-row selection */}
-          {singleSelected && (
-            <div
-              style={{
-                width: isMobile ? '100%' : 420,
-                flexShrink: 0,
-                borderLeft: isMobile ? 'none' : '1px solid var(--border)',
-                borderTop: isMobile ? '1px solid var(--border)' : 'none',
-                background: 'var(--surface)',
-                display: 'flex',
-                flexDirection: 'column',
-                overflow: 'hidden',
-                maxHeight: isMobile ? '50vh' : undefined,
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '8px 12px',
-                  borderBottom: '1px solid var(--border)',
-                  flexShrink: 0,
-                }}
-              >
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('cards.panel.editing')}</span>
-                <div style={{ flex: 1 }} />
-                <NNBtn size="sm" variant="ghost" icon="chevl" ariaLabel={t('cards.panel.prev')} onClick={() => movePanel(-1)} />
-                <NNBtn size="sm" variant="ghost" icon="chevr" ariaLabel={t('cards.panel.next')} onClick={() => movePanel(1)} />
-                <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('cards.panel.close')} onClick={() => setSelected(new Set())} />
-              </div>
-              <div style={{ flex: 1, overflow: 'auto', display: 'flex' }}>
-                <NNCardForm
-                  key={singleSelected.id}
-                  card={singleSelected}
-                  showFsrsHeader={false}
-                  onDeleted={() => setSelected(new Set())}
-                />
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Bulk action bar */}
-        {selected.size > 0 && (
+        {/* Bottom edit dock (Anki Browse). A sibling AFTER the table, so the table
+            never shrinks. Resizable by dragging the top edge; height persisted. */}
+        {focusedCard && (
           <div
             style={{
+              flexShrink: 0,
+              height: isMobile ? `min(${dockHeight}px, 60vh)` : dockHeight,
+              borderTop: '1px solid var(--border)',
+              background: 'var(--surface)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              position: 'relative',
+            }}
+          >
+            {/* Resize handle — thin drag strip on the top edge (chrome only, so
+                user-select:none is safe here; it never covers card content). */}
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label={t('cards.panel.resize')}
+              onPointerDown={onDockResizeDown}
+              onPointerMove={onDockResizeMove}
+              onPointerUp={onDockResizeUp}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 6,
+                cursor: 'ns-resize',
+                touchAction: 'none',
+                userSelect: 'none',
+                zIndex: 2,
+              }}
+            />
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 12px',
+                borderBottom: '1px solid var(--border)',
+                flexShrink: 0,
+                userSelect: 'none',
+              }}
+            >
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('cards.panel.editing')}</span>
+              <div style={{ flex: 1 }} />
+              <NNBtn size="sm" variant="ghost" icon="chevl" ariaLabel={t('cards.panel.prev')} onClick={() => movePanel(-1)} />
+              <NNBtn size="sm" variant="ghost" icon="chevr" ariaLabel={t('cards.panel.next')} onClick={() => movePanel(1)} />
+              <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('cards.panel.close')} onClick={() => setFocusedId(null)} />
+            </div>
+            <div style={{ flex: 1, overflow: 'auto', display: 'flex' }}>
+              <NNCardForm
+                key={focusedCard.id}
+                card={focusedCard}
+                showFsrsHeader={false}
+                layout="dock"
+                onDeleted={(id) => {
+                  setFocusedId(null);
+                  setSelected((prev) => {
+                    if (!prev.has(id)) return prev;
+                    const next = new Set(prev);
+                    next.delete(id);
+                    return next;
+                  });
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Floating contextual bulk pill — appears ONLY for checkbox / Ctrl+Shift
+            selection. position:fixed so it never reflows page layout; sits above
+            the dock and (on mobile) above the bottom-tabs + safe area. */}
+        {selected.size > 0 && (
+          <div
+            className="nn-chrome"
+            style={{
+              position: 'fixed',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              bottom: `calc(${focusedCard ? (isMobile ? `min(${dockHeight}px, 60vh)` : `${dockHeight}px`) : '0px'} + ${isMobile ? '80px' : '16px'} + ${isMobile ? 'env(safe-area-inset-bottom, 4px)' : '0px'})`,
+              zIndex: 50,
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              padding: '8px 14px',
-              borderTop: '1px solid var(--border)',
+              padding: '8px 12px',
+              maxWidth: 'calc(100vw - 24px)',
+              overflowX: 'auto',
+              borderRadius: 999,
+              border: '1px solid var(--border)',
               background: 'var(--surface-2)',
-              flexShrink: 0,
-              flexWrap: 'wrap',
+              boxShadow: 'var(--shadow-lg)',
             }}
           >
             <NNBadge tone="lime" size="sm">{t('cards.bulk.selected', { n: selected.size })}</NNBadge>
-            <div style={{ flex: 1 }} />
             <NNBtn size="sm" variant="soft" icon="stack" onClick={() => runBulk('move')}>{t('cards.bulk.move')}</NNBtn>
             <NNBtn size="sm" variant="soft" icon="tag" onClick={() => runBulk('addTag')}>{t('cards.bulk.addTag')}</NNBtn>
             <NNBtn size="sm" variant="soft" icon="x" onClick={() => runBulk('removeTag')}>{t('cards.bulk.removeTag')}</NNBtn>
