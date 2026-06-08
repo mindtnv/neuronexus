@@ -11,9 +11,27 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  vector,
 } from 'drizzle-orm/pg-core';
 import type { CardTemplate, FieldValues, NoteField } from '@neuronexus/shared';
 import { user } from './auth.ts';
+
+// Embedding vector dimension baked into the `kb_chunk.embedding` column type.
+// MUST match the configured EMBEDDING_MODEL (text-embedding-3-small = 1536).
+// The migration bakes this LITERAL into the generated SQL; changing it requires
+// the reindex-on-model-change runbook (see CLAUDE.md → AI / RAG): regenerate the
+// migration (drop + re-add the vector column + rebuild the HNSW index) + reindex.
+export const EMBEDDING_DIM = 1536;
+
+// Minimal local Citation shape for the typed `messages.citations` JSONB column.
+// TODO(slice-2): switch to the shared `Citation` from `@neuronexus/shared`
+// (packages/shared/src/kb-chunk.ts) once it exists — keep this in sync until then.
+export interface Citation {
+  cardId: string;
+  chunkId: string;
+  deckId?: string;
+  snippet?: string;
+}
 
 // Catalog of plant species. All species are available to every user (the
 // achievement-gated unlock flow was removed). Keep this list in sync with
@@ -403,6 +421,105 @@ export const filteredDeck = pgTable(
   (t) => [index('filtered_deck_user_idx').on(t.userId)],
 );
 
+// ── kb_chunk ──────────────────────────────────────────────────────────────────
+// DERIVED, disposable knowledge-base index (RAG substrate). NOT a source of
+// truth: each row is rebuildable at any time from `cards.render_text` (like
+// `cards.render_text` is itself a derived search cache). Deleting the source
+// card cascades the chunk via the typed `card_id` FK.
+//
+// AC7 SEAM — source-agnostic by design. Generic `source_type`/`source_id`/
+// `parent_id` columns let a future `'document'` (multi-chunk) or `'note'` source
+// plug in WITHOUT touching retrieval/chat core (which only reads generic chunk
+// columns). A real FK is only safe for the card source, so cascade-on-delete is
+// achieved via a nullable typed `card_id → cards(cascade)` (set for card chunks,
+// null for future doc chunks); future sources each add their own nullable FK.
+//
+// `embedding` is NULLABLE so a row can exist before it is embedded. `source_hash`
+// = hash(render_text + embeddingModel): indexCard/reconcile SKIP re-embedding
+// when it already matches, so a no-content `updatedAt` bump (forget/setDue/bulk
+// move) does NOT trigger a paid re-embed; including embeddingModel means a model
+// change naturally invalidates every chunk → full reindex.
+//
+// Index choice — HNSW over IVFFlat: no training / `lists` tuning, good recall on
+// a small/growing corpus, fine build cost at n=1. The HNSW index is GLOBAL across
+// all users — retrieval MUST always carry a `user_id = $userId` predicate (it is
+// the sole cross-tenant boundary).
+
+export const kbChunk = pgTable(
+  'kb_chunk',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    sourceType: text('source_type').notNull(),
+    sourceId: uuid('source_id').notNull(),
+    parentId: uuid('parent_id').notNull(),
+    position: integer('position').notNull().default(0),
+    text: text('text').notNull(),
+    embedding: vector('embedding', { dimensions: EMBEDDING_DIM }),
+    embeddingModel: text('embedding_model'),
+    sourceHash: text('source_hash'),
+    // Typed cascade FK for the card source (null for future non-card sources).
+    cardId: uuid('card_id').references(() => cards.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('kb_chunk_user_idx').on(t.userId),
+    index('kb_chunk_source_idx').on(t.sourceType, t.sourceId),
+    // Idempotent upsert key for card re-index (one chunk per (card, position)).
+    uniqueIndex('kb_chunk_card_pos_uq').on(t.cardId, t.position),
+    // HNSW cosine index for ANN search via the `<=>` operator.
+    index('kb_chunk_embedding_hnsw').using('hnsw', t.embedding.op('vector_cosine_ops')),
+  ],
+);
+
+// ── conversations ─────────────────────────────────────────────────────────────
+// A persisted chat thread, user-scoped. Newest-first listing via the
+// (user_id, updated_at desc) index.
+
+export const conversations = pgTable(
+  'conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    title: text('title'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('conversations_user_updated_idx').on(t.userId, t.updatedAt.desc())],
+);
+
+// ── messages ────────────────────────────────────────────────────────────────────
+// One turn in a conversation. `citations` carries the resolved source cards for
+// an assistant message (rendered through RichCard on the client) — empty for
+// user/system turns and for "not in your cards" answers. `user_id` is
+// denormalized for cheap user-scoping; the conversation FK cascades on delete.
+
+export const messages = pgTable(
+  'messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    role: text('role').notNull(), // 'user' | 'assistant' | 'system'
+    content: text('content').notNull(),
+    citations: jsonb('citations')
+      .notNull()
+      .$type<Citation[]>()
+      .default(sql`'[]'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('messages_conversation_idx').on(t.conversationId, t.createdAt)],
+);
+
 // ── relations ──────────────────────────────────────────────────────────────
 
 export const profileRelations = relations(profile, ({ one }) => ({
@@ -458,6 +575,24 @@ export const filteredDeckRelations = relations(filteredDeck, ({ one }) => ({
   user: one(user, { fields: [filteredDeck.userId], references: [user.id] }),
 }));
 
+export const kbChunkRelations = relations(kbChunk, ({ one }) => ({
+  user: one(user, { fields: [kbChunk.userId], references: [user.id] }),
+  card: one(cards, { fields: [kbChunk.cardId], references: [cards.id] }),
+}));
+
+export const conversationsRelations = relations(conversations, ({ one, many }) => ({
+  user: one(user, { fields: [conversations.userId], references: [user.id] }),
+  messages: many(messages),
+}));
+
+export const messagesRelations = relations(messages, ({ one }) => ({
+  user: one(user, { fields: [messages.userId], references: [user.id] }),
+  conversation: one(conversations, {
+    fields: [messages.conversationId],
+    references: [conversations.id],
+  }),
+}));
+
 // ── inferred types ─────────────────────────────────────────────────────────
 
 export type Profile = typeof profile.$inferSelect;
@@ -478,3 +613,9 @@ export type DeckOptionsPreset = typeof deckOptionsPreset.$inferSelect;
 export type NewDeckOptionsPreset = typeof deckOptionsPreset.$inferInsert;
 export type FilteredDeck = typeof filteredDeck.$inferSelect;
 export type NewFilteredDeck = typeof filteredDeck.$inferInsert;
+export type KbChunk = typeof kbChunk.$inferSelect;
+export type NewKbChunk = typeof kbChunk.$inferInsert;
+export type Conversation = typeof conversations.$inferSelect;
+export type NewConversation = typeof conversations.$inferInsert;
+export type Message = typeof messages.$inferSelect;
+export type NewMessage = typeof messages.$inferInsert;

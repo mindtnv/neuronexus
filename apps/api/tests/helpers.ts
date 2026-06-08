@@ -12,9 +12,16 @@
 // packages/db/src/env.ts already enforces this at DB-client construction.
 
 import { db } from '@neuronexus/db/client';
+import { ensureVectorExtension } from '@neuronexus/db';
 import { sql } from 'drizzle-orm';
 
 const TABLES = [
+  // RAG substrate first — messages → conversations → kb_chunk reference
+  // conversations/cards/user. RESTART IDENTITY CASCADE tolerates order, but
+  // explicit ordering keeps intent clear.
+  'messages',
+  'conversations',
+  'kb_chunk',
   'reviews',
   'cards',
   'notes',
@@ -30,11 +37,22 @@ const TABLES = [
   '"user"', // `user` is a reserved word in Postgres and must be quoted
 ];
 
+// Defense-in-depth: the primary guarantee that the pgvector extension exists is
+// the `predb:push:test` hook (runs BEFORE `drizzle-kit push`); this one-time
+// ensure covers any path that bypasses push (e.g. a hand-run migrate against a
+// bare DB). Memoized so concurrent suites share one ensure.
+let vectorEnsured: Promise<void> | null = null;
+function ensureVectorOnce(): Promise<void> {
+  if (!vectorEnsured) vectorEnsured = ensureVectorExtension();
+  return vectorEnsured;
+}
+
 export async function resetTestDb() {
   const url = process.env.TEST_DATABASE_URL ?? '';
   if (!/test/.test(url)) {
     throw new Error(`Refusing to reset DB — TEST_DATABASE_URL must contain "test" (got: ${url})`);
   }
+  await ensureVectorOnce();
   await db.execute(sql.raw(`TRUNCATE TABLE ${TABLES.join(', ')} RESTART IDENTITY CASCADE`));
 }
 

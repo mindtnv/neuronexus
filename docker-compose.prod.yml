@@ -5,7 +5,11 @@
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # Must ship the `vector` extension: the one-shot `migrate` service runs
+    # `CREATE EXTENSION vector` (via the 0010_* migration). alpine has no vector
+    # .so → the prod deploy would fail at migrate. For managed Postgres
+    # (Neon/Supabase/RDS) enable pgvector before applying migrations.
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-neuronexus}

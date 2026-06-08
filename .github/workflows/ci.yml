@@ -18,7 +18,9 @@ jobs:
     # `packages/db/src/env.ts` picks up when NODE_ENV=test.
     services:
       postgres:
-        image: postgres:17-alpine
+        # pgvector image so the `db:migrate:apply:test` step (CREATE EXTENSION
+        # vector in the 0010_* migration) succeeds against the test DB.
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: neuronexus
           POSTGRES_PASSWORD: neuronexus

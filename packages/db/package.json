@@ -11,7 +11,9 @@
     "./client": "./src/client.ts"
   },
   "scripts": {
+    "predb:push": "bun --env-file=../../.env run src/ensure-vector-cli.ts",
     "db:push": "drizzle-kit push --force",
+    "predb:push:test": "NODE_ENV=test bun --env-file=../../.env run src/ensure-vector-cli.ts",
     "db:push:test": "NODE_ENV=test drizzle-kit push --force",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

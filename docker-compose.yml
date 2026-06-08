@@ -1,6 +1,9 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    # pgvector/pgvector:pg17 = official Postgres 17 + the `vector` extension
+    # available. The 0010_* migration / ensure-vector create the extension
+    # per-DB; initdb does not. PG17→PG17 so the existing pgdata volume is reused.
+    image: pgvector/pgvector:pg17
     container_name: neuronexus-postgres
     restart: unless-stopped
     environment:
