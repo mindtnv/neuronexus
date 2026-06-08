@@ -10,6 +10,7 @@ const common = {
     graph: 'Граф',
     decks: 'Колоды',
     cards: 'Карточки',
+    chat: 'Чат',
     garden: 'Сад',
     editor: 'Редактор',
     stats: 'Статистика',

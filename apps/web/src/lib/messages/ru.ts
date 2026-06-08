@@ -4,6 +4,7 @@ import review from './ru/review';
 import decks from './ru/decks';
 import editor from './ru/editor';
 import cards from './ru/cards';
+import chat from './ru/chat';
 import stats from './ru/stats';
 import settings from './ru/settings';
 import garden from './ru/garden';
@@ -20,6 +21,7 @@ const messages = {
   decks,
   editor,
   cards,
+  chat,
   stats,
   settings,
   garden,

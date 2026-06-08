@@ -8,6 +8,10 @@
 import { describe, expect, test } from 'bun:test';
 import enSettings from './messages/en/settings';
 import ruSettings from './messages/ru/settings';
+import enChat from './messages/en/chat';
+import ruChat from './messages/ru/chat';
+import enCommon from './messages/en/common';
+import ruCommon from './messages/ru/common';
 
 // ── Recursive key extractor ──────────────────────────────────────────────────
 
@@ -74,4 +78,36 @@ describe('i18n parity — en/settings.ts vs ru/settings.ts', () => {
       expect(ruKeys.has(key)).toBe(true);
     });
   }
+});
+
+describe('i18n parity — en/chat.ts vs ru/chat.ts (Slice 5)', () => {
+  const enKeys = new Set(flattenKeys(enChat as unknown as NestedDict));
+  const ruKeys = new Set(flattenKeys(ruChat as unknown as NestedDict));
+
+  test('en and ru chat dicts have the same set of dot-path keys', () => {
+    const missingInRu = [...enKeys].filter((k) => !ruKeys.has(k));
+    const missingInEn = [...ruKeys].filter((k) => !enKeys.has(k));
+
+    if (missingInRu.length > 0 || missingInEn.length > 0) {
+      const lines: string[] = [];
+      if (missingInRu.length > 0) {
+        lines.push(`Keys in en but missing in ru:\n  ${missingInRu.join('\n  ')}`);
+      }
+      if (missingInEn.length > 0) {
+        lines.push(`Keys in ru but missing in en:\n  ${missingInEn.join('\n  ')}`);
+      }
+      throw new Error(`i18n chat parity failure:\n${lines.join('\n')}`);
+    }
+
+    expect(missingInRu).toHaveLength(0);
+    expect(missingInEn).toHaveLength(0);
+  });
+
+  // The nav entry for the /chat screen must exist in both locales' common dicts.
+  test('nav.chat exists in en/common', () => {
+    expect(flattenKeys(enCommon as unknown as NestedDict)).toContain('nav.chat');
+  });
+  test('nav.chat exists in ru/common', () => {
+    expect(flattenKeys(ruCommon as unknown as NestedDict)).toContain('nav.chat');
+  });
 });
