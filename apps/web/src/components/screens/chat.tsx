@@ -20,6 +20,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Citation } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNSkeleton, NNBadge } from '@/components/ui';
 import { RichCard } from '@/components/rich-card';
+import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { api, ok } from '@/lib/api';
 import { streamChat } from '@/lib/chat-stream';
 import { cardFromApi } from '@/lib/mappers';
@@ -58,6 +59,44 @@ function conversationTitle(c: ConversationVM, fallback: string): string {
   const trimmed = (c.title ?? '').trim();
   return trimmed.length > 0 ? trimmed : fallback;
 }
+
+// Strip the inline [card:<id>] grounding tokens the model emits — the cited
+// cards live in the collapsible "sources" block below, so the raw tokens are
+// noise in the prose. Only spaces/tabs around a token are absorbed (never
+// newlines), then runs of spaces are collapsed.
+const CARD_TOKEN_RE = /[ \t]*\[card:[0-9a-fA-F-]+\]/g;
+function stripCardTokens(text: string): string {
+  return text.replace(CARD_TOKEN_RE, '').replace(/[ \t]{2,}/g, ' ');
+}
+
+// Render assistant prose as Markdown through the SAME pipeline cards use
+// (markdown-it → DOMPurify via SafeHtml) so lists/bold/headings/code render —
+// the sanitizer stays the single security boundary and is never edited here. A
+// synthetic single-field "basic" note-type with a `{{Body}}` template feeds the
+// model text through `renderCardHtml`; `SafeHtml` is the one allowed inject sink.
+const CHAT_MD_NOTE_TYPE = {
+  kind: 'basic' as const,
+  templates: [{ name: 'chat', ord: 0, frontTemplate: '{{Body}}', backTemplate: '{{Body}}' }],
+};
+
+const AssistantMarkdown = ({ content }: { content: string }) => {
+  const html = useMemo(
+    () => renderCardHtml(CHAT_MD_NOTE_TYPE, { Body: stripCardTokens(content) }, 'front'),
+    [content],
+  );
+  return (
+    <SafeHtml
+      html={html}
+      style={{
+        fontFamily: 'var(--font-sans)',
+        fontSize: 14.5,
+        lineHeight: 1.6,
+        color: 'var(--text)',
+        wordBreak: 'break-word',
+      }}
+    />
+  );
+};
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
@@ -631,6 +670,10 @@ interface MessageRowProps {
 
 const MessageRow = ({ message, resolveCard, deckNameById, t }: MessageRowProps) => {
   const isUser = message.role === 'user';
+  // Cited cards are collapsed by default (they can be large); a count summary
+  // toggles the full RichCard list. Hook declared before the user-message early
+  // return so it's always called in the same order.
+  const [sourcesOpen, setSourcesOpen] = useState(false);
 
   if (isUser) {
     return (
@@ -675,29 +718,20 @@ const MessageRow = ({ message, resolveCard, deckNameById, t }: MessageRowProps) 
         </span>
       </div>
 
-      {/* Model prose. Plain text (whitespace preserved) — NOT card HTML; the
-          card-derived content lives in the RichCard block below. */}
+      {/* Model prose rendered as Markdown (same pipeline as cards, via SafeHtml).
+          The inline [card:<id>] grounding tokens are stripped — the sources are
+          shown in the collapsible block below. */}
       {message.content.length > 0 ? (
-        <div
-          style={{
-            fontFamily: 'var(--font-sans)',
-            fontSize: 14.5,
-            lineHeight: 1.6,
-            color: 'var(--text)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {message.content}
-        </div>
+        <AssistantMarkdown content={message.content} />
       ) : message.streaming ? (
         <span style={{ fontSize: 13, color: 'var(--text-dim)', fontStyle: 'italic' }}>
           {t('chat.stream.thinking')}
         </span>
       ) : null}
 
-      {/* Cited cards — rendered through RichCard (AC8), clearly delimited as
-          "from your cards" so they're visibly distinct from the prose above. */}
+      {/* Cited cards — collapsed by default into a count summary (they can be
+          large); expandable to the full RichCard list (AC8), clearly delimited
+          as "from your cards" so they're visibly distinct from the prose above. */}
       {message.citations.length > 0 && (
         <div
           style={{
@@ -708,7 +742,23 @@ const MessageRow = ({ message, resolveCard, deckNameById, t }: MessageRowProps) 
             borderTop: '1px dashed var(--border-2)',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            type="button"
+            onClick={() => setSourcesOpen((v) => !v)}
+            aria-expanded={sourcesOpen}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 7,
+              alignSelf: 'flex-start',
+              background: 'transparent',
+              border: 'none',
+              padding: '2px 0',
+              cursor: 'pointer',
+              color: 'var(--lime-400)',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
             <NNIcon name="stack" size={13} color="var(--lime-400)" />
             <span
               style={{
@@ -716,22 +766,30 @@ const MessageRow = ({ message, resolveCard, deckNameById, t }: MessageRowProps) 
                 fontWeight: 700,
                 letterSpacing: 1,
                 textTransform: 'uppercase',
-                color: 'var(--lime-400)',
-                fontFamily: 'var(--font-sans)',
               }}
             >
-              {t('chat.stream.sources')}
+              {t('chat.stream.sourcesCount', { count: message.citations.length })}
             </span>
-          </div>
-          {message.citations.map((cit) => (
-            <CitationCard
-              key={cit.chunkId}
-              citation={cit}
-              card={resolveCard(cit.cardId)}
-              deckName={cit.deckId ? deckNameById.get(cit.deckId) : undefined}
-              t={t}
-            />
-          ))}
+            <span
+              style={{
+                display: 'inline-flex',
+                transform: sourcesOpen ? 'rotate(-90deg)' : 'rotate(180deg)',
+                transition: 'transform 140ms ease',
+              }}
+            >
+              <NNIcon name="chevl" size={12} color="var(--lime-400)" />
+            </span>
+          </button>
+          {sourcesOpen &&
+            message.citations.map((cit) => (
+              <CitationCard
+                key={cit.chunkId}
+                citation={cit}
+                card={resolveCard(cit.cardId)}
+                deckName={cit.deckId ? deckNameById.get(cit.deckId) : undefined}
+                t={t}
+              />
+            ))}
         </div>
       )}
     </div>

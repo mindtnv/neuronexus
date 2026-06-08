@@ -17,6 +17,7 @@ const m = {
     assistant: 'Ассистент',
     thinking: 'Думаю…',
     sources: 'Из ваших карточек',
+    sourcesCount: 'Использовано карточек: {count}',
     sourceDeck: 'Колода',
   },
   // Composer
