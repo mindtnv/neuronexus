@@ -22,7 +22,7 @@
 // so stats/heatmap look lived-in. Review dates are spread across the past ~21
 // days. Deterministic except for the small per-review time jitter.
 
-import { count, eq } from 'drizzle-orm';
+import { and, count, eq, isNull } from 'drizzle-orm';
 import {
   BUILTIN_NOTE_TYPES,
   BUILTIN_BY_KIND,
@@ -36,7 +36,7 @@ import {
 import { auth } from '@neuronexus/auth/server';
 import { db } from './client.ts';
 import { ensureBuiltins } from './ensure-builtins.ts';
-import { cards, decks, notes, profile, reviews, user } from './schema/index.ts';
+import { cards, decks, noteTypes, notes, profile, reviews, user } from './schema/index.ts';
 import { SEED_DECKS, type DeckSeed, type NoteSeed } from './seed-data.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -85,16 +85,30 @@ async function resolveTargetUser(email: string): Promise<{ id: string; email: st
 /**
  * Ensure the 3 global builtin note-types exist (userId NULL, isBuiltin true) via
  * the shared `ensureBuiltins()` writer (idempotent + concurrency-safe, targeted
- * ON CONFLICT on the partial unique index). Then build a name → def map keyed by
- * the STABLE builtin ids from `BUILTIN_NOTE_TYPES` (the same literals
- * `ensureBuiltins` persists) for the downstream note inserts.
+ * ON CONFLICT on the partial unique index). Then build a name → def map whose
+ * `id` is the ACTUAL persisted row id read back from the DB.
+ *
+ * Why read back instead of trusting `BUILTIN_NOTE_TYPES[].id`: `ensureBuiltins`
+ * upserts `ON CONFLICT (name) DO NOTHING`, so on a DB that already has a builtin
+ * with that name — but a LEGACY random id (a dev DB seeded before the stable-id
+ * refactor / built via `db:push`, never running migration 0007's stable INSERT)
+ * — the stable id is NOT written, the legacy row keeps its id. Keying the note
+ * inserts off the live row id keeps the `notes.note_type_id` FK valid in both
+ * cases (fresh stable-id DB and legacy-id dev DB). The fields/templates/kind
+ * still come from `BUILTIN_NOTE_TYPES` (the engine contract for `generateCards`).
  */
 async function ensureBuiltinNoteTypes(): Promise<Map<string, NoteTypeDef & { id: string }>> {
   await ensureBuiltins(db);
+  const rows = await db
+    .select({ id: noteTypes.id, name: noteTypes.name })
+    .from(noteTypes)
+    .where(and(eq(noteTypes.isBuiltin, true), isNull(noteTypes.userId)));
+  const idByName = new Map(rows.map((r) => [r.name, r.id]));
   const byName = new Map<string, NoteTypeDef & { id: string }>();
   for (const def of BUILTIN_NOTE_TYPES) {
-    if (!def.id) throw new Error(`builtin note-type ${def.name} is missing a stable id`);
-    byName.set(def.name, { ...def, id: def.id });
+    const id = idByName.get(def.name);
+    if (!id) throw new Error(`builtin note-type ${def.name} not persisted (ensureBuiltins failed?)`);
+    byName.set(def.name, { ...def, id });
   }
   return byName;
 }
