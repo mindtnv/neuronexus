@@ -11,6 +11,8 @@ export * from './note-type.ts';
 export * from './template.ts';
 export * from './builtin-note-types.ts';
 export * from './media.ts';
+export * from './kb-chunk.ts';
+export * from './rag-prompt.ts';
 
 export const CARD_RATINGS = [1, 2, 3, 4] as const;
 

@@ -13,7 +13,7 @@ import {
   uuid,
   vector,
 } from 'drizzle-orm/pg-core';
-import type { CardTemplate, FieldValues, NoteField } from '@neuronexus/shared';
+import type { CardTemplate, Citation, FieldValues, NoteField } from '@neuronexus/shared';
 import { user } from './auth.ts';
 
 // Embedding vector dimension baked into the `kb_chunk.embedding` column type.
@@ -23,15 +23,9 @@ import { user } from './auth.ts';
 // migration (drop + re-add the vector column + rebuild the HNSW index) + reindex.
 export const EMBEDDING_DIM = 1536;
 
-// Minimal local Citation shape for the typed `messages.citations` JSONB column.
-// TODO(slice-2): switch to the shared `Citation` from `@neuronexus/shared`
-// (packages/shared/src/kb-chunk.ts) once it exists — keep this in sync until then.
-export interface Citation {
-  cardId: string;
-  chunkId: string;
-  deckId?: string;
-  snippet?: string;
-}
+// Citation is imported from @neuronexus/shared (packages/shared/src/kb-chunk.ts).
+// Re-export so consumers of @neuronexus/db/schema can import it from one place.
+export type { Citation };
 
 // Catalog of plant species. All species are available to every user (the
 // achievement-gated unlock flow was removed). Keep this list in sync with
