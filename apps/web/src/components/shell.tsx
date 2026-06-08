@@ -157,12 +157,15 @@ export const NNSidebar = ({
     >
       <div
         style={{
-          padding: collapsed ? '18px 12px' : '18px 18px',
+          // Match the NNTopbar height (44px content + 1px border = 45px total,
+          // border-box here) so the sidebar logo plate and the toolbar share one
+          // continuous bottom hairline instead of a 16px step at the corner.
+          padding: collapsed ? '0 12px' : '0 18px',
           borderBottom: '1px solid var(--border)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          height: 61,
+          height: 45,
         }}
       >
         <NNLogo showText={!collapsed} />
@@ -179,7 +182,6 @@ export const NNSidebar = ({
               borderRadius: 8,
               background: 'var(--surface-2)',
               border: '1px solid var(--border)',
-              cursor: 'pointer',
             }}
           >
             <div
@@ -201,10 +203,9 @@ export const NNSidebar = ({
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text)' }}>{workspaceName}</div>
               <div style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>
-                free · {totalCards} {t(totalCards === 1 ? 'units.card' : 'units.cards')}
+                {totalCards} {t(totalCards === 1 ? 'units.card' : 'units.cards')}
               </div>
             </div>
-            <NNIcon name="chevd" size={12} color="var(--text-dim)" />
           </div>
         </div>
       )}

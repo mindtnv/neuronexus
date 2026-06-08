@@ -274,7 +274,24 @@ export const NNDecks = () => {
               <div
                 key={d.id}
                 className="nn-deck-row"
+                role="button"
+                tabIndex={0}
+                aria-label={
+                  hasChildren
+                    ? `${d.name} — ${isCollapsed ? t('decks.expand') : t('decks.collapse')}`
+                    : `${d.name} — ${t('cards.openCards')}`
+                }
                 onClick={() => handleRowTap(node)}
+                onKeyDown={(e) => {
+                  // Only act when the row itself is focused — a focused child
+                  // (chevron, due-pill, kebab, hover links) handles Enter/Space
+                  // natively, so the row must not double-fire.
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault(); // stop Space from scrolling the page
+                    handleRowTap(node);
+                  }
+                }}
                 onMouseEnter={(e) => {
                   (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-3)';
                 }}
@@ -287,6 +304,16 @@ export const NNDecks = () => {
                 onMouseUp={(e) => {
                   (e.currentTarget as HTMLDivElement).style.transform = '';
                 }}
+                onFocus={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  (e.currentTarget as HTMLDivElement).style.outline = '2px solid var(--lime-500)';
+                  (e.currentTarget as HTMLDivElement).style.outlineOffset = '-2px';
+                }}
+                onBlur={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  (e.currentTarget as HTMLDivElement).style.outline = 'none';
+                  (e.currentTarget as HTMLDivElement).style.outlineOffset = '';
+                }}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -296,6 +323,7 @@ export const NNDecks = () => {
                   position: 'relative',
                   cursor: 'pointer',
                   background: 'transparent',
+                  outline: 'none',
                   transition: 'background 120ms ease',
                 }}
               >
