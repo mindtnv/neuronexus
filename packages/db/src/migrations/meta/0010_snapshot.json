@@ -1287,7 +1287,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "kb_chunk_card_source_chk": {
+          "name": "kb_chunk_card_source_chk",
+          "value": "(source_type = 'card') = (card_id is not null)"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.media": {

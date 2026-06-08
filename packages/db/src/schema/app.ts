@@ -1,6 +1,7 @@
 import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
+  check,
   doublePrecision,
   index,
   integer,
@@ -466,6 +467,9 @@ export const kbChunk = pgTable(
     uniqueIndex('kb_chunk_card_pos_uq').on(t.cardId, t.position),
     // HNSW cosine index for ANN search via the `<=>` operator.
     index('kb_chunk_embedding_hnsw').using('hnsw', t.embedding.op('vector_cosine_ops')),
+    // Card-source invariant: a 'card' chunk MUST carry its typed cardId (so the
+    // cascade FK fires on card delete); non-card sources MUST leave it null.
+    check('kb_chunk_card_source_chk', sql`(source_type = 'card') = (card_id is not null)`),
   ],
 );
 

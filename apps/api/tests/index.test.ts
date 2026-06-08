@@ -11,7 +11,7 @@
 //   * POST /notes  → a kb_chunk row with an embedding appears for the card.
 //   * PATCH /notes (content change) → chunk text/embedding updated, hash changed.
 //   * a no-content updatedAt bump (PATCH /cards setDue, bulk move) → NO re-embed.
-//   * bulk addTag → chunk meta tags refreshed (no re-embed).
+//   * bulk addTag → no re-embed (tags live on notes, not the chunk).
 //   * POST /ai/reindex → all caller cards queued/indexed via the batch worker.
 //   * user-scoping: user B's cards never indexed under A; reindex is caller-only.
 
@@ -190,7 +190,7 @@ describe('rag indexing (Slice 3)', () => {
     expect(after!.sourceHash).toBe(before!.sourceHash);
   });
 
-  test('bulk addTag → chunk meta tags refreshed (no paid re-embed)', async () => {
+  test('bulk addTag → no re-embed (tags live on notes, not the chunk)', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const deckId = await freshDeck(cookie);
     const card = await seedBasicCard(app, cookie, { deckId, front: 'Tag me', back: 'please' });
@@ -206,13 +206,13 @@ describe('rag indexing (Slice 3)', () => {
     expect(res.status).toBe(200);
     await drainIndexQueue({ timeoutMs: 5000 });
 
-    // render_text unchanged → sourceHash unchanged → meta-only refresh (NO embed).
+    // render_text unchanged → sourceHash unchanged → NO re-embed. Tags live on
+    // the notes row (tag-filtered retrieval JOINs it live), so the chunk is left
+    // untouched — bulk tag ops never enqueue an index pass.
     expect(embedCalls).toBe(0);
     const after = await chunkForCard(card.id);
     expect(after).not.toBeNull();
     expect(after!.sourceHash).toBe(beforeHash);
-    // The chunk still exists and is up to date (updatedAt bumped by the refresh).
-    expect(after!.text).toBe(before!.text);
   });
 
   test('POST /ai/reindex → all caller cards queued/indexed via the batch worker', async () => {

@@ -220,7 +220,9 @@ export async function* chatStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let tokens = 0;
+  // Count of streamed SSE content deltas — NOT model tokens (no usage parsing in
+  // streaming mode). Named `deltas` so the observability log isn't misleading.
+  let deltas = 0;
 
   try {
     while (true) {
@@ -240,7 +242,7 @@ export async function* chatStream(
           const payload = line.slice(5).trim();
           if (payload === '[DONE]') {
             log.info(
-              { model, tokens, latencyMs: Math.round(performance.now() - started) },
+              { model, deltas, latencyMs: Math.round(performance.now() - started) },
               'ai.chat',
             );
             return;
@@ -249,7 +251,7 @@ export async function* chatStream(
             const chunk = JSON.parse(payload) as ChatChunk;
             const delta = chunk.choices?.[0]?.delta?.content;
             if (delta) {
-              tokens += 1;
+              deltas += 1;
               yield delta;
             }
           } catch {
@@ -263,7 +265,7 @@ export async function* chatStream(
   }
 
   log.info(
-    { model, tokens, latencyMs: Math.round(performance.now() - started) },
+    { model, deltas, latencyMs: Math.round(performance.now() - started) },
     'ai.chat',
   );
 }

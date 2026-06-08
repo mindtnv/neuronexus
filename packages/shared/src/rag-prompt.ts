@@ -46,7 +46,7 @@ No card context was found for this query. You MUST respond with exactly: "This i
 
 function buildContextBlock(chunks: RagChunk[]): string {
   if (chunks.length === 0) return '';
-  const lines = chunks.map((c, i) => {
+  const lines = chunks.map((c) => {
     const deck = c.deckName ? ` (deck: ${c.deckName})` : '';
     return `[card:${c.cardId}]${deck}\n${c.text}`;
   });

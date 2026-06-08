@@ -281,26 +281,29 @@ export const chatModule = new Elysia({ prefix: '/chat' })
             emit({ type: 'citation', citations });
 
             // 7) Persist the assistant message + citations AFTER the stream
-            //    completed (no half-messages on a dropped stream).
-            const [assistantMsg] = await db
-              .insert(messagesTable)
-              .values({
-                conversationId: conv.id,
-                userId: user.id,
-                role: 'assistant',
-                content: assistantContent,
-                citations,
-              })
-              .returning({ id: messagesTable.id });
-            // Bump the conversation's updatedAt so newest-first ordering stays
-            // accurate after a turn.
-            await db
-              .update(conversations)
-              .set({ updatedAt: new Date() })
-              .where(eq(conversations.id, conv.id));
+            //    completed (no half-messages on a dropped stream). The INSERT and
+            //    the conversation `updatedAt` bump run in ONE transaction so the
+            //    message and the newest-first ordering can never diverge.
+            const assistantMsg = await db.transaction(async (tx) => {
+              const [msg] = await tx
+                .insert(messagesTable)
+                .values({
+                  conversationId: conv.id,
+                  userId: user.id,
+                  role: 'assistant',
+                  content: assistantContent,
+                  citations,
+                })
+                .returning({ id: messagesTable.id });
+              await tx
+                .update(conversations)
+                .set({ updatedAt: new Date() })
+                .where(eq(conversations.id, conv.id));
+              return msg!;
+            });
 
             // 8) Terminal done frame carrying the assistant message id.
-            emit({ type: 'done', messageId: assistantMsg!.id });
+            emit({ type: 'done', messageId: assistantMsg.id });
             controller.close();
           } catch (err) {
             // SHOULD-FIX #7: ALL post-flush errors are caught here and become a
@@ -328,7 +331,6 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         headers: {
           'content-type': 'text/event-stream',
           'cache-control': 'no-cache',
-          connection: 'keep-alive',
         },
       });
     },

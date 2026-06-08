@@ -12,9 +12,7 @@ import { closeDb, cards, db } from '@neuronexus/db';
 import { eq } from 'drizzle-orm';
 import { rootLogger } from '../logger.ts';
 import { isEmbeddingEnabled } from './openai-client.ts';
-import { assertEmbeddingDim, embeddingDegraded, indexCards } from './index-queue.ts';
-
-const EMBED_BATCH = 96;
+import { assertEmbeddingDim, EMBED_BATCH, embeddingDegraded, indexCards } from './index-queue.ts';
 
 async function main(): Promise<void> {
   if (!isEmbeddingEnabled()) {
