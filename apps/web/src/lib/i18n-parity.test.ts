@@ -135,6 +135,49 @@ describe('i18n parity — en/chat.ts vs ru/chat.ts (Slice 5)', () => {
     'confirm.willCreate',
     'confirm.willDelete',
     'confirm.affectsSiblings',
+    // Progress-tools + reasoning/model-selector + UX milestone
+    // (model picker, stop, deck-scope, rename + relative timestamps,
+    // copy/regenerate/open-card/stopped-retry, progress tool labels).
+    'composer.model',
+    'composer.stop',
+    'composer.deckScope',
+    'composer.allDecks',
+    'threads.rename',
+    'threads.updatedAgo',
+    'threads.relativeNow',
+    'threads.relativeMinutes',
+    'threads.relativeHours',
+    'threads.relativeDays',
+    'message.copy',
+    'message.copied',
+    'message.regenerate',
+    'message.openCard',
+    'message.stoppedRetry',
+    'tool.card_progress',
+    'tool.study_stats',
+    // Deterministic browse tools (list_decks / browse_cards / get_card).
+    'tool.list_decks',
+    'tool.browse_cards',
+    'tool.get_card',
+    // Codex-like redesign — repeated-call pluralized labels (AC2.2 collapse).
+    'tool.get_card_n',
+    'tool.card_progress_n',
+    'tool.browse_cards_n',
+    // Codex-like redesign — condensed activity group header + post-apply line.
+    'activity.worked',
+    'activity.working',
+    'activity.workedSub',
+    'activity.workedSeconds',
+    'activity.workedMinutes',
+    'activity.workedHours',
+    'activity.steps',
+    'activity.step',
+    'activity.appliedCreated',
+    'activity.appliedEdited',
+    // Codex-like redesign — edit-and-rerun the last user message (AC4.1).
+    'message.edit',
+    'message.editSave',
+    'message.editCancel',
   ];
 
   for (const key of REQUIRED_CHAT_AGENT_KEYS) {

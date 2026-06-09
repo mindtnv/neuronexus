@@ -7,6 +7,14 @@ const m = {
     untitled: 'New conversation',
     delete: 'Delete conversation',
     deleteConfirm: 'Delete this conversation? Its messages are removed for good.',
+    rename: 'Rename',
+    // Relative "updated N ago" line under each thread title. `{time}` is the
+    // pre-formatted relative duration (e.g. "3 h", "2 d"), built in code.
+    updatedAgo: 'updated {time} ago',
+    relativeNow: 'just now',
+    relativeMinutes: '{count} min',
+    relativeHours: '{count} h',
+    relativeDays: '{count} d',
   },
   // Message stream (right pane)
   stream: {
@@ -25,6 +33,13 @@ const m = {
     placeholder: 'Ask a question about your cards…',
     send: 'Send',
     sending: 'Sending…',
+    // Stop the in-flight stream (toggles in for Send while streaming).
+    stop: 'Stop',
+    // Model (reasoning-level) picker — hidden when no allow-list is configured.
+    model: 'Model',
+    // Optional per-turn deck scope picker.
+    deckScope: 'Scope to deck',
+    allDecks: 'All cards',
   },
   // Setup notice (chatEnabled === false)
   setup: {
@@ -41,14 +56,50 @@ const m = {
     show: 'Show reasoning',
     hide: 'Hide reasoning',
   },
+  // Per-assistant-message actions (copy prose, regenerate the turn).
+  message: {
+    copy: 'Copy',
+    copied: 'Copied',
+    regenerate: 'Regenerate',
+    openCard: 'Open card',
+    // Recovery affordance on a trailing user turn with no answer (stopped/torn).
+    stoppedRetry: 'Stopped — regenerate?',
+    // Edit-and-rerun the last user message (Codex-like redesign, AC4.1).
+    edit: 'Edit',
+    editSave: 'Save and re-run',
+    editCancel: 'Cancel edit',
+  },
   // Agentic tool calls (search_cards / web_search) surfaced as cards in the stream
   tool: {
     search_cards: 'Searched your cards',
     web_search: 'Searched the web',
+    card_progress: 'Checked card progress',
+    study_stats: 'Checked study stats',
+    list_decks: 'Listed your decks',
+    browse_cards: 'Browsed your cards',
+    get_card: 'Opened a card',
+    // Pluralized labels for a contiguous run of the same tool (AC2.2 collapse).
+    get_card_n: 'Reviewed {count} cards',
+    card_progress_n: 'Checked progress on {count} cards',
+    browse_cards_n: 'Browsed cards {count} times',
     running: 'Running…',
     done: 'Done',
     failed: 'Failed',
     resultToggle: 'Show result',
+  },
+  // Condensed activity group (Codex-like redesign) — the timed, collapsible work
+  // block that wraps an assistant turn's reasoning + tool steps.
+  activity: {
+    worked: 'Worked for {time}',
+    working: 'Working…',
+    workedSub: '<1s',
+    workedSeconds: '{count}s',
+    workedMinutes: '{m}m {s}s',
+    workedHours: '{h}h {m}m',
+    steps: '{count} steps',
+    step: '{count} step',
+    appliedCreated: 'Created {count} cards in {deck} · open',
+    appliedEdited: 'Card updated · open',
   },
   // Confirm-before-write controls (Phase B) — a write/SRS tool pauses the turn
   // and asks for explicit human approval, rendered inside the pending tool card.

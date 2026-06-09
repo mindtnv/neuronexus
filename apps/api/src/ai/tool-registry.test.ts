@@ -9,13 +9,23 @@ import { buildAgentSystemPrompt } from '@neuronexus/shared';
 
 // The write/SRS tools always present in Phase B (no extra env gate).
 const WRITE_SRS_TOOLS = ['create_card', 'edit_card', 'suspend', 'set_due', 'forget'];
+// Read tools always present (semantic card search + the two progress read-tools,
+// S4 — plus the deterministic browse tools list_decks/browse_cards/get_card).
+const READ_TOOLS = [
+  'search_cards',
+  'card_progress',
+  'study_stats',
+  'list_decks',
+  'browse_cards',
+  'get_card',
+];
 
 describe('buildToolRegistry — web_search gating', () => {
   afterEach(() => __resetWebSearchProviderForTests());
 
   test('excludes web_search when disabled (write/SRS still present)', () => {
     const names = buildToolRegistry({ webSearchEnabled: false }).map((t) => t.name);
-    expect(names).toEqual(['search_cards', ...WRITE_SRS_TOOLS]);
+    expect(names).toEqual([...READ_TOOLS, ...WRITE_SRS_TOOLS]);
   });
 
   test('includes web_search when enabled', () => {
@@ -30,7 +40,7 @@ describe('buildToolRegistry — web_search gating', () => {
     expect(names).toContain('web_search');
     __setWebSearchProviderForTests(null);
     const off = buildToolRegistry().map((t) => t.name);
-    expect(off).toEqual(['search_cards', ...WRITE_SRS_TOOLS]);
+    expect(off).toEqual([...READ_TOOLS, ...WRITE_SRS_TOOLS]);
   });
 });
 
@@ -54,12 +64,20 @@ describe('buildToolRegistry — write/SRS tools (Phase B)', () => {
     }
   });
 
-  test('read tools (search_cards/web_search) declare kind:read + omit dryRun', () => {
+  test('read tools (search_cards/web_search/progress) declare kind:read + omit dryRun', () => {
     const byName = new Map(buildToolRegistry({ webSearchEnabled: true }).map((t) => [t.name, t]));
     expect(byName.get('search_cards')!.kind).toBe('read');
     expect(byName.get('search_cards')!.dryRun).toBeUndefined();
     expect(byName.get('web_search')!.kind).toBe('read');
     expect(byName.get('web_search')!.dryRun).toBeUndefined();
+    expect(byName.get('card_progress')!.kind).toBe('read');
+    expect(byName.get('card_progress')!.dryRun).toBeUndefined();
+    expect(byName.get('study_stats')!.kind).toBe('read');
+    expect(byName.get('study_stats')!.dryRun).toBeUndefined();
+    for (const name of ['list_decks', 'browse_cards', 'get_card']) {
+      expect(byName.get(name)!.kind).toBe('read');
+      expect(byName.get(name)!.dryRun).toBeUndefined();
+    }
   });
 });
 
@@ -101,6 +119,11 @@ describe('toOpenAiTools — gateway schema shape', () => {
     }
     expect(specs.map((s) => s.function.name)).toEqual([
       'search_cards',
+      'card_progress',
+      'study_stats',
+      'list_decks',
+      'browse_cards',
+      'get_card',
       'web_search',
       ...WRITE_SRS_TOOLS,
     ]);
@@ -120,5 +143,31 @@ describe('buildAgentSystemPrompt — behavioral contract', () => {
     const p = buildAgentSystemPrompt({ webSearchEnabled: false });
     expect(p).toContain('search_cards');
     expect(p).toMatch(/NO web access/i);
+  });
+
+  test('mentions the progress tools (M6 carve-out) + narrows conversation-meta', () => {
+    const p = buildAgentSystemPrompt({ webSearchEnabled: false });
+    expect(p).toContain('study_stats');
+    expect(p).toContain('card_progress');
+    // The no-tool line is narrowed to THIS CONVERSATION (not progress).
+    expect(p).toMatch(/THIS CONVERSATION/);
+  });
+
+  test('routes deterministic browse to list_decks/browse_cards/get_card (AC2.4)', () => {
+    const p = buildAgentSystemPrompt({ webSearchEnabled: false });
+    expect(p).toContain('list_decks');
+    expect(p).toContain('browse_cards');
+    expect(p).toContain('get_card');
+    // search_cards is explicitly narrowed to MEANING/topic so the agent routes
+    // deterministic requests to the browse tools instead.
+    expect(p).toMatch(/MEANING\/topic/);
+  });
+
+  test('deck scope hint added when a deckScopeName is provided', () => {
+    const scoped = buildAgentSystemPrompt({ webSearchEnabled: false, deckScopeName: 'German' });
+    expect(scoped).toContain('German');
+    expect(scoped).toMatch(/scoped this chat to the deck/i);
+    const unscoped = buildAgentSystemPrompt({ webSearchEnabled: false });
+    expect(unscoped).not.toMatch(/scoped this chat to the deck/i);
   });
 });

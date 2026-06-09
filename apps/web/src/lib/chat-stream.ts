@@ -132,7 +132,11 @@ function parseBlock(block: string): ChatStreamEvent | null {
  * pre-flush failures (non-2xx / no body) and transport tears via `onError`, so
  * callers always have a single completion path; never rejects.
  */
-async function consumeSseResponse(res: Response, handlers: ChatStreamHandlers): Promise<void> {
+async function consumeSseResponse(
+  res: Response,
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
   // Pre-flush failures (chat disabled → 503, foreign thread → 404, auth → 401)
   // come back as a normal JSON body, not a stream. Surface them as an error.
   if (!res.ok || !res.body) {
@@ -174,6 +178,9 @@ async function consumeSseResponse(res: Response, handlers: ChatStreamHandlers): 
       if (event) dispatch(event, handlers);
     }
   } catch (err) {
+    // A deliberate stop aborts the in-flight reader.read() with AbortError —
+    // swallow it (the turn was cancelled on purpose, not a transport failure).
+    if (isAbortError(err) || signal?.aborted) return;
     handlers.onError?.(err instanceof Error ? err.message : 'stream_error');
   }
 }
@@ -190,13 +197,31 @@ async function consumeSseResponse(res: Response, handlers: ChatStreamHandlers): 
  * `await_confirmation` frame and then the stream CLOSES with NO `done` — the
  * turn is suspended awaiting human approval. The caller answers it via
  * `resumeChat`, which re-attaches the same handler set to the continued turn.
+ *
+ * `opts.model` / `opts.deckId` are the per-turn reasoning-level selection +
+ * deck scope (validated server-side; absent ⇒ today's behavior). `opts.signal`
+ * wires an AbortController so the caller can stop the stream — an `AbortError`
+ * from the cancelled fetch is swallowed silently (NOT surfaced via `onError`),
+ * so the generic-error copy never flashes on a deliberate stop.
  */
+export interface ChatTurnOpts {
+  model?: string;
+  deckId?: string;
+  signal?: AbortSignal;
+}
+
+/** True when a thrown error is the AbortController firing (a deliberate stop). */
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
+
 export async function streamChat(
   conversationId: string,
   content: string,
   handlers: ChatStreamHandlers,
+  opts?: ChatTurnOpts,
 ): Promise<void> {
-  const body: ChatStreamRequest = { content };
+  const body: ChatStreamRequest = { content, model: opts?.model, deckId: opts?.deckId };
   let res: Response;
   try {
     res = await fetch(`${baseURL}/chat/conversations/${conversationId}/stream`, {
@@ -204,13 +229,17 @@ export async function streamChat(
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: opts?.signal,
     });
   } catch (err) {
+    // A deliberate stop (controller.abort()) rejects the fetch with AbortError —
+    // swallow it; the caller drops the placeholder + shows the retry affordance.
+    if (isAbortError(err)) return;
     handlers.onError?.(err instanceof Error ? err.message : 'network_error');
     return;
   }
 
-  await consumeSseResponse(res, handlers);
+  await consumeSseResponse(res, handlers, opts?.signal);
 }
 
 /**
@@ -233,6 +262,7 @@ export async function resumeChat(
   conversationId: string,
   body: ChatResumeRequest,
   handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<void> {
   let res: Response;
   try {
@@ -241,11 +271,48 @@ export async function resumeChat(
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     });
   } catch (err) {
+    if (isAbortError(err)) return;
     handlers.onError?.(err instanceof Error ? err.message : 'network_error');
     return;
   }
 
-  await consumeSseResponse(res, handlers);
+  await consumeSseResponse(res, handlers, signal);
+}
+
+/**
+ * Regenerate the LAST assistant turn (S6 / AC3.4). POSTs to the server's
+ * `/regenerate` route, which deletes the trailing assistant turn then re-runs the
+ * loop over the SAME last user message with the CURRENT model (doubles as "retry
+ * deeper"). The continued SSE response is consumed with the SAME parse loop +
+ * handler set as `streamChat`, so the fresh answer renders into the placeholder
+ * the caller re-added. Mirrors `streamChat`: raw fetch + reader, outside Eden,
+ * abort-aware, never rejects (transport failures surface via `onError`).
+ */
+export async function regenerateChat(
+  conversationId: string,
+  opts: { model?: string; deckId?: string; content?: string },
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${baseURL}/chat/conversations/${conversationId}/regenerate`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      // `content` (edit-and-rerun, B2): when present the server UPDATES the last
+      // user row in place before replaying; absent ⇒ today's regenerate exactly.
+      body: JSON.stringify({ model: opts.model, deckId: opts.deckId, content: opts.content }),
+      signal,
+    });
+  } catch (err) {
+    if (isAbortError(err)) return;
+    handlers.onError?.(err instanceof Error ? err.message : 'network_error');
+    return;
+  }
+
+  await consumeSseResponse(res, handlers, signal);
 }

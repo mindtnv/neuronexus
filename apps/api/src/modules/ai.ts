@@ -24,6 +24,7 @@ import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import {
   conversations,
   db,
+  decks,
   messages as messagesTable,
   type Citation,
   type Db,
@@ -31,9 +32,12 @@ import {
 import {
   buildAgentSystemPrompt,
   CARD_TOKEN_RE,
+  isAllowedModel,
+  parseChatModels,
   type ChatStreamEvent,
 } from '@neuronexus/shared';
 import { env, embeddingEnabled, chatEnabled } from '../env.ts';
+import { descendantIds } from './cards.ts';
 import { authPlugin } from '../auth-plugin.ts';
 import { embeddingDegraded, reindexUser } from '../ai/index-queue.ts';
 import {
@@ -65,6 +69,62 @@ const TOOL_RESULT_MAX_CHARS = env.ai.TOOL_RESULT_MAX_CHARS;
 // multi-round search loop can't blow the context window). ×4 ≈ four full-size
 // tool rounds before we force a final answer, bounding per-turn context/cost.
 const TOOL_RESULT_BUDGET = TOOL_RESULT_MAX_CHARS * 4;
+
+// Parsed model allow-list (AC2.1). Computed once at module load; `[]` when
+// CHAT_MODELS is unset ⇒ the picker is hidden and chat uses CHAT_MODEL as today.
+let chatModels = parseChatModels(env.ai.CHAT_MODELS);
+
+/**
+ * Test seam: override the parsed allow-list (NODE_ENV=test only). `CHAT_MODELS`
+ * is parsed once at module load, so the integration suite can't set it via env
+ * before import — this setter lets a test pin the allow-list and restore it.
+ * Mirrors `__setAiClientForTests`. Pass `undefined` to re-parse from env.
+ */
+export function __setChatModelsForTests(raw: string | undefined): void {
+  chatModels = parseChatModels(raw ?? env.ai.CHAT_MODELS);
+}
+
+/** The default model id (the first allow-list entry), or undefined when no list. */
+function defaultChatModel(): string | undefined {
+  return chatModels.find((m) => m.default)?.id;
+}
+
+/**
+ * Resolve + validate a client-supplied model against the allow-list (pre-flush,
+ * shared by /stream + /resume + /regenerate). Returns the resolved model id (the
+ * request's model, or the default, or undefined when no list), or an
+ * `invalid_model` error when a non-empty allow-list rejects the supplied id.
+ */
+function resolveChatModel(
+  requested: string | undefined,
+): { ok: true; model: string | undefined } | { ok: false } {
+  if (requested && chatModels.length > 0 && !isAllowedModel(chatModels, requested)) {
+    return { ok: false };
+  }
+  return { ok: true, model: requested ?? defaultChatModel() };
+}
+
+/**
+ * Resolve a turn's optional `deckId` into the retrieval scope (AC3.7): the deck
+ * + its subtree over the CALLER's decks. A foreign/un-owned deckId yields an
+ * empty subtree → `[deckId]`, which matches no owned cards ⇒ an EMPTY scope (the
+ * agent finds nothing in that deck), NOT a silent global fallback. Returns the
+ * scope ids + the deck's display name (for the system-prompt hint). Undefined
+ * deckId ⇒ `{ deckIds: undefined }` (global retrieval, byte-identical to today).
+ */
+async function resolveDeckScope(
+  userId: string,
+  deckId: string | undefined,
+): Promise<{ deckIds: string[] | undefined; deckName?: string }> {
+  if (!deckId) return { deckIds: undefined };
+  const userDecks = await db
+    .select({ id: decks.id, parentId: decks.parentId, name: decks.name })
+    .from(decks)
+    .where(eq(decks.userId, userId));
+  const owned = userDecks.find((d) => d.id === deckId);
+  const deckIds = [deckId, ...descendantIds(deckId, userDecks)];
+  return { deckIds, deckName: owned?.name };
+}
 
 /** Serialize one SSE frame from a typed ChatStreamEvent. */
 function sseFrame(event: ChatStreamEvent): string {
@@ -175,6 +235,10 @@ interface RunAgentTurnArgs {
   /** [system, ...history, user] — already reconstructed by the caller. */
   startMessages: AgentChatMessage[];
   webSearchEnabled: boolean;
+  /** Resolved model id threaded into EVERY `chatStreamAgentic` call (AC2.3). */
+  model?: string;
+  /** Per-turn deck retrieval scope (AC3.7) — `[deckId, ...descendants]` or undefined. */
+  deckIds?: string[];
 }
 
 /**
@@ -194,12 +258,13 @@ interface RunAgentTurnArgs {
  * or — for a suspended turn — exactly at the confirmation boundary).
  */
 async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
-  const { userId, conversationId, log, emit, startMessages, webSearchEnabled } = args;
+  const { userId, conversationId, log, emit, startMessages, webSearchEnabled, model, deckIds } =
+    args;
 
   const registry: Tool[] = buildToolRegistry({ webSearchEnabled });
   const toolByName = new Map(registry.map((tl) => [tl.name, tl]));
   const openAiTools = toOpenAiTools(registry);
-  const toolCtx: ToolContext = { userId, log };
+  const toolCtx: ToolContext = { userId, log, deckIds };
 
   const messages = [...startMessages];
 
@@ -226,6 +291,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
       tools: isFinalStep ? [] : openAiTools,
       toolChoice,
       log,
+      model,
     })) {
       if (chunk.type === 'reasoning') {
         emit({ type: 'reasoning', delta: chunk.text });
@@ -494,6 +560,68 @@ async function loadHistoryRows(conversationId: string): Promise<HistoryRow[]> {
 }
 
 /**
+ * Delete the WHOLE trailing assistant turn for a conversation (S6 / AC3.4): every
+ * row created AFTER the last `user` row — its assistant tool_calls rows, role:tool
+ * result rows, AND the final assistant text row — in ONE user-scoped transaction.
+ * Deleting only the text row would orphan its tool_calls/role:tool rows, so the
+ * whole tail goes (the `messages_tool_result_uq` unique index is the backstop).
+ *
+ * Returns `{ ok: true, deleted }` when a `user` row exists (deleted ≥ 0), or
+ * `{ ok: false }` when the conversation has NO user row → caller returns
+ * `400 nothing_to_regenerate`. This is the DELETE half of the two-transaction
+ * regenerate (the REPLAY half re-runs the loop) — NOT atomic with the replay.
+ */
+async function deleteTrailingAssistantTurn(
+  conversationId: string,
+  userId: string,
+  content?: string,
+): Promise<{ ok: true; deleted: number } | { ok: false }> {
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ id: messagesTable.id, role: messagesTable.role, createdAt: messagesTable.createdAt })
+      .from(messagesTable)
+      .where(
+        and(
+          eq(messagesTable.conversationId, conversationId),
+          eq(messagesTable.userId, userId),
+        ),
+      )
+      .orderBy(asc(messagesTable.createdAt))
+      .limit(1000);
+
+    let lastUserIdx = -1;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i]!.role === 'user') {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx === -1) return { ok: false as const };
+
+    // Edit-and-rerun (B2 / AC4.2): when an edited `content` is supplied, UPDATE the
+    // last user row IN PLACE — INSIDE this same transaction, after `lastUserIdx` is
+    // resolved and BEFORE the delete loop. User-scoped, single row; it does NOT
+    // change the row's role or tail position, so the torn-tail recovery invariant
+    // is untouched and TX2 replays over the edited user row → clean history. Absent
+    // `content` ⇒ no UPDATE ⇒ behavior IDENTICAL to today's regenerate.
+    if (content !== undefined) {
+      await tx
+        .update(messagesTable)
+        .set({ content })
+        .where(and(eq(messagesTable.id, rows[lastUserIdx]!.id), eq(messagesTable.userId, userId)));
+    }
+
+    const toDelete = rows.slice(lastUserIdx + 1).map((r) => r.id);
+    for (const id of toDelete) {
+      await tx
+        .delete(messagesTable)
+        .where(and(eq(messagesTable.id, id), eq(messagesTable.userId, userId)));
+    }
+    return { ok: true as const, deleted: toDelete.length };
+  });
+}
+
+/**
  * Find the pending tool call named by `resumeToolCallId` — it must be one of the
  * `tool_calls` on a persisted assistant row in THIS conversation (the ownership
  * chain: the rows were already user+conversation scoped by the caller). Returns
@@ -601,6 +729,10 @@ export const aiModule = new Elysia({ prefix: '/ai' })
       chatModel: env.ai.CHAT_MODEL,
       embeddingDim: env.ai.EMBEDDING_DIM,
       degraded: embeddingDegraded(),
+      // Model allow-list for the per-turn picker (AC2.2). `[]` when CHAT_MODELS
+      // is unset ⇒ the picker is hidden. ONLY {id,label,default} — never a
+      // secret (no CHAT_API_KEY / base URL ever leaves the server, P3).
+      models: chatModels,
     }),
     { auth: true },
   )
@@ -670,6 +802,27 @@ export const chatModule = new Elysia({ prefix: '/chat' })
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   )
+  // Rename a conversation (AC3.1). User-scoped via `and(...userId)` — a foreign
+  // id matches 0 rows → 404. `title` is length-bounded (1..200); an empty or
+  // over-200 title fails Elysia body validation → 400 ValidationError (this app
+  // maps VALIDATION → 400, see app.ts onError).
+  .patch(
+    '/conversations/:id',
+    async ({ user, params, body, status }) => {
+      const [row] = await db
+        .update(conversations)
+        .set({ title: body.title, updatedAt: new Date() })
+        .where(and(eq(conversations.id, params.id), eq(conversations.userId, user.id)))
+        .returning();
+      if (!row) return status(404, { error: 'not_found' });
+      return row;
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({ title: t.String({ minLength: 1, maxLength: 200 }) }),
+    },
+  )
   // Delete a conversation (messages cascade). 404 if foreign.
   .delete(
     '/conversations/:id',
@@ -708,6 +861,12 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         return status(503, { error: 'ai_disabled' });
       }
 
+      // Pre-flush: validate the requested model against the allow-list. Unknown
+      // model + a non-empty allow-list → 400 (nothing flushed, normal JSON).
+      const resolved = resolveChatModel(body.model);
+      if (!resolved.ok) return status(400, { error: 'invalid_model' });
+      const model = resolved.model;
+
       // Pre-flush: ownership check. 404 if foreign/missing (normal JSON path).
       const [conv] = await db
         .select()
@@ -718,6 +877,10 @@ export const chatModule = new Elysia({ prefix: '/chat' })
 
       const userQuery = body.content;
       const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+
+      // Resolve the per-turn deck scope (AC3.7) BEFORE streaming. Foreign deck ⇒
+      // empty scope (not global fallback); absent ⇒ undefined (global).
+      const { deckIds, deckName } = await resolveDeckScope(user.id, body.deckId);
 
       // Persist the user's message BEFORE streaming (it always happened).
       await db.insert(messagesTable).values({
@@ -733,7 +896,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         // Build messages = [system, ...history, user]. History is the full
         // persisted transcript minus the user turn we just inserted.
         const priorRows = await loadHistoryRows(conv.id);
-        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn });
+        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn, deckScopeName: deckName });
         const startMessages: AgentChatMessage[] = [
           { role: 'system', content: system },
           ...reconstructHistory(priorRows.slice(0, -1)),
@@ -747,6 +910,8 @@ export const chatModule = new Elysia({ prefix: '/chat' })
           emit,
           startMessages,
           webSearchEnabled: webOn,
+          model,
+          deckIds,
         });
         return outcome;
       });
@@ -754,7 +919,11 @@ export const chatModule = new Elysia({ prefix: '/chat' })
     {
       auth: true,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),
-      body: t.Object({ content: t.String({ minLength: 1, maxLength: 8000 }) }),
+      body: t.Object({
+        content: t.String({ minLength: 1, maxLength: 8000 }),
+        model: t.Optional(t.String({ maxLength: 200 })),
+        deckId: t.Optional(t.String({ format: 'uuid' })),
+      }),
     },
   )
   // Resume a turn that paused on a write/SRS tool (`await_confirmation`). Same
@@ -777,6 +946,12 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         return status(503, { error: 'ai_disabled' });
       }
 
+      // Same pre-flush model validation as /stream (AC2.5 — the continuation
+      // uses the model the client carried in the resume body).
+      const resolved = resolveChatModel(body.model);
+      if (!resolved.ok) return status(400, { error: 'invalid_model' });
+      const model = resolved.model;
+
       const [conv] = await db
         .select()
         .from(conversations)
@@ -786,6 +961,9 @@ export const chatModule = new Elysia({ prefix: '/chat' })
 
       const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
       const { resumeToolCallId, decision } = body;
+
+      // Resolve the per-turn deck scope for the continuation (AC3.7).
+      const { deckIds, deckName } = await resolveDeckScope(user.id, body.deckId);
 
       // Load the full transcript ONCE (history mapping + validation share it).
       const priorRows = await loadHistoryRows(conv.id);
@@ -920,7 +1098,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         // the exact id we just answered (so the pending assistant tool_calls row
         // is kept — it now has its answering role:tool row).
         const updatedRows = await loadHistoryRows(conv.id);
-        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn });
+        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn, deckScopeName: deckName });
         const startMessages: AgentChatMessage[] = [
           { role: 'system', content: system },
           ...reconstructHistory(updatedRows, resumeToolCallId),
@@ -933,6 +1111,8 @@ export const chatModule = new Elysia({ prefix: '/chat' })
           emit,
           startMessages,
           webSearchEnabled: webOn,
+          model,
+          deckIds,
         });
       });
     },
@@ -942,6 +1122,85 @@ export const chatModule = new Elysia({ prefix: '/chat' })
       body: t.Object({
         resumeToolCallId: t.String({ minLength: 1, maxLength: 256 }),
         decision: t.Union([t.Literal('apply'), t.Literal('reject')]),
+        model: t.Optional(t.String({ maxLength: 200 })),
+        deckId: t.Optional(t.String({ format: 'uuid' })),
+      }),
+    },
+  )
+  // Regenerate the LAST assistant turn (S6 / AC3.4). Re-runs the last USER
+  // message with the CURRENTLY-selected model (doubles as "retry with a deeper
+  // reasoning level"; it does NOT re-prompt the user). Same raw SSE contract +
+  // the same pre-flush gates as /stream (ownership 404, chat 503, model 400).
+  //
+  // TWO transactions, NOT atomic (documented):
+  //   TX1 (delete): remove the WHOLE trailing assistant turn (all rows after the
+  //     last `user` row — tool_calls + role:tool + final text → no orphan tool
+  //     rows). No `user` row → 400 nothing_to_regenerate (nothing flushed yet).
+  //   TX2 (replay): rebuild [system, ...history-through-that-user-row] and re-run
+  //     `runAgentTurn` via the same sseResponse wrapper (its own end-of-turn
+  //     commit). If TX2 fails after TX1 committed, the conversation is left with a
+  //     trailing user row + no assistant row — IDENTICAL to the abort tail, so the
+  //     one "stopped — regenerate?" recovery affordance covers both.
+  .post(
+    '/conversations/:id/regenerate',
+    async ({ user, params, body, status, store }) => {
+      if (!isChatEnabled()) {
+        return status(503, { error: 'ai_disabled' });
+      }
+
+      const resolved = resolveChatModel(body.model);
+      if (!resolved.ok) return status(400, { error: 'invalid_model' });
+      const model = resolved.model;
+
+      const [conv] = await db
+        .select()
+        .from(conversations)
+        .where(and(eq(conversations.id, params.id), eq(conversations.userId, user.id)))
+        .limit(1);
+      if (!conv) return status(404, { error: 'not_found' });
+
+      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+
+      // TX1 — delete the trailing assistant turn (and, with an edited `content`,
+      // UPDATE the last user row in place — additive, single-row, user-scoped).
+      // 400 when there is no user row.
+      const deleted = await deleteTrailingAssistantTurn(conv.id, user.id, body.content);
+      if (!deleted.ok) return status(400, { error: 'nothing_to_regenerate' });
+
+      const { deckIds, deckName } = await resolveDeckScope(user.id, body.deckId);
+      const webOn = isWebSearchEnabled();
+
+      // TX2 — replay. After TX1 the trailing row is the last user message; rebuild
+      // [system, ...full-history] (which now ends at that user row) and re-run.
+      return sseResponse(log, async (emit) => {
+        const priorRows = await loadHistoryRows(conv.id);
+        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn, deckScopeName: deckName });
+        const startMessages: AgentChatMessage[] = [
+          { role: 'system', content: system },
+          ...reconstructHistory(priorRows),
+        ];
+
+        return runAgentTurn({
+          userId: user.id,
+          conversationId: conv.id,
+          log,
+          emit,
+          startMessages,
+          webSearchEnabled: webOn,
+          model,
+          deckIds,
+        });
+      });
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        model: t.Optional(t.String({ maxLength: 200 })),
+        deckId: t.Optional(t.String({ format: 'uuid' })),
+        // Edit-and-rerun (B2 / AC4.2): the edited last-user text. Absent ⇒ today's
+        // regenerate (strictly additive, backward-compatible).
+        content: t.Optional(t.String({ maxLength: 8000 })),
       }),
     },
   );

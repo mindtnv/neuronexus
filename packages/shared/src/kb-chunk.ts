@@ -72,6 +72,10 @@ export interface Citation {
 /** Request body for POST /chat/conversations/:id/stream */
 export interface ChatStreamRequest {
   content: string;
+  /** Optional model id; validated server-side against the CHAT_MODELS allow-list. */
+  model?: string;
+  /** Optional per-turn deck scope (AC3.7) — constrains card retrieval to a deck (subtree). */
+  deckId?: string;
 }
 
 /**
@@ -79,10 +83,24 @@ export interface ChatStreamRequest {
  * write/SRS tool call (the `await_confirmation` frame). `decision: 'apply'`
  * executes the pending mutation + continues the loop; `'reject'` records a
  * "user rejected" tool result so the model can answer without mutating.
+ * `model?` carries the user's current selection so the continuation stays
+ * consistent with their choice (AC2.5).
  */
 export interface ChatResumeRequest {
   resumeToolCallId: string;
   decision: 'apply' | 'reject';
+  model?: string;
+}
+
+/**
+ * One allow-listed chat model surfaced by GET /ai/status + consumed by the web
+ * picker. Derived from the CSV `CHAT_MODELS` env (`model[|label]`, first=default).
+ * NOT a secret — only `{ id, label, default }` ever leaves the server.
+ */
+export interface ChatModelOption {
+  id: string;
+  label: string;
+  default: boolean;
 }
 
 /**

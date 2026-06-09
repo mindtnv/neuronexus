@@ -17,19 +17,40 @@
 //    is visibly separated (AC3).
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Citation } from '@neuronexus/shared';
+import { useRouter } from 'next/navigation';
+import type { Citation, ChatModelOption } from '@neuronexus/shared';
 import { CARD_TOKEN_RE as CARD_TOKEN_CORE_RE } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNSkeleton, NNBadge } from '@/components/ui';
 import { RichCard } from '@/components/rich-card';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { api, ok } from '@/lib/api';
-import { resumeChat, streamChat, type ChatStreamHandlers } from '@/lib/chat-stream';
+import {
+  regenerateChat,
+  resumeChat,
+  streamChat,
+  type ChatStreamHandlers,
+} from '@/lib/chat-stream';
+import {
+  applySummaryFrom,
+  formatElapsed,
+  groupHeaderState,
+  hasAnswerlessUserTail,
+  PLURAL_TOOL_NAMES,
+  reconstructMessages,
+  summarizeSteps,
+  toolIcon,
+  toolLabel,
+  type MessageVM,
+  type PersistedMessageRow,
+  type ToolCallVM,
+} from '@/lib/chat-activity';
 import { cardFromApi } from '@/lib/mappers';
 import { useNN } from '@/lib/store';
 import type { Card } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
-import { useT } from '@/lib/i18n';
+import { useT, useLocale } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
+import { raiseToast } from '@/components/toasts';
 
 // ── Screen-local view models (Eden serializes dates → ISO strings) ───────────
 
@@ -39,56 +60,17 @@ interface ConversationVM {
   updatedAt: string;
 }
 
-// One agentic tool call surfaced as a card in the stream. `args` is the parsed
-// (or raw) argument object the model emitted; `result` is a one-line summary for
-// the collapsible body; `citations` are the cited cards (search_cards only) /
-// web results (web_search only) attached after the tool resolves.
-interface ToolCallVM {
-  id: string;
-  name: string;
-  args: unknown;
-  status: 'running' | 'ok' | 'error';
-  /** One-line human summary from the tool_result frame (optional). */
-  result?: string;
-  /** Cited cards for search_cards (rendered via RichCard — the only card sink). */
-  citations?: Citation[];
-  // ── Phase B: confirm-before-write (S10) ────────────────────────────────────
-  /**
-   * True while this write/SRS tool call is paused awaiting human approval (the
-   * `await_confirmation` frame arrived and the stream closed with no `done`).
-   * The card renders Apply/Reject controls + the blast-radius summary.
-   */
-  awaitingConfirmation?: boolean;
-  /** Dry-run blast radius from the `await_confirmation` frame (rendered above Apply). */
-  impact?: { willDeleteCards?: number; willCreateCards?: number; affectsSiblings?: boolean };
-  /**
-   * The decision the user picked, once clicked. Set IMMEDIATELY on click so both
-   * buttons disable and a double-apply can't be issued from the UI side (the
-   * server has its own atomic backstop, but this prevents the second request).
-   */
-  decision?: 'apply' | 'reject';
-}
-
-interface MessageVM {
-  id: string;
-  // `tool` only appears on reload reconstruction — a persisted role:'tool' row is
-  // folded into its parent assistant message's toolCalls, never rendered as its
-  // own bubble (see openThread reconstruction rule).
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
-  citations: Citation[];
-  /** Streamed reasoning trace for this assistant turn (ephemeral, never persisted). */
-  reasoning?: string;
-  /** Tool calls made during this assistant turn, in call order. */
-  toolCalls?: ToolCallVM[];
-  /** True while tokens are still streaming into this assistant message. */
-  streaming?: boolean;
-}
+// The view-model + persisted-row types (`MessageVM`, `ToolCallVM`,
+// `PersistedMessageRow`) and the pure reconstruction/parse helpers now live in
+// `@/lib/chat-activity` (ONE definition each — re-imported above). This screen
+// only wires them into JSX.
 
 type AiStatus = {
   embeddingEnabled: boolean;
   chatEnabled: boolean;
   degraded: boolean;
+  /** Model allow-list for the per-turn picker (AC2.2). `[]` ⇒ picker hidden. */
+  models: ChatModelOption[];
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -96,6 +78,50 @@ type AiStatus = {
 function conversationTitle(c: ConversationVM, fallback: string): string {
   const trimmed = (c.title ?? '').trim();
   return trimmed.length > 0 ? trimmed : fallback;
+}
+
+// Hand-rolled relative-duration formatter (no dep — Principle 4). Returns the
+// localized "updated N ago" line from an ISO timestamp, using the chat i18n
+// dictionary for the unit words (so en/ru both read naturally). `t` is the
+// translator; the unit count is interpolated via `{count}`. Anything in the
+// future or unparseable collapses to "just now".
+function relativeUpdated(
+  iso: string | undefined,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  if (!iso) return '';
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return '';
+  const diffMs = Date.now() - then;
+  // Under a minute reads as a bare "just now" — wrapping it in "updated … ago"
+  // would be redundant ("updated just now ago"), so return it standalone.
+  if (diffMs < 60_000) return t('chat.threads.relativeNow');
+  let time: string;
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 60) {
+    time = t('chat.threads.relativeMinutes', { count: mins });
+  } else {
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) {
+      time = t('chat.threads.relativeHours', { count: hours });
+    } else {
+      time = t('chat.threads.relativeDays', { count: Math.floor(hours / 24) });
+    }
+  }
+  return t('chat.threads.updatedAgo', { time });
+}
+
+// Absolute timestamp for the message-bubble hover title (AC3.2). Locale-formatted
+// via Intl; falls back to the raw ISO string if it can't be parsed.
+function formatTimestamp(iso: string | undefined, locale: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  try {
+    return d.toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' });
+  } catch {
+    return d.toLocaleString();
+  }
 }
 
 // Strip the inline [card:<id>] grounding tokens the model emits — the cited
@@ -126,148 +152,11 @@ function safeWebUrl(raw: unknown): string | null {
   }
 }
 
-// ── Persisted-row → view-model reconstruction (reload) ───────────────────────
-// Eden serializes the message rows verbatim, so a reloaded transcript carries
-// the wire shape: a `user` row, an `assistant` row whose `toolCalls` is non-null
-// (its `content` is the `''` sentinel), one `role:'tool'` row per result (its
-// `content` is the JSON-stringified tool result, linked by `toolCallId`), then
-// the final `assistant` text row (`toolCalls` null). The reconstruction rule
-// (S6 step 5) folds those back into the UI view models WITHOUT ever leaking a
-// sentinel or a JSON-in-content tool row as a blank/garbled bubble:
-//   • user                              → a user bubble
-//   • assistant w/ non-null toolCalls   → an assistant VM carrying tool-call
-//                                          cards (REGARDLESS of content)
-//   • role:'tool'                       → folded into its parent's matching
-//                                          tool call by toolCallId (never its
-//                                          own bubble)
-//   • assistant w/ null toolCalls       → prose
-interface PersistedMessageRow {
-  id: string;
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
-  citations?: Citation[] | null;
-  toolCalls?: { id: string; name: string; arguments: string }[] | null;
-  toolCallId?: string | null;
-}
-
-// Parse a persisted `role:'tool'` row's `content` into a UI status + summary.
-// The backend stores the tool's model-facing TEXT on success (plain, capped) and
-// `JSON.stringify({ ok:false, error })` on failure — so a JSON `{ ok:false }`
-// payload is a failed call, anything else is a successful text result. Per-call
-// citations are NOT in this content (they ride the turn-level `citation` event /
-// the final assistant row), so they're not reconstructed here. Best-effort: a
-// malformed/legacy payload degrades to a bare summary, never throws.
-function parseToolResultContent(content: string): { ok: boolean; summary?: string } {
-  if (content.length === 0) return { ok: true };
-  try {
-    const parsed = JSON.parse(content) as { ok?: boolean; error?: string; summary?: string };
-    // A structured failure envelope from the loop.
-    if (parsed && typeof parsed === 'object' && parsed.ok === false) {
-      const summary =
-        typeof parsed.error === 'string'
-          ? parsed.error
-          : typeof parsed.summary === 'string'
-            ? parsed.summary
-            : undefined;
-      return { ok: false, summary };
-    }
-    // JSON but not a failure envelope — fall through to treat as text below.
-  } catch {
-    // Not JSON — the common case (success text). Fall through.
-  }
-  return { ok: true, summary: content };
-}
-
-function parseToolArgs(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
-}
-
-// Write/SRS tool names — these PAUSE the loop for human approval (Phase B).
-// Used on reload reconstruction: a write/SRS tool-call row WITHOUT an answering
-// role:'tool' row is a suspended-pending-write (Principle 5 — the assistant
-// tool_calls row committed at await_confirmation, the result not yet resolved),
-// so it re-renders the Apply/Reject controls and can be resumed. Read tools
-// (search_cards/web_search) never pause; an unresolved one is just a torn turn.
-const WRITE_SRS_TOOL_NAMES = new Set(['create_card', 'edit_card', 'suspend', 'set_due', 'forget']);
-
-function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
-  const out: MessageVM[] = [];
-  // The last assistant VM that carries tool calls — role:'tool' rows attach here.
-  let pendingToolHost: MessageVM | null = null;
-  // Tool calls still awaiting a role:'tool' row across the whole transcript; the
-  // post-pass promotes the unresolved write/SRS ones to awaitingConfirmation.
-  const unresolved: ToolCallVM[] = [];
-
-  for (const row of rows) {
-    const citations = Array.isArray(row.citations) ? row.citations : [];
-
-    if (row.role === 'tool') {
-      // A tool-result row — fold into its parent's matching tool call. Never a bubble.
-      const parsed = parseToolResultContent(row.content);
-      const host = pendingToolHost;
-      const tc = host?.toolCalls?.find((c) => c.id === row.toolCallId);
-      if (tc) {
-        tc.status = parsed.ok ? 'ok' : 'error';
-        if (parsed.summary !== undefined) tc.result = parsed.summary;
-        // Resolved — drop it from the unresolved set.
-        const idx = unresolved.indexOf(tc);
-        if (idx !== -1) unresolved.splice(idx, 1);
-      }
-      continue;
-    }
-
-    if (row.role === 'assistant' && row.toolCalls && row.toolCalls.length > 0) {
-      // Tool-call row — render as tool-call cards regardless of content (sentinel).
-      // Start each call as `running`; a following role:'tool' row resolves it.
-      const calls: ToolCallVM[] = row.toolCalls.map((c) => ({
-        id: c.id,
-        name: c.name,
-        args: parseToolArgs(c.arguments),
-        status: 'running' as const,
-      }));
-      const vm: MessageVM = {
-        id: row.id,
-        role: 'assistant',
-        content: '',
-        citations: [],
-        toolCalls: calls,
-      };
-      out.push(vm);
-      pendingToolHost = vm;
-      for (const c of calls) unresolved.push(c);
-      continue;
-    }
-
-    // user OR assistant-prose OR system → a normal bubble.
-    out.push({
-      id: row.id,
-      role: row.role,
-      content: row.content,
-      citations,
-    });
-    // A fresh prose/user turn closes the tool-result attachment window.
-    pendingToolHost = null;
-  }
-
-  // Post-pass: any unresolved tool call is a tool that never got its result row.
-  // A write/SRS one is a suspended-pending-write → re-render Apply/Reject so the
-  // user can resume it (impact isn't persisted, so the blast-radius is omitted
-  // on reload — the buttons still drive resumeChat). A read tool left unresolved
-  // is a torn transcript; mark it errored rather than spin forever.
-  for (const tc of unresolved) {
-    if (WRITE_SRS_TOOL_NAMES.has(tc.name)) {
-      tc.awaitingConfirmation = true;
-    } else {
-      tc.status = 'error';
-    }
-  }
-
-  return out;
-}
+// Reconstruction note: the persisted-row → view-model reconstruction
+// (`reconstructMessages`, `parseToolArgs`, `parseToolResultContent`,
+// `WRITE_SRS_TOOL_NAMES`) and the answerless-tail detector (`hasAnswerlessUserTail`)
+// now live in `@/lib/chat-activity` (re-imported above), so they can be unit-tested
+// without a React import.
 
 // Render assistant prose as Markdown through the SAME pipeline cards use
 // (markdown-it → DOMPurify via SafeHtml) so lists/bold/headings/code render —
@@ -300,8 +189,13 @@ const AssistantMarkdown = ({ content }: { content: string }) => {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
+// localStorage key for the last-used model selection (re-validated on load).
+const MODEL_LS_KEY = 'nn:chat:model';
+
 export const NNChat = () => {
   const t = useT();
+  const { locale } = useLocale();
+  const router = useRouter();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const { confirm } = useDialog();
@@ -319,6 +213,9 @@ export const NNChat = () => {
 
   const [conversations, setConversations] = useState<ConversationVM[]>([]);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
+  // Inline-rename state (AC3.1): the thread id being edited + its draft title.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageVM[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
@@ -335,10 +232,20 @@ export const NNChat = () => {
     'thinking' | 'calling_tool' | 'answering' | null
   >(null);
 
+  // Per-turn reasoning-level (model) selection (AC2.4). Null = use the server
+  // default; re-validated against `status.models` on status load. Persisted to
+  // `localStorage` as last-used (pattern: cards-browser `nn:cards:dockHeight`).
+  const [model, setModel] = useState<string | null>(null);
+  // Optional per-turn deck scope (AC3.7). Null = all cards (no scope).
+  const [deckScope, setDeckScope] = useState<string | null>(null);
+
   // Resolved cards for citations outside the store mirror (cardId → Card).
   const [fetchedCards, setFetchedCards] = useState<Record<string, Card>>({});
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  // AbortController for the in-flight turn (S6 stop). Held in a ref so the Stop
+  // button can abort the same controller the active send/resume/regenerate owns.
+  const abortRef = useRef<AbortController | null>(null);
 
   // ── Effects ─────────────────────────────────────────────────────────────────
 
@@ -348,9 +255,31 @@ export const NNChat = () => {
     (async () => {
       try {
         const s = (await ok(await (api as any).ai.status.get())) as AiStatus;
-        if (!cancelled) setStatus(s);
+        if (!cancelled) {
+          setStatus(s);
+          // Re-validate the persisted model against the live allow-list (AC2.4).
+          // A stale value (model removed from CHAT_MODELS) silently falls back to
+          // the default and is rewritten; an empty allow-list clears it entirely.
+          const models = s.models ?? [];
+          let stored: string | null = null;
+          try {
+            stored = localStorage.getItem(MODEL_LS_KEY);
+          } catch {
+            /* localStorage unavailable (private mode / SSR) — treat as unset. */
+          }
+          const valid = models.find((m) => m.id === stored);
+          const resolved = valid ? stored : (models.find((m) => m.default)?.id ?? null);
+          setModel(resolved);
+          try {
+            if (resolved) localStorage.setItem(MODEL_LS_KEY, resolved);
+            else localStorage.removeItem(MODEL_LS_KEY);
+          } catch {
+            /* best-effort persistence */
+          }
+        }
       } catch {
-        if (!cancelled) setStatus({ embeddingEnabled: false, chatEnabled: false, degraded: false });
+        if (!cancelled)
+          setStatus({ embeddingEnabled: false, chatEnabled: false, degraded: false, models: [] });
       } finally {
         if (!cancelled) setStatusLoaded(true);
       }
@@ -389,6 +318,20 @@ export const NNChat = () => {
     for (const d of decks) map.set(d.id, d.name);
     return map;
   }, [decks]);
+
+  // Decks for the optional scope picker, sorted by name for a stable menu.
+  const sortedDecks = useMemo(
+    () => [...decks].sort((a, b) => a.name.localeCompare(b.name)),
+    [decks],
+  );
+
+  // The abort/regenerate cliff (M1): a committed user turn with no answer — show
+  // the recoverable "stopped — regenerate?" affordance (live + on reload). Never
+  // while a turn is actively streaming.
+  const answerlessTail = useMemo(
+    () => !sending && hasAnswerlessUserTail(messages),
+    [sending, messages],
+  );
 
   const resolveCard = useCallback(
     (cardId: string): Card | undefined => cardById.get(cardId) ?? fetchedCards[cardId],
@@ -491,6 +434,46 @@ export const NNChat = () => {
     [activeId, confirm, isMobile, t],
   );
 
+  // Persist the chosen model as last-used (AC2.4). Best-effort localStorage.
+  const selectModel = useCallback((id: string) => {
+    setModel(id);
+    try {
+      localStorage.setItem(MODEL_LS_KEY, id);
+    } catch {
+      /* best-effort */
+    }
+  }, []);
+
+  // Inline rename (AC3.1): PATCH the conversation title via Eden, update the
+  // local list optimistically. An empty title is ignored (server would 400 it).
+  const renameThread = useCallback(async (id: string, title: string) => {
+    const trimmed = title.trim();
+    if (trimmed.length === 0) return;
+    const next = trimmed.slice(0, 200);
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title: next } : c)));
+    try {
+      await ok(await (api as any).chat.conversations({ id }).patch({ title: next }));
+    } catch {
+      // best-effort; the optimistic title stays (server may have 404'd a foreign
+      // id, but a foreign id never reaches here from the user's own list).
+    }
+  }, []);
+
+  const startRename = useCallback((c: ConversationVM) => {
+    setRenamingId(c.id);
+    setRenameDraft((c.title ?? '').trim());
+  }, []);
+
+  // Commit the inline rename (Enter / blur). Empty draft just cancels.
+  const commitRename = useCallback(() => {
+    const id = renamingId;
+    if (!id) return;
+    const draftTitle = renameDraft;
+    setRenamingId(null);
+    setRenameDraft('');
+    if (draftTitle.trim().length > 0) void renameThread(id, draftTitle);
+  }, [renamingId, renameDraft, renameThread]);
+
   // Resolve an applied write/SRS tool by id (off the latest messages state) and
   // refetch the affected card/deck via the store mirror so the rest of the app
   // reflects the mutation. create_card → refetch the deck's cards; edit_card /
@@ -543,6 +526,24 @@ export const NNChat = () => {
           ),
         );
 
+      // Finalize the turn timer (T-accumulate): compute `elapsedMs` ONCE off the
+      // host's ORIGINAL `turnStartedAt`, called only at onDone/onError — never in
+      // confirmToolCall/onAwaitConfirmation. So "Worked for Ns" = the full turn
+      // INCLUDING any confirm pause, never overwritten by the resume stream.
+      const finalizeTurn = (patch: Partial<MessageVM>) =>
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsgId
+              ? {
+                  ...m,
+                  ...patch,
+                  elapsedMs:
+                    m.turnStartedAt != null ? Date.now() - m.turnStartedAt : m.elapsedMs,
+                }
+              : m,
+          ),
+        );
+
       return {
         onToken: (delta) =>
           setMessages((prev) =>
@@ -557,17 +558,24 @@ export const NNChat = () => {
               m.id === assistantMsgId ? { ...m, reasoning: (m.reasoning ?? '') + delta } : m,
             ),
           ),
-        // A tool call started — append a running card (idempotent on id).
+        // A tool call started — append a running card (idempotent on id). Stamp
+        // `startedAt` so per-tool `durationMs` can be computed on result (kept
+        // honest but NOT rendered — Assumption 3). A write tool's stream-1
+        // `startedAt` survives into the stream-2 result via the `some(id)` guard.
         onToolCall: (tc) =>
           patchToolCalls((calls) =>
             calls.some((c) => c.id === tc.id)
               ? calls
-              : [...calls, { id: tc.id, name: tc.name, args: tc.args, status: 'running' }],
+              : [
+                  ...calls,
+                  { id: tc.id, name: tc.name, args: tc.args, status: 'running', startedAt: Date.now() },
+                ],
           ),
         // A tool finished — flip status, attach the one-line summary + citations.
         // On a confirmed write/SRS resume, the answering `tool_result` also clears
         // the awaiting/decision flags AND (when ok) triggers the post-write store
-        // sync so the rest of the app mirrors the mutation.
+        // sync so the rest of the app mirrors the mutation. An APPLIED create/edit
+        // also derives an ephemeral post-apply summary line (S5 / AC5.1).
         onToolResult: (tr) => {
           patchToolCalls((calls) =>
             calls.map((c) =>
@@ -578,6 +586,11 @@ export const NNChat = () => {
                     result: tr.summary ?? c.result,
                     citations: tr.citations ?? c.citations,
                     awaitingConfirmation: false,
+                    durationMs: c.startedAt != null ? Date.now() - c.startedAt : c.durationMs,
+                    applySummary:
+                      tr.ok && (c.name === 'create_card' || c.name === 'edit_card')
+                        ? (applySummaryFrom(c.name, c.args) ?? c.applySummary)
+                        : c.applySummary,
                   }
                 : c,
             ),
@@ -618,7 +631,8 @@ export const NNChat = () => {
           setStreamPhase(null);
         },
         onDone: () => {
-          patchAssistant({ streaming: false });
+          // Finalize the turn timer off the ORIGINAL turnStartedAt (T-accumulate).
+          finalizeTurn({ streaming: false });
           setStreamPhase(null);
           // Bump this thread to the top (server already bumped updatedAt on done).
           setConversations((prev) => {
@@ -629,7 +643,7 @@ export const NNChat = () => {
           });
         },
         onError: (message) => {
-          patchAssistant({
+          finalizeTurn({
             streaming: false,
             content:
               message === 'ai_disabled'
@@ -650,7 +664,7 @@ export const NNChat = () => {
   // the model answers without mutating. The SAME stream handlers are re-attached
   // (via buildStreamHandlers) so the continued turn renders into the same bubble.
   const confirmToolCall = useCallback(
-    (assistantMsgId: string, toolCallId: string, decision: 'apply' | 'reject') => {
+    async (assistantMsgId: string, toolCallId: string, decision: 'apply' | 'reject') => {
       const convId = activeId;
       if (!convId) return;
       // Mark the decision IMMEDIATELY so both buttons disable — a double-apply
@@ -668,13 +682,20 @@ export const NNChat = () => {
             : m,
         ),
       );
-      void resumeChat(
+      // Flip the send/stop toggle BEFORE the await so the composer shows "Stop"
+      // and the user can abort the in-flight resume stream (AC3.3).
+      setSending(true);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      await resumeChat(
         convId,
-        { resumeToolCallId: toolCallId, decision },
+        { resumeToolCallId: toolCallId, decision, model: model ?? undefined },
         buildStreamHandlers(assistantMsgId, convId),
+        controller.signal,
       );
+      setSending(false);
     },
-    [activeId, buildStreamHandlers],
+    [activeId, buildStreamHandlers, model],
   );
 
   const send = useCallback(async () => {
@@ -701,18 +722,163 @@ export const NNChat = () => {
     }
 
     // Optimistically append the user turn + a streaming assistant placeholder.
+    // Stamp `turnStartedAt` ONCE here (T-accumulate, Change 1) — `elapsedMs` is
+    // computed off it at onDone/onError only, so "Worked for Ns" = the full
+    // perceived turn incl. any confirm pause.
     const userMsgId = `local-user-${Date.now()}`;
     const assistantMsgId = `local-assistant-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
-      { id: userMsgId, role: 'user', content, citations: [] },
-      { id: assistantMsgId, role: 'assistant', content: '', citations: [], streaming: true },
+      { id: userMsgId, role: 'user', content, citations: [], createdAt: new Date().toISOString() },
+      {
+        id: assistantMsgId,
+        role: 'assistant',
+        content: '',
+        citations: [],
+        streaming: true,
+        turnStartedAt: Date.now(),
+      },
     ]);
 
-    await streamChat(convId!, content, buildStreamHandlers(assistantMsgId, convId!));
+    const controller = new AbortController();
+    abortRef.current = controller;
+    await streamChat(convId!, content, buildStreamHandlers(assistantMsgId, convId!), {
+      model: model ?? undefined,
+      deckId: deckScope ?? undefined,
+      signal: controller.signal,
+    });
 
     setSending(false);
-  }, [activeId, draft, sending, buildStreamHandlers]);
+  }, [activeId, draft, sending, buildStreamHandlers, model, deckScope]);
+
+  // Stop the in-flight turn (S6 / AC3.3 — the abort cliff). Abort the active
+  // controller; the swallowed AbortError leaves the user row persisted server-side
+  // but no assistant turn committed. Drop the un-committed streaming placeholder
+  // so the recoverable "stopped — regenerate?" affordance shows on the user tail.
+  const stopTurn = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setMessages((prev) =>
+      prev.filter((m) => !(m.role === 'assistant' && m.streaming && m.content.length === 0 && (m.toolCalls ?? []).length === 0)),
+    );
+    // Any streaming placeholder that already has content/tool work: finalize it
+    // (drop the streaming flag) rather than discard partial visible work.
+    setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
+    setStreamPhase(null);
+    setSending(false);
+  }, []);
+
+  // Regenerate the LAST assistant turn (S6 / AC3.4). Removes any trailing
+  // assistant VM locally, re-adds a streaming placeholder, then POSTs to the
+  // server's /regenerate route (which deletes the trailing assistant turn + replays
+  // the last user message with the CURRENT model — doubles as "retry deeper").
+  // Reused by the per-message regenerate button AND the "stopped — regenerate?"
+  // recovery affordance (the answer-less user tail).
+  const regenerate = useCallback(async () => {
+    const convId = activeId;
+    if (!convId || sending) return;
+    setSending(true);
+    const assistantMsgId = `local-regen-${Date.now()}`;
+    // Drop a trailing assistant VM (if any) and append a fresh streaming
+    // placeholder so the new answer renders in its place.
+    setMessages((prev) => {
+      const trimmed =
+        prev.length > 0 && prev[prev.length - 1].role === 'assistant'
+          ? prev.slice(0, -1)
+          : prev;
+      return [
+        ...trimmed,
+        {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: '',
+          citations: [],
+          streaming: true,
+          turnStartedAt: Date.now(),
+        },
+      ];
+    });
+    const controller = new AbortController();
+    abortRef.current = controller;
+    await regenerateChat(
+      convId,
+      { model: model ?? undefined, deckId: deckScope ?? undefined },
+      buildStreamHandlers(assistantMsgId, convId),
+      controller.signal,
+    );
+    setSending(false);
+  }, [activeId, sending, buildStreamHandlers, model, deckScope]);
+
+  // Edit-and-rerun the LAST user message (S7 / AC4.2, B2 default). Locally update
+  // the last user VM's content, drop any trailing assistant VM, append a fresh
+  // streaming placeholder (stamping turnStartedAt — T-accumulate), then POST to
+  // /regenerate with `content` so the server UPDATES the last user row in place
+  // before replaying → clean history (no duplicate pre-edit pair on reload).
+  const editAndRegenerate = useCallback(
+    async (editedText: string) => {
+      const convId = activeId;
+      const trimmed = editedText.trim();
+      if (!convId || sending || trimmed.length === 0) return;
+      // Defensive: bail before mutating state or POSTing when there is no preceding
+      // user row. The edit affordance only renders on a trailing user bubble, but
+      // guard here to prevent a dangling streaming placeholder + spurious 400 POST.
+      const hasUserRow = messages.some((m) => m.role === 'user');
+      if (!hasUserRow) return;
+      setSending(true);
+      const assistantMsgId = `local-edit-${Date.now()}`;
+      setMessages((prev) => {
+        // Update the LAST user VM's content; drop a trailing assistant VM if any.
+        let prevLastUserIdx = -1;
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i]!.role === 'user') { prevLastUserIdx = i; break; }
+        }
+        if (prevLastUserIdx === -1) return prev;
+        const next = prev.map((m, i) =>
+          i === prevLastUserIdx ? { ...m, content: trimmed } : m,
+        );
+        const dropped =
+          next.length > 0 && next[next.length - 1]!.role === 'assistant'
+            ? next.slice(0, -1)
+            : next;
+        return [
+          ...dropped,
+          {
+            id: assistantMsgId,
+            role: 'assistant' as const,
+            content: '',
+            citations: [],
+            streaming: true,
+            turnStartedAt: Date.now(),
+          },
+        ];
+      });
+      const controller = new AbortController();
+      abortRef.current = controller;
+      await regenerateChat(
+        convId,
+        { model: model ?? undefined, deckId: deckScope ?? undefined, content: trimmed },
+        buildStreamHandlers(assistantMsgId, convId),
+        controller.signal,
+      );
+      setSending(false);
+    },
+    [activeId, sending, messages, buildStreamHandlers, model, deckScope],
+  );
+
+  // Copy an assistant message's clean prose to the clipboard (S6 / AC3.5). The
+  // inline [card:<id>] grounding tokens are stripped first (they're noise in
+  // copied text). A confirmation toast surfaces on success. Client-only.
+  const copyMessage = useCallback(
+    async (content: string) => {
+      try {
+        await navigator.clipboard.writeText(stripCardTokens(content));
+        raiseToast({ kind: 'info', titleKey: 'chat.message.copied' });
+      } catch {
+        // Clipboard unavailable / denied — best-effort, no toast.
+      }
+    },
+    [],
+  );
 
   // ── Render: setup notice when chat is unconfigured ───────────────────────────
 
@@ -819,13 +985,21 @@ export const NNChat = () => {
             ) : (
               conversations.map((c) => {
                 const isActive = c.id === activeId;
+                const isRenaming = renamingId === c.id;
                 return (
                   <div
                     key={c.id}
                     role="button"
                     tabIndex={0}
-                    onClick={() => openThread(c.id)}
+                    onClick={() => {
+                      if (!isRenaming) openThread(c.id);
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      startRename(c);
+                    }}
                     onKeyDown={(e) => {
+                      if (isRenaming) return;
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
                         openThread(c.id);
@@ -843,39 +1017,118 @@ export const NNChat = () => {
                       transition: 'background 120ms ease',
                     }}
                   >
-                    <span
-                      style={{
-                        fontSize: 13.5,
-                        fontWeight: isActive ? 600 : 500,
-                        color: isActive ? 'var(--text)' : 'var(--text-muted)',
-                        fontFamily: 'var(--font-sans)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {conversationTitle(c, t('chat.threads.untitled'))}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={t('chat.threads.delete')}
-                      title={t('chat.threads.delete')}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void deleteThread(c.id);
-                      }}
-                      style={{
-                        display: 'flex',
-                        background: 'transparent',
-                        border: 'none',
-                        cursor: 'pointer',
-                        color: 'var(--text-dim)',
-                        padding: 2,
-                        flexShrink: 0,
-                      }}
-                    >
-                      <NNIcon name="x" size={14} />
-                    </button>
+                    {isRenaming ? (
+                      <input
+                        autoFocus
+                        value={renameDraft}
+                        maxLength={200}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setRenameDraft(e.target.value)}
+                        onBlur={commitRename}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            commitRename();
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            setRenamingId(null);
+                            setRenameDraft('');
+                          }
+                        }}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          padding: '4px 8px',
+                          borderRadius: 'var(--r-sm)',
+                          border: '1px solid var(--border-2)',
+                          background: 'var(--surface-2)',
+                          color: 'var(--text)',
+                          fontFamily: 'var(--font-sans)',
+                          fontSize: 13.5,
+                          outline: 'none',
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          minWidth: 0,
+                          gap: 1,
+                          flex: 1,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 13.5,
+                            fontWeight: isActive ? 600 : 500,
+                            color: isActive ? 'var(--text)' : 'var(--text-muted)',
+                            fontFamily: 'var(--font-sans)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {conversationTitle(c, t('chat.threads.untitled'))}
+                        </span>
+                        {relativeUpdated(c.updatedAt, t) && (
+                          <span
+                            style={{
+                              fontSize: 10.5,
+                              color: 'var(--text-dim)',
+                              fontFamily: 'var(--font-sans)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {relativeUpdated(c.updatedAt, t)}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {!isRenaming && (
+                      <span style={{ display: 'inline-flex', gap: 2, flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          aria-label={t('chat.threads.rename')}
+                          title={t('chat.threads.rename')}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startRename(c);
+                          }}
+                          style={{
+                            display: 'flex',
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            color: 'var(--text-dim)',
+                            padding: 2,
+                          }}
+                        >
+                          <NNIcon name="edit" size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={t('chat.threads.delete')}
+                          title={t('chat.threads.delete')}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void deleteThread(c.id);
+                          }}
+                          style={{
+                            display: 'flex',
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            color: 'var(--text-dim)',
+                            padding: 2,
+                          }}
+                        >
+                          <NNIcon name="x" size={14} />
+                        </button>
+                      </span>
+                    )}
                   </div>
                 );
               })
@@ -952,7 +1205,7 @@ export const NNChat = () => {
                   margin: '0 auto',
                 }}
               >
-                {messages.map((m) => (
+                {messages.map((m, i) => (
                   <MessageRow
                     key={m.id}
                     message={m}
@@ -960,9 +1213,31 @@ export const NNChat = () => {
                     resolveCard={resolveCard}
                     deckNameById={deckNameById}
                     onConfirm={confirmToolCall}
+                    // Regenerate only on the LAST assistant message (and only once
+                    // it has finished streaming).
+                    canRegenerate={
+                      m.role === 'assistant' && !m.streaming && i === messages.length - 1 && !sending
+                    }
+                    onCopy={() => void copyMessage(m.content)}
+                    onRegenerate={() => void regenerate()}
+                    // Edit-and-rerun only on the LAST user message, when idle (AC4.1).
+                    canEdit={m.role === 'user' && i === messages.length - 1 && !sending}
+                    onEdit={(text) => void editAndRegenerate(text)}
+                    onOpenCard={(cardId) => router.push(`/cards?focus=${cardId}`)}
+                    locale={locale}
                     t={t}
                   />
                 ))}
+                {/* The abort/regenerate cliff (M1): a committed user turn with no
+                    answer — a recoverable "stopped — regenerate?" affordance shown
+                    both live (on abort) and on reload (trailing-user detection). */}
+                {answerlessTail && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+                    <NNBtn size="sm" variant="soft" icon="sync" onClick={() => void regenerate()}>
+                      {t('chat.message.stoppedRetry')}
+                    </NNBtn>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -978,49 +1253,81 @@ export const NNChat = () => {
             <div
               style={{
                 display: 'flex',
-                alignItems: 'flex-end',
-                gap: 10,
+                flexDirection: 'column',
+                gap: 8,
                 maxWidth: 760,
                 width: '100%',
                 margin: '0 auto',
               }}
             >
-              <textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    void send();
-                  }
-                }}
-                placeholder={t('chat.composer.placeholder')}
-                rows={1}
-                style={{
-                  flex: 1,
-                  resize: 'none',
-                  minHeight: 42,
-                  maxHeight: 160,
-                  padding: '10px 14px',
-                  borderRadius: 'var(--r-md)',
-                  border: '1px solid var(--border-2)',
-                  background: 'var(--surface-2)',
-                  color: 'var(--text)',
-                  fontFamily: 'var(--font-sans)',
-                  fontSize: 14,
-                  lineHeight: 1.45,
-                  outline: 'none',
-                }}
-              />
-              <NNBtn
-                variant="primary"
-                size="lg"
-                icon="arrow"
-                onClick={() => void send()}
-                disabled={sending || draft.trim().length === 0}
-              >
-                {sending ? t('chat.composer.sending') : t('chat.composer.send')}
-              </NNBtn>
+              {/* Per-turn controls: model (reasoning) picker + deck scope. The model
+                  picker is hidden entirely when no allow-list is configured
+                  (status.models empty) — chat is then identical to today. */}
+              {((status?.models?.length ?? 0) > 0 || sortedDecks.length > 0) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {(status?.models?.length ?? 0) > 0 && (
+                    <ModelPicker
+                      models={status?.models ?? []}
+                      value={model}
+                      onSelect={selectModel}
+                      t={t}
+                    />
+                  )}
+                  {sortedDecks.length > 0 && (
+                    <DeckScopePicker
+                      decks={sortedDecks}
+                      value={deckScope}
+                      onSelect={setDeckScope}
+                      t={t}
+                    />
+                  )}
+                </div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
+                <textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      void send();
+                    }
+                  }}
+                  placeholder={t('chat.composer.placeholder')}
+                  rows={1}
+                  style={{
+                    flex: 1,
+                    resize: 'none',
+                    minHeight: 42,
+                    maxHeight: 160,
+                    padding: '10px 14px',
+                    borderRadius: 'var(--r-md)',
+                    border: '1px solid var(--border-2)',
+                    background: 'var(--surface-2)',
+                    color: 'var(--text)',
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: 14,
+                    lineHeight: 1.45,
+                    outline: 'none',
+                  }}
+                />
+                {/* Send toggles to Stop while a turn is in flight (S6 / AC3.3). */}
+                {sending ? (
+                  <NNBtn variant="danger" size="lg" icon="pause" onClick={stopTurn}>
+                    {t('chat.composer.stop')}
+                  </NNBtn>
+                ) : (
+                  <NNBtn
+                    variant="primary"
+                    size="lg"
+                    icon="arrow"
+                    onClick={() => void send()}
+                    disabled={draft.trim().length === 0}
+                  >
+                    {t('chat.composer.send')}
+                  </NNBtn>
+                )}
+              </div>
             </div>
           </div>
         </section>
@@ -1044,6 +1351,20 @@ interface MessageRowProps {
    * message id so the resume targets the right bubble.
    */
   onConfirm: (assistantMsgId: string, toolCallId: string, decision: 'apply' | 'reject') => void;
+  /** Show the regenerate action (only on the last, finished assistant message). */
+  canRegenerate?: boolean;
+  /** Copy this message's clean prose to the clipboard (assistant only). */
+  onCopy?: () => void;
+  /** Regenerate the last assistant turn (assistant only). */
+  onRegenerate?: () => void;
+  /** Show the edit-and-rerun affordance (only on the last user message). */
+  canEdit?: boolean;
+  /** Edit-and-rerun the last user message with the edited text (AC4.1/4.2). */
+  onEdit?: (text: string) => void;
+  /** Open a cited card in /cards (jump-to-card, AC3.6). */
+  onOpenCard?: (cardId: string) => void;
+  /** Active locale for absolute-timestamp formatting on hover. */
+  locale: string;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
@@ -1053,6 +1374,13 @@ const MessageRow = ({
   resolveCard,
   deckNameById,
   onConfirm,
+  canRegenerate = false,
+  onCopy,
+  onRegenerate,
+  canEdit = false,
+  onEdit,
+  onOpenCard,
+  locale,
   t,
 }: MessageRowProps) => {
   const isUser = message.role === 'user';
@@ -1060,6 +1388,9 @@ const MessageRow = ({
   // toggles the full RichCard list. Hook declared before the user-message early
   // return so it's always called in the same order.
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  // Edit-and-rerun inline state (AC4.1) — hooks before the early return.
+  const [editing, setEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState('');
   const toolCalls = message.toolCalls ?? [];
   const hasReasoning = (message.reasoning ?? '').trim().length > 0;
   // While the turn is still streaming and the final answer hasn't begun, the
@@ -1068,24 +1399,99 @@ const MessageRow = ({
   const answerStarted = message.content.length > 0;
 
   if (isUser) {
+    const startEdit = () => {
+      setEditDraft(message.content);
+      setEditing(true);
+    };
+    const commitEdit = () => {
+      const text = editDraft.trim();
+      setEditing(false);
+      if (text.length > 0 && text !== message.content) onEdit?.(text);
+    };
     return (
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <div
-          style={{
-            maxWidth: '78%',
-            padding: '10px 14px',
-            borderRadius: 'var(--r-lg)',
-            background: 'var(--surface-3)',
-            color: 'var(--text)',
-            fontFamily: 'var(--font-sans)',
-            fontSize: 14,
-            lineHeight: 1.5,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {message.content}
-        </div>
+        {editing ? (
+          // Inline editable field (reuses the thread inline-rename pattern). Enter
+          // confirms (edit-and-rerun), Esc cancels.
+          <input
+            autoFocus
+            value={editDraft}
+            maxLength={8000}
+            aria-label={t('chat.message.editSave')}
+            onChange={(e) => setEditDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitEdit();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setEditing(false);
+              }
+            }}
+            onBlur={() => setEditing(false)}
+            style={{
+              maxWidth: '78%',
+              width: '78%',
+              padding: '10px 14px',
+              borderRadius: 'var(--r-lg)',
+              border: '1px solid var(--border-2)',
+              background: 'var(--surface-2)',
+              color: 'var(--text)',
+              fontFamily: 'var(--font-sans)',
+              fontSize: 14,
+              lineHeight: 1.5,
+              outline: 'none',
+            }}
+          />
+        ) : (
+          <div
+            className="nn-chat-user-bubble"
+            title={formatTimestamp(message.createdAt, locale)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'flex-start',
+              gap: 6,
+              maxWidth: '78%',
+            }}
+          >
+            {canEdit && onEdit && (
+              <button
+                type="button"
+                aria-label={t('chat.message.edit')}
+                title={t('chat.message.edit')}
+                onClick={startEdit}
+                style={{
+                  display: 'flex',
+                  alignSelf: 'center',
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'var(--text-dim)',
+                  padding: 2,
+                  flexShrink: 0,
+                }}
+              >
+                <NNIcon name="edit" size={14} />
+              </button>
+            )}
+            <div
+              style={{
+                padding: '10px 14px',
+                borderRadius: 'var(--r-lg)',
+                background: 'var(--surface-3)',
+                color: 'var(--text)',
+                fontFamily: 'var(--font-sans)',
+                fontSize: 14,
+                lineHeight: 1.5,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                minWidth: 0,
+              }}
+            >
+              {message.content}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1094,7 +1500,10 @@ const MessageRow = ({
   // (below), making own-vs-general content distinguishable (AC3).
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+      <div
+        title={formatTimestamp(message.createdAt, locale)}
+        style={{ display: 'flex', alignItems: 'center', gap: 7 }}
+      >
         <NNIcon name="sparkle" size={15} color="var(--violet-400)" />
         <span
           style={{
@@ -1121,21 +1530,22 @@ const MessageRow = ({
         />
       )}
 
-      {/* Tool-call cards (search_cards / web_search) — one per call, in call
-          order, ABOVE the prose so the work the agent did is visible. */}
+      {/* Condensed activity group (Codex-like) — a single timed, collapsible work
+          block wrapping the turn's tool steps, ABOVE the prose. Reasoning stays
+          above it (rendered just before). "Worked for Ns" shows once finished and
+          `elapsedMs` is present; on reload timing is absent (graceful). */}
       {toolCalls.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {toolCalls.map((tc) => (
-            <ToolCallCard
-              key={tc.id}
-              toolCall={tc}
-              resolveCard={resolveCard}
-              deckNameById={deckNameById}
-              onConfirm={(decision) => onConfirm(message.id, tc.id, decision)}
-              t={t}
-            />
-          ))}
-        </div>
+        <ToolActivityGroup
+          toolCalls={toolCalls}
+          elapsedMs={message.elapsedMs}
+          streaming={isStreaming}
+          answerStarted={answerStarted}
+          resolveCard={resolveCard}
+          deckNameById={deckNameById}
+          onConfirm={(toolCallId, decision) => onConfirm(message.id, toolCallId, decision)}
+          onOpenCard={onOpenCard}
+          t={t}
+        />
       )}
 
       {/* Model prose rendered as Markdown (same pipeline as cards, via SafeHtml).
@@ -1209,9 +1619,39 @@ const MessageRow = ({
                 citation={cit}
                 card={resolveCard(cit.cardId)}
                 deckName={cit.deckId ? deckNameById.get(cit.deckId) : undefined}
+                onOpenCard={onOpenCard}
                 t={t}
               />
             ))}
+        </div>
+      )}
+
+      {/* Per-message actions: copy clean prose + (last assistant only) regenerate.
+          Only on a finished assistant turn that has prose. */}
+      {!isStreaming && answerStarted && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <NNBtn
+            size="sm"
+            variant="ghost"
+            icon="stack"
+            ariaLabel={t('chat.message.copy')}
+            title={t('chat.message.copy')}
+            onClick={() => onCopy?.()}
+          >
+            {t('chat.message.copy')}
+          </NNBtn>
+          {canRegenerate && (
+            <NNBtn
+              size="sm"
+              variant="ghost"
+              icon="sync"
+              ariaLabel={t('chat.message.regenerate')}
+              title={t('chat.message.regenerate')}
+              onClick={() => onRegenerate?.()}
+            >
+              {t('chat.message.regenerate')}
+            </NNBtn>
+          )}
         </div>
       )}
     </div>
@@ -1224,20 +1664,55 @@ interface CitationCardProps {
   citation: Citation;
   card: Card | undefined;
   deckName: string | undefined;
+  /** Jump to this card in /cards (AC3.6) — opens the bottom edit dock there. */
+  onOpenCard?: (cardId: string) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-const CitationCard = ({ citation, card, deckName, t }: CitationCardProps) => (
+const CitationCard = ({ citation, card, deckName, onOpenCard, t }: CitationCardProps) => (
   <NNCard padding={14} style={{ background: 'var(--surface-2)' }}>
-    {(deckName || card) && (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-        {deckName && (
-          <NNBadge tone="lime" size="xs">
-            {deckName}
-          </NNBadge>
-        )}
-      </div>
-    )}
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 6,
+        marginBottom: deckName || card ? 8 : 0,
+      }}
+    >
+      {deckName ? (
+        <NNBadge tone="lime" size="xs">
+          {deckName}
+        </NNBadge>
+      ) : (
+        <span />
+      )}
+      {onOpenCard && (
+        <button
+          type="button"
+          aria-label={t('chat.message.openCard')}
+          title={t('chat.message.openCard')}
+          onClick={() => onOpenCard(citation.cardId)}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            color: 'var(--lime-400)',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 11,
+            fontWeight: 600,
+            padding: 2,
+            flexShrink: 0,
+          }}
+        >
+          <NNIcon name="link" size={12} color="var(--lime-400)" />
+          {t('chat.message.openCard')}
+        </button>
+      )}
+    </div>
     {card && card.noteType ? (
       // The ONLY card renderer (Principle 4). Render the card's FRONT side.
       <RichCard
@@ -1375,60 +1850,64 @@ const ReasoningBlock = ({ reasoning, live, t }: ReasoningBlockProps) => {
   );
 };
 
-// ── One agentic tool-call card ───────────────────────────────────────────────
-// Hand-rolled (no UI lib). Header: tool name + a short args summary + status
-// (spinner while running → ✓ ok / ✕ error). Collapsible body: for search_cards
-// the cited cards render through the EXISTING CitationCard/RichCard path (the
-// only card sink). For web_search the result is rendered as PLAIN TEXT — an
-// untrusted sink — with bare URLs linkified only after https?: scheme validation.
+// ── Condensed activity group: step row + collapsible wrapper (Codex-like) ─────
+// Hand-rolled (no UI lib — Principle 4). The group is a single timed, collapsible
+// work block wrapping one assistant turn's tool steps; each step is a COMPACT ROW
+// (icon + human label + optional monospace arg + status chip), expandable to its
+// body. `NNCard` is reserved for the step BODY, never the row header (AC1.4). The
+// step body REUSES verbatim the CitationCard/RichCard (the only card sink),
+// WebSearchResultText (untrusted), and ConfirmControls (Phase B) of the old
+// per-call card, plus a post-apply write-summary line (S5 / AC5.1).
 
-const TOOL_LABEL_KEY: Record<string, string> = {
-  search_cards: 'chat.tool.search_cards',
-  web_search: 'chat.tool.web_search',
-};
-
-// Build a one-line args summary without trusting the model's arg shape. For the
-// known read tools the most useful field is the query string; fall back to a
-// compact JSON for anything else. Rendered as a plain React text node.
-function toolArgsSummary(name: string, args: unknown): string {
-  if (args && typeof args === 'object') {
-    const q = (args as Record<string, unknown>).query;
-    if (typeof q === 'string' && q.trim().length > 0) return q.trim();
-  }
-  if (typeof args === 'string') return args;
-  try {
-    const json = JSON.stringify(args);
-    return json && json !== '{}' ? json : '';
-  } catch {
-    return '';
-  }
-}
-
-interface ToolCallCardProps {
+interface ToolActivityStepProps {
   toolCall: ToolCallVM;
   resolveCard: (cardId: string) => Card | undefined;
   deckNameById: Map<string, string>;
-  /** Answer this tool call's pending confirmation (Phase B). */
+  /** Answer this step's pending confirmation (Phase B). */
   onConfirm: (decision: 'apply' | 'reject') => void;
+  /** Jump to a cited card in /cards (AC3.6). */
+  onOpenCard?: (cardId: string) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-const ToolCallCard = ({
+const ToolActivityStep = ({
   toolCall,
   resolveCard,
   deckNameById,
   onConfirm,
+  onOpenCard,
   t,
-}: ToolCallCardProps) => {
+}: ToolActivityStepProps) => {
   const [open, setOpen] = useState(false);
-  const labelKey = TOOL_LABEL_KEY[toolCall.name];
-  const label = labelKey ? t(labelKey) : toolCall.name;
-  const argsSummary = toolArgsSummary(toolCall.name, toolCall.args);
+  // Human-readable verb-phrase label + optional monospace arg (NO UUID/JSON).
+  const { labelKey, params, argMono } = toolLabel(toolCall.name, toolCall.args, {
+    resolveCardFront: (cardId) => {
+      const card = resolveCard(cardId);
+      // The card's front text isn't directly available as a string here; the
+      // first field value is the closest human-readable front for the label.
+      const fields = card?.note?.fieldValues;
+      if (fields) {
+        const first = Object.values(fields).find((v) => typeof v === 'string' && v.trim());
+        if (typeof first === 'string') return first.trim().slice(0, 80);
+      }
+      return undefined;
+    },
+    deckName: (deckId) => deckNameById.get(deckId),
+  });
+  const label = t(labelKey, params);
   const isWebSearch = toolCall.name === 'web_search';
   const cardCitations = toolCall.citations ?? [];
-  // A body exists when there's something to expand: cited cards (search_cards) or
-  // a textual result (web_search / any tool's one-line summary).
-  const hasBody = cardCitations.length > 0 || (toolCall.result ?? '').trim().length > 0;
+  const hasResultContent =
+    cardCitations.length > 0 || (toolCall.result ?? '').trim().length > 0;
+  // A body exists when there's something to expand: cited cards, a textual result,
+  // a pending confirmation, or a post-apply summary line (S5).
+  const hasBody =
+    hasResultContent ||
+    !!toolCall.awaitingConfirmation ||
+    !!toolCall.applySummary;
+  // PostApplySummary is the ONLY visible body element (no citations/result) → omit
+  // its bottom margin so the NNCard padding isn't doubled at the bottom.
+  const summaryIsLast = !!toolCall.applySummary && !hasResultContent && !toolCall.awaitingConfirmation;
 
   const statusTone =
     toolCall.status === 'ok' ? 'lime' : toolCall.status === 'error' ? 'rose' : 'neutral';
@@ -1439,42 +1918,62 @@ const ToolCallCard = ({
         ? t('chat.tool.failed')
         : t('chat.tool.running');
 
+  // Awaiting-confirmation steps must show their Apply/Reject body without a click.
+  const bodyOpen = open || !!toolCall.awaitingConfirmation;
+
   return (
-    <NNCard padding={12} style={{ background: 'var(--surface-2)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-        <NNIcon
-          name={isWebSearch ? 'link' : 'search'}
-          size={14}
-          color="var(--violet-400)"
-        />
-        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {/* Compact row header — NOT an NNCard. Click toggles the body. */}
+      <button
+        type="button"
+        onClick={() => hasBody && setOpen((v) => !v)}
+        aria-expanded={hasBody ? bodyOpen : undefined}
+        disabled={!hasBody}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          minWidth: 0,
+          width: '100%',
+          textAlign: 'left',
+          background: 'transparent',
+          border: 'none',
+          padding: '4px 2px',
+          cursor: hasBody ? 'pointer' : 'default',
+        }}
+      >
+        <NNIcon name={toolIcon(toolCall.name)} size={14} color="var(--violet-400)" />
+        <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0, flex: 1 }}>
           <span
             style={{
               fontSize: 12.5,
               fontWeight: 600,
               color: 'var(--text)',
               fontFamily: 'var(--font-sans)',
+              flexShrink: 0,
             }}
           >
             {label}
           </span>
-          {argsSummary.length > 0 && (
+          {/* A query arg is rendered in --font-mono for a code-like Codex feel (AC3.2). */}
+          {argMono && (
             <span
+              title={argMono}
               style={{
                 fontSize: 12,
                 color: 'var(--text-dim)',
-                fontFamily: 'var(--font-sans)',
+                fontFamily: 'var(--font-mono)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
+                minWidth: 0,
               }}
-              title={argsSummary}
             >
-              {argsSummary}
+              {argMono}
             </span>
           )}
-        </div>
-        {/* Status pill: spinner while running, ✓/✕ once resolved. */}
+        </span>
+        {/* Status chip: spinner while running, ✓/✕ once resolved (reused verbatim). */}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
           {toolCall.status === 'running' ? (
             <span className="nn-spin" aria-hidden>
@@ -1490,77 +1989,279 @@ const ToolCallCard = ({
           <NNBadge tone={statusTone} size="xs">
             {statusText}
           </NNBadge>
-        </span>
-      </div>
-
-      {/* Phase B: confirm-before-write controls. Render the dry-run blast radius
-          ABOVE the Apply/Reject buttons so a destructive write is deliberate.
-          Both buttons disable the instant one is clicked (decision set) — the
-          server has an atomic backstop, this stops the second request UI-side. */}
-      {toolCall.awaitingConfirmation && (
-        <ConfirmControls toolCall={toolCall} onConfirm={onConfirm} t={t} />
-      )}
-
-      {/* Collapsible result body. */}
-      {hasBody && (
-        <div style={{ marginTop: 10 }}>
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              alignSelf: 'flex-start',
-              background: 'transparent',
-              border: 'none',
-              padding: '2px 0',
-              cursor: 'pointer',
-              color: 'var(--text-muted)',
-              fontFamily: 'var(--font-sans)',
-            }}
-          >
-            <span style={{ fontSize: 11, fontWeight: 600 }}>{t('chat.tool.resultToggle')}</span>
+          {hasBody && (
             <span
               style={{
                 display: 'inline-flex',
-                transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+                transform: bodyOpen ? 'rotate(180deg)' : 'rotate(0deg)',
                 transition: 'transform 140ms ease',
               }}
             >
-              <NNIcon name="chevd" size={12} color="var(--text-muted)" />
+              <NNIcon name="chevd" size={12} color="var(--text-dim)" />
             </span>
-          </button>
-          {open && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
-              {/* search_cards → cited cards through the ONLY card sink (RichCard). */}
-              {!isWebSearch &&
-                cardCitations.map((cit) => (
-                  <CitationCard
-                    key={cit.chunkId}
-                    citation={cit}
-                    card={resolveCard(cit.cardId)}
-                    deckName={cit.deckId ? deckNameById.get(cit.deckId) : undefined}
-                    t={t}
-                  />
-                ))}
-              {/* search_cards with a textual summary but no cited cards (genuine
-                  no-hit / error) → render the one-line summary as plain text. */}
-              {!isWebSearch &&
-                cardCitations.length === 0 &&
-                (toolCall.result ?? '').length > 0 && (
-                  <WebSearchResultText text={toolCall.result ?? ''} />
-                )}
-              {/* web_search → UNTRUSTED: plain-text result with scheme-validated links. */}
-              {isWebSearch && (toolCall.result ?? '').length > 0 && (
+          )}
+        </span>
+      </button>
+
+      {/* Step body — NNCard is reserved for the BODY (AC1.4). */}
+      {hasBody && bodyOpen && (
+        <NNCard padding={12} style={{ background: 'var(--surface-2)' }}>
+          {/* Phase B: confirm-before-write controls (reused verbatim). */}
+          {toolCall.awaitingConfirmation && (
+            <ConfirmControls toolCall={toolCall} onConfirm={onConfirm} t={t} />
+          )}
+
+          {/* Post-apply write summary line (S5 / AC5.1) — a single line, NOT a
+              diff card. Only after an APPLIED create/edit; reject renders nothing. */}
+          {toolCall.applySummary && (
+            <PostApplySummary
+              summary={toolCall.applySummary}
+              deckNameById={deckNameById}
+              onOpenCard={onOpenCard}
+              noBottomMargin={summaryIsLast}
+              t={t}
+            />
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {/* search_cards → cited cards through the ONLY card sink (RichCard). */}
+            {!isWebSearch &&
+              cardCitations.map((cit) => (
+                <CitationCard
+                  key={cit.chunkId}
+                  citation={cit}
+                  card={resolveCard(cit.cardId)}
+                  deckName={cit.deckId ? deckNameById.get(cit.deckId) : undefined}
+                  onOpenCard={onOpenCard}
+                  t={t}
+                />
+              ))}
+            {/* search_cards with a textual summary but no cited cards (genuine
+                no-hit / error) → render the one-line summary as plain text. */}
+            {!isWebSearch &&
+              cardCitations.length === 0 &&
+              (toolCall.result ?? '').length > 0 && (
                 <WebSearchResultText text={toolCall.result ?? ''} />
               )}
-            </div>
+            {/* web_search → UNTRUSTED: plain-text result with scheme-validated links. */}
+            {isWebSearch && (toolCall.result ?? '').length > 0 && (
+              <WebSearchResultText text={toolCall.result ?? ''} />
+            )}
+          </div>
+        </NNCard>
+      )}
+    </div>
+  );
+};
+
+// ── Post-apply write-summary line (S5 / AC5.1) ───────────────────────────────
+// A single line after an APPLIED create/edit: "Created N cards in ‹deck› · open"
+// / "Card updated · open" with a jump-link reusing onOpenCard → /cards?focus=.
+// NOT a diff card. Reject path renders nothing (no applySummary set).
+
+interface PostApplySummaryProps {
+  summary: NonNullable<ToolCallVM['applySummary']>;
+  deckNameById: Map<string, string>;
+  onOpenCard?: (cardId: string) => void;
+  /** Omit the bottom margin when this is the only element in the step body. */
+  noBottomMargin?: boolean;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+const PostApplySummary = ({ summary, deckNameById, onOpenCard, noBottomMargin, t }: PostApplySummaryProps) => {
+  const deckName = summary.deckId ? deckNameById.get(summary.deckId) : undefined;
+  const text =
+    summary.kind === 'create'
+      ? t('chat.activity.appliedCreated', {
+          count: summary.count ?? 1,
+          deck: deckName ?? '',
+        })
+      : t('chat.activity.appliedEdited');
+  return (
+    <button
+      type="button"
+      onClick={() => summary.cardId && onOpenCard?.(summary.cardId)}
+      disabled={!summary.cardId || !onOpenCard}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        alignSelf: 'flex-start',
+        background: 'transparent',
+        border: 'none',
+        padding: '2px 0',
+        marginBottom: noBottomMargin ? 0 : 6,
+        cursor: summary.cardId && onOpenCard ? 'pointer' : 'default',
+        color: 'var(--lime-400)',
+        fontFamily: 'var(--font-sans)',
+        fontSize: 12.5,
+        fontWeight: 600,
+      }}
+    >
+      <NNIcon name="check" size={13} color="var(--lime-400)" />
+      {text}
+    </button>
+  );
+};
+
+// ── Condensed activity group (collapsible wrapper, Codex-like / AC1.1–1.3) ────
+// Always wraps the turn's toolCalls[] (Decision A1). The header is the single
+// collapse toggle: a work icon, a one-line summary ("Worked for Ns" once finished
+// + `elapsedMs` present; live "working…" + nn-spin while live), the total step
+// count (= raw step count = sum of summarizeSteps group counts), and overall
+// status. Collapse state is driven ENTIRELY by groupHeaderState (Change 5):
+// `manualOpen ?? (initialOpen || live)` (mirrors ReasoningBlock). Single-step
+// renders light (no "N steps") + auto-expanded; multi-step collapses-on-answer.
+
+interface ToolActivityGroupProps {
+  toolCalls: ToolCallVM[];
+  /** Turn-level wall-clock duration (ephemeral; absent on reload ⇒ no "Worked for Ns"). */
+  elapsedMs?: number;
+  streaming: boolean;
+  answerStarted: boolean;
+  resolveCard: (cardId: string) => Card | undefined;
+  deckNameById: Map<string, string>;
+  onConfirm: (toolCallId: string, decision: 'apply' | 'reject') => void;
+  onOpenCard?: (cardId: string) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+const ToolActivityGroup = ({
+  toolCalls,
+  elapsedMs,
+  streaming,
+  answerStarted,
+  resolveCard,
+  deckNameById,
+  onConfirm,
+  onOpenCard,
+  t,
+}: ToolActivityGroupProps) => {
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
+  const singleStep = toolCalls.length === 1;
+  // Force open when ANY step is awaiting confirmation so Apply/Reject is never
+  // hidden behind a closed multi-step group (AC1.4).
+  const anyAwaiting = toolCalls.some((c) => c.awaitingConfirmation);
+  const { status, live, initialOpen } = groupHeaderState(toolCalls, {
+    streaming,
+    answerStarted,
+    singleStepAutoOpen: singleStep,
+    anyAwaiting,
+  });
+  // Effective open state: a manual choice wins; else auto (initialOpen || live || anyAwaiting).
+  const open = manualOpen ?? (initialOpen || live || anyAwaiting);
+
+  const groups = summarizeSteps(toolCalls);
+  const totalSteps = toolCalls.length;
+  // Per-tool pluralized phrase for a single CONTIGUOUS run of the same tool with a
+  // `_n` plural key (AC2.2: "Reviewed 7 cards"). Only when the whole group is one
+  // contiguous run (groups.length === 1) of count >= 2 and a `_n` key exists.
+  // PLURAL_TOOL_NAMES is the single source (imported from chat-activity).
+  const dominantPhrase =
+    groups.length === 1 && groups[0]!.count >= 2 && PLURAL_TOOL_NAMES.has(groups[0]!.name)
+      ? t(`chat.tool.${groups[0]!.name}_n`, { count: groups[0]!.count })
+      : null;
+
+  // Header summary line: live → "Working…"; finished with timing → "Worked for Ns";
+  // finished without timing (reload) → the step count / pluralized phrase carries
+  // it. Single-step is light (no "N steps" pluralization).
+  const timeText =
+    elapsedMs != null && !live ? t('chat.activity.worked', { time: formatElapsed(elapsedMs, t) }) : null;
+  const countText = dominantPhrase ?? (singleStep ? '' : t('chat.activity.steps', { count: totalSteps }));
+  const summaryText = live ? t('chat.activity.working') : (timeText ?? countText);
+  // For a finished turn that ALSO has timing, surface the count/phrase as a suffix.
+  const stepSuffix = !live && timeText && countText ? countText : null;
+
+  const statusColor =
+    status === 'error'
+      ? 'var(--rose-400)'
+      : status === 'running'
+        ? 'var(--text-dim)'
+        : 'var(--lime-400)';
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--r-md)',
+        background: 'var(--surface)',
+        padding: '8px 12px',
+      }}
+    >
+      {/* Header — the single collapse toggle for the whole work block. */}
+      <button
+        type="button"
+        onClick={() => setManualOpen(!open)}
+        aria-expanded={open}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          width: '100%',
+          textAlign: 'left',
+          background: 'transparent',
+          border: 'none',
+          padding: 0,
+          cursor: 'pointer',
+        }}
+      >
+        {live ? (
+          <span className="nn-spin" aria-hidden>
+            <NNIcon name="bolt" size={14} color="var(--violet-400)" />
+          </span>
+        ) : (
+          <NNIcon name="bolt" size={14} color={statusColor} />
+        )}
+        <span
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 8,
+            flex: 1,
+            minWidth: 0,
+            fontFamily: 'var(--font-sans)',
+          }}
+        >
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
+            {summaryText || t('chat.activity.steps', { count: totalSteps })}
+          </span>
+          {stepSuffix && (
+            <span style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{stepSuffix}</span>
           )}
+        </span>
+        <span
+          style={{
+            display: 'inline-flex',
+            flexShrink: 0,
+            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: 'transform 140ms ease',
+          }}
+        >
+          <NNIcon name="chevd" size={12} color="var(--text-dim)" />
+        </span>
+      </button>
+
+      {/* Collapsed body = each step enumerated (the summarizeSteps grouping only
+          drives the header copy; the expanded list shows EACH step — AC2.2). */}
+      {open && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {toolCalls.map((tc) => (
+            <ToolActivityStep
+              key={tc.id}
+              toolCall={tc}
+              resolveCard={resolveCard}
+              deckNameById={deckNameById}
+              onConfirm={(decision) => onConfirm(tc.id, decision)}
+              onOpenCard={onOpenCard}
+              t={t}
+            />
+          ))}
         </div>
       )}
-    </NNCard>
+    </div>
   );
 };
 
@@ -1734,5 +2435,209 @@ const WebSearchResultText = ({ text }: { text: string }) => {
         return <React.Fragment key={i}>{part}</React.Fragment>;
       })}
     </div>
+  );
+};
+
+// ── Compact dropdown menu (hand-rolled — no UI lib, Principle 4) ──────────────
+// Shared by the model + deck-scope pickers. A trigger button opens a small
+// absolutely-positioned popover above the composer; clicking outside or picking
+// an option closes it. Inline styles + CSS vars; primitives from ui.tsx.
+
+interface PickerMenuOption {
+  id: string | null;
+  label: string;
+}
+
+interface PickerMenuProps {
+  /** Trigger label prefix (e.g. "Model"). */
+  triggerLabel: string;
+  /** Current selection's display label (shown after the prefix). */
+  valueLabel: string;
+  icon: 'bolt' | 'filter';
+  options: PickerMenuOption[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+}
+
+const PickerMenu = ({
+  triggerLabel,
+  valueLabel,
+  icon,
+  options,
+  selectedId,
+  onSelect,
+}: PickerMenuProps) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      {/* Codex-style compact pill (S6 / AC6.1): leading glyph + value + chevron,
+          --r-pill rounded. Cosmetic only — the menu/selection/persistence below
+          are unchanged. Hand-rolled (inline + CSS vars, Principle 4). */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={triggerLabel}
+        aria-label={triggerLabel}
+        aria-expanded={open}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '5px 10px',
+          borderRadius: 'var(--r-pill)',
+          border: '1px solid var(--border-2)',
+          background: open ? 'var(--surface-3)' : 'var(--surface-2)',
+          color: 'var(--text)',
+          fontFamily: 'var(--font-sans)',
+          fontSize: 12.5,
+          fontWeight: 600,
+          cursor: 'pointer',
+          maxWidth: 220,
+          transition: 'background 120ms ease',
+        }}
+      >
+        <NNIcon name={icon} size={13} color="var(--text-dim)" />
+        <span
+          style={{
+            maxWidth: 160,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {valueLabel}
+        </span>
+        <NNIcon name="chevd" size={12} color="var(--text-dim)" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="nn-scroll"
+          style={{
+            position: 'absolute',
+            bottom: 'calc(100% + 6px)',
+            left: 0,
+            minWidth: 180,
+            maxWidth: 280,
+            maxHeight: 280,
+            overflowY: 'auto',
+            padding: 4,
+            borderRadius: 'var(--r-md)',
+            border: '1px solid var(--border-2)',
+            background: 'var(--surface)',
+            boxShadow: 'var(--shadow-lg)',
+            zIndex: 20,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+          }}
+        >
+          {options.map((opt) => {
+            const isSelected = opt.id === selectedId;
+            return (
+              <button
+                key={opt.id ?? '__all__'}
+                type="button"
+                role="menuitemradio"
+                aria-checked={isSelected}
+                onClick={() => {
+                  onSelect(opt.id);
+                  setOpen(false);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  padding: '8px 10px',
+                  borderRadius: 'var(--r-sm)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: isSelected ? 'var(--surface-3)' : 'transparent',
+                  color: 'var(--text)',
+                  fontFamily: 'var(--font-sans)',
+                  fontSize: 13,
+                  textAlign: 'left',
+                  width: '100%',
+                }}
+              >
+                <span
+                  style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {opt.label}
+                </span>
+                {isSelected && <NNIcon name="check" size={13} color="var(--lime-400)" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Model (reasoning-level) picker (S3 / AC2.4) ──────────────────────────────
+// Rendered only when status.models is non-empty. Selecting an option persists it
+// as last-used; the chosen model rides every turn (send / resume / regenerate).
+
+interface ModelPickerProps {
+  models: ChatModelOption[];
+  value: string | null;
+  onSelect: (id: string) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+const ModelPicker = ({ models, value, onSelect, t }: ModelPickerProps) => {
+  const current = models.find((m) => m.id === value) ?? models.find((m) => m.default) ?? models[0];
+  return (
+    <PickerMenu
+      triggerLabel={t('chat.composer.model')}
+      valueLabel={current ? current.label : t('chat.composer.model')}
+      icon="bolt"
+      options={models.map((m) => ({ id: m.id, label: m.label }))}
+      selectedId={current?.id ?? null}
+      onSelect={(id) => {
+        if (id) onSelect(id);
+      }}
+    />
+  );
+};
+
+// ── Deck-scope picker (S7 / AC3.7) ───────────────────────────────────────────
+// An optional, clearable deck scope sent as the turn-level deckId. "All cards"
+// clears it (deckId undefined ⇒ global retrieval, today's behavior).
+
+interface DeckScopePickerProps {
+  decks: { id: string; name: string }[];
+  value: string | null;
+  onSelect: (id: string | null) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+const DeckScopePicker = ({ decks, value, onSelect, t }: DeckScopePickerProps) => {
+  const current = decks.find((d) => d.id === value);
+  return (
+    <PickerMenu
+      triggerLabel={t('chat.composer.deckScope')}
+      valueLabel={current ? current.name : t('chat.composer.allDecks')}
+      icon="filter"
+      options={[
+        { id: null, label: t('chat.composer.allDecks') },
+        ...decks.map((d) => ({ id: d.id, label: d.name })),
+      ]}
+      selectedId={value}
+      onSelect={onSelect}
+    />
   );
 };

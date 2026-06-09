@@ -186,6 +186,24 @@ export const NNCardsBrowser = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlQ]);
 
+  // Jump-to-card (AC3.6): a `?focus=<id>` param (from a chat citation's "open
+  // card" affordance) opens the bottom edit dock on that card. Wait for the
+  // mirror to bootstrap before consuming — the card may not be loaded yet on a
+  // cold open. Once the card resolves in the mirror, focus it and CLEAR the param
+  // (router.replace) so back/forward stays clean and a refocus needs a fresh link.
+  const focusParam = searchParams.get('focus');
+  useEffect(() => {
+    if (!focusParam || !bootstrapped) return;
+    const exists = cards.some((c) => c.id === focusParam);
+    if (!exists) return;
+    setFocusedId(focusParam);
+    const params = new URLSearchParams(Array.from(searchParams.entries()));
+    params.delete('focus');
+    const qs = params.toString();
+    router.replace(qs ? `/cards?${qs}` : '/cards');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusParam, bootstrapped, cards]);
+
   // Resolve a deck NAME (or path) to its id + descendants for the predicate.
   const resolveDeckIds = useCallback(
     (value: string, nested: boolean): string[] => {

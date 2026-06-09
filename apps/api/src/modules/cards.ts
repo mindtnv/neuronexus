@@ -10,7 +10,13 @@ import {
   notes,
   profile,
 } from '@neuronexus/db';
-import { parseCardQuery, CardQueryError, fsrsResetColumns, todayISO } from '@neuronexus/shared';
+import {
+  parseCardQuery,
+  CardQueryError,
+  fsrsResetColumns,
+  todayISO,
+  type CardQueryNode,
+} from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
 import { buildCardWhere } from './card-query-sql.ts';
 import { resolveDeckConfig } from './deck-config.ts';
@@ -124,7 +130,7 @@ const SORT_FIELDS = new Set<string>(Object.keys(SORT_COLUMNS));
  * `{ field, dir }`, or `null` when it is off the allowlist. Missing `sort`
  * defaults to `created desc`.
  */
-function parseSort(raw: string | undefined): { field: SortField; dir: 'asc' | 'desc' } | null {
+export function parseSort(raw: string | undefined): { field: SortField; dir: 'asc' | 'desc' } | null {
   if (!raw) return { field: 'created', dir: 'desc' };
   const [fieldRaw, dirRaw = 'desc'] = raw.trim().split(/[\s:]+/);
   const field = (fieldRaw ?? '').toLowerCase();
@@ -210,7 +216,7 @@ type DeckRow = { id: string; parentId: string | null; name: string };
  * resolver (`makeDeckResolver`) and the regular `/queue` subtree aggregation
  * share ONE implementation.
  */
-function descendantIds(deckId: string, userDecks: DeckRow[], seen = new Set<string>()): string[] {
+export function descendantIds(deckId: string, userDecks: DeckRow[], seen = new Set<string>()): string[] {
   if (seen.has(deckId)) return [];
   seen.add(deckId);
   const children = userDecks.filter((d) => d.parentId === deckId).map((d) => d.id);
@@ -255,6 +261,164 @@ function makeDeckResolver(userDecks: DeckRow[]): (value: string, nested: boolean
     }
     return [...ids];
   };
+}
+
+// ── Extracted /cards/search query execution (reused by the agent browse tool) ─
+//
+// The Anki-grammar query builder + tuple-keyset pagination that the GET
+// /cards/search route runs is hoisted here so the `browse_cards` agent tool
+// (apps/api/src/ai/tools.ts) executes the EXACT same path — never reimplementing
+// the parser (`parseCardQuery` → `buildCardWhere`), the `SORT_COLUMNS` allowlist,
+// the `deck:`→subtree resolver, or the `(sortValue, id)` keyset cursor. The route
+// handler calls this verbatim, so its responses are byte-identical (the route
+// keeps its own 400 guards on `parseCardQuery`/`parseSort` + the enrich step).
+
+export interface SearchCardsInput {
+  userId: string;
+  /** Parsed query AST (the route parses + 400s on CardQueryError before calling). */
+  ast: CardQueryNode;
+  /** Validated sort field + direction (the route 400s on a bad sort before calling). */
+  sortField: SortField;
+  dir: 'asc' | 'desc';
+  /** Page size — the route clamps to [1, MAX_CARDS_PAGE] before calling. */
+  limit: number;
+  /** Per-request clock (Critic C2) — never SQL now(). */
+  now: Date;
+  /** Optional opaque tuple-keyset cursor (base64). */
+  cursor?: string;
+  /**
+   * Optional deck-id scope ANDed onto the query (the `browse_cards` tool resolves
+   * a `deckId` to `[deckId, ...descendants]` and passes it here). An EMPTY array
+   * forces a no-match (a foreign/un-owned deck yields no cards, NOT a global
+   * fallback) — mirroring the `deck:` resolver. `undefined` ⇒ no deck filter (the
+   * route's behavior, unchanged).
+   */
+  deckScope?: string[];
+}
+
+/**
+ * Run the user-scoped `/cards/search` query: translate the AST to a WHERE
+ * (`buildCardWhere`, which ANDs `user_id` as the first conjunct), apply the
+ * tuple-keyset cursor predicate over `(sortColumn, id)`, order + limit, and
+ * compute the next cursor. Returns the RAW card rows (the caller enriches or
+ * renders compactly). `userDecks` is loaded inside so a single call wires the
+ * `deck:`/subtree resolver — identical to the route's setup.
+ */
+export async function searchCardsQuery(
+  input: SearchCardsInput,
+): Promise<{ rows: (typeof cards.$inferSelect)[]; nextCursor: string | null }> {
+  const { userId, ast, sortField, dir, limit, now } = input;
+
+  // Load the user's decks once for deck-name → id (subtree) resolution.
+  const userDecks = await db
+    .select({ id: decks.id, parentId: decks.parentId, name: decks.name })
+    .from(decks)
+    .where(eq(decks.userId, userId));
+  const resolveDeckIds = makeDeckResolver(userDecks);
+
+  const where = buildCardWhere(ast, { userId, now, resolveDeckIds });
+
+  // Tuple-keyset cursor predicate.
+  const col = SORT_COLUMNS[sortField];
+  const cmp = dir === 'asc' ? gt : lt;
+  const conditions = [where];
+  // Optional deck-id scope (browse_cards). An empty array → match nothing (a
+  // foreign deck is empty, not global); a populated array → deck-id membership.
+  if (input.deckScope !== undefined) {
+    conditions.push(input.deckScope.length === 0 ? sql`false` : inArray(cards.deckId, input.deckScope));
+  }
+  if (input.cursor) {
+    const decoded = decodeCursor(input.cursor);
+    if (decoded) {
+      const v = decodeSortValue(sortField, decoded.v);
+      // A cursor whose sort value is unparseable (crafted/invalid date) → drop
+      // it rather than throw. decodeSortValue returns null in that case.
+      if (v !== null) {
+        conditions.push(or(cmp(col, v), and(eq(col, v), cmp(cards.id, decoded.id)))!);
+      }
+    }
+  }
+
+  const order = dir === 'asc' ? asc : desc;
+  const rows = await db
+    .select()
+    .from(cards)
+    .where(and(...conditions))
+    .orderBy(order(col), order(cards.id))
+    .limit(limit);
+
+  let nextCursor: string | null = null;
+  if (rows.length === limit) {
+    const last = rows[rows.length - 1]!;
+    nextCursor = encodeCursor({ v: encodeSortValue(sortField, last), id: last.id });
+  }
+  return { rows, nextCursor };
+}
+
+// ── Extracted card-content + deck-listing helpers (reused by the agent tools) ─
+//
+// `cardContent` wraps the GET /cards/:id load (single card, user-scoped, enriched
+// with note + noteType) so the `get_card` agent tool returns content WITHOUT
+// reimplementing the load. `listDecksWithCounts` is a small user-scoped GROUP BY
+// over `cards` joined onto the deck tree — the data behind the `list_decks` tool.
+
+export type CardContent = EnrichedCard;
+
+/** Load one user-scoped card enriched with note + noteType, or null if foreign/missing. */
+export async function cardContent(userId: string, cardId: string): Promise<CardContent | null> {
+  const [row] = await db
+    .select()
+    .from(cards)
+    .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
+    .limit(1);
+  if (!row) return null;
+  const [enriched] = await enrichCards([row]);
+  return enriched ?? null;
+}
+
+export interface DeckWithCounts {
+  id: string;
+  name: string;
+  parentId: string | null;
+  total: number;
+  due: number;
+}
+
+/**
+ * The user's deck tree with per-deck (NON-aggregated) card counts: `total` =
+ * cards whose `deck_id` is exactly this deck, `due` = those with `due <= now` and
+ * not suspended. `user_id` is the mandatory first conjunct on BOTH selects. The
+ * count query is a single GROUP BY over the user's own cards; decks with zero
+ * cards still appear (left-merged onto the deck list).
+ */
+export async function listDecksWithCounts(userId: string, now: Date): Promise<DeckWithCounts[]> {
+  const deckRows = await db
+    .select({ id: decks.id, name: decks.name, parentId: decks.parentId })
+    .from(decks)
+    .where(eq(decks.userId, userId));
+
+  const nowIso = now.toISOString();
+  const countRows = await db
+    .select({
+      deckId: cards.deckId,
+      total: sql<number>`count(*)::int`,
+      due: sql<number>`sum(CASE WHEN ${cards.suspended} = false AND ${cards.due} <= ${nowIso}::timestamptz THEN 1 ELSE 0 END)::int`,
+    })
+    .from(cards)
+    .where(eq(cards.userId, userId))
+    .groupBy(cards.deckId);
+  const byDeck = new Map(countRows.map((r) => [r.deckId, r]));
+
+  return deckRows.map((d) => {
+    const c = byDeck.get(d.id);
+    return {
+      id: d.id,
+      name: d.name,
+      parentId: d.parentId,
+      total: c ? Number(c.total) : 0,
+      due: c ? Number(c.due) : 0,
+    };
+  });
 }
 
 // ── Extracted, reuse-by-the-agentic-SRS/edit tools helper (Phase B) ──────────
@@ -614,46 +778,17 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         if (Number.isFinite(t)) now = new Date(t);
       }
 
-      // Load the user's decks once for deck-name → id (subtree) resolution.
-      const userDecks = await db
-        .select({ id: decks.id, parentId: decks.parentId, name: decks.name })
-        .from(decks)
-        .where(eq(decks.userId, user.id));
-      const resolveDeckIds = makeDeckResolver(userDecks);
-
-      const where = buildCardWhere(ast, { userId: user.id, now, resolveDeckIds });
-
-      // Tuple-keyset cursor predicate.
-      const col = SORT_COLUMNS[sortField];
-      const cmp = dir === 'asc' ? gt : lt;
-      const conditions = [where];
-      if (query.cursor) {
-        const decoded = decodeCursor(query.cursor);
-        if (decoded) {
-          const v = decodeSortValue(sortField, decoded.v);
-          // A cursor whose sort value is unparseable (crafted/invalid date) → drop
-          // it rather than 500. decodeSortValue returns null in that case.
-          if (v !== null) {
-            conditions.push(
-              or(cmp(col, v), and(eq(col, v), cmp(cards.id, decoded.id)))!,
-            );
-          }
-        }
-      }
-
-      const order = dir === 'asc' ? asc : desc;
-      const rows = await db
-        .select()
-        .from(cards)
-        .where(and(...conditions))
-        .orderBy(order(col), order(cards.id))
-        .limit(limit);
-
-      let nextCursor: string | null = null;
-      if (rows.length === limit) {
-        const last = rows[rows.length - 1]!;
-        nextCursor = encodeCursor({ v: encodeSortValue(sortField, last), id: last.id });
-      }
+      // Execute via the extracted helper (same query builder + keyset cursor the
+      // `browse_cards` agent tool reuses) — byte-identical to the inline version.
+      const { rows, nextCursor } = await searchCardsQuery({
+        userId: user.id,
+        ast,
+        sortField,
+        dir,
+        limit,
+        now,
+        cursor: query.cursor,
+      });
 
       return { items: await enrichCards(rows), nextCursor };
     },

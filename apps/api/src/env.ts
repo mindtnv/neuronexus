@@ -43,6 +43,12 @@ export const env = {
     CHAT_BASE_URL: process.env.CHAT_BASE_URL ?? 'https://api.openai.com/v1',
     CHAT_MODEL: process.env.CHAT_MODEL ?? 'gpt-4o-mini',
     CHAT_API_KEY: process.env.CHAT_API_KEY,
+    // Optional model allow-list (CSV `model[|label]`, first=default) for the
+    // per-turn reasoning/model picker. Unset ⇒ the picker is hidden and chat
+    // uses CHAT_MODEL exactly as today (degrade — NO required()). Parsed via
+    // `parseChatModels` from @neuronexus/shared; only the parsed {id,label,
+    // default} is ever exposed via /ai/status — never the key/base URL.
+    CHAT_MODELS: process.env.CHAT_MODELS,
     // Lets ops pause indexing independently of chat (default on).
     INDEXING_ENABLED: process.env.INDEXING_ENABLED ?? 'true',
     // Retrieval tuning (chat grounding):

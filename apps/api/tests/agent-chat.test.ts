@@ -124,9 +124,14 @@ async function createConversation(cookie: string): Promise<string> {
   expect(res.status).toBe(200);
   return (await res.json<{ id: string }>()).id;
 }
-async function freshDeck(cookie: string, name = 'D'): Promise<string> {
+async function freshDeck(cookie: string, name = 'D', parentId?: string): Promise<string> {
   return (
-    await (await callApp(app, 'POST', '/decks', { cookie, body: { name } })).json<{ id: string }>()
+    await (
+      await callApp(app, 'POST', '/decks', {
+        cookie,
+        body: { name, ...(parentId ? { parentId } : {}) },
+      })
+    ).json<{ id: string }>()
   ).id;
 }
 
@@ -296,5 +301,222 @@ describe('agentic chat — headline regressions', () => {
     expect(finalAssistant[0]!.citations.map((c) => c.cardId).sort()).toEqual(
       [cardA.id, cardB.id].sort(),
     );
+  });
+});
+
+// ── M6 / M7 — progress-tool routing carve-out + small-talk guard ──────────────
+//
+// The progress tools (study_stats/card_progress) do NOT embed, so the embed-count
+// guard is BLIND to a spurious progress-tool call (M7). We assert ZERO progress
+// tool EXECUTIONS via the SSE `tool_call` frames (the loop emits one `tool_call`
+// frame per executed call, carrying the tool `name`).
+
+/** Names of tools the loop actually executed, from the SSE `tool_call` frames. */
+function executedTools(frames: SseFrame[]): string[] {
+  return frames
+    .filter((f) => f.event === 'tool_call')
+    .map((f) => (f.data as { name: string }).name);
+}
+
+describe('agentic chat — progress-tool routing (M6) + small-talk guard (M7)', () => {
+  beforeEach(async () => {
+    await resetTestDb();
+  });
+  afterEach(() => {
+    __resetAiClientForTests();
+  });
+
+  test('progress-meta question → study_stats is CALLED', async () => {
+    __setAiClientForTests({
+      chatStreamAgentic: scriptedAgentStream([
+        searchTurn([{ id: 's1', name: 'study_stats', args: { scope: 'global' } }]),
+        answerTurn('You are doing fine.'),
+      ]),
+    });
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const convId = await createConversation(cookie);
+    const frames = await readSse(await streamReq(cookie, convId, 'что я заваливаю?'));
+    expect(executedTools(frames)).toContain('study_stats');
+  });
+
+  test('card-history question → card_progress is CALLED', async () => {
+    let embedCalls = 0;
+    const countingEmbed = (texts: string[]) => {
+      embedCalls += 1;
+      return Promise.resolve(texts.map(vectorFor));
+    };
+    __setAiClientForTests({ embed: countingEmbed });
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+    const card = await seedBasicCard(app, cookie, { deckId, front: 'q', back: 'a' });
+    // Drain the index queue THEN reset the spy so the count reflects only the
+    // chat turn (indexing the seeded card embeds it asynchronously).
+    await drainIndexQueue({ timeoutMs: 5000 });
+    expect(embedCalls).toBeGreaterThan(0);
+    embedCalls = 0;
+
+    __setAiClientForTests({
+      embed: countingEmbed,
+      chatStreamAgentic: scriptedAgentStream([
+        searchTurn([{ id: 'p1', name: 'card_progress', args: { cardId: card.id } }]),
+        answerTurn('That card is doing well.'),
+      ]),
+    });
+    const convId = await createConversation(cookie);
+    const frames = await readSse(await streamReq(cookie, convId, 'how is this card scheduled?'));
+    expect(executedTools(frames)).toContain('card_progress');
+    // card_progress does NOT embed — the embed spy stays at zero (M7).
+    expect(embedCalls).toBe(0);
+  });
+
+  test('conversation-meta question → NO tool call (the carve-out)', async () => {
+    __setAiClientForTests({
+      chatStreamAgentic: scriptedAgentStream([answerTurn('You asked about your decks earlier.')]),
+    });
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const convId = await createConversation(cookie);
+    const frames = await readSse(await streamReq(cookie, convId, 'summarize what we discussed'));
+    expect(frames.some((f) => f.event === 'tool_call')).toBe(false);
+    expect(executedTools(frames)).toEqual([]);
+  });
+
+  test('small-talk → ZERO study_stats/card_progress executions (tool-call LOG, not embedCalls — M7)', async () => {
+    __setAiClientForTests({
+      chatStreamAgentic: scriptedAgentStream([answerTurn('You are welcome!')]),
+    });
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const convId = await createConversation(cookie);
+    const frames = await readSse(await streamReq(cookie, convId, 'спасибо!'));
+    const tools = executedTools(frames);
+    expect(tools).not.toContain('study_stats');
+    expect(tools).not.toContain('card_progress');
+    expect(tools.length).toBe(0);
+  });
+});
+
+// ── S7 — per-deck retrieval scope (AC3.7) ─────────────────────────────────────
+//
+// `search_cards` forwards the turn's resolved deck subtree (ctx.deckIds) to
+// `retrieve({ deckIds })`. A card in the scoped deck is returned; a card only in
+// another deck is NOT. An unscoped turn forwards NO deckIds (byte-identical to
+// pre-S7 — covered by the existing grounding tests passing).
+
+describe('agentic chat — per-deck retrieval scope (S7 / AC3.7)', () => {
+  beforeEach(async () => {
+    await resetTestDb();
+  });
+  afterEach(() => {
+    __resetAiClientForTests();
+  });
+
+  test('deck-scoped search_cards: card in scoped deck returned, card only in other deck NOT', async () => {
+    let cardA: { id: string; renderText: string };
+    let cardB: { id: string; renderText: string };
+    const embed = (texts: string[]): Promise<number[][]> =>
+      Promise.resolve(
+        texts.map((t) => {
+          // A query that matches BOTH cards' content equally so the deck filter
+          // (not relevance) is what excludes B.
+          if (t === 'find topic') return vectorFor(cardA.renderText);
+          return vectorFor(t);
+        }),
+      );
+    __setAiClientForTests({ embed });
+
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckA = await freshDeck(cookie, 'A');
+    const deckB = await freshDeck(cookie, 'B');
+    cardA = await seedBasicCard(app, cookie, { deckId: deckA, front: 'shared topic', back: 'in A' });
+    cardB = await seedBasicCard(app, cookie, { deckId: deckB, front: 'shared topic', back: 'in B' });
+
+    __setAiClientForTests({
+      embed,
+      chatStreamAgentic: scriptedAgentStream([
+        searchTurn([{ id: 'c1', name: 'search_cards', args: { query: 'find topic' } }]),
+        answerTurn(`Found [card:${cardA.id}].`),
+      ]),
+    });
+    await drainIndexQueue({ timeoutMs: 5000 });
+
+    const convId = await createConversation(cookie);
+    // Scope the turn to deck A.
+    const req = new Request(`http://localhost/chat/conversations/${convId}/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ content: 'find the topic', deckId: deckA }),
+    });
+    const frames = await readSse(await app.handle(req));
+    const toolResult = frames.find((f) => f.event === 'tool_result');
+    const cites = (toolResult!.data as { citations?: { cardId: string }[] }).citations ?? [];
+    const ids = cites.map((c) => c.cardId);
+    expect(ids).toContain(cardA.id);
+    expect(ids).not.toContain(cardB.id);
+  });
+
+  test('subtree: a card in a CHILD deck is in scope when scoped to the PARENT', async () => {
+    let childCard: { id: string; renderText: string };
+    const embed = (texts: string[]): Promise<number[][]> =>
+      Promise.resolve(
+        texts.map((t) => (t === 'find child' ? vectorFor(childCard.renderText) : vectorFor(t))),
+      );
+    __setAiClientForTests({ embed });
+
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const parent = await freshDeck(cookie, 'Parent');
+    const child = await freshDeck(cookie, 'Child', parent);
+    childCard = await seedBasicCard(app, cookie, { deckId: child, front: 'child topic', back: 'x' });
+
+    __setAiClientForTests({
+      embed,
+      chatStreamAgentic: scriptedAgentStream([
+        searchTurn([{ id: 'c1', name: 'search_cards', args: { query: 'find child' } }]),
+        answerTurn(`Found [card:${childCard.id}].`),
+      ]),
+    });
+    await drainIndexQueue({ timeoutMs: 5000 });
+
+    const convId = await createConversation(cookie);
+    const req = new Request(`http://localhost/chat/conversations/${convId}/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ content: 'find it', deckId: parent }),
+    });
+    const frames = await readSse(await app.handle(req));
+    const toolResult = frames.find((f) => f.event === 'tool_result');
+    const cites = (toolResult!.data as { citations?: { cardId: string }[] }).citations ?? [];
+    expect(cites.map((c) => c.cardId)).toContain(childCard.id);
+  });
+
+  test('foreign deckId → empty scope: no cards returned (NOT a global fallback)', async () => {
+    const foreignDeck = '00000000-0000-0000-0000-0000000000ff';
+    let card: { id: string; renderText: string };
+    const embed = (texts: string[]): Promise<number[][]> =>
+      Promise.resolve(texts.map((t) => (t === 'find it' ? vectorFor(card.renderText) : vectorFor(t))));
+    __setAiClientForTests({ embed });
+
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+    card = await seedBasicCard(app, cookie, { deckId, front: 'topic', back: 'x' });
+
+    __setAiClientForTests({
+      embed,
+      chatStreamAgentic: scriptedAgentStream([
+        searchTurn([{ id: 'c1', name: 'search_cards', args: { query: 'find it' } }]),
+        answerTurn('done'),
+      ]),
+    });
+    await drainIndexQueue({ timeoutMs: 5000 });
+
+    const convId = await createConversation(cookie);
+    const req = new Request(`http://localhost/chat/conversations/${convId}/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ content: 'find it', deckId: foreignDeck }),
+    });
+    const frames = await readSse(await app.handle(req));
+    const toolResult = frames.find((f) => f.event === 'tool_result');
+    const cites = (toolResult!.data as { citations?: { cardId: string }[] }).citations ?? [];
+    // Empty scope — the owned card is NOT returned (no global fallback).
+    expect(cites.map((c) => c.cardId)).not.toContain(card.id);
   });
 });

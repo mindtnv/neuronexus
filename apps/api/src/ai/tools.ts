@@ -11,8 +11,8 @@
 // (the `text` field, capped) + a streamed `tool_result` event.
 
 import type { Logger } from 'pino';
-import { and, eq } from 'drizzle-orm';
-import { cards, db, notes, type Citation, type Db } from '@neuronexus/db';
+import { and, eq, inArray } from 'drizzle-orm';
+import { cards, db, decks, notes, type Citation, type Db } from '@neuronexus/db';
 import { BASIC_NOTE_TYPE, type FieldValues } from '@neuronexus/shared';
 import { embed } from './openai-client.ts';
 import { retrieve } from './retrieve.ts';
@@ -26,7 +26,16 @@ import {
   applyNoteUpdate,
   noteUpdateImpact,
 } from '../modules/notes.ts';
-import { patchCard } from '../modules/cards.ts';
+import {
+  descendantIds,
+  patchCard,
+  parseSort,
+  searchCardsQuery,
+  listDecksWithCounts,
+  cardContent,
+} from '../modules/cards.ts';
+import { cardProgress, studyStats } from '../modules/progress-stats.ts';
+import { parseCardQuery, CardQueryError } from '@neuronexus/shared';
 import { env } from '../env.ts';
 
 const RETRIEVE_K = env.ai.RETRIEVE_K;
@@ -51,6 +60,13 @@ export interface ToolContext {
   log: Logger;
   /** Optional caller-supplied transaction (confirm-resume atomicity). */
   tx?: Tx;
+  /**
+   * Optional per-turn deck scope (AC3.7): the turn's `deckId` resolved to its
+   * subtree `[deckId, ...descendants]`. When set, `search_cards` forwards it to
+   * `retrieve({ deckIds })` so retrieval is constrained to those decks. Defaults
+   * to undefined ⇒ global retrieval (byte-identical to pre-S7 behavior).
+   */
+  deckIds?: string[];
 }
 
 /**
@@ -145,6 +161,9 @@ const searchCards: Tool = {
             queryEmbedding,
             k,
             minScore: RETRIEVE_MIN_SCORE,
+            // Per-turn deck scope (AC3.7). Undefined ⇒ global retrieval (the
+            // existing `retrieve.ts` deckIds pre-filter no-ops when absent).
+            deckIds: ctx.deckIds,
           })
         : [];
 
@@ -225,6 +244,456 @@ const webSearch: Tool = {
     }
   },
 };
+
+// ── card_progress (read) ──────────────────────────────────────────────────────
+//
+// User-scoped READ of one card's FSRS scheduling state + recent review history.
+// Mirrors `search_cards`: kind:'read', scoped by ctx.userId, returns a compact
+// `ToolResult` (never a raw row dump), never throws into the loop. A foreign or
+// missing card → a graceful "no reviews recorded" result (AC1.5 spirit).
+
+interface CardProgressArgs {
+  cardId?: unknown;
+}
+
+const cardProgressTool: Tool = {
+  name: 'card_progress',
+  kind: 'read',
+  description:
+    "Look up ONE of the user's OWN cards' scheduling state (FSRS) and recent " +
+    'review history. Use this when the user asks how a SPECIFIC card is doing — ' +
+    'when it is next due, how many times they have reviewed/lapsed it, or their ' +
+    'recent grades on it. Pass the card\'s UUID as `cardId`. Returns a compact ' +
+    'summary, never raw rows.',
+  parameters: {
+    type: 'object',
+    properties: {
+      cardId: { type: 'string', description: 'UUID of the card to inspect.' },
+    },
+    required: ['cardId'],
+  },
+  async execute(ctx, rawArgs): Promise<ToolResult> {
+    const args = (rawArgs ?? {}) as CardProgressArgs;
+    const cardId = typeof args.cardId === 'string' ? args.cardId.trim() : '';
+    if (!cardId) return { ok: false, error: 'card_progress: missing "cardId" argument' };
+
+    try {
+      const p = await cardProgress(ctx.userId, cardId);
+      if (!p) {
+        return { ok: true, text: 'No reviews recorded for this card yet (or the card was not found).' };
+      }
+      const dueDate = p.due.slice(0, 10);
+      const lastReview = p.lastReview ? p.lastReview.slice(0, 10) : 'never';
+      const lines = [
+        `Card ${p.cardId}: state=${p.state}, reps=${p.reps}, lapses=${p.lapses}, suspended=${p.suspended}.`,
+        `Due ${dueDate} · stability ${p.stability.toFixed(2)} · difficulty ${p.difficulty.toFixed(2)} · last reviewed ${lastReview}.`,
+      ];
+      if (p.recent.length > 0) {
+        const recent = p.recent
+          .map((r) => `${r.rating}@${r.reviewedAt.slice(0, 10)}`)
+          .join(', ');
+        lines.push(`Recent grades (newest first): ${recent}.`);
+      } else {
+        lines.push('No reviews recorded for this card yet.');
+      }
+      return { ok: true, text: capText(lines.join('\n')) };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.card_progress.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'card_progress_failed' };
+    }
+  },
+};
+
+// ── study_stats (read) ────────────────────────────────────────────────────────
+//
+// User-scoped READ of aggregated review history (global or per-deck) over a
+// bounded window. Backed by the single GROUP BY helper in progress-stats.ts.
+// Renders a COMPACT text block (counts/retention/minutes + a short heatmap
+// summary + global streak/level/xp) — NEVER raw row dumps, well under the cap.
+
+interface StudyStatsArgsRaw {
+  scope?: unknown;
+  deckId?: unknown;
+  days?: unknown;
+}
+
+const studyStatsTool: Tool = {
+  name: 'study_stats',
+  kind: 'read',
+  description:
+    'Aggregate the user\'s OWN review history to answer how they are DOING — ' +
+    'progress, retention, what they are FAILING, how MUCH they studied (review ' +
+    'count, retention %, study minutes, a day-by-day activity summary), and (for ' +
+    'global scope) their streak/level/XP. Pass `scope:"global"` for everything, ' +
+    'or `scope:"deck"` with a `deckId` to scope to one deck (and its subdecks). ' +
+    'Optional `days` window (default 30, max 365). Returns a compact summary.',
+  parameters: {
+    type: 'object',
+    properties: {
+      scope: {
+        type: 'string',
+        enum: ['global', 'deck'],
+        description: 'global = all the user\'s reviews; deck = scoped to one deck (subtree).',
+      },
+      deckId: { type: 'string', description: 'UUID of the deck (required when scope="deck").' },
+      days: {
+        type: 'integer',
+        description: 'Window in days (default 30, clamped 1..365).',
+        minimum: 1,
+        maximum: 365,
+      },
+    },
+    required: ['scope'],
+  },
+  async execute(ctx, rawArgs): Promise<ToolResult> {
+    const args = (rawArgs ?? {}) as StudyStatsArgsRaw;
+    const scope: 'global' | 'deck' = args.scope === 'deck' ? 'deck' : 'global';
+    const days =
+      typeof args.days === 'number' && Number.isFinite(args.days) ? args.days : undefined;
+    const deckId = typeof args.deckId === 'string' ? args.deckId.trim() : '';
+    if (scope === 'deck' && !deckId) {
+      return { ok: false, error: 'study_stats: scope "deck" requires a "deckId" argument' };
+    }
+
+    try {
+      // For a deck scope, always resolve the full subtree from the tool's explicit
+      // deckId arg — independent of ctx.deckIds (the turn-level scope is for
+      // search_cards only). This is the AC1.2-correct path: whether the agent call
+      // is triggered by a turn-scoped request or a free-form "how am I doing on my
+      // German deck?" the tool resolves its own subtree. Foreign/un-owned deckId
+      // produces [deckId] with no owned rows → empty scope (NOT a global fallback).
+      let deckIds: string[] | undefined;
+      if (scope === 'deck') {
+        const userDecks = await db
+          .select({ id: decks.id, parentId: decks.parentId, name: decks.name })
+          .from(decks)
+          .where(eq(decks.userId, ctx.userId));
+        deckIds = [deckId, ...descendantIds(deckId, userDecks)];
+      }
+
+      const stats = await studyStats({ userId: ctx.userId, scope, deckIds, days });
+      ctx.log.info(
+        { tool: 'study_stats', scope, days: stats.days, rows: stats.heatmap.length },
+        'ai.tool.study_stats',
+      );
+
+      if (stats.reviewCount === 0) {
+        const where = scope === 'deck' ? ' in this deck' : '';
+        return {
+          ok: true,
+          text: `No reviews recorded${where} in the last ${stats.days} days yet.`,
+        };
+      }
+
+      const activeDays = stats.heatmap.length;
+      const busiest = stats.heatmap.reduce(
+        (best, d) => (d.count > best.count ? d : best),
+        stats.heatmap[0]!,
+      );
+      const lines = [
+        `Reviews: ${stats.reviewCount} · Retention: ${stats.retentionPct!}% · Minutes: ${stats.studyMinutes}`,
+        `Last ${stats.days}d: ${stats.reviewCount} reviews across ${activeDays} active day(s); busiest ${busiest.day} (${busiest.count}).`,
+      ];
+      if (scope === 'global' && stats.profile) {
+        lines.push(
+          `Streak ${stats.profile.streakDays}d · Level ${stats.profile.level} · XP ${stats.profile.xp}.`,
+        );
+      }
+      return { ok: true, text: capText(lines.join('\n')) };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.study_stats.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'study_stats_failed' };
+    }
+  },
+};
+
+// ── list_decks (read) ─────────────────────────────────────────────────────────
+//
+// User-scoped READ of the deck TREE (id, name, parentId hierarchy) + per-deck
+// card counts (total + due). Backed by `listDecksWithCounts` (a small GROUP BY
+// over the user's own cards, `user_id` as the mandatory first conjunct). Renders
+// a COMPACT indented tree — never a raw row dump, well under the cap. Answers
+// "какие у меня колоды/папки?" — the deterministic counterpart to `search_cards`.
+
+const listDecks: Tool = {
+  name: 'list_decks',
+  kind: 'read',
+  description:
+    "List the user's OWN decks (folders) as a tree, with per-deck card counts " +
+    '(total + how many are due now). Counts are for cards DIRECTLY in each deck, ' +
+    'NOT rolled up over sub-decks — a parent deck with child decks may hold more ' +
+    'cards across its subtree than its own number shows. Use this when the user ' +
+    'asks what decks or folders they have, or wants an overview of their ' +
+    'collection structure. Returns a compact indented tree with [deck:<id>] ' +
+    'tokens; never raw rows.',
+  parameters: {
+    type: 'object',
+    properties: {},
+  },
+  async execute(ctx): Promise<ToolResult> {
+    try {
+      const now = new Date();
+      const decksWithCounts = await listDecksWithCounts(ctx.userId, now);
+      if (decksWithCounts.length === 0) {
+        return { ok: true, text: 'The user has no decks yet.' };
+      }
+
+      // Render an indented tree. Children sort under their parent; roots first.
+      const byParent = new Map<string | null, typeof decksWithCounts>();
+      for (const d of decksWithCounts) {
+        const key = d.parentId;
+        const list = byParent.get(key) ?? [];
+        list.push(d);
+        byParent.set(key, list);
+      }
+      for (const list of byParent.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+
+      const lines: string[] = [];
+      const seen = new Set<string>();
+      const walk = (parentId: string | null, depth: number): void => {
+        for (const d of byParent.get(parentId) ?? []) {
+          if (seen.has(d.id)) continue; // cycle guard
+          seen.add(d.id);
+          const indent = '  '.repeat(depth);
+          lines.push(`${indent}- ${d.name} [deck:${d.id}] — ${d.total} card(s), ${d.due} due`);
+          walk(d.id, depth + 1);
+        }
+      };
+      walk(null, 0);
+      // Any deck whose parent is foreign/orphaned (parentId set but parent not in
+      // the user's set) would be missed by the root walk — surface them flat.
+      for (const d of decksWithCounts) {
+        if (!seen.has(d.id)) {
+          seen.add(d.id);
+          lines.push(`- ${d.name} [deck:${d.id}] — ${d.total} card(s), ${d.due} due`);
+        }
+      }
+
+      return { ok: true, text: capText(lines.join('\n')) };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.list_decks.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'list_decks_failed' };
+    }
+  },
+};
+
+// ── browse_cards (read) ─────────────────────────────────────────────────────────
+//
+// User-scoped DETERMINISTIC browse: list/sort/filter cards by structural facts
+// (deck, tag, state, date) — NOT by embedding similarity (that is `search_cards`).
+// REUSES the GET /cards/search query infrastructure verbatim via the extracted
+// `searchCardsQuery` (Anki parser → buildCardWhere → SORT_COLUMNS → keyset). A
+// `deckId` is resolved to its subtree (descendantIds over the user's decks) and
+// ANDed into the query as a `deck:<id>`-style id list; a foreign deckId yields an
+// EMPTY scope (NOT global). DEFAULT sort `created desc` so "show my recent cards"
+// works with no args. Output is a COMPACT per-card line (front excerpt + id +
+// deck + state), capText-bounded — never a raw row dump.
+
+const BROWSE_DEFAULT_LIMIT = 10;
+const BROWSE_MAX_LIMIT = 50;
+
+interface BrowseCardsArgs {
+  deckId?: unknown;
+  query?: unknown;
+  sort?: unknown;
+  limit?: unknown;
+}
+
+const browseCards: Tool = {
+  name: 'browse_cards',
+  kind: 'read',
+  description:
+    "Browse the user's OWN cards by structural facts — recency, deck, tag, " +
+    'state, or date — NOT by meaning (use `search_cards` for topic/meaning). ' +
+    'All params are optional: with NO args it returns the most recently added ' +
+    'cards (newest first). Pass `deckId` to limit to a deck AND its subdecks; ' +
+    '`query` for an Anki-style filter (e.g. "is:due", "tag:grammar", "added:7"); ' +
+    '`sort` as "<field> <dir>" where field ∈ {created,due,lapses,front} (default ' +
+    '"created desc"); `limit` (default 10, max 50). Returns a compact list — each ' +
+    'card a short front excerpt + [card:<id>] + deck + state. Never raw rows.',
+  parameters: {
+    type: 'object',
+    properties: {
+      deckId: {
+        type: 'string',
+        description: 'Optional deck UUID — constrains to that deck and its subdecks.',
+      },
+      query: {
+        type: 'string',
+        description:
+          'Optional Anki-style filter string (tag:/is:due/added:N/front:…). Combined with deckId.',
+      },
+      sort: {
+        type: 'string',
+        description:
+          'Optional "<field> <dir>", field ∈ {created,due,lapses,front}, dir ∈ {asc,desc}. Default "created desc".',
+      },
+      limit: {
+        type: 'integer',
+        description: `Max cards to return (1..${BROWSE_MAX_LIMIT}, default ${BROWSE_DEFAULT_LIMIT}).`,
+        minimum: 1,
+        maximum: BROWSE_MAX_LIMIT,
+      },
+    },
+  },
+  async execute(ctx, rawArgs): Promise<ToolResult> {
+    const args = (rawArgs ?? {}) as BrowseCardsArgs;
+    const deckId = typeof args.deckId === 'string' ? args.deckId.trim() : '';
+    const rawQuery = typeof args.query === 'string' ? args.query.trim() : '';
+    const limit =
+      typeof args.limit === 'number' && Number.isFinite(args.limit)
+        ? Math.max(1, Math.min(Math.floor(args.limit), BROWSE_MAX_LIMIT))
+        : BROWSE_DEFAULT_LIMIT;
+
+    // Sort: reuse the route's allowlist parser. An off-list/garbage sort is a
+    // soft error (graceful) rather than a silent default, so the agent learns.
+    const sortSpec = parseSort(typeof args.sort === 'string' && args.sort.trim() ? args.sort : undefined);
+    if (sortSpec === null) {
+      return {
+        ok: false,
+        error: 'browse_cards: invalid "sort" — use "<field> <dir>" with field ∈ {created,due,lapses,front}',
+      };
+    }
+
+    try {
+      // Parse the (optional) Anki query via the SAME parser the route uses.
+      let ast;
+      try {
+        ast = parseCardQuery(rawQuery);
+      } catch (err) {
+        if (err instanceof CardQueryError) {
+          return { ok: false, error: `browse_cards: bad query — ${err.message}` };
+        }
+        throw err;
+      }
+
+      // Resolve a deckId to its subtree (the same `descendantIds` the `deck:`
+      // resolver uses) and pass it as a deck-id scope. A foreign id yields an
+      // empty `[deckId]`-only scope that matches no owned card (NOT a global
+      // fallback). `undefined` ⇒ no deck filter (whole collection).
+      let deckScope: string[] | undefined;
+      if (deckId) {
+        const userDecks = await db
+          .select({ id: decks.id, parentId: decks.parentId, name: decks.name })
+          .from(decks)
+          .where(eq(decks.userId, ctx.userId));
+        deckScope = [deckId, ...descendantIds(deckId, userDecks)];
+      }
+
+      const { rows } = await searchCardsQuery({
+        userId: ctx.userId,
+        ast,
+        sortField: sortSpec.field,
+        dir: sortSpec.dir,
+        limit,
+        now: new Date(),
+        deckScope,
+        // Tool always returns the first page (compact) — no cursor exposure.
+      });
+
+      if (rows.length === 0) {
+        return { ok: true, text: 'No cards match this browse.' };
+      }
+
+      // Resolve deck names for the returned rows (one user-scoped select).
+      const deckIds = [...new Set(rows.map((r) => r.deckId))];
+      const deckRows = await db
+        .select({ id: decks.id, name: decks.name })
+        .from(decks)
+        .where(and(eq(decks.userId, ctx.userId), inArray(decks.id, deckIds)));
+      const deckName = new Map(deckRows.map((d) => [d.id, d.name]));
+
+      const lines = rows.map((r) => {
+        const excerpt = excerptFront(r.renderFrontText || r.renderText);
+        const state = r.suspended ? 'suspended' : r.state;
+        const deck = deckName.get(r.deckId) ?? '—';
+        return `- ${excerpt} [card:${r.id}] · deck: ${deck} · ${state}`;
+      });
+      return { ok: true, text: capText(lines.join('\n')) };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.browse_cards.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'browse_cards_failed' };
+    }
+  },
+};
+
+/** One-line front excerpt: collapse whitespace, cap to a short length. */
+function excerptFront(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length === 0) return '(empty)';
+  return flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
+}
+
+// ── get_card (read) ─────────────────────────────────────────────────────────────
+//
+// User-scoped READ of ONE card's CONTENT (note field values, deck name, tags,
+// note-type name) — complementing `card_progress` (which returns scheduling/FSRS
+// state). Wraps the extracted `cardContent` (the GET /cards/:id load + enrich).
+// A foreign/missing id → a graceful `{ ok:true, text:'Card not found.' }`, never
+// a throw into the loop (Principle 5).
+
+interface GetCardArgs {
+  cardId?: unknown;
+}
+
+const getCard: Tool = {
+  name: 'get_card',
+  kind: 'read',
+  description:
+    "Fetch the full CONTENT of ONE of the user's OWN cards — its note field " +
+    'values (front/back/etc.), deck, tags, and note-type — given the card UUID ' +
+    'as `cardId`. Use this to read/show a specific card the user references by ' +
+    'id. For scheduling state (when it is due, lapses, review history) use ' +
+    '`card_progress` instead. A missing/foreign id returns "Card not found.".',
+  parameters: {
+    type: 'object',
+    properties: {
+      cardId: { type: 'string', description: 'UUID of the card to fetch.' },
+    },
+    required: ['cardId'],
+  },
+  async execute(ctx, rawArgs): Promise<ToolResult> {
+    const args = (rawArgs ?? {}) as GetCardArgs;
+    const cardId = typeof args.cardId === 'string' ? args.cardId.trim() : '';
+    if (!cardId) return { ok: false, error: 'get_card: missing "cardId" argument' };
+
+    try {
+      const card = await cardContent(ctx.userId, cardId);
+      if (!card) return { ok: true, text: 'Card not found.' };
+
+      const deckName = card.deckId
+        ? (
+            await db
+              .select({ name: decks.name })
+              .from(decks)
+              .where(and(eq(decks.id, card.deckId), eq(decks.userId, ctx.userId)))
+              .limit(1)
+          )[0]?.name ?? '—'
+        : '—';
+
+      const lines: string[] = [`Card ${card.id} [card:${card.id}] · deck: ${deckName}`];
+      if (card.noteType) lines.push(`Note type: ${card.noteType.name}`);
+      const tags = card.note?.tags ?? [];
+      if (tags.length > 0) lines.push(`Tags: ${tags.join(', ')}`);
+      const fieldValues = card.note?.fieldValues ?? {};
+      const fieldLines = Object.entries(fieldValues).map(
+        ([k, v]) => `${k}: ${excerptField(String(v ?? ''))}`,
+      );
+      if (fieldLines.length > 0) lines.push('Fields:', ...fieldLines.map((l) => `  ${l}`));
+
+      return { ok: true, text: capText(lines.join('\n')) };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.get_card.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'get_card_failed' };
+    }
+  },
+};
+
+/** Compact a single field value: collapse whitespace, cap length. */
+function excerptField(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > 400 ? `${flat.slice(0, 400)}…` : flat;
+}
 
 // ── create_card (write) ──────────────────────────────────────────────────────
 //
@@ -611,7 +1080,10 @@ const forget: Tool = {
 
 /**
  * Build the tool registry offered to the model.
- *  - `search_cards` is always present.
+ *  - `search_cards`, `card_progress`, `study_stats`, plus the deterministic
+ *    browse tools `list_decks`, `browse_cards`, `get_card` (read tools) are
+ *    always present — they only need a DB + ctx.userId, so they work whenever
+ *    chat works (Principle 2).
  *  - `web_search` is included only when web search is enabled (Brave key or a
  *    test-injected provider) — Principle 1: absent ⇒ tool simply not offered.
  *  - The write/SRS tools (`create_card`, `edit_card`, `suspend`, `set_due`,
@@ -622,7 +1094,17 @@ export function buildToolRegistry(
   opts: { webSearchEnabled?: boolean } = {},
 ): Tool[] {
   const webOn = opts.webSearchEnabled ?? isWebSearchEnabled();
-  const registry: Tool[] = [searchCards];
+  // Read tools always present: semantic card search + the two progress read-tools
+  // + the deterministic browse tools (list_decks / browse_cards / get_card). They
+  // only need a DB + ctx.userId, so they work whenever chat works (Principle 2).
+  const registry: Tool[] = [
+    searchCards,
+    cardProgressTool,
+    studyStatsTool,
+    listDecks,
+    browseCards,
+    getCard,
+  ];
   if (webOn) registry.push(webSearch);
   registry.push(createCard, editCard, suspend, setDue, forget);
   return registry;
