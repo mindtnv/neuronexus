@@ -54,6 +54,21 @@ export const env = {
     //    (unrelated ≲0.27, relevant ≳0.35); lower it to be more inclusive.
     RETRIEVE_K: Number(process.env.RETRIEVE_K ?? 12),
     RETRIEVE_MIN_SCORE: Number(process.env.RETRIEVE_MIN_SCORE ?? 0.32),
+    // ── Agentic tool-calling chat ────────────────────────────────────────────
+    // Web search (Brave) — OPTIONAL. Absent ⇒ the `web_search` tool is simply
+    // not offered to the model (chat unaffected — Principle 1). The ONLY web
+    // provider for now; a second provider would be a clean drop-in (no
+    // WEB_SEARCH_PROVIDER selector env — YAGNI).
+    BRAVE_SEARCH_API_KEY: process.env.BRAVE_SEARCH_API_KEY,
+    // Hard ceiling on agent loop iterations (loop-enforced — the cap is the
+    // source of truth, NOT the gateway honoring tool_choice:'none').
+    AGENT_MAX_STEPS: Number(process.env.AGENT_MAX_STEPS ?? 8),
+    // Per-web_search-call hard timeout (ms) via AbortController so one tool call
+    // can't stall the SSE stream.
+    WEB_SEARCH_TIMEOUT_MS: Number(process.env.WEB_SEARCH_TIMEOUT_MS ?? 7000),
+    // Per-`role:tool` content cap (chars) — bounds how much a single tool result
+    // can grow the context window; the loop also tracks the cross-turn total.
+    TOOL_RESULT_MAX_CHARS: Number(process.env.TOOL_RESULT_MAX_CHARS ?? 4000),
   },
 };
 
@@ -72,3 +87,8 @@ const aiEnvDisabled = env.NODE_ENV === 'test';
 export const embeddingEnabled =
   !aiEnvDisabled && Boolean(env.ai.OPENAI_API_KEY) && env.ai.INDEXING_ENABLED !== 'false';
 export const chatEnabled = !aiEnvDisabled && Boolean(env.ai.CHAT_API_KEY);
+// Gates whether the `web_search` tool is OFFERED to the model. Decoupled from
+// chat: absent Brave key ⇒ tool not in the registry, chat works unchanged.
+// Forced off under test like the others; a fake provider flips it on via the
+// `__setWebSearchProviderForTests` seam (mirrors the isChatEnabled pattern).
+export const webSearchEnabled = !aiEnvDisabled && Boolean(env.ai.BRAVE_SEARCH_API_KEY);

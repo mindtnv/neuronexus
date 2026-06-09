@@ -33,6 +33,27 @@ export interface ChatMessage {
   content: string;
 }
 
+/**
+ * Server-internal message shape for the agentic loop. Extends `ChatMessage`
+ * with the OpenAI tool-calling wire fields: an `assistant` row may carry
+ * `tool_calls`, and a `tool` result row carries `tool_call_id`. The `role`
+ * union widens to include `'tool'` (never exposed to the string consumer).
+ */
+export interface AgentChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  /** Set on an assistant turn that emitted tool calls (OpenAI wire shape). */
+  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
+  /** Set on a `role:'tool'` result row, linking it to its parent tool call. */
+  tool_call_id?: string;
+}
+
+/** A tool exposed to the gateway in the `tools[]` request field. */
+export interface OpenAiToolSpec {
+  type: 'function';
+  function: { name: string; description: string; parameters: unknown };
+}
+
 export interface ChatStreamOpts {
   /** Overrides env.ai.CHAT_MODEL when set. */
   model?: string;
@@ -40,10 +61,34 @@ export interface ChatStreamOpts {
   log?: Logger;
 }
 
-/** The injectable surface. A fake (tests) provides either/both members. */
+export interface AgentChatStreamOpts extends ChatStreamOpts {
+  /** Tool specs offered to the model (omit/empty ⇒ no tools). */
+  tools?: OpenAiToolSpec[];
+  /** Tool-choice directive; defaults to `'auto'`. S4's forced-final passes `'none'`. */
+  toolChoice?: 'auto' | 'none' | 'required';
+}
+
+/**
+ * One streamed chunk from `chatStreamAgentic`. The generator emits a `finish`
+ * chunk when the gateway reports `finish_reason` (or on `[DONE]` carrying one).
+ * If the underlying reader hits EOF/`[DONE]` WITHOUT a `finish_reason`, the
+ * generator returns with NO `finish` chunk — S4's never-terminated guard
+ * detects buffered tool_call fragments + no `finish` as a torn stream.
+ */
+export type AgentStreamChunk =
+  | { type: 'content'; text: string }
+  | { type: 'reasoning'; text: string }
+  | { type: 'tool_call_delta'; index: number; id?: string; name?: string; argsFragment?: string }
+  | { type: 'finish'; reason: 'stop' | 'tool_calls' | 'length' };
+
+/** The injectable surface. A fake (tests) provides any subset of members. */
 export interface AiClient {
   embed?: (texts: string[]) => Promise<number[][]>;
   chatStream?: (messages: ChatMessage[], opts?: ChatStreamOpts) => AsyncIterable<string>;
+  chatStreamAgentic?: (
+    messages: AgentChatMessage[],
+    opts?: AgentChatStreamOpts,
+  ) => AsyncIterable<AgentStreamChunk>;
 }
 
 // ── Test-seam state ──────────────────────────────────────────────────────────
@@ -71,9 +116,13 @@ export function isEmbeddingEnabled(): boolean {
   return embeddingEnabled || Boolean(injected?.embed);
 }
 
-/** Effective chat switch: env flag OR an injected fake `chatStream`. */
+/**
+ * Effective chat switch: env flag OR an injected fake chat surface (either the
+ * legacy string `chatStream` or the agentic `chatStreamAgentic`) — so an
+ * agentic-only fake flips chat on in tests.
+ */
 export function isChatEnabled(): boolean {
-  return chatEnabled || Boolean(injected?.chatStream);
+  return chatEnabled || Boolean(injected?.chatStream) || Boolean(injected?.chatStreamAgentic);
 }
 
 // ── Backoff helper ───────────────────────────────────────────────────────────
@@ -173,6 +222,57 @@ export async function embed(texts: string[]): Promise<number[][]> {
   throw lastErr instanceof Error ? lastErr : new Error('embed_failed');
 }
 
+// ── Shared SSE frame splitting ────────────────────────────────────────────────
+
+/** A sentinel parsed payload meaning the stream sent `data: [DONE]`. */
+export const SSE_DONE = Symbol('sse_done');
+
+/**
+ * Read an OpenAI-compatible SSE body and yield each `data:` payload as it
+ * completes a frame. Frames are separated by a blank line (`\n\n`); the trailing
+ * partial is buffered across reads. Yields the parsed JSON of each `data:` line,
+ * or `SSE_DONE` for `data: [DONE]`. Malformed/partial JSON lines are skipped
+ * (the next read may complete them). Shared by `chatStream` (string consumer)
+ * and `chatStreamAgentic` (agent consumer) so the frame-splitting is tested once.
+ */
+export async function* parseSseLines(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncIterable<unknown | typeof SSE_DONE> {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE frames are separated by a blank line. Process complete frames; keep
+      // the trailing partial in the buffer.
+      let sep: number;
+      while ((sep = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        for (const rawLine of frame.split('\n')) {
+          const line = rawLine.trim();
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') {
+            yield SSE_DONE;
+            return;
+          }
+          try {
+            yield JSON.parse(payload);
+          } catch {
+            // Skip a malformed/partial JSON line — the next read may complete it.
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 // ── Chat completion (SSE stream) ──────────────────────────────────────────────
 
 interface ChatChunk {
@@ -219,55 +319,137 @@ export async function* chatStream(
     throw new Error(`chat_failed:${res.status}`);
   }
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
   // Count of streamed SSE content deltas — NOT model tokens (no usage parsing in
   // streaming mode). Named `deltas` so the observability log isn't misleading.
   let deltas = 0;
 
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // SSE frames are separated by a blank line. Process complete frames; keep
-      // the trailing partial in the buffer.
-      let sep: number;
-      while ((sep = buffer.indexOf('\n\n')) !== -1) {
-        const frame = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
-        for (const rawLine of frame.split('\n')) {
-          const line = rawLine.trim();
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
-          if (payload === '[DONE]') {
-            log.info(
-              { model, deltas, latencyMs: Math.round(performance.now() - started) },
-              'ai.chat',
-            );
-            return;
-          }
-          try {
-            const chunk = JSON.parse(payload) as ChatChunk;
-            const delta = chunk.choices?.[0]?.delta?.content;
-            if (delta) {
-              deltas += 1;
-              yield delta;
-            }
-          } catch {
-            // Skip a malformed/partial JSON line — the next read may complete it.
-          }
-        }
-      }
+  for await (const payload of parseSseLines(res.body.getReader())) {
+    if (payload === SSE_DONE) break;
+    const chunk = payload as ChatChunk;
+    const delta = chunk.choices?.[0]?.delta?.content;
+    if (delta) {
+      deltas += 1;
+      yield delta;
     }
-  } finally {
-    reader.releaseLock();
   }
 
   log.info(
     { model, deltas, latencyMs: Math.round(performance.now() - started) },
     'ai.chat',
   );
+}
+
+// ── Agentic chat completion (tool-calling SSE stream) ─────────────────────────
+
+/** SSE delta shape for the agentic loop — content + reasoning + tool_calls. */
+interface AgentChatChunk {
+  choices?: {
+    delta?: {
+      content?: string;
+      reasoning_content?: string;
+      tool_calls?: {
+        index: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }[];
+    };
+    finish_reason?: 'stop' | 'tool_calls' | 'length' | null;
+  }[];
+}
+
+/**
+ * Stream an agentic chat completion. Sends `tools` + `tool_choice` and parses
+ * streamed `delta.content`, `delta.reasoning_content`, and `delta.tool_calls[]`
+ * (each `{ index, id?, function?: { name?, arguments? } }`), emitting the
+ * discriminated `AgentStreamChunk` union. Runs ALONGSIDE `chatStream` (which is
+ * byte-identical for its string consumer) and shares `parseSseLines`.
+ *
+ * The generator emits a `finish` chunk on `finish_reason`. On EOF/`[DONE]`
+ * WITHOUT a `finish_reason`, it returns with NO `finish` chunk — the agent loop
+ * treats buffered-tool-fragments-but-no-finish as a torn stream (terminal error).
+ *
+ * Throws `AiDisabledError('chat')` when chat is not enabled and no fake is
+ * injected. Post-first-byte errors are the caller's concern (S4 wraps them in a
+ * terminal `event: error` frame).
+ */
+export async function* chatStreamAgentic(
+  messages: AgentChatMessage[],
+  opts: AgentChatStreamOpts = {},
+): AsyncIterable<AgentStreamChunk> {
+  if (injected?.chatStreamAgentic) {
+    yield* injected.chatStreamAgentic(messages, opts);
+    return;
+  }
+  if (!chatEnabled) throw new AiDisabledError('chat');
+
+  const apiKey = env.ai.CHAT_API_KEY!;
+  const model = opts.model ?? env.ai.CHAT_MODEL;
+  const url = `${env.ai.CHAT_BASE_URL.replace(/\/$/, '')}/chat/completions`;
+  const log = opts.log ?? rootLogger;
+  const started = performance.now();
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: true,
+      ...(opts.tools && opts.tools.length > 0
+        ? { tools: opts.tools, tool_choice: opts.toolChoice ?? 'auto' }
+        : {}),
+    }),
+  });
+
+  if (!res.ok || !res.body) {
+    const detail = await res.text().catch(() => '');
+    log.error({ status: res.status, detail }, 'ai.chat.failed');
+    throw new Error(`chat_failed:${res.status}`);
+  }
+
+  let deltas = 0;
+
+  for await (const payload of parseSseLines(res.body.getReader())) {
+    if (payload === SSE_DONE) break;
+    const chunk = payload as AgentChatChunk;
+    const choice = chunk.choices?.[0];
+    if (!choice) continue;
+    const delta = choice.delta;
+    const reasoning = delta?.reasoning_content;
+    if (reasoning) yield { type: 'reasoning', text: reasoning };
+    const content = delta?.content;
+    if (content) {
+      deltas += 1;
+      yield { type: 'content', text: content };
+    }
+    if (delta?.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        yield {
+          type: 'tool_call_delta',
+          index: tc.index,
+          id: tc.id,
+          name: tc.function?.name,
+          argsFragment: tc.function?.arguments,
+        };
+      }
+    }
+    if (choice.finish_reason) {
+      log.info(
+        {
+          model,
+          deltas,
+          finish: choice.finish_reason,
+          latencyMs: Math.round(performance.now() - started),
+        },
+        'ai.chat.agentic',
+      );
+      yield { type: 'finish', reason: choice.finish_reason };
+      // A `finish_reason` ends this completion; if a `[DONE]` follows it is a
+      // no-op (the for-await breaks on it). Keep reading in case the gateway
+      // sends trailing keep-alives, but emit no further finish.
+    }
+  }
 }

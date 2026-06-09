@@ -35,6 +35,21 @@ const m = {
       'Эмбеддинги (для поиска) настраиваются отдельно через OPENAI_API_KEY — оставьте обе переменные пустыми, чтобы выключить ИИ-функции.',
     docsHint: 'Полный список переменных — в разделе AI / RAG README проекта.',
   },
+  // Streamed reasoning trace (collapsible, ephemeral — never persisted)
+  reasoning: {
+    label: 'Размышления',
+    show: 'Показать размышления',
+    hide: 'Скрыть размышления',
+  },
+  // Agentic tool calls (search_cards / web_search) surfaced as cards in the stream
+  tool: {
+    search_cards: 'Поиск по вашим карточкам',
+    web_search: 'Поиск в интернете',
+    running: 'Выполняется…',
+    done: 'Готово',
+    failed: 'Ошибка',
+    resultToggle: 'Показать результат',
+  },
   // Errors surfaced in the stream
   errors: {
     generic: 'Что-то пошло не так. Попробуйте ещё раз.',

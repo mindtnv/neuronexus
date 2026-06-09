@@ -14,7 +14,7 @@ import {
   uuid,
   vector,
 } from 'drizzle-orm/pg-core';
-import type { CardTemplate, Citation, FieldValues, NoteField } from '@neuronexus/shared';
+import type { CardTemplate, Citation, FieldValues, NoteField, ToolCallRecord } from '@neuronexus/shared';
 import { user } from './auth.ts';
 
 // Embedding vector dimension baked into the `kb_chunk.embedding` column type.
@@ -507,15 +507,36 @@ export const messages = pgTable(
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
-    role: text('role').notNull(), // 'user' | 'assistant' | 'system'
+    role: text('role').notNull(), // 'user' | 'assistant' | 'system' | 'tool'
+    // `content` stays NOT NULL (additive — no destructive DROP NOT NULL). A
+    // tool-calls-only assistant row stores `''` (sentinel); a `role:'tool'` row
+    // stores the JSON-stringified tool result. Disambiguation is structural
+    // (non-null `toolCalls` ⇒ tool-call row; `role='tool'` ⇒ result row), never
+    // by content emptiness — see the agent loop history mapping + chat UI
+    // reconstruction rule.
     content: text('content').notNull(),
+    // Set on an assistant row that emitted tool calls (the OpenAI wire shape so
+    // a persisted row replays straight back into `messages[]`); null otherwise.
+    toolCalls: jsonb('tool_calls').$type<ToolCallRecord[]>(),
+    // Set on a `role:'tool'` result row, linking it to its parent's tool call;
+    // null otherwise.
+    toolCallId: text('tool_call_id'),
     citations: jsonb('citations')
       .notNull()
       .$type<Citation[]>()
       .default(sql`'[]'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('messages_conversation_idx').on(t.conversationId, t.createdAt)],
+  (t) => [
+    index('messages_conversation_idx').on(t.conversationId, t.createdAt),
+    // Idempotent resume backstop (Phase B): at most one `role:'tool'` result row
+    // per (conversation, tool_call_id) so a double/concurrent Apply hits a
+    // unique violation at the storage layer. Partial index — precedent
+    // `note_types_builtin_uq` proves db:generate round-trips `WHERE` clauses.
+    uniqueIndex('messages_tool_result_uq')
+      .on(t.conversationId, t.toolCallId)
+      .where(sql`role = 'tool'`),
+  ],
 );
 
 // ── relations ──────────────────────────────────────────────────────────────

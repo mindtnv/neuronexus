@@ -74,9 +74,53 @@ export interface ChatStreamRequest {
   content: string;
 }
 
+/**
+ * Request body for POST /chat/conversations/:id/resume — answers a paused
+ * write/SRS tool call (the `await_confirmation` frame). `decision: 'apply'`
+ * executes the pending mutation + continues the loop; `'reject'` records a
+ * "user rejected" tool result so the model can answer without mutating.
+ */
+export interface ChatResumeRequest {
+  resumeToolCallId: string;
+  decision: 'apply' | 'reject';
+}
+
+/**
+ * One streamed tool call as the gateway/agent loop assembled it. `arguments` is
+ * the raw JSON string the model emitted (parsed at execute time) — matches the
+ * OpenAI wire shape so a persisted row replays straight back into `messages[]`.
+ */
+export interface ToolCallRecord {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
 /** Discriminated union of SSE frames emitted by the chat stream endpoint. */
 export type ChatStreamEvent =
   | { type: 'token'; delta: string }
   | { type: 'citation'; citations: Citation[] }
   | { type: 'done'; messageId: string }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'reasoning'; delta: string }
+  | { type: 'tool_call'; id: string; name: string; args: unknown; status: 'running' }
+  | { type: 'tool_result'; id: string; ok: boolean; summary?: string; citations?: Citation[] }
+  | { type: 'status'; phase: 'thinking' | 'calling_tool' | 'answering' }
+  | {
+      type: 'await_confirmation';
+      toolCall: { id: string; name: string; args: unknown };
+      impact?: {
+        willDeleteCards?: number;
+        willCreateCards?: number;
+        affectsSiblings?: boolean;
+      };
+    };
+
+// ── Model-emitted card-citation token ────────────────────────────────────────
+// The grounded chat model marks the cards it cites inline as `[card:<uuid>]`.
+// Shared between the server (citation union-dedup — intersect with the tokens
+// the answer actually emitted) and the web client (chat.tsx, which wraps this in
+// a local whitespace-absorbing variant for stripping the token from rendered
+// prose). Capture group 1 = the cardId. `g` flag — reset `lastIndex` or use a
+// fresh literal when matching repeatedly.
+export const CARD_TOKEN_RE = /\[card:([0-9a-fA-F-]+)\]/g;

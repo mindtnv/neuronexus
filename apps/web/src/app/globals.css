@@ -139,6 +139,16 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   to { opacity: 1; transform: none; }
 }
 
+/* Tool-call card spinner (agentic chat) — a slow continuous rotation on the
+   `sync` icon while a tool is running. Honours reduced-motion. */
+@keyframes nn-spin {
+  to { transform: rotate(360deg); }
+}
+.nn-spin { animation: nn-spin 900ms linear infinite; transform-origin: center; display: inline-flex; }
+@media (prefers-reduced-motion: reduce) {
+  .nn-spin { animation: none; }
+}
+
 /* Shared rendered-card display CSS — applied via `nn-rendered` on every SafeHtml
    sink (editor preview, review, note-type preview, browser). Image sizing rides
    the `width` attribute (the only size carrier that survives BOTH sanitizer

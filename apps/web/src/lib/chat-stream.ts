@@ -31,6 +31,32 @@ export interface ChatStreamHandlers {
    * itself failed (network / non-2xx / no body). Either way the stream is over.
    */
   onError?: (message: string) => void;
+
+  // ── Agentic stream handlers (Phase A) ──────────────────────────────────────
+  /**
+   * A streamed reasoning delta — append to the live "thinking" trace. Best-effort
+   * and never persisted; the trace auto-collapses once the final answer arrives.
+   */
+  onReasoning?: (delta: string) => void;
+  /** The model finalized a tool call and the loop began executing it (status `running`). */
+  onToolCall?: (toolCall: { id: string; name: string; args: unknown }) => void;
+  /** A tool finished executing — `ok` + optional one-line `summary` + citations (search_cards). */
+  onToolResult?: (toolResult: {
+    id: string;
+    ok: boolean;
+    summary?: string;
+    citations?: Citation[];
+  }) => void;
+  /** A coarse loop-phase hint for the live status line (thinking / calling_tool / answering). */
+  onStatus?: (phase: 'thinking' | 'calling_tool' | 'answering') => void;
+  /**
+   * Phase B: the loop paused awaiting human approval of a write/SRS tool. Declared
+   * here so the union is stable; the resume transport that answers it lands in B.
+   */
+  onAwaitConfirmation?: (await_: {
+    toolCall: { id: string; name: string; args: unknown };
+    impact?: { willDeleteCards?: number; willCreateCards?: number; affectsSiblings?: boolean };
+  }) => void;
 }
 
 /** Dispatch one parsed SSE event to the matching handler. */
@@ -47,6 +73,29 @@ function dispatch(event: ChatStreamEvent, handlers: ChatStreamHandlers): void {
       break;
     case 'error':
       handlers.onError?.(event.message);
+      break;
+    // ── Agentic frames (Phase A; additive — parseBlock already decodes them) ──
+    case 'reasoning':
+      handlers.onReasoning?.(event.delta);
+      break;
+    case 'tool_call':
+      handlers.onToolCall?.({ id: event.id, name: event.name, args: event.args });
+      break;
+    case 'tool_result':
+      handlers.onToolResult?.({
+        id: event.id,
+        ok: event.ok,
+        summary: event.summary,
+        citations: event.citations,
+      });
+      break;
+    case 'status':
+      handlers.onStatus?.(event.phase);
+      break;
+    case 'await_confirmation':
+      // Phase B: surfaced to the (optional) confirmation handler. The resume
+      // transport that answers it lands in Phase B; harmless to dispatch now.
+      handlers.onAwaitConfirmation?.({ toolCall: event.toolCall, impact: event.impact });
       break;
   }
 }

@@ -110,4 +110,31 @@ describe('i18n parity — en/chat.ts vs ru/chat.ts (Slice 5)', () => {
   test('nav.chat exists in ru/common', () => {
     expect(flattenKeys(ruCommon as unknown as NestedDict)).toContain('nav.chat');
   });
+
+  // Explicit guard: the new agentic-chat keys (reasoning trace + tool-call cards)
+  // must exist in BOTH locales. The symmetric diff above only catches a key
+  // present in one locale and missing in the other — a key absent from BOTH
+  // would slip through it, so this enumerated guard is required (mirrors
+  // REQUIRED_NOTIFICATION_KEYS for the settings dict).
+  const REQUIRED_CHAT_AGENT_KEYS = [
+    'reasoning.label',
+    'reasoning.show',
+    'reasoning.hide',
+    'tool.search_cards',
+    'tool.web_search',
+    'tool.running',
+    'tool.done',
+    'tool.failed',
+    'tool.resultToggle',
+  ];
+
+  for (const key of REQUIRED_CHAT_AGENT_KEYS) {
+    test(`agentic-chat key "${key}" exists in en/chat`, () => {
+      expect(enKeys.has(key)).toBe(true);
+    });
+
+    test(`agentic-chat key "${key}" exists in ru/chat`, () => {
+      expect(ruKeys.has(key)).toBe(true);
+    });
+  }
 });

@@ -18,6 +18,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Citation } from '@neuronexus/shared';
+import { CARD_TOKEN_RE as CARD_TOKEN_CORE_RE } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNSkeleton, NNBadge } from '@/components/ui';
 import { RichCard } from '@/components/rich-card';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
@@ -38,11 +39,33 @@ interface ConversationVM {
   updatedAt: string;
 }
 
+// One agentic tool call surfaced as a card in the stream. `args` is the parsed
+// (or raw) argument object the model emitted; `result` is a one-line summary for
+// the collapsible body; `citations` are the cited cards (search_cards only) /
+// web results (web_search only) attached after the tool resolves.
+interface ToolCallVM {
+  id: string;
+  name: string;
+  args: unknown;
+  status: 'running' | 'ok' | 'error';
+  /** One-line human summary from the tool_result frame (optional). */
+  result?: string;
+  /** Cited cards for search_cards (rendered via RichCard — the only card sink). */
+  citations?: Citation[];
+}
+
 interface MessageVM {
   id: string;
-  role: 'user' | 'assistant' | 'system';
+  // `tool` only appears on reload reconstruction — a persisted role:'tool' row is
+  // folded into its parent assistant message's toolCalls, never rendered as its
+  // own bubble (see openThread reconstruction rule).
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   citations: Citation[];
+  /** Streamed reasoning trace for this assistant turn (ephemeral, never persisted). */
+  reasoning?: string;
+  /** Tool calls made during this assistant turn, in call order. */
+  toolCalls?: ToolCallVM[];
   /** True while tokens are still streaming into this assistant message. */
   streaming?: boolean;
 }
@@ -64,9 +87,141 @@ function conversationTitle(c: ConversationVM, fallback: string): string {
 // cards live in the collapsible "sources" block below, so the raw tokens are
 // noise in the prose. Only spaces/tabs around a token are absorbed (never
 // newlines), then runs of spaces are collapsed.
-const CARD_TOKEN_RE = /[ \t]*\[card:[0-9a-fA-F-]+\]/g;
+//
+// Built from the shared core pattern (`CARD_TOKEN_CORE_RE` from @neuronexus/shared)
+// so the server's citation-dedup and this client stay in lockstep on the token
+// shape; the leading `[ \t]*` whitespace-absorber stays local to the renderer.
+const CARD_TOKEN_RE = new RegExp(`[ \\t]*${CARD_TOKEN_CORE_RE.source}`, 'g');
 function stripCardTokens(text: string): string {
   return text.replace(CARD_TOKEN_RE, '').replace(/[ \t]{2,}/g, ' ');
+}
+
+// Validate a web-search result URL before rendering it as an <a href>. Mirrors
+// the sanitizer's uponSanitizeAttribute scheme discipline (https?: / mailto:),
+// but for web_search we only ever surface http(s) links. Anything else (a
+// `javascript:` payload, a relative ref, garbage) is rejected → rendered as
+// inert plain text, never a clickable link.
+function safeWebUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Persisted-row → view-model reconstruction (reload) ───────────────────────
+// Eden serializes the message rows verbatim, so a reloaded transcript carries
+// the wire shape: a `user` row, an `assistant` row whose `toolCalls` is non-null
+// (its `content` is the `''` sentinel), one `role:'tool'` row per result (its
+// `content` is the JSON-stringified tool result, linked by `toolCallId`), then
+// the final `assistant` text row (`toolCalls` null). The reconstruction rule
+// (S6 step 5) folds those back into the UI view models WITHOUT ever leaking a
+// sentinel or a JSON-in-content tool row as a blank/garbled bubble:
+//   • user                              → a user bubble
+//   • assistant w/ non-null toolCalls   → an assistant VM carrying tool-call
+//                                          cards (REGARDLESS of content)
+//   • role:'tool'                       → folded into its parent's matching
+//                                          tool call by toolCallId (never its
+//                                          own bubble)
+//   • assistant w/ null toolCalls       → prose
+interface PersistedMessageRow {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  citations?: Citation[] | null;
+  toolCalls?: { id: string; name: string; arguments: string }[] | null;
+  toolCallId?: string | null;
+}
+
+// Parse a persisted `role:'tool'` row's `content` into a UI status + summary.
+// The backend stores the tool's model-facing TEXT on success (plain, capped) and
+// `JSON.stringify({ ok:false, error })` on failure — so a JSON `{ ok:false }`
+// payload is a failed call, anything else is a successful text result. Per-call
+// citations are NOT in this content (they ride the turn-level `citation` event /
+// the final assistant row), so they're not reconstructed here. Best-effort: a
+// malformed/legacy payload degrades to a bare summary, never throws.
+function parseToolResultContent(content: string): { ok: boolean; summary?: string } {
+  if (content.length === 0) return { ok: true };
+  try {
+    const parsed = JSON.parse(content) as { ok?: boolean; error?: string; summary?: string };
+    // A structured failure envelope from the loop.
+    if (parsed && typeof parsed === 'object' && parsed.ok === false) {
+      const summary =
+        typeof parsed.error === 'string'
+          ? parsed.error
+          : typeof parsed.summary === 'string'
+            ? parsed.summary
+            : undefined;
+      return { ok: false, summary };
+    }
+    // JSON but not a failure envelope — fall through to treat as text below.
+  } catch {
+    // Not JSON — the common case (success text). Fall through.
+  }
+  return { ok: true, summary: content };
+}
+
+function parseToolArgs(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
+  const out: MessageVM[] = [];
+  // The last assistant VM that carries tool calls — role:'tool' rows attach here.
+  let pendingToolHost: MessageVM | null = null;
+
+  for (const row of rows) {
+    const citations = Array.isArray(row.citations) ? row.citations : [];
+
+    if (row.role === 'tool') {
+      // A tool-result row — fold into its parent's matching tool call. Never a bubble.
+      const parsed = parseToolResultContent(row.content);
+      const host = pendingToolHost;
+      const tc = host?.toolCalls?.find((c) => c.id === row.toolCallId);
+      if (tc) {
+        tc.status = parsed.ok ? 'ok' : 'error';
+        if (parsed.summary !== undefined) tc.result = parsed.summary;
+      }
+      continue;
+    }
+
+    if (row.role === 'assistant' && row.toolCalls && row.toolCalls.length > 0) {
+      // Tool-call row — render as tool-call cards regardless of content (sentinel).
+      const vm: MessageVM = {
+        id: row.id,
+        role: 'assistant',
+        content: '',
+        citations: [],
+        toolCalls: row.toolCalls.map((c) => ({
+          id: c.id,
+          name: c.name,
+          args: parseToolArgs(c.arguments),
+          status: 'ok' as const,
+        })),
+      };
+      out.push(vm);
+      pendingToolHost = vm;
+      continue;
+    }
+
+    // user OR assistant-prose OR system → a normal bubble.
+    out.push({
+      id: row.id,
+      role: row.role,
+      content: row.content,
+      citations,
+    });
+    // A fresh prose/user turn closes the tool-result attachment window.
+    pendingToolHost = null;
+  }
+
+  return out;
 }
 
 // Render assistant prose as Markdown through the SAME pipeline cards use
@@ -125,6 +280,11 @@ export const NNChat = () => {
 
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  // Coarse loop-phase of the in-flight turn (drives the live status line under
+  // the thinking placeholder). Null when no turn is streaming.
+  const [streamPhase, setStreamPhase] = useState<
+    'thinking' | 'calling_tool' | 'answering' | null
+  >(null);
 
   // Resolved cards for citations outside the store mirror (cardId → Card).
   const [fetchedCards, setFetchedCards] = useState<Record<string, Card>>({});
@@ -187,11 +347,17 @@ export const NNChat = () => {
   );
 
   // When citations reference cards outside the mirror, fetch them via Eden.
+  // Tool-call citations (search_cards results) are resolved the same way as the
+  // turn-level citation set, so a cited card always renders through RichCard.
   useEffect(() => {
     const missing = new Set<string>();
+    const consider = (cit: Citation) => {
+      if (!cardById.has(cit.cardId) && !fetchedCards[cit.cardId]) missing.add(cit.cardId);
+    };
     for (const m of messages) {
-      for (const cit of m.citations) {
-        if (!cardById.has(cit.cardId) && !fetchedCards[cit.cardId]) missing.add(cit.cardId);
+      for (const cit of m.citations) consider(cit);
+      for (const tc of m.toolCalls ?? []) {
+        for (const cit of tc.citations ?? []) consider(cit);
       }
     }
     if (missing.size === 0) return;
@@ -223,16 +389,12 @@ export const NNChat = () => {
     setThreadLoading(true);
     try {
       const res = (await ok(await (api as any).chat.conversations({ id }).get())) as {
-        messages: MessageVM[];
+        messages: PersistedMessageRow[];
       };
-      setMessages(
-        (res.messages ?? []).map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          citations: Array.isArray(m.citations) ? m.citations : [],
-        })),
-      );
+      // Reconstruct the agentic transcript from the persisted wire shape: tool-call
+      // rows become cards, role:'tool' rows fold into their parent, the '' sentinel
+      // and JSON-in-content tool rows never leak as blank/garbled bubbles.
+      setMessages(reconstructMessages(res.messages ?? []));
     } catch {
       setMessages([]);
     } finally {
@@ -317,6 +479,14 @@ export const NNChat = () => {
         prev.map((m) => (m.id === assistantMsgId ? { ...m, ...patch } : m)),
       );
 
+    // Mutate the live assistant message's toolCalls array immutably.
+    const patchToolCalls = (mut: (calls: ToolCallVM[]) => ToolCallVM[]) =>
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantMsgId ? { ...m, toolCalls: mut(m.toolCalls ?? []) } : m,
+        ),
+      );
+
     await streamChat(convId!, content, {
       onToken: (delta) =>
         setMessages((prev) =>
@@ -324,16 +494,53 @@ export const NNChat = () => {
             m.id === assistantMsgId ? { ...m, content: m.content + delta } : m,
           ),
         ),
+      // Stream the reasoning trace into the collapsible "thinking" block.
+      onReasoning: (delta) =>
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsgId ? { ...m, reasoning: (m.reasoning ?? '') + delta } : m,
+          ),
+        ),
+      // A tool call started — append a running card (idempotent on id).
+      onToolCall: (tc) =>
+        patchToolCalls((calls) =>
+          calls.some((c) => c.id === tc.id)
+            ? calls
+            : [...calls, { id: tc.id, name: tc.name, args: tc.args, status: 'running' }],
+        ),
+      // A tool finished — flip status, attach the one-line summary + citations.
+      onToolResult: (tr) =>
+        patchToolCalls((calls) =>
+          calls.map((c) =>
+            c.id === tr.id
+              ? {
+                  ...c,
+                  status: tr.ok ? 'ok' : 'error',
+                  result: tr.summary ?? c.result,
+                  citations: tr.citations ?? c.citations,
+                }
+              : c,
+          ),
+        ),
+      // Coarse phase hint — drives the live status line under the placeholder.
+      onStatus: (phase) => setStreamPhase(phase),
+      // Turn-level citation set (union-deduped server-side, intersected with
+      // emitted [card:<id>] tokens) — the collapsible "sources" block below.
       onCitation: (citations) => patchAssistant({ citations }),
-      onDone: () => patchAssistant({ streaming: false }),
-      onError: (message) =>
+      onDone: () => {
+        patchAssistant({ streaming: false });
+        setStreamPhase(null);
+      },
+      onError: (message) => {
         patchAssistant({
           streaming: false,
           content:
             message === 'ai_disabled'
               ? t('chat.errors.disabled')
               : t('chat.errors.generic'),
-        }),
+        });
+        setStreamPhase(null);
+      },
     });
 
     // Bump this thread to the top (server already bumped updatedAt on done).
@@ -588,6 +795,7 @@ export const NNChat = () => {
                   <MessageRow
                     key={m.id}
                     message={m}
+                    phase={m.streaming ? streamPhase : null}
                     resolveCard={resolveCard}
                     deckNameById={deckNameById}
                     t={t}
@@ -661,19 +869,29 @@ export const NNChat = () => {
 
 // ── One message row ──────────────────────────────────────────────────────────
 
+type StreamPhase = 'thinking' | 'calling_tool' | 'answering' | null;
+
 interface MessageRowProps {
   message: MessageVM;
+  /** Coarse loop phase of the in-flight turn (only set on the streaming row). */
+  phase?: StreamPhase;
   resolveCard: (cardId: string) => Card | undefined;
   deckNameById: Map<string, string>;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-const MessageRow = ({ message, resolveCard, deckNameById, t }: MessageRowProps) => {
+const MessageRow = ({ message, phase = null, resolveCard, deckNameById, t }: MessageRowProps) => {
   const isUser = message.role === 'user';
   // Cited cards are collapsed by default (they can be large); a count summary
   // toggles the full RichCard list. Hook declared before the user-message early
   // return so it's always called in the same order.
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const toolCalls = message.toolCalls ?? [];
+  const hasReasoning = (message.reasoning ?? '').trim().length > 0;
+  // While the turn is still streaming and the final answer hasn't begun, the
+  // thinking placeholder shows; once any prose/tool work exists it gives way.
+  const isStreaming = !!message.streaming;
+  const answerStarted = message.content.length > 0;
 
   if (isUser) {
     return (
@@ -718,14 +936,43 @@ const MessageRow = ({ message, resolveCard, deckNameById, t }: MessageRowProps) 
         </span>
       </div>
 
+      {/* Collapsible reasoning trace — live-streams while the answer is still
+          generating, then auto-collapses once the final answer arrives. */}
+      {hasReasoning && (
+        <ReasoningBlock
+          reasoning={message.reasoning ?? ''}
+          // Auto-open while streaming with no answer yet; collapse once prose lands.
+          live={isStreaming && !answerStarted}
+          t={t}
+        />
+      )}
+
+      {/* Tool-call cards (search_cards / web_search) — one per call, in call
+          order, ABOVE the prose so the work the agent did is visible. */}
+      {toolCalls.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {toolCalls.map((tc) => (
+            <ToolCallCard
+              key={tc.id}
+              toolCall={tc}
+              resolveCard={resolveCard}
+              deckNameById={deckNameById}
+              t={t}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Model prose rendered as Markdown (same pipeline as cards, via SafeHtml).
           The inline [card:<id>] grounding tokens are stripped — the sources are
           shown in the collapsible block below. */}
-      {message.content.length > 0 ? (
+      {answerStarted ? (
         <AssistantMarkdown content={message.content} />
-      ) : message.streaming ? (
+      ) : isStreaming ? (
         <span style={{ fontSize: 13, color: 'var(--text-dim)', fontStyle: 'italic' }}>
-          {t('chat.stream.thinking')}
+          {phase === 'calling_tool'
+            ? t('chat.tool.running')
+            : t('chat.stream.thinking')}
         </span>
       ) : null}
 
@@ -849,3 +1096,328 @@ const CitationCard = ({ citation, card, deckName, t }: CitationCardProps) => (
     )}
   </NNCard>
 );
+
+// ── Collapsible reasoning trace ──────────────────────────────────────────────
+// Hand-rolled (no UI lib — Principle 4). While `live` (turn streaming, no answer
+// yet) the block is forced open so deltas are visible; once the answer arrives it
+// auto-collapses. A manual toggle takes over from the auto behavior so a user who
+// opens it to read isn't fought by the auto-collapse.
+
+interface ReasoningBlockProps {
+  reasoning: string;
+  live: boolean;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+const ReasoningBlock = ({ reasoning, live, t }: ReasoningBlockProps) => {
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
+  const tailRef = useRef<HTMLDivElement>(null);
+
+  // Effective open state: a manual choice wins; otherwise mirror `live`.
+  const open = manualOpen ?? live;
+
+  // Keep the live trace pinned to its newest line while streaming + open.
+  useEffect(() => {
+    if (open && live && tailRef.current) {
+      tailRef.current.scrollTop = tailRef.current.scrollHeight;
+    }
+  }, [open, live, reasoning]);
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        borderLeft: '2px solid var(--border-2)',
+        paddingLeft: 12,
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setManualOpen(!open)}
+        aria-expanded={open}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 7,
+          alignSelf: 'flex-start',
+          background: 'transparent',
+          border: 'none',
+          padding: '2px 0',
+          cursor: 'pointer',
+          color: 'var(--text-dim)',
+          fontFamily: 'var(--font-sans)',
+        }}
+      >
+        {live && (
+          <span className="nn-spin" aria-hidden>
+            <NNIcon name="sparkle" size={12} color="var(--violet-400)" />
+          </span>
+        )}
+        <span
+          style={{
+            fontSize: 10.5,
+            fontWeight: 700,
+            letterSpacing: 1,
+            textTransform: 'uppercase',
+          }}
+        >
+          {t('chat.reasoning.label')}
+        </span>
+        <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>
+          {open ? t('chat.reasoning.hide') : t('chat.reasoning.show')}
+        </span>
+        <span
+          style={{
+            display: 'inline-flex',
+            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: 'transform 140ms ease',
+          }}
+        >
+          <NNIcon name="chevd" size={12} color="var(--text-dim)" />
+        </span>
+      </button>
+      {open && (
+        <div
+          ref={tailRef}
+          className="nn-scroll"
+          style={{
+            maxHeight: live ? 180 : 320,
+            overflowY: 'auto',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 12.5,
+            lineHeight: 1.6,
+            color: 'var(--text-dim)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {reasoning}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── One agentic tool-call card ───────────────────────────────────────────────
+// Hand-rolled (no UI lib). Header: tool name + a short args summary + status
+// (spinner while running → ✓ ok / ✕ error). Collapsible body: for search_cards
+// the cited cards render through the EXISTING CitationCard/RichCard path (the
+// only card sink). For web_search the result is rendered as PLAIN TEXT — an
+// untrusted sink — with bare URLs linkified only after https?: scheme validation.
+
+const TOOL_LABEL_KEY: Record<string, string> = {
+  search_cards: 'chat.tool.search_cards',
+  web_search: 'chat.tool.web_search',
+};
+
+// Build a one-line args summary without trusting the model's arg shape. For the
+// known read tools the most useful field is the query string; fall back to a
+// compact JSON for anything else. Rendered as a plain React text node.
+function toolArgsSummary(name: string, args: unknown): string {
+  if (args && typeof args === 'object') {
+    const q = (args as Record<string, unknown>).query;
+    if (typeof q === 'string' && q.trim().length > 0) return q.trim();
+  }
+  if (typeof args === 'string') return args;
+  try {
+    const json = JSON.stringify(args);
+    return json && json !== '{}' ? json : '';
+  } catch {
+    return '';
+  }
+}
+
+interface ToolCallCardProps {
+  toolCall: ToolCallVM;
+  resolveCard: (cardId: string) => Card | undefined;
+  deckNameById: Map<string, string>;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+const ToolCallCard = ({ toolCall, resolveCard, deckNameById, t }: ToolCallCardProps) => {
+  const [open, setOpen] = useState(false);
+  const labelKey = TOOL_LABEL_KEY[toolCall.name];
+  const label = labelKey ? t(labelKey) : toolCall.name;
+  const argsSummary = toolArgsSummary(toolCall.name, toolCall.args);
+  const isWebSearch = toolCall.name === 'web_search';
+  const cardCitations = toolCall.citations ?? [];
+  // A body exists when there's something to expand: cited cards (search_cards) or
+  // a textual result (web_search / any tool's one-line summary).
+  const hasBody = cardCitations.length > 0 || (toolCall.result ?? '').trim().length > 0;
+
+  const statusTone =
+    toolCall.status === 'ok' ? 'lime' : toolCall.status === 'error' ? 'rose' : 'neutral';
+  const statusText =
+    toolCall.status === 'ok'
+      ? t('chat.tool.done')
+      : toolCall.status === 'error'
+        ? t('chat.tool.failed')
+        : t('chat.tool.running');
+
+  return (
+    <NNCard padding={12} style={{ background: 'var(--surface-2)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <NNIcon
+          name={isWebSearch ? 'link' : 'search'}
+          size={14}
+          color="var(--violet-400)"
+        />
+        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+          <span
+            style={{
+              fontSize: 12.5,
+              fontWeight: 600,
+              color: 'var(--text)',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
+            {label}
+          </span>
+          {argsSummary.length > 0 && (
+            <span
+              style={{
+                fontSize: 12,
+                color: 'var(--text-dim)',
+                fontFamily: 'var(--font-sans)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              title={argsSummary}
+            >
+              {argsSummary}
+            </span>
+          )}
+        </div>
+        {/* Status pill: spinner while running, ✓/✕ once resolved. */}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+          {toolCall.status === 'running' ? (
+            <span className="nn-spin" aria-hidden>
+              <NNIcon name="sync" size={13} color="var(--text-dim)" />
+            </span>
+          ) : (
+            <NNIcon
+              name={toolCall.status === 'ok' ? 'check' : 'x'}
+              size={13}
+              color={toolCall.status === 'ok' ? 'var(--lime-400)' : 'var(--rose-400)'}
+            />
+          )}
+          <NNBadge tone={statusTone} size="xs">
+            {statusText}
+          </NNBadge>
+        </span>
+      </div>
+
+      {/* Collapsible result body. */}
+      {hasBody && (
+        <div style={{ marginTop: 10 }}>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              alignSelf: 'flex-start',
+              background: 'transparent',
+              border: 'none',
+              padding: '2px 0',
+              cursor: 'pointer',
+              color: 'var(--text-muted)',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 600 }}>{t('chat.tool.resultToggle')}</span>
+            <span
+              style={{
+                display: 'inline-flex',
+                transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+                transition: 'transform 140ms ease',
+              }}
+            >
+              <NNIcon name="chevd" size={12} color="var(--text-muted)" />
+            </span>
+          </button>
+          {open && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+              {/* search_cards → cited cards through the ONLY card sink (RichCard). */}
+              {!isWebSearch &&
+                cardCitations.map((cit) => (
+                  <CitationCard
+                    key={cit.chunkId}
+                    citation={cit}
+                    card={resolveCard(cit.cardId)}
+                    deckName={cit.deckId ? deckNameById.get(cit.deckId) : undefined}
+                    t={t}
+                  />
+                ))}
+              {/* search_cards with a textual summary but no cited cards (genuine
+                  no-hit / error) → render the one-line summary as plain text. */}
+              {!isWebSearch &&
+                cardCitations.length === 0 &&
+                (toolCall.result ?? '').length > 0 && (
+                  <WebSearchResultText text={toolCall.result ?? ''} />
+                )}
+              {/* web_search → UNTRUSTED: plain-text result with scheme-validated links. */}
+              {isWebSearch && (toolCall.result ?? '').length > 0 && (
+                <WebSearchResultText text={toolCall.result ?? ''} />
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </NNCard>
+  );
+};
+
+// ── Untrusted web-search result renderer (plain text + safe links) ───────────
+// Brave title/snippet/url are attacker-influenced. We render the result string
+// as PLAIN React text nodes — markup like `[x](javascript:)` or `<img onerror>`
+// shows literally, never interpreted. Bare http(s) URLs found in the text are
+// promoted to <a href> ONLY after `safeWebUrl` validates the scheme; any other
+// scheme stays inert literal text. There is NO markdown / SafeHtml path here.
+
+const URL_CANDIDATE_RE = /(https?:\/\/[^\s<>"']+)/gi;
+
+const WebSearchResultText = ({ text }: { text: string }) => {
+  // Split on URL candidates and interleave validated links with literal text.
+  const parts = text.split(URL_CANDIDATE_RE);
+  return (
+    <div
+      style={{
+        fontFamily: 'var(--font-sans)',
+        fontSize: 13,
+        lineHeight: 1.55,
+        color: 'var(--text-muted)',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}
+    >
+      {parts.map((part, i) => {
+        // Odd indices are the captured URL candidates (split with one capture group).
+        if (i % 2 === 1) {
+          const href = safeWebUrl(part);
+          if (href) {
+            return (
+              <a
+                key={i}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                style={{ color: 'var(--sky-400)', wordBreak: 'break-all' }}
+              >
+                {part}
+              </a>
+            );
+          }
+          // Rejected scheme / malformed → inert literal text.
+          return <React.Fragment key={i}>{part}</React.Fragment>;
+        }
+        return <React.Fragment key={i}>{part}</React.Fragment>;
+      })}
+    </div>
+  );
+};

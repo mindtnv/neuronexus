@@ -35,6 +35,21 @@ const m = {
       'Embeddings (for retrieval) are configured separately via OPENAI_API_KEY — leave both unset to keep AI features off.',
     docsHint: 'See the AI / RAG section of the project README for the full variable list.',
   },
+  // Streamed reasoning trace (collapsible, ephemeral — never persisted)
+  reasoning: {
+    label: 'Reasoning',
+    show: 'Show reasoning',
+    hide: 'Hide reasoning',
+  },
+  // Agentic tool calls (search_cards / web_search) surfaced as cards in the stream
+  tool: {
+    search_cards: 'Searched your cards',
+    web_search: 'Searched the web',
+    running: 'Running…',
+    done: 'Done',
+    failed: 'Failed',
+    resultToggle: 'Show result',
+  },
   // Errors surfaced in the stream
   errors: {
     generic: 'Something went wrong. Please try again.',

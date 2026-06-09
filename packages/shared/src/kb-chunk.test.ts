@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { chunkSource } from './kb-chunk.ts';
+import { CARD_TOKEN_RE, chunkSource } from './kb-chunk.ts';
 import type { SourceInput } from './kb-chunk.ts';
 
 describe('chunkSource — card branch', () => {
@@ -52,5 +52,31 @@ describe('chunkSource — document branch (AC7 seam)', () => {
     expect(() =>
       chunkSource({ sourceType: 'document' as any, sourceId: 'x', parentId: 'x', text: 'hi' }),
     ).toThrow('not_implemented');
+  });
+});
+
+describe('CARD_TOKEN_RE — model-emitted card citation token', () => {
+  test('captures the cardId from a [card:<uuid>] token', () => {
+    const sample = 'answer [card:aaaaaaaa-0000-0000-0000-000000000001].';
+    const re = new RegExp(CARD_TOKEN_RE.source, CARD_TOKEN_RE.flags);
+    const match = re.exec(sample);
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe('aaaaaaaa-0000-0000-0000-000000000001');
+  });
+
+  test('captures every cardId across multiple tokens', () => {
+    const sample =
+      'first [card:aaaaaaaa-0000-0000-0000-000000000001] and second [card:bbbbbbbb-0000-0000-0000-000000000002].';
+    const re = new RegExp(CARD_TOKEN_RE.source, CARD_TOKEN_RE.flags);
+    const ids = [...sample.matchAll(re)].map((m) => m[1]);
+    expect(ids).toEqual([
+      'aaaaaaaa-0000-0000-0000-000000000001',
+      'bbbbbbbb-0000-0000-0000-000000000002',
+    ]);
+  });
+
+  test('does not match prose without a token', () => {
+    const re = new RegExp(CARD_TOKEN_RE.source, CARD_TOKEN_RE.flags);
+    expect(re.test('just a plain answer with no citation.')).toBe(false);
   });
 });
