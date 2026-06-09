@@ -11,7 +11,12 @@
 // server 401s. We hit `NEXT_PUBLIC_API_URL` directly (no Next proxy), exactly
 // the same base URL Eden uses.
 
-import type { ChatStreamEvent, ChatStreamRequest, Citation } from '@neuronexus/shared';
+import type {
+  ChatResumeRequest,
+  ChatStreamEvent,
+  ChatStreamRequest,
+  Citation,
+} from '@neuronexus/shared';
 
 // Same resolution order as lib/api.ts so the two clients agree on the origin.
 const baseURL =
@@ -121,32 +126,13 @@ function parseBlock(block: string): ChatStreamEvent | null {
 }
 
 /**
- * Open the SSE stream for a chat turn and drive the handlers as frames arrive.
- *
- * Resolves when the stream closes (after `done`/`error` or the body ends). Never
- * rejects — transport failures are surfaced via `onError` so callers have a
- * single completion path. Returns the accumulated assistant text (handy for the
- * caller's own bookkeeping / tests).
+ * Drive `handlers` off an already-opened SSE `Response`. Shared verbatim by
+ * `streamChat` and `resumeChat` so both transports parse frames identically
+ * (raw fetch + reader, outside Eden — Eden can't consume a stream). Surfaces
+ * pre-flush failures (non-2xx / no body) and transport tears via `onError`, so
+ * callers always have a single completion path; never rejects.
  */
-export async function streamChat(
-  conversationId: string,
-  content: string,
-  handlers: ChatStreamHandlers,
-): Promise<void> {
-  const body: ChatStreamRequest = { content };
-  let res: Response;
-  try {
-    res = await fetch(`${baseURL}/chat/conversations/${conversationId}/stream`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
-    handlers.onError?.(err instanceof Error ? err.message : 'network_error');
-    return;
-  }
-
+async function consumeSseResponse(res: Response, handlers: ChatStreamHandlers): Promise<void> {
   // Pre-flush failures (chat disabled → 503, foreign thread → 404, auth → 401)
   // come back as a normal JSON body, not a stream. Surface them as an error.
   if (!res.ok || !res.body) {
@@ -190,4 +176,76 @@ export async function streamChat(
   } catch (err) {
     handlers.onError?.(err instanceof Error ? err.message : 'stream_error');
   }
+}
+
+/**
+ * Open the SSE stream for a chat turn and drive the handlers as frames arrive.
+ *
+ * Resolves when the stream closes (after `done`/`error` or the body ends). Never
+ * rejects — transport failures are surfaced via `onError` so callers have a
+ * single completion path. Returns the accumulated assistant text (handy for the
+ * caller's own bookkeeping / tests).
+ *
+ * Note (Phase B): a turn that hits a write/SRS tool ends with an
+ * `await_confirmation` frame and then the stream CLOSES with NO `done` — the
+ * turn is suspended awaiting human approval. The caller answers it via
+ * `resumeChat`, which re-attaches the same handler set to the continued turn.
+ */
+export async function streamChat(
+  conversationId: string,
+  content: string,
+  handlers: ChatStreamHandlers,
+): Promise<void> {
+  const body: ChatStreamRequest = { content };
+  let res: Response;
+  try {
+    res = await fetch(`${baseURL}/chat/conversations/${conversationId}/stream`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    handlers.onError?.(err instanceof Error ? err.message : 'network_error');
+    return;
+  }
+
+  await consumeSseResponse(res, handlers);
+}
+
+/**
+ * Resume a turn suspended at an `await_confirmation` frame (Phase B / S9).
+ *
+ * `streamChat` closes its stream (with NO `done`) when the agent loop hits a
+ * write/SRS tool; the loop is paused server-side, the transcript-up-to-the
+ * pending `tool_calls` row already committed. This POSTs the human decision to
+ * `POST /chat/conversations/:id/resume` and consumes the CONTINUED SSE response
+ * with the SAME parse loop + handler set — the resumed turn keeps rendering
+ * reasoning/token/tool_result/citation into the same assistant message until
+ * `done` (Apply executes the mutation first; Reject records a "rejected" tool
+ * result so the model answers without mutating).
+ *
+ * `decision: 'apply'` runs the pending mutation then continues the loop;
+ * `'reject'` skips it. Mirrors `streamChat`: raw fetch + reader, outside Eden,
+ * never rejects (failures surface via `onError`).
+ */
+export async function resumeChat(
+  conversationId: string,
+  body: ChatResumeRequest,
+  handlers: ChatStreamHandlers,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${baseURL}/chat/conversations/${conversationId}/resume`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    handlers.onError?.(err instanceof Error ? err.message : 'network_error');
+    return;
+  }
+
+  await consumeSseResponse(res, handlers);
 }

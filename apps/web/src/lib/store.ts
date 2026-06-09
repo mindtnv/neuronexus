@@ -80,6 +80,24 @@ interface State {
    */
   setCardDue: (id: string, iso: string) => Promise<void>;
 
+  /**
+   * Refetch a single card (GET /cards/:id) and merge it into the mirror —
+   * update-in-place by id, or append when it's a card the mirror hadn't seen.
+   * Used after an out-of-band write (e.g. the agentic chat applies an
+   * `edit_card`/SRS tool) to reflect the server change without a full reload.
+   * Silently no-ops if the card is gone/foreign (404). Does NOT change the data
+   * model — it's a thin GET-and-merge over the existing `cards` array.
+   */
+  refetchCard: (id: string) => Promise<void>;
+
+  /**
+   * Refetch the cards of a deck (GET /cards?deckId=:id) and merge them into the
+   * mirror (update-by-id, append new). Used after an agentic `create_card` write
+   * resolves so newly-generated cards appear app-wide. Thin GET-and-merge; no
+   * data-model change. Silently no-ops on error.
+   */
+  refetchDeckCards: (deckId: string) => Promise<void>;
+
   /** Fetch own + builtin note-types (GET /note-types) into the store. */
   getNoteTypes: () => Promise<NoteType[]>;
 
@@ -354,6 +372,41 @@ export const useNN = create<State>()((set, get) => ({
   async setCardDue(id, iso) {
     const updated = cardFromApi(await ok(await (api as any).cards({ id }).patch({ setDue: iso })));
     set((s) => ({ cards: s.cards.map((c) => (c.id === updated.id ? updated : c)) }));
+  },
+
+  async refetchCard(id) {
+    try {
+      const updated = cardFromApi(await ok(await (api as any).cards({ id }).get()));
+      set((s) => {
+        const exists = s.cards.some((c) => c.id === updated.id);
+        return {
+          cards: exists
+            ? s.cards.map((c) => (c.id === updated.id ? updated : c))
+            : [...s.cards, updated],
+        };
+      });
+    } catch {
+      // Card deleted / foreign / chat-applied write that removed it — no-op.
+    }
+  },
+
+  async refetchDeckCards(deckId) {
+    try {
+      // GET /cards?deckId=… is cursor-paginated ({ items, nextCursor }) but the
+      // first page (≤500) is enough to surface freshly-created cards in the
+      // mirror; deeper pages load on-demand elsewhere (same contract bootstrap uses).
+      const page: any = await ok(await (api as any).cards.get({ query: { deckId } }));
+      const rows = Array.isArray(page) ? page : (page?.items ?? []);
+      const fresh: Card[] = (rows as any[]).map(cardFromApi);
+      if (fresh.length === 0) return;
+      set((s) => {
+        const byId = new Map(s.cards.map((c) => [c.id, c]));
+        for (const c of fresh) byId.set(c.id, c);
+        return { cards: [...byId.values()] };
+      });
+    } catch {
+      // Deck gone / foreign — no-op (the chat answer still rendered).
+    }
   },
 
   async getNoteTypes() {

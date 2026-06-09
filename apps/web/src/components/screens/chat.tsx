@@ -23,7 +23,7 @@ import { NNBtn, NNCard, NNIcon, NNSkeleton, NNBadge } from '@/components/ui';
 import { RichCard } from '@/components/rich-card';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { api, ok } from '@/lib/api';
-import { streamChat } from '@/lib/chat-stream';
+import { resumeChat, streamChat, type ChatStreamHandlers } from '@/lib/chat-stream';
 import { cardFromApi } from '@/lib/mappers';
 import { useNN } from '@/lib/store';
 import type { Card } from '@/lib/types';
@@ -52,6 +52,21 @@ interface ToolCallVM {
   result?: string;
   /** Cited cards for search_cards (rendered via RichCard — the only card sink). */
   citations?: Citation[];
+  // ── Phase B: confirm-before-write (S10) ────────────────────────────────────
+  /**
+   * True while this write/SRS tool call is paused awaiting human approval (the
+   * `await_confirmation` frame arrived and the stream closed with no `done`).
+   * The card renders Apply/Reject controls + the blast-radius summary.
+   */
+  awaitingConfirmation?: boolean;
+  /** Dry-run blast radius from the `await_confirmation` frame (rendered above Apply). */
+  impact?: { willDeleteCards?: number; willCreateCards?: number; affectsSiblings?: boolean };
+  /**
+   * The decision the user picked, once clicked. Set IMMEDIATELY on click so both
+   * buttons disable and a double-apply can't be issued from the UI side (the
+   * server has its own atomic backstop, but this prevents the second request).
+   */
+  decision?: 'apply' | 'reject';
 }
 
 interface MessageVM {
@@ -171,10 +186,21 @@ function parseToolArgs(raw: string): unknown {
   }
 }
 
+// Write/SRS tool names — these PAUSE the loop for human approval (Phase B).
+// Used on reload reconstruction: a write/SRS tool-call row WITHOUT an answering
+// role:'tool' row is a suspended-pending-write (Principle 5 — the assistant
+// tool_calls row committed at await_confirmation, the result not yet resolved),
+// so it re-renders the Apply/Reject controls and can be resumed. Read tools
+// (search_cards/web_search) never pause; an unresolved one is just a torn turn.
+const WRITE_SRS_TOOL_NAMES = new Set(['create_card', 'edit_card', 'suspend', 'set_due', 'forget']);
+
 function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
   const out: MessageVM[] = [];
   // The last assistant VM that carries tool calls — role:'tool' rows attach here.
   let pendingToolHost: MessageVM | null = null;
+  // Tool calls still awaiting a role:'tool' row across the whole transcript; the
+  // post-pass promotes the unresolved write/SRS ones to awaitingConfirmation.
+  const unresolved: ToolCallVM[] = [];
 
   for (const row of rows) {
     const citations = Array.isArray(row.citations) ? row.citations : [];
@@ -187,26 +213,32 @@ function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
       if (tc) {
         tc.status = parsed.ok ? 'ok' : 'error';
         if (parsed.summary !== undefined) tc.result = parsed.summary;
+        // Resolved — drop it from the unresolved set.
+        const idx = unresolved.indexOf(tc);
+        if (idx !== -1) unresolved.splice(idx, 1);
       }
       continue;
     }
 
     if (row.role === 'assistant' && row.toolCalls && row.toolCalls.length > 0) {
       // Tool-call row — render as tool-call cards regardless of content (sentinel).
+      // Start each call as `running`; a following role:'tool' row resolves it.
+      const calls: ToolCallVM[] = row.toolCalls.map((c) => ({
+        id: c.id,
+        name: c.name,
+        args: parseToolArgs(c.arguments),
+        status: 'running' as const,
+      }));
       const vm: MessageVM = {
         id: row.id,
         role: 'assistant',
         content: '',
         citations: [],
-        toolCalls: row.toolCalls.map((c) => ({
-          id: c.id,
-          name: c.name,
-          args: parseToolArgs(c.arguments),
-          status: 'ok' as const,
-        })),
+        toolCalls: calls,
       };
       out.push(vm);
       pendingToolHost = vm;
+      for (const c of calls) unresolved.push(c);
       continue;
     }
 
@@ -219,6 +251,19 @@ function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
     });
     // A fresh prose/user turn closes the tool-result attachment window.
     pendingToolHost = null;
+  }
+
+  // Post-pass: any unresolved tool call is a tool that never got its result row.
+  // A write/SRS one is a suspended-pending-write → re-render Apply/Reject so the
+  // user can resume it (impact isn't persisted, so the blast-radius is omitted
+  // on reload — the buttons still drive resumeChat). A read tool left unresolved
+  // is a torn transcript; mark it errored rather than spin forever.
+  for (const tc of unresolved) {
+    if (WRITE_SRS_TOOL_NAMES.has(tc.name)) {
+      tc.awaitingConfirmation = true;
+    } else {
+      tc.status = 'error';
+    }
   }
 
   return out;
@@ -264,6 +309,10 @@ export const NNChat = () => {
   // Store mirror (read-only here): cards for citation resolution, decks for names.
   const cards = useNN((s) => s.cards);
   const decks = useNN((s) => s.decks);
+  // Post-write store sync (S10): after an APPLIED chat write/SRS tool resolves,
+  // refetch the affected card/deck so the rest of the app mirrors the change.
+  const refetchCard = useNN((s) => s.refetchCard);
+  const refetchDeckCards = useNN((s) => s.refetchDeckCards);
 
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [statusLoaded, setStatusLoaded] = useState(false);
@@ -442,6 +491,192 @@ export const NNChat = () => {
     [activeId, confirm, isMobile, t],
   );
 
+  // Resolve an applied write/SRS tool by id (off the latest messages state) and
+  // refetch the affected card/deck via the store mirror so the rest of the app
+  // reflects the mutation. create_card → refetch the deck's cards; edit_card /
+  // SRS → refetch the affected card. Best-effort; the store methods no-op on error.
+  const syncStoreAfterToolResult = useCallback(
+    (toolCallId: string) => {
+      setMessages((prev) => {
+        for (const m of prev) {
+          const tc = m.toolCalls?.find((c) => c.id === toolCallId);
+          if (!tc) continue;
+          const args = (tc.args && typeof tc.args === 'object' ? tc.args : {}) as Record<
+            string,
+            unknown
+          >;
+          const deckId = typeof args.deckId === 'string' ? args.deckId : undefined;
+          const cardId = typeof args.cardId === 'string' ? args.cardId : undefined;
+          if (tc.name === 'create_card' && deckId) {
+            void refetchDeckCards(deckId);
+          } else if (cardId) {
+            // edit_card / suspend / set_due / forget all carry the target cardId.
+            void refetchCard(cardId);
+          } else if (deckId) {
+            void refetchDeckCards(deckId);
+          }
+          break;
+        }
+        return prev; // read-only pass — no state change.
+      });
+    },
+    [refetchCard, refetchDeckCards],
+  );
+
+  // Build the streaming handler set for one assistant message. Shared verbatim
+  // by the initial `send()` turn and the Phase-B `resumeChat` continuation, so a
+  // resumed turn renders reasoning/token/tool_result/citation into the SAME
+  // assistant bubble. `assistantMsgId` pins the target message; `convId` is used
+  // for the post-write store sync + thread bump on done.
+  const buildStreamHandlers = useCallback(
+    (assistantMsgId: string, convId: string): ChatStreamHandlers => {
+      const patchAssistant = (patch: Partial<MessageVM>) =>
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMsgId ? { ...m, ...patch } : m)),
+        );
+
+      // Mutate the live assistant message's toolCalls array immutably.
+      const patchToolCalls = (mut: (calls: ToolCallVM[]) => ToolCallVM[]) =>
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsgId ? { ...m, toolCalls: mut(m.toolCalls ?? []) } : m,
+          ),
+        );
+
+      return {
+        onToken: (delta) =>
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId ? { ...m, content: m.content + delta } : m,
+            ),
+          ),
+        // Stream the reasoning trace into the collapsible "thinking" block.
+        onReasoning: (delta) =>
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId ? { ...m, reasoning: (m.reasoning ?? '') + delta } : m,
+            ),
+          ),
+        // A tool call started — append a running card (idempotent on id).
+        onToolCall: (tc) =>
+          patchToolCalls((calls) =>
+            calls.some((c) => c.id === tc.id)
+              ? calls
+              : [...calls, { id: tc.id, name: tc.name, args: tc.args, status: 'running' }],
+          ),
+        // A tool finished — flip status, attach the one-line summary + citations.
+        // On a confirmed write/SRS resume, the answering `tool_result` also clears
+        // the awaiting/decision flags AND (when ok) triggers the post-write store
+        // sync so the rest of the app mirrors the mutation.
+        onToolResult: (tr) => {
+          patchToolCalls((calls) =>
+            calls.map((c) =>
+              c.id === tr.id
+                ? {
+                    ...c,
+                    status: tr.ok ? 'ok' : 'error',
+                    result: tr.summary ?? c.result,
+                    citations: tr.citations ?? c.citations,
+                    awaitingConfirmation: false,
+                  }
+                : c,
+            ),
+          );
+          // Web-store sync after an APPLIED write resolves ok. Resolve the call
+          // by id off the latest state so we know its name+args (the resume that
+          // produced this result may have started after `send()` returned).
+          if (tr.ok) void syncStoreAfterToolResult(tr.id);
+        },
+        // Coarse phase hint — drives the live status line under the placeholder.
+        onStatus: (phase) => setStreamPhase(phase),
+        // Turn-level citation set (union-deduped server-side, intersected with
+        // emitted [card:<id>] tokens) — the collapsible "sources" block below.
+        onCitation: (citations) => patchAssistant({ citations }),
+        // Phase B: a write/SRS tool paused the turn. Mark the matching tool-call
+        // card as awaiting confirmation + attach its dry-run blast radius. The
+        // stream then closes with NO `done`, so we also drop the streaming/phase
+        // state — the turn is suspended until the user clicks Apply/Reject.
+        onAwaitConfirmation: ({ toolCall, impact }) => {
+          patchToolCalls((calls) =>
+            calls.some((c) => c.id === toolCall.id)
+              ? calls.map((c) =>
+                  c.id === toolCall.id ? { ...c, awaitingConfirmation: true, impact } : c,
+                )
+              : [
+                  ...calls,
+                  {
+                    id: toolCall.id,
+                    name: toolCall.name,
+                    args: toolCall.args,
+                    status: 'running',
+                    awaitingConfirmation: true,
+                    impact,
+                  },
+                ],
+          );
+          patchAssistant({ streaming: false });
+          setStreamPhase(null);
+        },
+        onDone: () => {
+          patchAssistant({ streaming: false });
+          setStreamPhase(null);
+          // Bump this thread to the top (server already bumped updatedAt on done).
+          setConversations((prev) => {
+            const found = prev.find((c) => c.id === convId);
+            if (!found) return prev;
+            const rest = prev.filter((c) => c.id !== convId);
+            return [{ ...found, updatedAt: new Date().toISOString() }, ...rest];
+          });
+        },
+        onError: (message) => {
+          patchAssistant({
+            streaming: false,
+            content:
+              message === 'ai_disabled'
+                ? t('chat.errors.disabled')
+                : t('chat.errors.generic'),
+          });
+          setStreamPhase(null);
+        },
+      };
+    },
+    // `t` is stable per-locale; `syncStoreAfterToolResult` is a stable callback.
+    // setMessages/setStreamPhase/setConversations are stable store/state setters.
+    [t, syncStoreAfterToolResult],
+  );
+
+  // Answer a paused write/SRS tool call (Phase B / S10). Apply runs the mutation
+  // server-side then continues the loop; Reject records a "rejected" result so
+  // the model answers without mutating. The SAME stream handlers are re-attached
+  // (via buildStreamHandlers) so the continued turn renders into the same bubble.
+  const confirmToolCall = useCallback(
+    (assistantMsgId: string, toolCallId: string, decision: 'apply' | 'reject') => {
+      const convId = activeId;
+      if (!convId) return;
+      // Mark the decision IMMEDIATELY so both buttons disable — a double-apply
+      // can't be issued from the UI (the server also has an atomic backstop).
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantMsgId
+            ? {
+                ...m,
+                streaming: true,
+                toolCalls: (m.toolCalls ?? []).map((c) =>
+                  c.id === toolCallId ? { ...c, decision } : c,
+                ),
+              }
+            : m,
+        ),
+      );
+      void resumeChat(
+        convId,
+        { resumeToolCallId: toolCallId, decision },
+        buildStreamHandlers(assistantMsgId, convId),
+      );
+    },
+    [activeId, buildStreamHandlers],
+  );
+
   const send = useCallback(async () => {
     const content = draft.trim();
     if (!content || sending) return;
@@ -474,84 +709,10 @@ export const NNChat = () => {
       { id: assistantMsgId, role: 'assistant', content: '', citations: [], streaming: true },
     ]);
 
-    const patchAssistant = (patch: Partial<MessageVM>) =>
-      setMessages((prev) =>
-        prev.map((m) => (m.id === assistantMsgId ? { ...m, ...patch } : m)),
-      );
+    await streamChat(convId!, content, buildStreamHandlers(assistantMsgId, convId!));
 
-    // Mutate the live assistant message's toolCalls array immutably.
-    const patchToolCalls = (mut: (calls: ToolCallVM[]) => ToolCallVM[]) =>
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantMsgId ? { ...m, toolCalls: mut(m.toolCalls ?? []) } : m,
-        ),
-      );
-
-    await streamChat(convId!, content, {
-      onToken: (delta) =>
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsgId ? { ...m, content: m.content + delta } : m,
-          ),
-        ),
-      // Stream the reasoning trace into the collapsible "thinking" block.
-      onReasoning: (delta) =>
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsgId ? { ...m, reasoning: (m.reasoning ?? '') + delta } : m,
-          ),
-        ),
-      // A tool call started — append a running card (idempotent on id).
-      onToolCall: (tc) =>
-        patchToolCalls((calls) =>
-          calls.some((c) => c.id === tc.id)
-            ? calls
-            : [...calls, { id: tc.id, name: tc.name, args: tc.args, status: 'running' }],
-        ),
-      // A tool finished — flip status, attach the one-line summary + citations.
-      onToolResult: (tr) =>
-        patchToolCalls((calls) =>
-          calls.map((c) =>
-            c.id === tr.id
-              ? {
-                  ...c,
-                  status: tr.ok ? 'ok' : 'error',
-                  result: tr.summary ?? c.result,
-                  citations: tr.citations ?? c.citations,
-                }
-              : c,
-          ),
-        ),
-      // Coarse phase hint — drives the live status line under the placeholder.
-      onStatus: (phase) => setStreamPhase(phase),
-      // Turn-level citation set (union-deduped server-side, intersected with
-      // emitted [card:<id>] tokens) — the collapsible "sources" block below.
-      onCitation: (citations) => patchAssistant({ citations }),
-      onDone: () => {
-        patchAssistant({ streaming: false });
-        setStreamPhase(null);
-      },
-      onError: (message) => {
-        patchAssistant({
-          streaming: false,
-          content:
-            message === 'ai_disabled'
-              ? t('chat.errors.disabled')
-              : t('chat.errors.generic'),
-        });
-        setStreamPhase(null);
-      },
-    });
-
-    // Bump this thread to the top (server already bumped updatedAt on done).
-    setConversations((prev) => {
-      const found = prev.find((c) => c.id === convId);
-      if (!found) return prev;
-      const rest = prev.filter((c) => c.id !== convId);
-      return [{ ...found, updatedAt: new Date().toISOString() }, ...rest];
-    });
     setSending(false);
-  }, [activeId, draft, sending, t]);
+  }, [activeId, draft, sending, buildStreamHandlers]);
 
   // ── Render: setup notice when chat is unconfigured ───────────────────────────
 
@@ -798,6 +959,7 @@ export const NNChat = () => {
                     phase={m.streaming ? streamPhase : null}
                     resolveCard={resolveCard}
                     deckNameById={deckNameById}
+                    onConfirm={confirmToolCall}
                     t={t}
                   />
                 ))}
@@ -877,10 +1039,22 @@ interface MessageRowProps {
   phase?: StreamPhase;
   resolveCard: (cardId: string) => Card | undefined;
   deckNameById: Map<string, string>;
+  /**
+   * Answer a paused write/SRS tool call (Phase B). Carries the parent assistant
+   * message id so the resume targets the right bubble.
+   */
+  onConfirm: (assistantMsgId: string, toolCallId: string, decision: 'apply' | 'reject') => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-const MessageRow = ({ message, phase = null, resolveCard, deckNameById, t }: MessageRowProps) => {
+const MessageRow = ({
+  message,
+  phase = null,
+  resolveCard,
+  deckNameById,
+  onConfirm,
+  t,
+}: MessageRowProps) => {
   const isUser = message.role === 'user';
   // Cited cards are collapsed by default (they can be large); a count summary
   // toggles the full RichCard list. Hook declared before the user-message early
@@ -957,6 +1131,7 @@ const MessageRow = ({ message, phase = null, resolveCard, deckNameById, t }: Mes
               toolCall={tc}
               resolveCard={resolveCard}
               deckNameById={deckNameById}
+              onConfirm={(decision) => onConfirm(message.id, tc.id, decision)}
               t={t}
             />
           ))}
@@ -1233,10 +1408,18 @@ interface ToolCallCardProps {
   toolCall: ToolCallVM;
   resolveCard: (cardId: string) => Card | undefined;
   deckNameById: Map<string, string>;
+  /** Answer this tool call's pending confirmation (Phase B). */
+  onConfirm: (decision: 'apply' | 'reject') => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-const ToolCallCard = ({ toolCall, resolveCard, deckNameById, t }: ToolCallCardProps) => {
+const ToolCallCard = ({
+  toolCall,
+  resolveCard,
+  deckNameById,
+  onConfirm,
+  t,
+}: ToolCallCardProps) => {
   const [open, setOpen] = useState(false);
   const labelKey = TOOL_LABEL_KEY[toolCall.name];
   const label = labelKey ? t(labelKey) : toolCall.name;
@@ -1310,6 +1493,14 @@ const ToolCallCard = ({ toolCall, resolveCard, deckNameById, t }: ToolCallCardPr
         </span>
       </div>
 
+      {/* Phase B: confirm-before-write controls. Render the dry-run blast radius
+          ABOVE the Apply/Reject buttons so a destructive write is deliberate.
+          Both buttons disable the instant one is clicked (decision set) — the
+          server has an atomic backstop, this stops the second request UI-side. */}
+      {toolCall.awaitingConfirmation && (
+        <ConfirmControls toolCall={toolCall} onConfirm={onConfirm} t={t} />
+      )}
+
       {/* Collapsible result body. */}
       {hasBody && (
         <div style={{ marginTop: 10 }}>
@@ -1370,6 +1561,130 @@ const ToolCallCard = ({ toolCall, resolveCard, deckNameById, t }: ToolCallCardPr
         </div>
       )}
     </NNCard>
+  );
+};
+
+// ── Confirm-before-write controls (Phase B / S10) ────────────────────────────
+// Hand-rolled (no UI lib — Principle 4). Rendered inside a paused write/SRS
+// tool-call card. Shows the dry-run blast radius ABOVE the Apply/Reject buttons
+// so a destructive edit is confirmed knowingly; `willDelete` is surfaced
+// PROMINENTLY (rose) because it loses FSRS history. Both buttons disable the
+// instant one is clicked (`toolCall.decision` set) — the UI-side double-apply
+// guard (the server enforces idempotency atomically too). Once a decision is
+// chosen the controls collapse to a single status chip ("Applied"/"Rejected").
+
+interface ConfirmControlsProps {
+  toolCall: ToolCallVM;
+  onConfirm: (decision: 'apply' | 'reject') => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+const ConfirmControls = ({ toolCall, onConfirm, t }: ConfirmControlsProps) => {
+  const decided = toolCall.decision != null;
+  const impact = toolCall.impact;
+  const willCreate = impact?.willCreateCards ?? 0;
+  const willDelete = impact?.willDeleteCards ?? 0;
+  const affectsSiblings = impact?.affectsSiblings === true;
+
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        paddingTop: 10,
+        borderTop: '1px dashed var(--border-2)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+      }}
+    >
+      <span
+        style={{
+          fontSize: 10.5,
+          fontWeight: 700,
+          letterSpacing: 1,
+          textTransform: 'uppercase',
+          color: 'var(--amber-400)',
+          fontFamily: 'var(--font-sans)',
+        }}
+      >
+        {t('chat.confirm.pendingTitle')}
+      </span>
+
+      {/* Blast radius — only the parts the dry-run predicted. DELETE is prominent. */}
+      {(willCreate > 0 || willDelete > 0 || affectsSiblings) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {willCreate > 0 && (
+            <span
+              style={{
+                fontSize: 12.5,
+                color: 'var(--text-muted)',
+                fontFamily: 'var(--font-sans)',
+              }}
+            >
+              {t('chat.confirm.willCreate', { count: willCreate })}
+            </span>
+          )}
+          {willDelete > 0 && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 13,
+                fontWeight: 700,
+                color: 'var(--rose-400)',
+                fontFamily: 'var(--font-sans)',
+              }}
+            >
+              <NNIcon name="x" size={13} color="var(--rose-400)" />
+              {t('chat.confirm.willDelete', { count: willDelete })}
+            </span>
+          )}
+          {affectsSiblings && (
+            <span
+              style={{
+                fontSize: 12.5,
+                color: 'var(--text-dim)',
+                fontFamily: 'var(--font-sans)',
+              }}
+            >
+              {t('chat.confirm.affectsSiblings')}
+            </span>
+          )}
+        </div>
+      )}
+
+      {decided ? (
+        // Once chosen, replace the buttons with a terminal status chip so the
+        // decision is irreversible from the UI (no re-click path).
+        <NNBadge tone={toolCall.decision === 'apply' ? 'lime' : 'neutral'} size="sm">
+          {toolCall.decision === 'apply'
+            ? t('chat.confirm.applied')
+            : t('chat.confirm.rejected')}
+        </NNBadge>
+      ) : (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <NNBtn
+            size="sm"
+            variant="primary"
+            icon="check"
+            disabled={decided}
+            onClick={() => onConfirm('apply')}
+          >
+            {t('chat.confirm.apply')}
+          </NNBtn>
+          <NNBtn
+            size="sm"
+            variant="ghost"
+            icon="x"
+            disabled={decided}
+            onClick={() => onConfirm('reject')}
+          >
+            {t('chat.confirm.reject')}
+          </NNBtn>
+        </div>
+      )}
+    </div>
   );
 };
 

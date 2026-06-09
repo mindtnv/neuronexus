@@ -257,6 +257,82 @@ function makeDeckResolver(userDecks: DeckRow[]): (value: string, nested: boolean
   };
 }
 
+// ── Extracted, reuse-by-the-agentic-SRS/edit tools helper (Phase B) ──────────
+//
+// Hoists the PATCH /cards/:id explicit-field map + guards (forget/setDue mutual
+// exclusion, ISO-date validation, deck-ownership, suspend) out of the route body
+// so the `suspend`/`set_due`/`forget` SRS tools and `edit_card`'s deck-move path
+// (apps/api/src/ai/tools.ts) wrap the EXACT same path — never reimplementing the
+// FSRS reset (`fsrsResetColumns`) or the explicit-field map (cards.ts:735). The
+// route handler calls this verbatim, so its behavior is unchanged.
+
+/** Patchable card-control fields — identical surface to the PATCH route body. */
+export interface CardPatch {
+  deckId?: string;
+  suspended?: boolean;
+  forget?: boolean;
+  setDue?: string;
+}
+
+export type CardPatchResult =
+  | { ok: true; card: typeof cards.$inferSelect }
+  | {
+      ok: false;
+      code: 400 | 404;
+      error: 'forget_and_setdue_exclusive' | 'deck_not_found' | 'invalid_date' | 'not_found';
+    };
+
+/**
+ * Apply a card-control patch (deck-move / suspend / forget / setDue), scoped by
+ * `userId`. Mirrors the PATCH /cards/:id route guards exactly (mutual exclusion
+ * 400, deck-ownership 400, invalid-date 400, not-found 404). Control fields are
+ * mapped EXPLICITLY (no body spread) so a stray key can never reach a column.
+ */
+export async function patchCard(
+  userId: string,
+  cardId: string,
+  body: CardPatch,
+): Promise<CardPatchResult> {
+  if (body.forget === true && body.setDue !== undefined) {
+    return { ok: false, code: 400, error: 'forget_and_setdue_exclusive' };
+  }
+
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+
+  // If moving the card to a different deck, verify ownership of the target deck.
+  if (body.deckId !== undefined) {
+    const deck = await db
+      .select({ id: decks.id })
+      .from(decks)
+      .where(and(eq(decks.id, body.deckId), eq(decks.userId, userId)))
+      .limit(1);
+    if (deck.length === 0) return { ok: false, code: 400, error: 'deck_not_found' };
+    patch.deckId = body.deckId;
+  }
+
+  if (body.suspended !== undefined) patch.suspended = body.suspended;
+
+  if (body.forget === true) {
+    // Reuse the shared FSRS defaults — no hard-coded magic. Resets state to
+    // "new" with zeroed reps/lapses, due=now, lastReview=null.
+    Object.assign(patch, fsrsResetColumns());
+  }
+
+  if (body.setDue !== undefined) {
+    const d = new Date(body.setDue);
+    if (Number.isNaN(d.getTime())) return { ok: false, code: 400, error: 'invalid_date' };
+    patch.due = d;
+  }
+
+  const [updated] = await db
+    .update(cards)
+    .set(patch)
+    .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
+    .returning();
+  if (!updated) return { ok: false, code: 404, error: 'not_found' };
+  return { ok: true, card: updated };
+}
+
 export const cardsModule = new Elysia({ prefix: '/cards' })
   .use(authPlugin)
   // List cards. Cursor-paginated: ordered by `created_at DESC`, cursor is
@@ -743,44 +819,9 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
   .patch(
     '/:id',
     async ({ user, params, body, status }) => {
-      if (body.forget === true && body.setDue !== undefined) {
-        return status(400, { error: 'forget_and_setdue_exclusive' });
-      }
-
-      const patch: Record<string, unknown> = { updatedAt: new Date() };
-
-      // If moving the card to a different deck, verify ownership of the target deck.
-      if (body.deckId !== undefined) {
-        const deck = await db
-          .select({ id: decks.id })
-          .from(decks)
-          .where(and(eq(decks.id, body.deckId), eq(decks.userId, user.id)))
-          .limit(1);
-        if (deck.length === 0) return status(400, { error: 'deck_not_found' });
-        patch.deckId = body.deckId;
-      }
-
-      if (body.suspended !== undefined) patch.suspended = body.suspended;
-
-      if (body.forget === true) {
-        // Reuse the shared FSRS defaults — no hard-coded magic. Resets state to
-        // "new" with zeroed reps/lapses, due=now, lastReview=null.
-        Object.assign(patch, fsrsResetColumns());
-      }
-
-      if (body.setDue !== undefined) {
-        const d = new Date(body.setDue);
-        if (Number.isNaN(d.getTime())) return status(400, { error: 'invalid_date' });
-        patch.due = d;
-      }
-
-      const [updated] = await db
-        .update(cards)
-        .set(patch)
-        .where(and(eq(cards.id, params.id), eq(cards.userId, user.id)))
-        .returning();
-      if (!updated) return status(404, { error: 'not_found' });
-      return updated;
+      const result = await patchCard(user.id, params.id, body);
+      if (!result.ok) return status(result.code, { error: result.error });
+      return result.card;
     },
     {
       auth: true,

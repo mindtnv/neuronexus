@@ -126,6 +126,15 @@ describe('i18n parity — en/chat.ts vs ru/chat.ts (Slice 5)', () => {
     'tool.done',
     'tool.failed',
     'tool.resultToggle',
+    // Phase B — confirm-before-write controls + blast-radius summary.
+    'confirm.pendingTitle',
+    'confirm.apply',
+    'confirm.reject',
+    'confirm.applied',
+    'confirm.rejected',
+    'confirm.willCreate',
+    'confirm.willDelete',
+    'confirm.affectsSiblings',
   ];
 
   for (const key of REQUIRED_CHAT_AGENT_KEYS) {

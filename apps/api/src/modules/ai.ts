@@ -20,12 +20,13 @@
 // via the normal path because nothing was flushed.
 
 import { Elysia, t } from 'elysia';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import {
   conversations,
   db,
   messages as messagesTable,
   type Citation,
+  type Db,
 } from '@neuronexus/db';
 import {
   buildAgentSystemPrompt,
@@ -40,9 +41,21 @@ import {
   isChatEnabled,
   type AgentChatMessage,
 } from '../ai/openai-client.ts';
-import { buildToolRegistry, toOpenAiTools, type Tool, type ToolResult } from '../ai/tools.ts';
+import {
+  buildToolRegistry,
+  enqueueToolCardsForIndex,
+  toOpenAiTools,
+  type Tool,
+  type ToolContext,
+  type ToolImpact,
+  type ToolResult,
+} from '../ai/tools.ts';
 import { isWebSearchEnabled } from '../ai/web-search.ts';
 import { rootLogger } from '../logger.ts';
+import type { Logger } from 'pino';
+
+/** A Drizzle transaction handle (the arg passed to `db.transaction`). */
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 // Retrieval tuning for a chat turn (env-configurable — see env.ts ai block).
 const RETRIEVE_K = env.ai.RETRIEVE_K;
@@ -94,9 +107,16 @@ type TranscriptRow =
  * Dangling-tool_calls guard: if the LAST row is an assistant tool_calls row with
  * no answering `tool` rows, strip it so the gateway doesn't 400 on an unanswered
  * tool_calls tail (Phase A never produces this — read tools always answer in the
- * same turn — but a Phase B suspended turn could, and a torn legacy row might).
+ * same turn — but a Phase B suspended turn does, and a torn legacy row might).
+ *
+ * `bypassDanglingToolCallId` (resume path): the resume route has JUST persisted
+ * the answering `role:tool` row for that id, so the trailing assistant tool_calls
+ * row is no longer dangling — the guard is suppressed for that exact id.
  */
-function reconstructHistory(rows: HistoryRow[]): AgentChatMessage[] {
+function reconstructHistory(
+  rows: HistoryRow[],
+  bypassDanglingToolCallId?: string,
+): AgentChatMessage[] {
   const out: AgentChatMessage[] = [];
   for (const r of rows) {
     if (r.role === 'user') {
@@ -125,7 +145,9 @@ function reconstructHistory(rows: HistoryRow[]): AgentChatMessage[] {
     const answered = new Set(
       out.filter((m) => m.role === 'tool' && m.tool_call_id).map((m) => m.tool_call_id),
     );
-    const allAnswered = last.tool_calls.every((tc) => answered.has(tc.id));
+    const allAnswered = last.tool_calls.every(
+      (tc) => answered.has(tc.id) || tc.id === bypassDanglingToolCallId,
+    );
     if (!allAnswered) out.pop();
   }
   return out;
@@ -135,6 +157,433 @@ function reconstructHistory(rows: HistoryRow[]): AgentChatMessage[] {
 function capToolResult(text: string): string {
   if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
   return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n…[truncated]`;
+}
+
+/** Outcome of a shared agent turn — the caller closes the controller accordingly. */
+type AgentTurnOutcome =
+  | { kind: 'done'; messageId: string }
+  // The turn paused on a write/SRS tool awaiting confirmation. The buffered
+  // transcript (up to AND including the assistant tool_calls row naming the
+  // pending write) is already COMMITTED; the caller closes WITHOUT a `done`.
+  | { kind: 'suspended' };
+
+interface RunAgentTurnArgs {
+  userId: string;
+  conversationId: string;
+  log: Logger;
+  emit: (event: ChatStreamEvent) => void;
+  /** [system, ...history, user] — already reconstructed by the caller. */
+  startMessages: AgentChatMessage[];
+  webSearchEnabled: boolean;
+}
+
+/**
+ * The shared agentic loop body — used by BOTH the initial `/stream` handler and
+ * the `/resume` continuation. Streams `reasoning`/`token`/`tool_*`/`status`
+ * frames, executes READ tools server-side, and — when a finalized tool call is a
+ * write/SRS tool — computes its dry-run `impact`, emits `await_confirmation`,
+ * commits the transcript up to and including that pending `tool_calls` row, and
+ * returns `{ kind:'suspended' }` (the turn is suspended; the caller closes the
+ * stream WITHOUT a `done`). Otherwise it runs to `finish:stop`, emits the
+ * union-deduped `citation`, commits the entire turn transcript in ONE end-of-turn
+ * transaction, and returns `{ kind:'done', messageId }`.
+ *
+ * NOTE: this routine NEVER catches — it lets errors propagate to the caller's
+ * try/catch (which turns them into a terminal `event: error` frame, SHOULD-FIX
+ * #7). A dropped/erroring turn persists nothing (the commit is at the very end,
+ * or — for a suspended turn — exactly at the confirmation boundary).
+ */
+async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
+  const { userId, conversationId, log, emit, startMessages, webSearchEnabled } = args;
+
+  const registry: Tool[] = buildToolRegistry({ webSearchEnabled });
+  const toolByName = new Map(registry.map((tl) => [tl.name, tl]));
+  const openAiTools = toOpenAiTools(registry);
+  const toolCtx: ToolContext = { userId, log };
+
+  const messages = [...startMessages];
+
+  // `transcript` accumulates rows to persist. Phase A / a fully-answered resume
+  // commits ALL rows in ONE end-of-turn transaction at `done`. A write/SRS pause
+  // commits the buffer-so-far + the pending assistant tool_calls row, then stops.
+  const transcript: TranscriptRow[] = [];
+  // Turn-level citation accumulator (union across ALL search_cards calls).
+  const citationAcc = new Map<string, Citation>();
+  let finalText = '';
+  let toolResultChars = 0;
+  let answeringEmitted = false;
+
+  emit({ type: 'status', phase: 'thinking' });
+
+  for (let step = 0; step < AGENT_MAX_STEPS; step++) {
+    const isFinalStep = step === AGENT_MAX_STEPS - 1 || toolResultChars >= TOOL_RESULT_BUDGET;
+    const toolChoice = isFinalStep ? 'none' : 'auto';
+
+    const partials = new Map<number, { id: string; name: string; args: string }>();
+    let finishReason: 'stop' | 'tool_calls' | 'length' | undefined;
+
+    for await (const chunk of chatStreamAgentic(messages, {
+      tools: isFinalStep ? [] : openAiTools,
+      toolChoice,
+      log,
+    })) {
+      if (chunk.type === 'reasoning') {
+        emit({ type: 'reasoning', delta: chunk.text });
+      } else if (chunk.type === 'content') {
+        if (!answeringEmitted) {
+          answeringEmitted = true;
+          emit({ type: 'status', phase: 'answering' });
+        }
+        finalText += chunk.text;
+        emit({ type: 'token', delta: chunk.text });
+      } else if (chunk.type === 'tool_call_delta') {
+        const cur = partials.get(chunk.index) ?? { id: '', name: '', args: '' };
+        if (chunk.id) cur.id = chunk.id;
+        if (chunk.name) cur.name = chunk.name;
+        if (chunk.argsFragment) cur.args += chunk.argsFragment;
+        partials.set(chunk.index, cur);
+      } else if (chunk.type === 'finish') {
+        finishReason = chunk.reason;
+      }
+    }
+
+    // Never-terminated guard (M3): reader ended with buffered tool_call fragments
+    // but NO finish chunk → torn stream. Terminal error; do NOT execute partials.
+    if (finishReason === undefined && partials.size > 0) {
+      throw new Error('chat_stream_torn');
+    }
+
+    if (isFinalStep || finishReason !== 'tool_calls') {
+      // Terminal: a (possibly empty) text answer. On the forced-final step we
+      // IGNORE any tool_calls the gateway returned anyway.
+      break;
+    }
+
+    const assembled: AssembledToolCall[] = [...partials.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, p], index) => ({
+        id: p.id || `call_${step}_${index}`,
+        name: p.name,
+        arguments: p.args,
+      }));
+
+    if (assembled.length === 0) break;
+
+    // ── Write/SRS pause (Phase B) ──────────────────────────────────────────────
+    // If ANY finalized call is a write/SRS tool, the turn pauses for confirmation.
+    // We only support ONE pending write at a time: pause on the FIRST write call
+    // in this batch, attaching just that call as the pending assistant tool_calls
+    // row (the model rarely batches a write with other calls; if it does, we
+    // surface the first write — the rest are dropped, the model re-proposes on
+    // resume if still needed).
+    const firstWrite = assembled.find((c) => {
+      const tl = toolByName.get(c.name);
+      return tl && tl.kind !== 'read';
+    });
+
+    if (firstWrite) {
+      const tool = toolByName.get(firstWrite.name)!;
+      // Compute the blast radius WITHOUT mutating.
+      let impact: ToolImpact = {};
+      try {
+        const parsed = firstWrite.arguments ? JSON.parse(firstWrite.arguments) : {};
+        impact = (await tool.dryRun?.(toolCtx, parsed)) ?? {};
+      } catch (err) {
+        log.warn({ err, tool: firstWrite.name }, 'ai.tool.dryRun_failed');
+      }
+
+      // Persist (and replay) only the pending write call as the assistant row.
+      messages.push({
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: firstWrite.id,
+            type: 'function',
+            function: { name: firstWrite.name, arguments: firstWrite.arguments },
+          },
+        ],
+      });
+      transcript.push({ role: 'assistant', content: '', toolCalls: [firstWrite] });
+
+      emit({ type: 'tool_call', id: firstWrite.id, name: firstWrite.name, args: firstWrite.arguments, status: 'running' });
+      emit({
+        type: 'await_confirmation',
+        toolCall: { id: firstWrite.id, name: firstWrite.name, args: firstWrite.arguments },
+        impact: Object.keys(impact).length > 0 ? impact : undefined,
+      });
+
+      // Commit everything so far (parent + so-far children + this pending
+      // tool_calls row) in ONE transaction (Principle 5 — no orphan tool row).
+      await persistTranscript({ tx: undefined, transcript, userId, conversationId });
+      log.info({ tool: firstWrite.name, toolCallId: firstWrite.id }, 'ai.agent.suspended');
+      return { kind: 'suspended' };
+    }
+
+    // ── Read tools — auto-execute server-side ──────────────────────────────────
+    messages.push({
+      role: 'assistant',
+      content: '',
+      tool_calls: assembled.map((tc) => ({
+        id: tc.id,
+        type: 'function',
+        function: { name: tc.name, arguments: tc.arguments },
+      })),
+    });
+    transcript.push({ role: 'assistant', content: '', toolCalls: assembled });
+
+    emit({ type: 'status', phase: 'calling_tool' });
+
+    for (const call of assembled) {
+      emit({ type: 'tool_call', id: call.id, name: call.name, args: call.arguments, status: 'running' });
+
+      let parsedArgs: unknown = {};
+      let parseFailed = false;
+      try {
+        parsedArgs = call.arguments ? JSON.parse(call.arguments) : {};
+      } catch {
+        parseFailed = true;
+      }
+
+      const tool = toolByName.get(call.name);
+      let result: ToolResult;
+      if (parseFailed) {
+        result = { ok: false, error: `invalid tool arguments for ${call.name}` };
+      } else if (!tool) {
+        result = { ok: false, error: `unknown tool: ${call.name}` };
+      } else {
+        try {
+          result = await tool.execute(toolCtx, parsedArgs);
+        } catch (toolErr) {
+          result = {
+            ok: false,
+            error: toolErr instanceof Error ? toolErr.message : 'tool_failed',
+          };
+        }
+      }
+
+      const resultCitations = result.ok ? (result.citations ?? []) : [];
+      for (const c of resultCitations) {
+        const key = c.chunkId || c.cardId;
+        if (!citationAcc.has(key)) citationAcc.set(key, c);
+      }
+
+      emit({
+        type: 'tool_result',
+        id: call.id,
+        ok: result.ok,
+        summary: result.ok ? undefined : result.error,
+        citations: result.ok && resultCitations.length > 0 ? resultCitations : undefined,
+      });
+
+      const toolContent = capToolResult(
+        result.ok ? result.text : JSON.stringify({ ok: false, error: result.error }),
+      );
+      toolResultChars += toolContent.length;
+      messages.push({ role: 'tool', content: toolContent, tool_call_id: call.id });
+      transcript.push({ role: 'tool', content: toolContent, toolCallId: call.id });
+    }
+  }
+
+  // Citations = union-dedup across ALL search_cards calls, intersected with the
+  // [card:<id>] tokens the model actually emitted (fallback to the capped union).
+  const emittedCardIds = new Set<string>();
+  for (const m of finalText.matchAll(CARD_TOKEN_RE)) {
+    if (m[1]) emittedCardIds.add(m[1]);
+  }
+  const unionCitations = [...citationAcc.values()];
+  let citations: Citation[];
+  if (emittedCardIds.size > 0) {
+    const intersected = unionCitations.filter((c) => emittedCardIds.has(c.cardId));
+    citations = (intersected.length > 0 ? intersected : unionCitations).slice(0, RETRIEVE_K);
+  } else {
+    citations = unionCitations.slice(0, RETRIEVE_K);
+  }
+
+  if (finalText.trim().length === 0) {
+    finalText = "I couldn't complete the request within the step limit.";
+  }
+
+  emit({ type: 'citation', citations });
+  transcript.push({ role: 'assistant', content: finalText, citations });
+
+  const finalMessageId = await persistTranscript({
+    tx: undefined,
+    transcript,
+    userId,
+    conversationId,
+  });
+  return { kind: 'done', messageId: finalMessageId! };
+}
+
+/**
+ * Persist a transcript buffer (assistant tool_calls rows + role:tool rows + the
+ * final assistant text row) and bump the conversation's `updatedAt`, in ONE
+ * transaction. When `tx` is supplied the inserts run in the caller's
+ * transaction (resume atomicity); otherwise a fresh transaction is opened.
+ * Returns the id of the LAST assistant text row inserted (the `done` messageId),
+ * or `null` if the buffer held no final text row (a suspended turn).
+ */
+async function persistTranscript(args: {
+  tx: Tx | undefined;
+  transcript: TranscriptRow[];
+  userId: string;
+  conversationId: string;
+}): Promise<string | null> {
+  const { transcript, userId, conversationId } = args;
+  const run = async (tx: Tx): Promise<string | null> => {
+    let lastAssistantId: string | null = null;
+    for (const row of transcript) {
+      if (row.role === 'assistant' && row.content === '' && 'toolCalls' in row) {
+        await tx.insert(messagesTable).values({
+          conversationId,
+          userId,
+          role: 'assistant',
+          content: '',
+          toolCalls: row.toolCalls.map((tc) => ({
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.arguments,
+          })),
+        });
+      } else if (row.role === 'tool') {
+        await tx.insert(messagesTable).values({
+          conversationId,
+          userId,
+          role: 'tool',
+          content: row.content,
+          toolCallId: row.toolCallId,
+        });
+      } else {
+        const [msg] = await tx
+          .insert(messagesTable)
+          .values({
+            conversationId,
+            userId,
+            role: 'assistant',
+            content: row.content,
+            citations: 'citations' in row ? row.citations : [],
+          })
+          .returning({ id: messagesTable.id });
+        lastAssistantId = msg!.id;
+      }
+    }
+    await tx
+      .update(conversations)
+      .set({ updatedAt: new Date() })
+      .where(eq(conversations.id, conversationId));
+    return lastAssistantId;
+  };
+  return args.tx ? run(args.tx) : db.transaction(run);
+}
+
+/** Load the full persisted transcript for a conversation (oldest-first). */
+async function loadHistoryRows(conversationId: string): Promise<HistoryRow[]> {
+  const rows = await db
+    .select({
+      role: messagesTable.role,
+      content: messagesTable.content,
+      toolCalls: messagesTable.toolCalls,
+      toolCallId: messagesTable.toolCallId,
+    })
+    .from(messagesTable)
+    .where(eq(messagesTable.conversationId, conversationId))
+    .orderBy(asc(messagesTable.createdAt))
+    .limit(500);
+  return rows as HistoryRow[];
+}
+
+/**
+ * Find the pending tool call named by `resumeToolCallId` — it must be one of the
+ * `tool_calls` on a persisted assistant row in THIS conversation (the ownership
+ * chain: the rows were already user+conversation scoped by the caller). Returns
+ * the matching call record or `null` (→ 404, never trust the client's id).
+ */
+function findPendingToolCall(
+  rows: HistoryRow[],
+  resumeToolCallId: string,
+): AssembledToolCall | null {
+  for (const r of rows) {
+    if (r.role === 'assistant' && r.toolCalls) {
+      const match = r.toolCalls.find((tc) => tc.id === resumeToolCallId);
+      if (match) return { id: match.id, name: match.name, arguments: match.arguments };
+    }
+  }
+  return null;
+}
+
+/**
+ * The id of the most recent assistant TEXT row in a conversation (null
+ * tool_calls), for the idempotent resume no-op `done`. Returns `null` if the
+ * suspended turn never produced a final text row yet (the client falls back to
+ * an empty id — the no-op `done` is terminal + cosmetic).
+ */
+async function lastAssistantTextId(conversationId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ id: messagesTable.id })
+    .from(messagesTable)
+    .where(
+      and(
+        eq(messagesTable.conversationId, conversationId),
+        eq(messagesTable.role, 'assistant'),
+        isNull(messagesTable.toolCalls),
+      ),
+    )
+    .orderBy(desc(messagesTable.createdAt))
+    .limit(1);
+  return row?.id ?? null;
+}
+
+/**
+ * Wrap an agent-turn runner in the raw SSE `Response(ReadableStream)` boilerplate
+ * + the post-flush error boundary (SHOULD-FIX #7): ANY error inside `run`
+ * becomes a terminal `event: error` frame; nothing throws into Elysia's
+ * `.onError` (which can't rewrite an event-stream body). `run` returns the turn
+ * outcome — a `done` outcome already emitted its `done` frame inside the loop;
+ * a `suspended` outcome closes the stream WITHOUT a `done`.
+ */
+function sseResponse(
+  log: Logger,
+  run: (emit: (event: ChatStreamEvent) => void) => Promise<AgentTurnOutcome>,
+): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const emit = (event: ChatStreamEvent) => {
+        controller.enqueue(encoder.encode(sseFrame(event)));
+      };
+      try {
+        const outcome = await run(emit);
+        if (outcome.kind === 'done') {
+          emit({ type: 'done', messageId: outcome.messageId });
+        }
+        // 'suspended' → close WITHOUT a `done` (the turn is paused for confirm).
+        controller.close();
+      } catch (err) {
+        log.error({ err }, 'ai.chat.stream_failed');
+        const code =
+          err instanceof Error && /^(chat_stream_torn|chat_failed|ai_disabled)/.test(err.message)
+            ? err.message
+            : 'chat_failed';
+        try {
+          emit({ type: 'error', message: code });
+        } catch {
+          // controller already closed — nothing to do.
+        }
+        try {
+          controller.close();
+        } catch {
+          // already closed.
+        }
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+    },
+  });
 }
 
 export const aiModule = new Elysia({ prefix: '/ai' })
@@ -239,17 +688,17 @@ export const chatModule = new Elysia({ prefix: '/chat' })
   // the Eden type graph (the typed RPC client can't consume a stream). The web
   // client reaches this via a hand-written fetch+reader (Slice 5).
   //
-  // Flow: persist the user message → build [system, ...history, user] → run a
-  // BOUNDED agent loop (chatStreamAgentic): emit `reasoning`/`token` deltas,
-  // assemble streamed tool_calls (index-keyed), execute READ tools server-side,
-  // emit `tool_call`/`tool_result`, feed results back, continue. On `finish:stop`
-  // emit ONE union-deduped `citation` event, then commit the ENTIRE transcript
-  // (assistant tool_calls rows + role:tool rows + final assistant text) in ONE
-  // end-of-turn transaction → `event: done`. A dropped stream persists nothing
-  // (same safety as before). Reasoning is streamed only, never persisted. Errors
-  // after the first flushed byte become a terminal `event: error` frame (NEVER
-  // reach app.ts's `.onError`). Phase A registry = read tools only; the
-  // write/SRS confirm-pause branch is Phase B (loop left structured for it).
+  // Flow: persist the user message → build [system, ...history, user] → run the
+  // shared `runAgentTurn` loop: emit `reasoning`/`token` deltas, assemble
+  // streamed tool_calls (index-keyed), execute READ tools server-side, emit
+  // `tool_call`/`tool_result`, feed results back, continue. On `finish:stop` emit
+  // ONE union-deduped `citation` event, then commit the ENTIRE transcript in ONE
+  // end-of-turn transaction → `event: done`. If a WRITE/SRS tool is hit, the loop
+  // emits `await_confirmation`, commits the transcript up to the pending
+  // tool_calls row, and SUSPENDS (no `done`) — the user resumes via
+  // POST .../resume. A dropped stream persists nothing. Reasoning is streamed
+  // only, never persisted. Errors after the first flushed byte become a terminal
+  // `event: error` frame (NEVER reach app.ts's `.onError`).
   .post(
     '/conversations/:id/stream',
     async ({ user, params, body, status, store }) => {
@@ -278,321 +727,221 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         content: userQuery,
       });
 
-      // Tool registry for this turn — Phase A: read tools only. `web_search` is
-      // present only when web search is enabled (Brave key / test provider).
       const webOn = isWebSearchEnabled();
-      const registry: Tool[] = buildToolRegistry({ webSearchEnabled: webOn });
-      const toolByName = new Map(registry.map((tl) => [tl.name, tl]));
-      const openAiTools = toOpenAiTools(registry);
-      const toolCtx = { userId: user.id, log };
 
-      // The agent loop runs INSIDE the ReadableStream's `start`, fully wrapped in
-      // a try/catch that turns ANY failure into a terminal `event: error` frame.
-      // Once we return the Response below the headers are committed, so the
-      // controller owns every error frame — nothing throws into Elysia's
-      // `.onError` (which can't rewrite an event-stream body).
-      const encoder = new TextEncoder();
+      return sseResponse(log, async (emit) => {
+        // Build messages = [system, ...history, user]. History is the full
+        // persisted transcript minus the user turn we just inserted.
+        const priorRows = await loadHistoryRows(conv.id);
+        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn });
+        const startMessages: AgentChatMessage[] = [
+          { role: 'system', content: system },
+          ...reconstructHistory(priorRows.slice(0, -1)),
+          { role: 'user', content: userQuery },
+        ];
 
-      const stream = new ReadableStream<Uint8Array>({
-        async start(controller) {
-          const emit = (event: ChatStreamEvent) => {
-            controller.enqueue(encoder.encode(sseFrame(event)));
-          };
-          try {
-            // 1) Build messages = [system, ...history, user]. History is the
-            //    full persisted transcript minus the user turn we just inserted.
-            const priorRows = await db
-              .select({
-                role: messagesTable.role,
-                content: messagesTable.content,
-                toolCalls: messagesTable.toolCalls,
-                toolCallId: messagesTable.toolCallId,
-              })
-              .from(messagesTable)
-              .where(eq(messagesTable.conversationId, conv.id))
-              .orderBy(asc(messagesTable.createdAt))
-              .limit(500);
-            const system = buildAgentSystemPrompt({ webSearchEnabled: webOn });
-            const messages: AgentChatMessage[] = [
-              { role: 'system', content: system },
-              ...reconstructHistory(priorRows.slice(0, -1) as HistoryRow[]),
-              { role: 'user', content: userQuery },
-            ];
-
-            // 2) Bounded agent loop. `transcript` accumulates rows to persist in
-            //    ONE end-of-turn transaction (do NOT commit mid-loop in Phase A).
-            const transcript: TranscriptRow[] = [];
-            // Turn-level citation accumulator (union across ALL search_cards calls).
-            const citationAcc = new Map<string, Citation>();
-            let finalText = '';
-            let toolResultChars = 0;
-            // Drives the wired UI phase line; flips to 'answering' on the first
-            // final-text token so we only emit that transition once.
-            let answeringEmitted = false;
-
-            // Phase line: 'thinking' before the first agentic call of the turn.
-            emit({ type: 'status', phase: 'thinking' });
-
-            for (let step = 0; step < AGENT_MAX_STEPS; step++) {
-              // The final allowed step (or once the tool-result budget is spent)
-              // forces a tool-free answer. The cap is LOOP-enforced: we treat the
-              // forced-final response as terminal regardless of what it returns.
-              const isFinalStep = step === AGENT_MAX_STEPS - 1 || toolResultChars >= TOOL_RESULT_BUDGET;
-              const toolChoice = isFinalStep ? 'none' : 'auto';
-
-              // Index-keyed assembly of streamed tool_call deltas.
-              const partials = new Map<number, { id: string; name: string; args: string }>();
-              let finishReason: 'stop' | 'tool_calls' | 'length' | undefined;
-
-              for await (const chunk of chatStreamAgentic(messages, {
-                tools: isFinalStep ? [] : openAiTools,
-                toolChoice,
-                log,
-              })) {
-                if (chunk.type === 'reasoning') {
-                  // Reasoning is streamed only — NOT persisted.
-                  emit({ type: 'reasoning', delta: chunk.text });
-                } else if (chunk.type === 'content') {
-                  // Phase line: 'answering' on the first final-text token (once).
-                  if (!answeringEmitted) {
-                    answeringEmitted = true;
-                    emit({ type: 'status', phase: 'answering' });
-                  }
-                  finalText += chunk.text;
-                  emit({ type: 'token', delta: chunk.text });
-                } else if (chunk.type === 'tool_call_delta') {
-                  const cur = partials.get(chunk.index) ?? { id: '', name: '', args: '' };
-                  if (chunk.id) cur.id = chunk.id;
-                  if (chunk.name) cur.name = chunk.name;
-                  if (chunk.argsFragment) cur.args += chunk.argsFragment;
-                  partials.set(chunk.index, cur);
-                } else if (chunk.type === 'finish') {
-                  finishReason = chunk.reason;
-                }
-              }
-
-              // Never-terminated guard (M3): reader ended with buffered tool_call
-              // fragments but NO finish chunk → torn stream. Terminal error; do
-              // NOT execute partial calls (assembled args may be truncated).
-              if (finishReason === undefined && partials.size > 0) {
-                throw new Error('chat_stream_torn');
-              }
-
-              if (isFinalStep || finishReason !== 'tool_calls') {
-                // Terminal: a (possibly empty) text answer. On the forced-final
-                // step we IGNORE any tool_calls the gateway returned anyway. An
-                // empty answer is backfilled by the post-loop fallback below.
-                break;
-              }
-
-              // finish === 'tool_calls' and we are NOT on the final step → execute.
-              // Synthesize a stable unique id for any call the gateway left empty
-              // — an empty `tool_call_id` would collide on the partial unique index
-              // messages_tool_result_uq (conversation_id, tool_call_id WHERE role=
-              // 'tool'), tearing the whole end-of-turn transaction. The synthesized
-              // id is reused verbatim by the emitted `tool_call` event, the in-memory
-              // messages (assistant tool_calls + role:tool reply), and the persisted
-              // rows; real gateway ids are left untouched.
-              const assembled: AssembledToolCall[] = [...partials.entries()]
-                .sort((a, b) => a[0] - b[0])
-                .map(([, p], index) => ({
-                  id: p.id || `call_${step}_${index}`,
-                  name: p.name,
-                  arguments: p.args,
-                }));
-
-              if (assembled.length === 0) {
-                // finish:tool_calls with no assembled calls — nothing to do; treat
-                // as terminal so we don't spin.
-                break;
-              }
-
-              // Append the assistant(tool_calls) message to both the live messages
-              // array and the persisted transcript.
-              messages.push({
-                role: 'assistant',
-                content: '',
-                tool_calls: assembled.map((tc) => ({
-                  id: tc.id,
-                  type: 'function',
-                  function: { name: tc.name, arguments: tc.arguments },
-                })),
-              });
-              transcript.push({ role: 'assistant', content: '', toolCalls: assembled });
-
-              // Phase line: 'calling_tool' once finish:tool_calls resolved into
-              // real calls, before we execute them server-side.
-              emit({ type: 'status', phase: 'calling_tool' });
-
-              // Execute each tool server-side (read tools only in Phase A).
-              for (const call of assembled) {
-                emit({ type: 'tool_call', id: call.id, name: call.name, args: call.arguments, status: 'running' });
-
-                let parsedArgs: unknown = {};
-                let parseFailed = false;
-                try {
-                  parsedArgs = call.arguments ? JSON.parse(call.arguments) : {};
-                } catch {
-                  parseFailed = true;
-                }
-
-                const tool = toolByName.get(call.name);
-                let result: ToolResult;
-                if (parseFailed) {
-                  result = { ok: false, error: `invalid tool arguments for ${call.name}` };
-                } else if (!tool) {
-                  result = { ok: false, error: `unknown tool: ${call.name}` };
-                } else {
-                  // Tools NEVER throw — execute() returns a ToolResult. Guard anyway.
-                  try {
-                    result = await tool.execute(toolCtx, parsedArgs);
-                  } catch (toolErr) {
-                    result = {
-                      ok: false,
-                      error: toolErr instanceof Error ? toolErr.message : 'tool_failed',
-                    };
-                  }
-                }
-
-                // Accumulate search_cards citations (union-dedup by chunkId→cardId).
-                const resultCitations = result.ok ? (result.citations ?? []) : [];
-                for (const c of resultCitations) {
-                  const key = c.chunkId || c.cardId;
-                  if (!citationAcc.has(key)) citationAcc.set(key, c);
-                }
-
-                emit({
-                  type: 'tool_result',
-                  id: call.id,
-                  ok: result.ok,
-                  summary: result.ok ? undefined : result.error,
-                  citations: result.ok && resultCitations.length > 0 ? resultCitations : undefined,
-                });
-
-                // role:tool content: the tool text on success, JSON error on
-                // failure. Capped per result; track the cross-turn total.
-                const toolContent = capToolResult(
-                  result.ok ? result.text : JSON.stringify({ ok: false, error: result.error }),
-                );
-                toolResultChars += toolContent.length;
-                messages.push({ role: 'tool', content: toolContent, tool_call_id: call.id });
-                transcript.push({ role: 'tool', content: toolContent, toolCallId: call.id });
-              }
-              // Loop continues — the model now sees the tool results.
-            }
-
-            // 3) Citations = union-dedup across ALL search_cards calls, intersected
-            //    with the [card:<id>] tokens the model actually emitted (fallback to
-            //    the capped union when no tokens), capped at RETRIEVE_K.
-            const emittedCardIds = new Set<string>();
-            for (const m of finalText.matchAll(CARD_TOKEN_RE)) {
-              if (m[1]) emittedCardIds.add(m[1]);
-            }
-            const unionCitations = [...citationAcc.values()];
-            let citations: Citation[];
-            if (emittedCardIds.size > 0) {
-              const intersected = unionCitations.filter((c) => emittedCardIds.has(c.cardId));
-              citations = (intersected.length > 0 ? intersected : unionCitations).slice(0, RETRIEVE_K);
-            } else {
-              citations = unionCitations.slice(0, RETRIEVE_K);
-            }
-
-            // Synthesize a fallback when the loop produced no text at all.
-            if (finalText.trim().length === 0) {
-              finalText = "I couldn't complete the request within the step limit.";
-            }
-
-            // 4) Emit the single final citation event.
-            emit({ type: 'citation', citations });
-
-            // Append the final assistant text row to the transcript.
-            transcript.push({ role: 'assistant', content: finalText, citations });
-
-            // 5) Persist the ENTIRE transcript in ONE end-of-turn transaction
-            //    (Phase A regime — no mid-loop commit). A dropped stream persists
-            //    nothing. The final assistant row id is the `done` messageId.
-            const finalMessageId = await db.transaction(async (tx) => {
-              let lastAssistantId: string | null = null;
-              for (const row of transcript) {
-                if (row.role === 'assistant' && row.content === '' && 'toolCalls' in row) {
-                  await tx.insert(messagesTable).values({
-                    conversationId: conv.id,
-                    userId: user.id,
-                    role: 'assistant',
-                    content: '',
-                    toolCalls: row.toolCalls.map((tc) => ({
-                      id: tc.id,
-                      name: tc.name,
-                      arguments: tc.arguments,
-                    })),
-                  });
-                } else if (row.role === 'tool') {
-                  await tx.insert(messagesTable).values({
-                    conversationId: conv.id,
-                    userId: user.id,
-                    role: 'tool',
-                    content: row.content,
-                    toolCallId: row.toolCallId,
-                  });
-                } else {
-                  const [msg] = await tx
-                    .insert(messagesTable)
-                    .values({
-                      conversationId: conv.id,
-                      userId: user.id,
-                      role: 'assistant',
-                      content: row.content,
-                      citations: 'citations' in row ? row.citations : [],
-                    })
-                    .returning({ id: messagesTable.id });
-                  lastAssistantId = msg!.id;
-                }
-              }
-              await tx
-                .update(conversations)
-                .set({ updatedAt: new Date() })
-                .where(eq(conversations.id, conv.id));
-              return lastAssistantId!;
-            });
-
-            // 6) Terminal done frame carrying the final assistant message id.
-            emit({ type: 'done', messageId: finalMessageId });
-            controller.close();
-          } catch (err) {
-            // SHOULD-FIX #7: ALL post-flush errors are caught here and become a
-            // terminal `event: error` frame — nothing throws into Elysia's error
-            // pipeline (which can't rewrite an event-stream body).
-            log.error({ err }, 'ai.chat.stream_failed');
-            // Don't forward raw error text to the client. Full `err` is logged
-            // above; only known-safe internal prefixes pass through, else opaque.
-            const code =
-              err instanceof Error && /^(chat_stream_torn|chat_failed|ai_disabled)/.test(err.message)
-                ? err.message
-                : 'chat_failed';
-            try {
-              emit({ type: 'error', message: code });
-            } catch {
-              // controller already closed — nothing to do.
-            }
-            try {
-              controller.close();
-            } catch {
-              // already closed.
-            }
-          }
-        },
-      });
-
-      return new Response(stream, {
-        headers: {
-          'content-type': 'text/event-stream',
-          'cache-control': 'no-cache',
-        },
+        const outcome = await runAgentTurn({
+          userId: user.id,
+          conversationId: conv.id,
+          log,
+          emit,
+          startMessages,
+          webSearchEnabled: webOn,
+        });
+        return outcome;
       });
     },
     {
       auth: true,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),
       body: t.Object({ content: t.String({ minLength: 1, maxLength: 8000 }) }),
+    },
+  )
+  // Resume a turn that paused on a write/SRS tool (`await_confirmation`). Same
+  // raw SSE contract. Body: { resumeToolCallId, decision }. User-scoped — a
+  // foreign conversation 404s; the `resumeToolCallId` is validated against the
+  // persisted assistant `tool_calls` row IN THIS conversation (never trust the
+  // client id).
+  //
+  // Apply: execute the pending write/SRS tool + persist its `role:tool` result
+  // row in ONE transaction (so a unique-index violation on
+  // `messages_tool_result_uq` rolls the mutation back too — atomic double-apply
+  // guard), then CONTINUE the shared loop to `done`. Reject: persist a
+  // "user rejected" `role:tool` row, continue to `done`. Idempotent: a
+  // `resumeToolCallId` already answered by a `role:tool` row → no-op terminal
+  // `done` (never double-execute), backed by the partial unique index.
+  .post(
+    '/conversations/:id/resume',
+    async ({ user, params, body, status, store }) => {
+      if (!isChatEnabled()) {
+        return status(503, { error: 'ai_disabled' });
+      }
+
+      const [conv] = await db
+        .select()
+        .from(conversations)
+        .where(and(eq(conversations.id, params.id), eq(conversations.userId, user.id)))
+        .limit(1);
+      if (!conv) return status(404, { error: 'not_found' });
+
+      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+      const { resumeToolCallId, decision } = body;
+
+      // Load the full transcript ONCE (history mapping + validation share it).
+      const priorRows = await loadHistoryRows(conv.id);
+
+      // Validate the resumeToolCallId against a persisted assistant tool_calls
+      // row in THIS conversation (ownership chain user→conversation→tool_calls).
+      const pending = findPendingToolCall(priorRows, resumeToolCallId);
+      if (!pending) {
+        // No assistant tool_calls row in this conversation names that id → 404.
+        return status(404, { error: 'unknown_tool_call' });
+      }
+
+      // Idempotency (app-level check; the partial unique index is the backstop):
+      // an already-answered tool call → terminal no-op `done` carrying the latest
+      // assistant text id (never re-execute).
+      const alreadyAnswered = priorRows.some(
+        (r) => r.role === 'tool' && r.toolCallId === resumeToolCallId,
+      );
+
+      const webOn = isWebSearchEnabled();
+
+      return sseResponse(log, async (emit) => {
+        if (alreadyAnswered) {
+          // Idempotent no-op: sseResponse emits the terminal `done` for us.
+          return { kind: 'done', messageId: (await lastAssistantTextId(conv.id)) ?? '' };
+        }
+
+        // Execute (apply) or record a rejection for the pending tool call, then
+        // continue the loop. The role:tool insert runs in the SAME transaction
+        // as the mutation (apply) so a concurrent double-apply hits the unique
+        // index and rolls back the mutation too.
+        const toolCtx: ToolContext = { userId: user.id, log };
+        let toolCardIds: string[] | undefined;
+
+        if (decision === 'apply') {
+          const registry = buildToolRegistry({ webSearchEnabled: webOn });
+          const tool = registry.find((tl) => tl.name === pending.name);
+
+          emit({ type: 'tool_call', id: pending.id, name: pending.name, args: pending.arguments, status: 'running' });
+
+          let result: ToolResult;
+          if (!tool || tool.kind === 'read') {
+            result = { ok: false, error: `not a confirmable tool: ${pending.name}` };
+          } else {
+            let parsedArgs: unknown = {};
+            let parseFailed = false;
+            try {
+              parsedArgs = pending.arguments ? JSON.parse(pending.arguments) : {};
+            } catch {
+              parseFailed = true;
+            }
+            if (parseFailed) {
+              result = { ok: false, error: `invalid tool arguments for ${pending.name}` };
+            } else {
+              // ONE transaction: the mutation + the role:tool insert. A duplicate
+              // (conversation_id, tool_call_id) for role='tool' violates
+              // messages_tool_result_uq → the whole tx (incl. the mutation) rolls
+              // back. So a racing/double Apply never double-executes.
+              try {
+                result = await db.transaction(async (tx) => {
+                  const r = await tool.execute({ ...toolCtx, tx }, parsedArgs);
+                  const content = capToolResult(
+                    r.ok ? r.text : JSON.stringify({ ok: false, error: r.error }),
+                  );
+                  await tx.insert(messagesTable).values({
+                    conversationId: conv.id,
+                    userId: user.id,
+                    role: 'tool',
+                    content,
+                    toolCallId: resumeToolCallId,
+                  });
+                  return r;
+                });
+              } catch (txErr) {
+                // Unique-violation (double-apply race) or a real mutation error.
+                // Surface as a non-throwing tool failure so the loop continues to
+                // a `done` rather than tearing the whole stream.
+                log.warn({ err: txErr, tool: pending.name }, 'ai.resume.apply_failed');
+                result = {
+                  ok: false,
+                  error: txErr instanceof Error ? txErr.message : 'apply_failed',
+                };
+                // A failed apply leaves NO role:tool row (tx rolled back). Persist
+                // a failure row OUTSIDE the tx so the loop's history is consistent
+                // and the call is marked answered (idempotency). Best-effort: a
+                // duplicate here means another resume already answered it.
+                try {
+                  await db.insert(messagesTable).values({
+                    conversationId: conv.id,
+                    userId: user.id,
+                    role: 'tool',
+                    content: capToolResult(JSON.stringify({ ok: false, error: result.error })),
+                    toolCallId: resumeToolCallId,
+                  });
+                } catch {
+                  // already answered by a racing resume — fine.
+                }
+              }
+            }
+            if (result.ok) toolCardIds = result.cardIds;
+          }
+
+          emit({
+            type: 'tool_result',
+            id: pending.id,
+            ok: result.ok,
+            summary: result.ok ? undefined : result.error,
+          });
+
+          // RAG index hook — enqueue created/updated cards AFTER the commit.
+          enqueueToolCardsForIndex(toolCardIds);
+        } else {
+          // Reject: record a "user rejected" tool result so the model can answer
+          // without the mutation. Idempotent via the partial unique index.
+          const rejectionContent = JSON.stringify({ ok: false, error: 'user_rejected' });
+          try {
+            await db.insert(messagesTable).values({
+              conversationId: conv.id,
+              userId: user.id,
+              role: 'tool',
+              content: rejectionContent,
+              toolCallId: resumeToolCallId,
+            });
+          } catch {
+            // already answered — idempotent.
+          }
+          emit({ type: 'tool_result', id: pending.id, ok: false, summary: 'user_rejected' });
+        }
+
+        // Continue the shared loop. Rebuild messages from the NOW-updated
+        // persisted transcript; the dangling-tool_calls guard is bypassed for
+        // the exact id we just answered (so the pending assistant tool_calls row
+        // is kept — it now has its answering role:tool row).
+        const updatedRows = await loadHistoryRows(conv.id);
+        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn });
+        const startMessages: AgentChatMessage[] = [
+          { role: 'system', content: system },
+          ...reconstructHistory(updatedRows, resumeToolCallId),
+        ];
+
+        return runAgentTurn({
+          userId: user.id,
+          conversationId: conv.id,
+          log,
+          emit,
+          startMessages,
+          webSearchEnabled: webOn,
+        });
+      });
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        resumeToolCallId: t.String({ minLength: 1, maxLength: 256 }),
+        decision: t.Union([t.Literal('apply'), t.Literal('reject')]),
+      }),
     },
   );

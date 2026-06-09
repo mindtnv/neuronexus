@@ -50,6 +50,19 @@ const m = {
     failed: 'Ошибка',
     resultToggle: 'Показать результат',
   },
+  // Confirm-before-write controls (Phase B) — a write/SRS tool pauses the turn
+  // and asks for explicit human approval, rendered inside the pending tool card.
+  confirm: {
+    pendingTitle: 'Ожидает вашего подтверждения',
+    apply: 'Применить',
+    reject: 'Отклонить',
+    applied: 'Применено',
+    rejected: 'Отклонено',
+    // Blast-radius summary shown above Apply so destructive writes are deliberate.
+    willCreate: 'Будет создано карточек: {count}',
+    willDelete: 'Будет УДАЛЕНО карточек: {count} — история FSRS потеряна',
+    affectsSiblings: 'Затрагивает другие карточки этой заметки',
+  },
   // Errors surfaced in the stream
   errors: {
     generic: 'Что-то пошло не так. Попробуйте ещё раз.',

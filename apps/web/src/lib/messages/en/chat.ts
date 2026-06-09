@@ -50,6 +50,19 @@ const m = {
     failed: 'Failed',
     resultToggle: 'Show result',
   },
+  // Confirm-before-write controls (Phase B) — a write/SRS tool pauses the turn
+  // and asks for explicit human approval, rendered inside the pending tool card.
+  confirm: {
+    pendingTitle: 'Awaiting your confirmation',
+    apply: 'Apply',
+    reject: 'Reject',
+    applied: 'Applied',
+    rejected: 'Rejected',
+    // Blast-radius summary shown above Apply so destructive writes are deliberate.
+    willCreate: 'Will create {count} cards',
+    willDelete: 'Will DELETE {count} cards — FSRS history lost',
+    affectsSiblings: 'Affects other cards of this note',
+  },
   // Errors surfaced in the stream
   errors: {
     generic: 'Something went wrong. Please try again.',
