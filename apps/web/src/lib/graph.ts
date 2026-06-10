@@ -20,7 +20,9 @@ export interface GraphNode {
 export interface GraphEdge {
   a: string;       // node id
   b: string;       // node id
-  weight: number;  // count of shared tags
+  weight: number;  // shared-tag count (tags source) or scaled strength (semantic)
+  /** Raw cosine similarity 0..1 — present only on semantic edges. */
+  score?: number;
 }
 
 // Simple deterministic string hash → unsigned 32-bit integer.
@@ -47,14 +49,18 @@ const MAX_EDGES = 200;
  *   - Each deck cluster is centered on a circle around viewbox center.
  *   - Each card orbits its cluster center at a small deterministic radius.
  * Edges:
- *   - Two cards share ≥1 tag → edge, weighted by shared-tag count.
+ *   - Default: two cards share ≥1 tag → edge, weighted by shared-tag count.
+ *   - `edgesOverride` (semantic edges from GET /graph/semantic-edges) replaces
+ *     the tag computation entirely; edges referencing cards outside the mirror
+ *     are dropped, the same MAX_EDGES cap applies.
  *   - Kept to MAX_EDGES total, prioritising highest weight.
  */
 export function buildGraph(
   cards: Card[],
   decks: Deck[],
   width: number,
-  height: number
+  height: number,
+  edgesOverride?: GraphEdge[],
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const cx = width / 2;
   const cy = height / 2;
@@ -111,6 +117,16 @@ export function buildGraph(
     };
   });
 
+  // Semantic override: filter to mirrored nodes, keep the same cap. Weight is
+  // already pre-scaled by the caller (see semanticToGraphEdges).
+  if (edgesOverride) {
+    const nodeIds = new Set(nodes.map((n) => n.id));
+    const edges = edgesOverride
+      .filter((e) => nodeIds.has(e.a) && nodeIds.has(e.b))
+      .slice(0, MAX_EDGES);
+    return { nodes, edges };
+  }
+
   // Build edges: cards with ≥1 shared tag.
   // Use a tag→cards index so we don't do O(N²) for tag-less cards.
   const tagIndex = new Map<string, string[]>(); // tag → card ids
@@ -145,6 +161,24 @@ export function buildGraph(
   const edges = allEdges.slice(0, MAX_EDGES);
 
   return { nodes, edges };
+}
+
+/**
+ * Map server semantic edges → GraphEdge[]. Visual weight 1..3 scaled from the
+ * cosine score over the [minScore, 1] band (the server's default floor is
+ * 0.35); the raw score rides along for the detail panel's "{pct}% similar".
+ */
+export function semanticToGraphEdges(
+  edges: { a: string; b: string; score: number }[],
+  minScore = 0.35,
+): GraphEdge[] {
+  const band = Math.max(0.0001, 1 - minScore);
+  return edges.map((e) => ({
+    a: e.a,
+    b: e.b,
+    weight: 1 + Math.round(Math.max(0, Math.min(1, (e.score - minScore) / band)) * 2),
+    score: e.score,
+  }));
 }
 
 /**

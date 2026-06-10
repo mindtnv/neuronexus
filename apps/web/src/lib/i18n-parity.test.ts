@@ -78,6 +78,25 @@ describe('i18n parity — en/settings.ts vs ru/settings.ts', () => {
       expect(ruKeys.has(key)).toBe(true);
     });
   }
+
+  // Explicit guard: the agent-instructions section (C5) — mirrors the
+  // notifications guard (a key absent from BOTH locales slips the symmetric diff).
+  const REQUIRED_AGENT_SETTINGS_KEYS = [
+    'agent.title',
+    'agent.subtitle',
+    'agent.placeholder',
+    'agent.hint',
+  ];
+
+  for (const key of REQUIRED_AGENT_SETTINGS_KEYS) {
+    test(`agent-settings key "${key}" exists in en/settings`, () => {
+      expect(enKeys.has(key)).toBe(true);
+    });
+
+    test(`agent-settings key "${key}" exists in ru/settings`, () => {
+      expect(ruKeys.has(key)).toBe(true);
+    });
+  }
 });
 
 describe('i18n parity — en/chat.ts vs ru/chat.ts (Slice 5)', () => {
@@ -125,7 +144,17 @@ describe('i18n parity — en/chat.ts vs ru/chat.ts (Slice 5)', () => {
     'tool.running',
     'tool.done',
     'tool.failed',
+    'tool.awaiting',
     'tool.resultToggle',
+    // Turn-lock notice (per-conversation serialization, 409 turn_in_progress).
+    'errors.turnInProgress',
+    // Composer attachments (images via the media pipeline + inline text files).
+    'composer.attach',
+    'composer.removeAttachment',
+    'composer.attachLimit',
+    'composer.attachTooBig',
+    'composer.attachUnsupported',
+    'composer.attachFailed',
     // Phase B — confirm-before-write controls + blast-radius summary.
     'confirm.pendingTitle',
     'confirm.apply',
@@ -173,11 +202,90 @@ describe('i18n parity — en/chat.ts vs ru/chat.ts (Slice 5)', () => {
     'activity.steps',
     'activity.step',
     'activity.appliedCreated',
+    'activity.appliedCreatedNodeck',
+    'activity.appliedCreatedOne',
+    'activity.appliedCreatedOneNodeck',
     'activity.appliedEdited',
     // Codex-like redesign — edit-and-rerun the last user message (AC4.1).
     'message.edit',
     'message.editSave',
     'message.editCancel',
+    // Due-forecast read tool (upcoming workload) + its plural form.
+    'tool.due_forecast',
+    'tool.due_forecast_n',
+    // Deep research: fetch_page tool labels + the /research slash command +
+    // the composer mode toggle.
+    'tool.fetch_page',
+    'tool.fetch_page_n',
+    'slash.researchLabel',
+    'slash.researchTemplate',
+    'composer.research',
+    'composer.researchHint',
+    'composer.researchPlaceholder',
+    // Suggested prompts on the empty chat state.
+    'suggested.dueToday',
+    'suggested.deckProgress',
+    'suggested.failing',
+    'suggested.quiz',
+    // ── Agentic-environment pack ─────────────────────────────────────────────
+    // Thread rail: search + date groups + pin (A1/A2/C4).
+    'threads.searchPlaceholder',
+    'threads.searchNoResults',
+    'threads.groupPinned',
+    'threads.groupToday',
+    'threads.groupYesterday',
+    'threads.groupWeek',
+    'threads.groupOlder',
+    'threads.pin',
+    'threads.unpin',
+    // Smart scroll + day separators (B1/B2).
+    'stream.jumpToBottom',
+    'stream.newMessages',
+    'stream.today',
+    'stream.yesterday',
+    // Code copy + model/token badge + follow-up queue (B3/B6/D4).
+    'message.codeCopy',
+    'message.codeCopied',
+    'message.tokens',
+    'message.queued',
+    'message.queuedCancel',
+    // Write/SRS tool labels (B5) + batch create variants.
+    'tool.create_card',
+    'tool.create_card_nodeck',
+    'tool.create_card_batch',
+    'tool.create_card_batch_nodeck',
+    'tool.edit_card',
+    'tool.suspend',
+    'tool.set_due',
+    'tool.forget',
+    // Confirm previews (B4/C8) + batch create_card per-card heading + the
+    // per-card confirm editor (include/exclude/edit + feedback).
+    'confirm.changes',
+    'confirm.proposed',
+    'confirm.cardN',
+    'confirm.applyN',
+    'confirm.excludeCard',
+    'confirm.includeCard',
+    'confirm.feedbackPlaceholder',
+    'confirm.cardOf',
+    'confirm.acceptCard',
+    'confirm.back',
+    'confirm.acceptedBadge',
+    'confirm.excludedBadge',
+    'confirm.reviewJump',
+    // Composer @-mentions (D1) + slash commands (D2).
+    'composer.mentionDecks',
+    'composer.mentionCards',
+    'composer.mentionNoResults',
+    'composer.removeMention',
+    'slash.quizLabel',
+    'slash.quizTemplate',
+    'slash.forecastLabel',
+    'slash.forecastTemplate',
+    'slash.statsLabel',
+    'slash.statsTemplate',
+    'slash.reviewLabel',
+    'slash.reviewTemplate',
   ];
 
   for (const key of REQUIRED_CHAT_AGENT_KEYS) {

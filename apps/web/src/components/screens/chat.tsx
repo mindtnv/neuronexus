@@ -17,9 +17,18 @@
 //    is visibly separated (AC3).
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import type { Citation, ChatModelOption } from '@neuronexus/shared';
-import { CARD_TOKEN_RE as CARD_TOKEN_CORE_RE } from '@neuronexus/shared';
+import { useRouter, useSearchParams } from 'next/navigation';
+import type {
+  ChatModelOption,
+  ChatResumeRequest,
+  Citation,
+  MessageAttachmentInput,
+} from '@neuronexus/shared';
+import {
+  CARD_TOKEN_RE as CARD_TOKEN_CORE_RE,
+  MAX_MEDIA_BYTES,
+  MEDIA_MIME_ALLOWLIST,
+} from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNSkeleton, NNBadge } from '@/components/ui';
 import { RichCard } from '@/components/rich-card';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
@@ -32,38 +41,53 @@ import {
 } from '@/lib/chat-stream';
 import {
   applySummaryFrom,
+  buildCardSelections,
+  confirmDiffRows,
+  createCardDraft,
+  formatDayLabel,
   formatElapsed,
   groupHeaderState,
   hasAnswerlessUserTail,
+  hasPendingConfirmation,
+  needsDaySeparator,
+  nextUndecidedIndex,
   PLURAL_TOOL_NAMES,
   reconstructMessages,
   summarizeSteps,
   toolIcon,
   toolLabel,
+  usageTotal,
   type MessageVM,
   type PersistedMessageRow,
   type ToolCallVM,
 } from '@/lib/chat-activity';
+import { type ConversationVM } from '@/lib/chat-threads';
+import {
+  applyTrigger,
+  detectComposerTrigger,
+  filterSlashCommands,
+  searchMentions,
+  slashTemplate,
+  type ComposerTrigger,
+} from '@/lib/chat-mentions';
+import { ThreadRail } from '@/components/chat/thread-rail';
+import { ConfirmDiff } from '@/components/chat/confirm-diff';
+import { MentionPopover, SlashMenu, mentionItems } from '@/components/chat/mention-popover';
+import { useCodeCopyButtons } from '@/components/chat/code-copy';
+import { useStickToBottom } from '@/lib/use-stick-to-bottom';
 import { cardFromApi } from '@/lib/mappers';
 import { useNN } from '@/lib/store';
+import { getDueCards } from '@/lib/cards';
 import type { Card } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT, useLocale } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 
-// ── Screen-local view models (Eden serializes dates → ISO strings) ───────────
-
-interface ConversationVM {
-  id: string;
-  title: string | null;
-  updatedAt: string;
-}
-
 // The view-model + persisted-row types (`MessageVM`, `ToolCallVM`,
-// `PersistedMessageRow`) and the pure reconstruction/parse helpers now live in
-// `@/lib/chat-activity` (ONE definition each — re-imported above). This screen
-// only wires them into JSX.
+// `PersistedMessageRow`, `ConversationVM`) and the pure reconstruction/parse
+// helpers live in `@/lib/chat-activity` + `@/lib/chat-threads` (ONE definition
+// each — re-imported above). This screen only wires them into JSX.
 
 type AiStatus = {
   embeddingEnabled: boolean;
@@ -71,45 +95,42 @@ type AiStatus = {
   degraded: boolean;
   /** Model allow-list for the per-turn picker (AC2.2). `[]` ⇒ picker hidden. */
   models: ChatModelOption[];
+  /** Image attachments offered only when the server has vision on (CHAT_VISION). */
+  visionEnabled?: boolean;
+  /** The fetch_page tool is available — gates the deep-research mode toggle. */
+  fetchPageEnabled?: boolean;
 };
 
+// ── Composer attachments ──────────────────────────────────────────────────────
+
+/** One composer attachment chip (image: uploaded media ref; text: inline). */
+interface AttachmentChipVM {
+  key: string;
+  kind: 'image' | 'text';
+  name: string;
+  /** image: set after the upload finishes. */
+  mediaId?: string;
+  /** image: `/m/<uuid>` preview path (Next rewrite → MinIO/S3). */
+  token?: string;
+  /** image: client-known MIME (preview only — the server trusts its DB row). */
+  mime?: string;
+  /** text: file content (client-truncated; the server re-caps). */
+  text?: string;
+  uploading?: boolean;
+}
+
+/** Max attachments per message (mirrors the server's body schema cap). */
+const ATTACH_MAX = 4;
+/** Text-file extensions accepted for inline attachment. */
+const ATTACH_TEXT_TYPES = /\.(txt|md|markdown|csv|json|log)$/i;
+/** Raw text-file size gate (the content is then truncated to ATTACH_TEXT_CHARS). */
+const ATTACH_TEXT_FILE_MAX_BYTES = 256 * 1024;
+/** Inline text-content cap (mirrors the server's re-cap). */
+const ATTACH_TEXT_CHARS = 16_000;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function conversationTitle(c: ConversationVM, fallback: string): string {
-  const trimmed = (c.title ?? '').trim();
-  return trimmed.length > 0 ? trimmed : fallback;
-}
-
-// Hand-rolled relative-duration formatter (no dep — Principle 4). Returns the
-// localized "updated N ago" line from an ISO timestamp, using the chat i18n
-// dictionary for the unit words (so en/ru both read naturally). `t` is the
-// translator; the unit count is interpolated via `{count}`. Anything in the
-// future or unparseable collapses to "just now".
-function relativeUpdated(
-  iso: string | undefined,
-  t: (key: string, params?: Record<string, string | number>) => string,
-): string {
-  if (!iso) return '';
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return '';
-  const diffMs = Date.now() - then;
-  // Under a minute reads as a bare "just now" — wrapping it in "updated … ago"
-  // would be redundant ("updated just now ago"), so return it standalone.
-  if (diffMs < 60_000) return t('chat.threads.relativeNow');
-  let time: string;
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 60) {
-    time = t('chat.threads.relativeMinutes', { count: mins });
-  } else {
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) {
-      time = t('chat.threads.relativeHours', { count: hours });
-    } else {
-      time = t('chat.threads.relativeDays', { count: Math.floor(hours / 24) });
-    }
-  }
-  return t('chat.threads.updatedAgo', { time });
-}
+// `conversationTitle` / `relativeUpdated` moved to lib/chat-threads (pure,
+// unit-tested) — the rail renders them via the extracted ThreadRail.
 
 // Absolute timestamp for the message-bubble hover title (AC3.2). Locale-formatted
 // via Intl; falls back to the raw ISO string if it can't be parsed.
@@ -168,22 +189,41 @@ const CHAT_MD_NOTE_TYPE = {
   templates: [{ name: 'chat', ord: 0, frontTemplate: '{{Body}}', backTemplate: '{{Body}}' }],
 };
 
-const AssistantMarkdown = ({ content }: { content: string }) => {
+const AssistantMarkdown = ({
+  content,
+  final,
+  t,
+}: {
+  content: string;
+  /** Code-copy buttons decorate only FINAL renders (no churn while streaming). */
+  final: boolean;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) => {
   const html = useMemo(
     () => renderCardHtml(CHAT_MD_NOTE_TYPE, { Body: stripCardTokens(content) }, 'front'),
     [content],
   );
+  const hostRef = useRef<HTMLDivElement>(null);
+  const copyLabels = useMemo(
+    () => ({ copy: t('chat.message.codeCopy'), copied: t('chat.message.codeCopied') }),
+    [t],
+  );
+  // B3 — post-render DOM decoration of `pre` blocks; the sanitizer never sees
+  // the button. Scoped to THIS host only (cited RichCards are unaffected).
+  useCodeCopyButtons(hostRef, { html, final }, copyLabels);
   return (
-    <SafeHtml
-      html={html}
-      style={{
-        fontFamily: 'var(--font-sans)',
-        fontSize: 14.5,
-        lineHeight: 1.6,
-        color: 'var(--text)',
-        wordBreak: 'break-word',
-      }}
-    />
+    <div ref={hostRef}>
+      <SafeHtml
+        html={html}
+        style={{
+          fontFamily: 'var(--font-sans)',
+          fontSize: 14.5,
+          lineHeight: 1.6,
+          color: 'var(--text)',
+          wordBreak: 'break-word',
+        }}
+      />
+    </div>
   );
 };
 
@@ -191,11 +231,14 @@ const AssistantMarkdown = ({ content }: { content: string }) => {
 
 // localStorage key for the last-used model selection (re-validated on load).
 const MODEL_LS_KEY = 'nn:chat:model';
+// localStorage key for the deep-research mode toggle (sticky across sessions).
+const RESEARCH_LS_KEY = 'nn:chat:research';
 
 export const NNChat = () => {
   const t = useT();
   const { locale } = useLocale();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const { confirm } = useDialog();
@@ -213,9 +256,6 @@ export const NNChat = () => {
 
   const [conversations, setConversations] = useState<ConversationVM[]>([]);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
-  // Inline-rename state (AC3.1): the thread id being edited + its draft title.
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameDraft, setRenameDraft] = useState('');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageVM[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
@@ -238,14 +278,106 @@ export const NNChat = () => {
   const [model, setModel] = useState<string | null>(null);
   // Optional per-turn deck scope (AC3.7). Null = all cards (no scope).
   const [deckScope, setDeckScope] = useState<string | null>(null);
+  // Deep-research MODE toggle: rides every turn (send/resume/regenerate) as
+  // `research: true` → research prompt + raised step/budget caps server-side.
+  // Sticky across sessions (localStorage); only shown/restored when the server
+  // offers fetch_page (status.fetchPageEnabled).
+  const [research, setResearch] = useState(false);
+
+  // Composer @-mention chips (D1): cards explicitly attached to the next send.
+  const [mentionChips, setMentionChips] = useState<{ cardId: string; label: string }[]>([]);
+  const mentionChipsRef = useRef<{ cardId: string; label: string }[]>([]);
+  useEffect(() => {
+    mentionChipsRef.current = mentionChips;
+  }, [mentionChips]);
+
+  // Composer file attachments: images upload through the SAME media pipeline as
+  // card images (presign→POST→finalize via store.uploadMedia); text files are
+  // read client-side and ride the body inline. Max 4; chips ride the NEXT send.
+  const uploadMedia = useNN((s) => s.uploadMedia);
+  const [attachChips, setAttachChips] = useState<AttachmentChipVM[]>([]);
+  const attachChipsRef = useRef<AttachmentChipVM[]>([]);
+  useEffect(() => {
+    attachChipsRef.current = attachChips;
+  }, [attachChips]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const addAttachmentFiles = useCallback(
+    async (files: Iterable<File>) => {
+      for (const file of files) {
+        if (attachChipsRef.current.length >= ATTACH_MAX) {
+          raiseToast({ kind: 'info', titleKey: 'chat.composer.attachLimit' });
+          return;
+        }
+        const isImage = (MEDIA_MIME_ALLOWLIST as readonly string[]).includes(file.type);
+        const isText = ATTACH_TEXT_TYPES.test(file.name) || file.type.startsWith('text/');
+        if (isImage) {
+          if (file.size > MAX_MEDIA_BYTES) {
+            raiseToast({ kind: 'info', titleKey: 'chat.composer.attachTooBig' });
+            continue;
+          }
+          const key = `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          setAttachChips((prev) => [
+            ...prev,
+            { key, kind: 'image', name: file.name, mime: file.type, uploading: true },
+          ]);
+          try {
+            const { token, mediaId } = await uploadMedia(file);
+            setAttachChips((prev) =>
+              prev.map((c) => (c.key === key ? { ...c, mediaId, token, uploading: false } : c)),
+            );
+          } catch {
+            setAttachChips((prev) => prev.filter((c) => c.key !== key));
+            raiseToast({ kind: 'info', titleKey: 'chat.composer.attachFailed' });
+          }
+        } else if (isText) {
+          if (file.size > ATTACH_TEXT_FILE_MAX_BYTES) {
+            raiseToast({ kind: 'info', titleKey: 'chat.composer.attachTooBig' });
+            continue;
+          }
+          try {
+            const text = (await file.text()).slice(0, ATTACH_TEXT_CHARS);
+            if (text.trim().length === 0) continue;
+            const key = `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            setAttachChips((prev) => [
+              ...prev,
+              { key, kind: 'text', name: file.name, text, uploading: false },
+            ]);
+          } catch {
+            raiseToast({ kind: 'info', titleKey: 'chat.composer.attachFailed' });
+          }
+        } else {
+          raiseToast({ kind: 'info', titleKey: 'chat.composer.attachUnsupported' });
+        }
+      }
+    },
+    [uploadMedia],
+  );
+  // Live composer popover trigger (@-mention / slash) + its keyboard cursor.
+  const [trigger, setTrigger] = useState<ComposerTrigger | null>(null);
+  const [popoverIdx, setPopoverIdx] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Follow-up queue (D4): ONE message queued while a turn streams; auto-sent on
+  // completion (but never while a confirmation is pending).
+  const [queued, setQueued] = useState<string | null>(null);
+  const queuedRef = useRef<string | null>(null);
 
   // Resolved cards for citations outside the store mirror (cardId → Card).
   const [fetchedCards, setFetchedCards] = useState<Record<string, Card>>({});
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Smart stick-to-bottom (B1): follow only while the user is near the bottom;
+  // otherwise surface the "jump to latest" pill instead of yanking the scroll.
+  const stick = useStickToBottom(scrollRef);
   // AbortController for the in-flight turn (S6 stop). Held in a ref so the Stop
   // button can abort the same controller the active send/resume/regenerate owns.
   const abortRef = useRef<AbortController | null>(null);
+  // Latest messages mirror for non-reactive reads (queue flush guard).
+  const messagesRef = useRef<MessageVM[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // ── Effects ─────────────────────────────────────────────────────────────────
 
@@ -276,6 +408,16 @@ export const NNChat = () => {
           } catch {
             /* best-effort persistence */
           }
+          // Restore the deep-research toggle — only meaningful when the server
+          // offers fetch_page (a stale "1" with the tool killed stays ignored:
+          // the toggle is hidden and `research` is never sent).
+          if (s.fetchPageEnabled === true) {
+            try {
+              setResearch(localStorage.getItem(RESEARCH_LS_KEY) === '1');
+            } catch {
+              /* best-effort */
+            }
+          }
         }
       } catch {
         if (!cancelled)
@@ -299,11 +441,55 @@ export const NNChat = () => {
     };
   }, []);
 
-  // Keep the stream pinned to the bottom as tokens / messages arrive.
+  // Keep the stream pinned to the bottom as tokens / messages arrive — but ONLY
+  // while the user is near the bottom (B1). Scrolled away ⇒ the pill lights up.
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+    stick.notifyContentChange();
+  }, [messages, stick]);
+
+  // ── Deep link `?thread=<id>` (A5) ────────────────────────────────────────────
+  // Open the linked conversation once the list has loaded. The param is KEPT
+  // (shareable URLs): switching threads rewrites it; new chat / back clears it.
+  const threadParam = searchParams.get('thread');
+  const consumedThreadParamRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!conversationsLoaded || !threadParam) return;
+    if (consumedThreadParamRef.current === threadParam) return;
+    consumedThreadParamRef.current = threadParam;
+    if (threadParam === activeId) return;
+    if (conversations.some((c) => c.id === threadParam)) {
+      void openThread(threadParam);
+    }
+    // Unknown id (foreign/deleted) — leave the rail as-is; the URL is harmless.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationsLoaded, threadParam, conversations, activeId]);
+
+  // ── Draft persistence (D3) — per-thread composer drafts in localStorage ─────
+  // Persistence happens in `updateDraft` (the onChange path), NOT an effect, so
+  // a thread switch can restore without racing a stale-draft write.
+  const draftStorageKey = useCallback((id: string | null) => `nn:chat:draft:${id ?? 'new'}`, []);
+  const updateDraft = useCallback(
+    (value: string, threadId: string | null) => {
+      setDraft(value);
+      try {
+        const key = draftStorageKey(threadId);
+        if (value.trim().length === 0) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      } catch {
+        /* best-effort */
+      }
+    },
+    [draftStorageKey],
+  );
+  // Restore the (possibly empty) stored draft whenever the thread context flips.
+  useEffect(() => {
+    try {
+      setDraft(localStorage.getItem(draftStorageKey(activeId)) ?? '');
+    } catch {
+      setDraft('');
+    }
+    setTrigger(null);
+  }, [activeId, draftStorageKey]);
 
   // ── Card resolution for citations (store mirror → GET /cards/:id) ────────────
 
@@ -375,39 +561,55 @@ export const NNChat = () => {
 
   // ── Actions ─────────────────────────────────────────────────────────────────
 
-  const openThread = useCallback(async (id: string) => {
-    setActiveId(id);
-    setComposing(true);
-    setThreadLoading(true);
-    try {
-      const res = (await ok(await (api as any).chat.conversations({ id }).get())) as {
-        messages: PersistedMessageRow[];
-      };
-      // Reconstruct the agentic transcript from the persisted wire shape: tool-call
-      // rows become cards, role:'tool' rows fold into their parent, the '' sentinel
-      // and JSON-in-content tool rows never leak as blank/garbled bubbles.
-      setMessages(reconstructMessages(res.messages ?? []));
-    } catch {
-      setMessages([]);
-    } finally {
-      setThreadLoading(false);
-    }
-  }, []);
+  const openThread = useCallback(
+    async (id: string) => {
+      setActiveId(id);
+      setComposing(true);
+      setThreadLoading(true);
+      // Shareable URL (A5): keep ?thread= in sync with the open conversation.
+      router.replace(`/chat?thread=${id}`, { scroll: false });
+      try {
+        const res = (await ok(await (api as any).chat.conversations({ id }).get())) as {
+          messages: PersistedMessageRow[];
+        };
+        // Reconstruct the agentic transcript from the persisted wire shape: tool-call
+        // rows become cards, role:'tool' rows fold into their parent, the '' sentinel
+        // and JSON-in-content tool rows never leak as blank/garbled bubbles.
+        setMessages(reconstructMessages(res.messages ?? []));
+      } catch {
+        setMessages([]);
+      } finally {
+        setThreadLoading(false);
+      }
+    },
+    [router],
+  );
 
   // Start a fresh chat: clear the active thread and (on mobile) reveal the
   // stream pane with an empty state + composer.
   const newThread = useCallback(() => {
     setActiveId(null);
     setMessages([]);
-    setDraft('');
     setComposing(true);
-  }, []);
+    router.replace('/chat', { scroll: false });
+  }, [router]);
 
   // Mobile-only: leave the stream pane and return to the thread list.
   const backToList = useCallback(() => {
     setActiveId(null);
     setMessages([]);
     setComposing(false);
+    router.replace('/chat', { scroll: false });
+  }, [router]);
+
+  // Pin / unpin a thread (C4): optimistic flip, reverted on a failed PATCH.
+  const togglePin = useCallback(async (id: string, pinned: boolean) => {
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, pinned } : c)));
+    try {
+      await ok(await (api as any).chat.conversations({ id }).patch({ pinned }));
+    } catch {
+      setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, pinned: !pinned } : c)));
+    }
   }, []);
 
   const deleteThread = useCallback(
@@ -444,8 +646,23 @@ export const NNChat = () => {
     }
   }, []);
 
+  // Deep-research mode toggle — sticky, best-effort localStorage.
+  const toggleResearch = useCallback(() => {
+    setResearch((prev) => {
+      const next = !prev;
+      try {
+        if (next) localStorage.setItem(RESEARCH_LS_KEY, '1');
+        else localStorage.removeItem(RESEARCH_LS_KEY);
+      } catch {
+        /* best-effort */
+      }
+      return next;
+    });
+  }, []);
+
   // Inline rename (AC3.1): PATCH the conversation title via Eden, update the
   // local list optimistically. An empty title is ignored (server would 400 it).
+  // The inline-edit state lives in ThreadRail; this is the commit handler.
   const renameThread = useCallback(async (id: string, title: string) => {
     const trimmed = title.trim();
     if (trimmed.length === 0) return;
@@ -458,21 +675,6 @@ export const NNChat = () => {
       // id, but a foreign id never reaches here from the user's own list).
     }
   }, []);
-
-  const startRename = useCallback((c: ConversationVM) => {
-    setRenamingId(c.id);
-    setRenameDraft((c.title ?? '').trim());
-  }, []);
-
-  // Commit the inline rename (Enter / blur). Empty draft just cancels.
-  const commitRename = useCallback(() => {
-    const id = renamingId;
-    if (!id) return;
-    const draftTitle = renameDraft;
-    setRenamingId(null);
-    setRenameDraft('');
-    if (draftTitle.trim().length > 0) void renameThread(id, draftTitle);
-  }, [renamingId, renameDraft, renameThread]);
 
   // Resolve an applied write/SRS tool by id (off the latest messages state) and
   // refetch the affected card/deck via the store mirror so the rest of the app
@@ -630,19 +832,53 @@ export const NNChat = () => {
           patchAssistant({ streaming: false });
           setStreamPhase(null);
         },
+        // C3 — the server auto-titled this (previously untitled) thread. The
+        // PATCH-on-rename path wins server-side (`title IS NULL` guard); locally
+        // we just reflect the frame.
+        onTitle: (title) =>
+          setConversations((prev) =>
+            prev.map((c) => (c.id === convId ? { ...c, title } : c)),
+          ),
+        // C1 — accumulated token usage for the finished turn (badge under it).
+        onUsage: (usage) =>
+          patchAssistant({
+            usage: {
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+              totalTokens: usage.totalTokens ?? usage.promptTokens + usage.completionTokens,
+            },
+          }),
         onDone: () => {
           // Finalize the turn timer off the ORIGINAL turnStartedAt (T-accumulate).
           finalizeTurn({ streaming: false });
           setStreamPhase(null);
-          // Bump this thread to the top (server already bumped updatedAt on done).
-          setConversations((prev) => {
-            const found = prev.find((c) => c.id === convId);
-            if (!found) return prev;
-            const rest = prev.filter((c) => c.id !== convId);
-            return [{ ...found, updatedAt: new Date().toISOString() }, ...rest];
-          });
+          // Refresh recency (the rail derives ordering/groups from updatedAt).
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === convId ? { ...c, updatedAt: new Date().toISOString() } : c,
+            ),
+          );
         },
         onError: (message) => {
+          // A second turn raced a live one — the server refused pre-flush, so
+          // NOTHING was persisted. Drop the optimistic rows, put the text back
+          // in the composer, and explain via toast instead of an error bubble.
+          if (message === 'turn_in_progress') {
+            const all = messagesRef.current;
+            const idx = all.findIndex((m) => m.id === assistantMsgId);
+            const prevRow = idx > 0 ? all[idx - 1] : undefined;
+            const restored =
+              prevRow && prevRow.role === 'user' && prevRow.id.startsWith('local-user-')
+                ? prevRow.content
+                : '';
+            setMessages((prev) =>
+              prev.filter((m) => m.id !== assistantMsgId && (restored ? m.id !== prevRow!.id : true)),
+            );
+            if (restored) setDraft(restored);
+            raiseToast({ kind: 'info', titleKey: 'chat.errors.turnInProgress' });
+            setStreamPhase(null);
+            return;
+          }
           finalizeTurn({
             streaming: false,
             content:
@@ -659,12 +895,31 @@ export const NNChat = () => {
     [t, syncStoreAfterToolResult],
   );
 
+  // Flush the queued follow-up (D4) once the current turn fully settles — but
+  // never while a confirmation is still pending (the queued message waits for
+  // Apply/Reject + the resumed turn). `sendContentRef` breaks the circular dep
+  // (sendContent is declared further down and registered into the ref).
+  const sendContentRef = useRef<((content: string) => Promise<void>) | null>(null);
+  const maybeFlushQueue = useCallback(() => {
+    const q = queuedRef.current;
+    if (!q) return;
+    if (hasPendingConfirmation(messagesRef.current)) return;
+    queuedRef.current = null;
+    setQueued(null);
+    void sendContentRef.current?.(q);
+  }, []);
+
   // Answer a paused write/SRS tool call (Phase B / S10). Apply runs the mutation
   // server-side then continues the loop; Reject records a "rejected" result so
   // the model answers without mutating. The SAME stream handlers are re-attached
   // (via buildStreamHandlers) so the continued turn renders into the same bubble.
   const confirmToolCall = useCallback(
-    async (assistantMsgId: string, toolCallId: string, decision: 'apply' | 'reject') => {
+    async (
+      assistantMsgId: string,
+      toolCallId: string,
+      decision: 'apply' | 'reject',
+      payload?: ConfirmPayload,
+    ) => {
       const convId = activeId;
       if (!convId) return;
       // Mark the decision IMMEDIATELY so both buttons disable — a double-apply
@@ -689,34 +944,81 @@ export const NNChat = () => {
       abortRef.current = controller;
       await resumeChat(
         convId,
-        { resumeToolCallId: toolCallId, decision, model: model ?? undefined },
+        {
+          resumeToolCallId: toolCallId,
+          decision,
+          model: model ?? undefined,
+          research: research || undefined,
+          // Per-card confirm decisions + the optional note to the agent.
+          cardSelections: payload?.cardSelections,
+          feedback: payload?.feedback,
+        },
         buildStreamHandlers(assistantMsgId, convId),
         controller.signal,
       );
       setSending(false);
+      // A queued follow-up held back by the confirmation flushes once the
+      // resumed turn settles (D4).
+      maybeFlushQueue();
     },
-    [activeId, buildStreamHandlers, model],
+    [activeId, buildStreamHandlers, model, research, maybeFlushQueue],
   );
 
-  const send = useCallback(async () => {
-    const content = draft.trim();
-    if (!content || sending) return;
+  // Send an explicit content string. `send()` (textarea/Enter) trims the draft;
+  // suggested-prompt pills call this DIRECTLY — `setDraft(text); send()` would
+  // read the STALE draft from the closure (state updates are async).
+  const sendContent = useCallback(async (content: string) => {
+    // Attachment-only sends are valid (e.g. "here's a screenshot" with no text).
+    const hasAttachments = attachChipsRef.current.some((a) => !a.uploading);
+    if (!content && !hasAttachments) return;
+    // Mid-stream send → queue ONE follow-up (a second send replaces it) (D4).
+    if (sending) {
+      queuedRef.current = content;
+      setQueued(content);
+      updateDraft('', activeId);
+      return;
+    }
     setSending(true);
     setDraft('');
+    // The send consumes the draft — clear its stored copies (both the thread key
+    // and the 'new' key when this send is about to create the conversation).
+    try {
+      localStorage.removeItem(draftStorageKey(activeId));
+      localStorage.removeItem(draftStorageKey(null));
+    } catch {
+      /* best-effort */
+    }
+    // Consume the mention chips (C7) — they ride this turn only.
+    const chips = mentionChipsRef.current;
+    const mentionedCardIds = chips.map((c) => c.cardId);
+    setMentionChips([]);
+    // Consume the attachment chips (uploaded images + inline text files).
+    const atts = attachChipsRef.current.filter((a) => !a.uploading);
+    const attachmentInputs: MessageAttachmentInput[] = atts.map((a) =>
+      a.kind === 'image'
+        ? { kind: 'image' as const, mediaId: a.mediaId!, name: a.name }
+        : { kind: 'text' as const, name: a.name, text: a.text! },
+    );
+    setAttachChips([]);
 
     // Ensure a conversation exists (create on first message of a new thread).
+    // Created WITHOUT a title so the server auto-titles it after the first turn
+    // (C3); locally the first-message slice is the placeholder until the
+    // `title` frame arrives.
     let convId = activeId;
     if (!convId) {
       try {
         const created = (await ok(
-          await (api as any).chat.conversations.post({ title: content.slice(0, 80) }),
+          await (api as any).chat.conversations.post({}),
         )) as ConversationVM;
         convId = created.id;
         setActiveId(created.id);
-        setConversations((prev) => [created, ...prev]);
+        setConversations((prev) => [{ ...created, title: content.slice(0, 80) }, ...prev]);
+        router.replace(`/chat?thread=${created.id}`, { scroll: false });
       } catch {
         setSending(false);
         setDraft(content);
+        setMentionChips(chips);
         return;
       }
     }
@@ -729,7 +1031,29 @@ export const NNChat = () => {
     const assistantMsgId = `local-assistant-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
-      { id: userMsgId, role: 'user', content, citations: [], createdAt: new Date().toISOString() },
+      {
+        id: userMsgId,
+        role: 'user',
+        content,
+        citations: [],
+        createdAt: new Date().toISOString(),
+        mentions:
+          chips.length > 0 ? chips.map((c) => ({ cardId: c.cardId, front: c.label })) : undefined,
+        attachments:
+          atts.length > 0
+            ? atts.map((a) =>
+                a.kind === 'image'
+                  ? {
+                      kind: 'image' as const,
+                      mediaId: a.mediaId!,
+                      token: a.token!,
+                      mime: a.mime ?? 'image/png',
+                      name: a.name,
+                    }
+                  : { kind: 'text' as const, name: a.name, text: a.text! },
+              )
+            : undefined,
+      },
       {
         id: assistantMsgId,
         role: 'assistant',
@@ -737,6 +1061,8 @@ export const NNChat = () => {
         citations: [],
         streaming: true,
         turnStartedAt: Date.now(),
+        createdAt: new Date().toISOString(),
+        model: model ?? undefined,
       },
     ]);
 
@@ -745,11 +1071,134 @@ export const NNChat = () => {
     await streamChat(convId!, content, buildStreamHandlers(assistantMsgId, convId!), {
       model: model ?? undefined,
       deckId: deckScope ?? undefined,
+      research: research || undefined,
+      mentionedCardIds: mentionedCardIds.length > 0 ? mentionedCardIds : undefined,
+      attachments: attachmentInputs.length > 0 ? attachmentInputs : undefined,
       signal: controller.signal,
     });
 
     setSending(false);
-  }, [activeId, draft, sending, buildStreamHandlers, model, deckScope]);
+    maybeFlushQueue();
+  }, [activeId, sending, buildStreamHandlers, model, deckScope, research, router, draftStorageKey, updateDraft, maybeFlushQueue]);
+  useEffect(() => {
+    sendContentRef.current = sendContent;
+  }, [sendContent]);
+
+  const send = useCallback(() => sendContent(draft.trim()), [sendContent, draft]);
+
+  // The user's biggest deck (by mirrored card count) — used by the suggested
+  // prompts AND the slash-command templates (D2).
+  const biggestDeck = useMemo(() => {
+    if (cards.length === 0) return undefined;
+    const countByDeck = new Map<string, number>();
+    for (const c of cards) countByDeck.set(c.deckId, (countByDeck.get(c.deckId) ?? 0) + 1);
+    return decks
+      .filter((d) => (countByDeck.get(d.id) ?? 0) > 0)
+      .sort((a, b) => countByDeck.get(b.id)! - countByDeck.get(a.id)!)[0];
+  }, [cards, decks]);
+
+  // Suggested prompts for the empty state of a NEW conversation — built purely
+  // from the store mirror (deck names / due counts), zero extra fetches. Hidden
+  // when the user has no cards (nothing to ask about).
+  const suggestions = useMemo(() => {
+    if (cards.length === 0) return [];
+    const out: string[] = [];
+    const dueCount = getDueCards(cards).length;
+    if (dueCount > 0) out.push(t('chat.suggested.dueToday'));
+    if (biggestDeck) out.push(t('chat.suggested.deckProgress', { name: biggestDeck.name }));
+    out.push(t('chat.suggested.failing'));
+    if (biggestDeck) out.push(t('chat.suggested.quiz', { name: biggestDeck.name }));
+    return out.slice(0, 4);
+  }, [cards, biggestDeck, t]);
+
+  // ── Composer popovers: @-mention + slash (D1/D2) ─────────────────────────────
+
+  // Re-derive the live trigger from the textarea's value + caret. Called from
+  // onChange / onClick / onKeyUp so caret moves keep the popover honest.
+  const refreshTrigger = useCallback((value: string) => {
+    const caret = textareaRef.current?.selectionStart ?? value.length;
+    const next = detectComposerTrigger(value, caret);
+    setTrigger((prev) => {
+      const changed =
+        (prev === null) !== (next === null) ||
+        prev?.kind !== next?.kind ||
+        prev?.query !== next?.query ||
+        prev?.start !== next?.start;
+      if (changed) setPopoverIdx(0);
+      return next;
+    });
+  }, []);
+
+  const mentionResults = useMemo(() => {
+    if (trigger?.kind !== 'mention') return null;
+    return searchMentions(
+      sortedDecks.map((d) => ({ id: d.id, name: d.name })),
+      cards.map((c) => ({
+        id: c.id,
+        front: (c.renderFrontText || '').replace(/\s+/g, ' ').trim() || '…',
+        deckId: c.deckId,
+      })),
+      trigger.query,
+    );
+  }, [trigger, sortedDecks, cards]);
+
+  const slashCommands = useMemo(
+    () => (trigger?.kind === 'slash' ? filterSlashCommands(trigger.query) : []),
+    [trigger],
+  );
+
+  const popoverCount =
+    trigger?.kind === 'mention' && mentionResults
+      ? mentionResults.decks.length + mentionResults.cards.length
+      : trigger?.kind === 'slash'
+        ? slashCommands.length
+        : 0;
+
+  // Pick the active mention option: a DECK sets the existing per-turn scope; a
+  // CARD becomes a removable chip riding `mentionedCardIds` on the next send.
+  const pickMention = useCallback(
+    (index: number) => {
+      if (!mentionResults || trigger?.kind !== 'mention') return;
+      const { picks } = mentionItems(mentionResults, t);
+      const pick = picks[index];
+      if (!pick) return;
+      const caret = textareaRef.current?.selectionStart ?? draft.length;
+      const r = applyTrigger(draft, trigger, caret, '');
+      updateDraft(r.value, activeId);
+      if (pick.kind === 'deck') {
+        setDeckScope(pick.id);
+      } else {
+        setMentionChips((prev) =>
+          prev.some((c) => c.cardId === pick.id) || prev.length >= 5
+            ? prev
+            : [...prev, { cardId: pick.id, label: pick.label }],
+        );
+      }
+      setTrigger(null);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        el?.focus();
+        el?.setSelectionRange(r.caret, r.caret);
+      });
+    },
+    [mentionResults, trigger, draft, activeId, updateDraft, t],
+  );
+
+  const pickSlash = useCallback(
+    (index: number) => {
+      const cmd = slashCommands[index];
+      if (!cmd) return;
+      const text = slashTemplate(cmd, t, biggestDeck?.name);
+      updateDraft(text, activeId);
+      setTrigger(null);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        el?.focus();
+        el?.setSelectionRange(text.length, text.length);
+      });
+    },
+    [slashCommands, t, biggestDeck, activeId, updateDraft],
+  );
 
   // Stop the in-flight turn (S6 / AC3.3 — the abort cliff). Abort the active
   // controller; the swallowed AbortError leaves the user row persisted server-side
@@ -766,7 +1215,15 @@ export const NNChat = () => {
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
     setStreamPhase(null);
     setSending(false);
-  }, []);
+    // Stop means stop (D4): a queued follow-up returns to the draft instead of
+    // auto-firing into a turn the user just cancelled.
+    if (queuedRef.current) {
+      const q = queuedRef.current;
+      queuedRef.current = null;
+      setQueued(null);
+      updateDraft(q, activeId);
+    }
+  }, [activeId, updateDraft]);
 
   // Regenerate the LAST assistant turn (S6 / AC3.4). Removes any trailing
   // assistant VM locally, re-adds a streaming placeholder, then POSTs to the
@@ -795,6 +1252,8 @@ export const NNChat = () => {
           citations: [],
           streaming: true,
           turnStartedAt: Date.now(),
+          createdAt: new Date().toISOString(),
+          model: model ?? undefined,
         },
       ];
     });
@@ -802,12 +1261,13 @@ export const NNChat = () => {
     abortRef.current = controller;
     await regenerateChat(
       convId,
-      { model: model ?? undefined, deckId: deckScope ?? undefined },
+      { model: model ?? undefined, deckId: deckScope ?? undefined, research: research || undefined },
       buildStreamHandlers(assistantMsgId, convId),
       controller.signal,
     );
     setSending(false);
-  }, [activeId, sending, buildStreamHandlers, model, deckScope]);
+    maybeFlushQueue();
+  }, [activeId, sending, buildStreamHandlers, model, deckScope, research, maybeFlushQueue]);
 
   // Edit-and-rerun the LAST user message (S7 / AC4.2, B2 default). Locally update
   // the last user VM's content, drop any trailing assistant VM, append a fresh
@@ -849,6 +1309,8 @@ export const NNChat = () => {
             citations: [],
             streaming: true,
             turnStartedAt: Date.now(),
+            createdAt: new Date().toISOString(),
+            model: model ?? undefined,
           },
         ];
       });
@@ -856,13 +1318,19 @@ export const NNChat = () => {
       abortRef.current = controller;
       await regenerateChat(
         convId,
-        { model: model ?? undefined, deckId: deckScope ?? undefined, content: trimmed },
+        {
+          model: model ?? undefined,
+          deckId: deckScope ?? undefined,
+          research: research || undefined,
+          content: trimmed,
+        },
         buildStreamHandlers(assistantMsgId, convId),
         controller.signal,
       );
       setSending(false);
+      maybeFlushQueue();
     },
-    [activeId, sending, messages, buildStreamHandlers, model, deckScope],
+    [activeId, sending, messages, buildStreamHandlers, model, deckScope, research, maybeFlushQueue],
   );
 
   // Copy an assistant message's clean prose to the clipboard (S6 / AC3.5). The
@@ -925,216 +1393,22 @@ export const NNChat = () => {
         overflow: 'hidden',
       }}
     >
-      {/* Thread list. On mobile it's the full screen until the user opens or
-          starts a chat (`composing`); on desktop it's always the left rail. */}
+      {/* Thread list (extracted ThreadRail — search/groups/pin/rename/delete).
+          On mobile it's the full screen until the user opens or starts a chat
+          (`composing`); on desktop it's always the left rail. */}
       {(!isMobile || !composing) && (
-        <aside
-          style={{
-            width: isMobile ? '100%' : 268,
-            flexShrink: 0,
-            borderRight: isMobile ? 'none' : '1px solid var(--border)',
-            display: 'flex',
-            flexDirection: 'column',
-            background: 'var(--surface)',
-          }}
-        >
-          <div
-            style={{
-              padding: '12px 14px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 8,
-              borderBottom: '1px solid var(--border)',
-            }}
-          >
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                letterSpacing: 1.4,
-                textTransform: 'uppercase',
-                color: 'var(--text-dim)',
-                fontFamily: 'var(--font-sans)',
-              }}
-            >
-              {t('chat.threads.title')}
-            </span>
-            <NNBtn size="sm" variant="soft" icon="plus" onClick={newThread}>
-              {t('chat.threads.newThread')}
-            </NNBtn>
-          </div>
-          <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
-            {!conversationsLoaded ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 4 }}>
-                <NNSkeleton height={38} />
-                <NNSkeleton height={38} />
-                <NNSkeleton height={38} />
-              </div>
-            ) : conversations.length === 0 ? (
-              <p
-                style={{
-                  fontSize: 13,
-                  color: 'var(--text-dim)',
-                  padding: '12px 8px',
-                  margin: 0,
-                }}
-              >
-                {t('chat.threads.empty')}
-              </p>
-            ) : (
-              conversations.map((c) => {
-                const isActive = c.id === activeId;
-                const isRenaming = renamingId === c.id;
-                return (
-                  <div
-                    key={c.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => {
-                      if (!isRenaming) openThread(c.id);
-                    }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      startRename(c);
-                    }}
-                    onKeyDown={(e) => {
-                      if (isRenaming) return;
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        openThread(c.id);
-                      }
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 6,
-                      padding: '9px 10px',
-                      borderRadius: 'var(--r-md)',
-                      cursor: 'pointer',
-                      background: isActive ? 'var(--surface-3)' : 'transparent',
-                      transition: 'background 120ms ease',
-                    }}
-                  >
-                    {isRenaming ? (
-                      <input
-                        autoFocus
-                        value={renameDraft}
-                        maxLength={200}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => setRenameDraft(e.target.value)}
-                        onBlur={commitRename}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            commitRename();
-                          } else if (e.key === 'Escape') {
-                            e.preventDefault();
-                            setRenamingId(null);
-                            setRenameDraft('');
-                          }
-                        }}
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          padding: '4px 8px',
-                          borderRadius: 'var(--r-sm)',
-                          border: '1px solid var(--border-2)',
-                          background: 'var(--surface-2)',
-                          color: 'var(--text)',
-                          fontFamily: 'var(--font-sans)',
-                          fontSize: 13.5,
-                          outline: 'none',
-                        }}
-                      />
-                    ) : (
-                      <div
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          minWidth: 0,
-                          gap: 1,
-                          flex: 1,
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: 13.5,
-                            fontWeight: isActive ? 600 : 500,
-                            color: isActive ? 'var(--text)' : 'var(--text-muted)',
-                            fontFamily: 'var(--font-sans)',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {conversationTitle(c, t('chat.threads.untitled'))}
-                        </span>
-                        {relativeUpdated(c.updatedAt, t) && (
-                          <span
-                            style={{
-                              fontSize: 10.5,
-                              color: 'var(--text-dim)',
-                              fontFamily: 'var(--font-sans)',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            {relativeUpdated(c.updatedAt, t)}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    {!isRenaming && (
-                      <span style={{ display: 'inline-flex', gap: 2, flexShrink: 0 }}>
-                        <button
-                          type="button"
-                          aria-label={t('chat.threads.rename')}
-                          title={t('chat.threads.rename')}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startRename(c);
-                          }}
-                          style={{
-                            display: 'flex',
-                            background: 'transparent',
-                            border: 'none',
-                            cursor: 'pointer',
-                            color: 'var(--text-dim)',
-                            padding: 2,
-                          }}
-                        >
-                          <NNIcon name="edit" size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={t('chat.threads.delete')}
-                          title={t('chat.threads.delete')}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void deleteThread(c.id);
-                          }}
-                          style={{
-                            display: 'flex',
-                            background: 'transparent',
-                            border: 'none',
-                            cursor: 'pointer',
-                            color: 'var(--text-dim)',
-                            padding: 2,
-                          }}
-                        >
-                          <NNIcon name="x" size={14} />
-                        </button>
-                      </span>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </aside>
+        <ThreadRail
+          conversations={conversations}
+          activeId={activeId}
+          loaded={conversationsLoaded}
+          isMobile={isMobile}
+          onOpen={(id) => void openThread(id)}
+          onNew={newThread}
+          onRename={(id, title) => void renameThread(id, title)}
+          onDelete={(id) => void deleteThread(id)}
+          onTogglePin={(id, pinned) => void togglePin(id, pinned)}
+          t={t}
+        />
       )}
 
       {/* Message stream + composer. On mobile it replaces the list while
@@ -1149,6 +1423,7 @@ export const NNChat = () => {
             </div>
           )}
 
+          <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex' }}>
           <div
             ref={scrollRef}
             className="nn-scroll"
@@ -1193,6 +1468,39 @@ export const NNChat = () => {
                 <p style={{ fontSize: 14, lineHeight: 1.55, color: 'var(--text-muted)', margin: 0 }}>
                   {t('chat.stream.emptySubtitle')}
                 </p>
+                {/* Suggested prompts — new conversations only; click = send now. */}
+                {!activeId && suggestions.length > 0 && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      justifyContent: 'center',
+                      gap: 8,
+                      marginTop: 6,
+                    }}
+                  >
+                    {suggestions.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        disabled={sending}
+                        onClick={() => void sendContent(s)}
+                        style={{
+                          border: '1px solid var(--border)',
+                          background: 'var(--surface-2)',
+                          color: 'var(--text-muted)',
+                          borderRadius: 999,
+                          padding: '7px 14px',
+                          fontSize: 12.5,
+                          fontFamily: 'var(--font-sans)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               <div
@@ -1206,27 +1514,56 @@ export const NNChat = () => {
                 }}
               >
                 {messages.map((m, i) => (
-                  <MessageRow
-                    key={m.id}
-                    message={m}
-                    phase={m.streaming ? streamPhase : null}
-                    resolveCard={resolveCard}
-                    deckNameById={deckNameById}
-                    onConfirm={confirmToolCall}
-                    // Regenerate only on the LAST assistant message (and only once
-                    // it has finished streaming).
-                    canRegenerate={
-                      m.role === 'assistant' && !m.streaming && i === messages.length - 1 && !sending
-                    }
-                    onCopy={() => void copyMessage(m.content)}
-                    onRegenerate={() => void regenerate()}
-                    // Edit-and-rerun only on the LAST user message, when idle (AC4.1).
-                    canEdit={m.role === 'user' && i === messages.length - 1 && !sending}
-                    onEdit={(text) => void editAndRegenerate(text)}
-                    onOpenCard={(cardId) => router.push(`/cards?focus=${cardId}`)}
-                    locale={locale}
-                    t={t}
-                  />
+                  <React.Fragment key={m.id}>
+                    {/* Day separator between messages from different LOCAL days (B2). */}
+                    {needsDaySeparator(messages[i - 1]?.createdAt, m.createdAt) && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          margin: '2px 0',
+                        }}
+                      >
+                        <span style={{ flex: 1, borderTop: '1px dashed var(--border-2)' }} />
+                        <span
+                          style={{
+                            fontSize: 10.5,
+                            fontWeight: 600,
+                            letterSpacing: 0.8,
+                            textTransform: 'uppercase',
+                            color: 'var(--text-dim)',
+                            fontFamily: 'var(--font-sans)',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {formatDayLabel(m.createdAt!, locale, t)}
+                        </span>
+                        <span style={{ flex: 1, borderTop: '1px dashed var(--border-2)' }} />
+                      </div>
+                    )}
+                    <MessageRow
+                      message={m}
+                      phase={m.streaming ? streamPhase : null}
+                      resolveCard={resolveCard}
+                      deckNameById={deckNameById}
+                      onConfirm={confirmToolCall}
+                      // Regenerate only on the LAST assistant message (and only once
+                      // it has finished streaming).
+                      canRegenerate={
+                        m.role === 'assistant' && !m.streaming && i === messages.length - 1 && !sending
+                      }
+                      onCopy={() => void copyMessage(m.content)}
+                      onRegenerate={() => void regenerate()}
+                      // Edit-and-rerun only on the LAST user message, when idle (AC4.1).
+                      canEdit={m.role === 'user' && i === messages.length - 1 && !sending}
+                      onEdit={(text) => void editAndRegenerate(text)}
+                      onOpenCard={(cardId) => router.push(`/cards?focus=${cardId}`)}
+                      modelLabel={(id) => status?.models?.find((mm) => mm.id === id)?.label ?? id}
+                      locale={locale}
+                      t={t}
+                    />
+                  </React.Fragment>
                 ))}
                 {/* The abort/regenerate cliff (M1): a committed user turn with no
                     answer — a recoverable "stopped — regenerate?" affordance shown
@@ -1238,12 +1575,115 @@ export const NNChat = () => {
                     </NNBtn>
                   </div>
                 )}
+                {/* Queued follow-up (D4): a dim pending bubble, cancellable back
+                    into the draft; auto-sends once the current turn settles. */}
+                {queued && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <div
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        maxWidth: '78%',
+                        padding: '8px 12px',
+                        borderRadius: 'var(--r-lg)',
+                        background: 'var(--surface-2)',
+                        border: '1px dashed var(--border-2)',
+                        opacity: 0.7,
+                      }}
+                    >
+                      <span
+                        style={{
+                          color: 'var(--text-muted)',
+                          fontFamily: 'var(--font-sans)',
+                          fontSize: 13.5,
+                          lineHeight: 1.45,
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          minWidth: 0,
+                        }}
+                      >
+                        {queued}
+                      </span>
+                      <NNBadge tone="neutral" size="xs">
+                        {t('chat.message.queued')}
+                      </NNBadge>
+                      <button
+                        type="button"
+                        aria-label={t('chat.message.queuedCancel')}
+                        title={t('chat.message.queuedCancel')}
+                        onClick={() => {
+                          const q = queuedRef.current;
+                          queuedRef.current = null;
+                          setQueued(null);
+                          if (q) updateDraft(q, activeId);
+                        }}
+                        style={{
+                          display: 'flex',
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: 'pointer',
+                          color: 'var(--text-dim)',
+                          padding: 2,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <NNIcon name="x" size={13} />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
 
+          {/* Jump-to-latest pill (B1) — floats over the scroll pane while the
+              user is scrolled away; highlights when new content arrived. */}
+          {!stick.nearBottom && messages.length > 0 && (
+            <button
+              type="button"
+              onClick={stick.scrollToBottom}
+              aria-label={t('chat.stream.jumpToBottom')}
+              title={t('chat.stream.jumpToBottom')}
+              style={{
+                position: 'absolute',
+                bottom: 12,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '7px 12px',
+                borderRadius: 'var(--r-pill)',
+                border: '1px solid var(--border-2)',
+                background: 'var(--surface-3)',
+                color: 'var(--text)',
+                fontFamily: 'var(--font-sans)',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                boxShadow: 'var(--shadow-md)',
+                zIndex: 15,
+              }}
+            >
+              <NNIcon name="chevd" size={13} />
+              {stick.hasUnseen && sending ? t('chat.stream.newMessages') : null}
+            </button>
+          )}
+          </div>
+
           {/* Composer */}
           <div
+            onDragOver={(e) => {
+              if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
+            }}
+            onDrop={(e) => {
+              const files = e.dataTransfer?.files;
+              if (files && files.length > 0) {
+                e.preventDefault();
+                void addAttachmentFiles(Array.from(files));
+              }
+            }}
             style={{
               borderTop: '1px solid var(--border)',
               padding: isMobile ? '10px 12px' : '14px 28px',
@@ -1260,10 +1700,13 @@ export const NNChat = () => {
                 margin: '0 auto',
               }}
             >
-              {/* Per-turn controls: model (reasoning) picker + deck scope. The model
-                  picker is hidden entirely when no allow-list is configured
-                  (status.models empty) — chat is then identical to today. */}
-              {((status?.models?.length ?? 0) > 0 || sortedDecks.length > 0) && (
+              {/* Per-turn controls: model (reasoning) picker + deck scope + the
+                  deep-research mode toggle. The model picker is hidden entirely
+                  when no allow-list is configured (status.models empty); the
+                  research toggle is hidden when the server has no fetch_page. */}
+              {((status?.models?.length ?? 0) > 0 ||
+                sortedDecks.length > 0 ||
+                status?.fetchPageEnabled === true) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   {(status?.models?.length ?? 0) > 0 && (
                     <ModelPicker
@@ -1281,19 +1724,266 @@ export const NNChat = () => {
                       t={t}
                     />
                   )}
+                  {status?.fetchPageEnabled === true && (
+                    <ResearchToggle active={research} onToggle={toggleResearch} t={t} />
+                  )}
                 </div>
               )}
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
+              {/* Mention chips (D1) — cards attached to the next send. */}
+              {mentionChips.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {mentionChips.map((chip) => (
+                    <span
+                      key={chip.cardId}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        padding: '4px 8px',
+                        borderRadius: 'var(--r-pill)',
+                        border: '1px solid var(--border-2)',
+                        background: 'var(--surface-3)',
+                        color: 'var(--text-muted)',
+                        fontFamily: 'var(--font-sans)',
+                        fontSize: 12,
+                        maxWidth: 240,
+                      }}
+                    >
+                      <NNIcon name="brain" size={12} color="var(--text-dim)" />
+                      <span
+                        style={{
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          minWidth: 0,
+                        }}
+                      >
+                        {chip.label}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={t('chat.composer.removeMention')}
+                        title={t('chat.composer.removeMention')}
+                        onClick={() =>
+                          setMentionChips((prev) => prev.filter((c) => c.cardId !== chip.cardId))
+                        }
+                        style={{
+                          display: 'flex',
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: 'pointer',
+                          color: 'var(--text-dim)',
+                          padding: 0,
+                        }}
+                      >
+                        <NNIcon name="x" size={12} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {/* Attachment chips — uploaded images + inline text files. */}
+              {attachChips.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {attachChips.map((chip) => (
+                    <span
+                      key={chip.key}
+                      title={chip.name}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '4px 8px',
+                        borderRadius: 'var(--r-pill)',
+                        border: '1px solid var(--border-2)',
+                        background: 'var(--surface-3)',
+                        color: 'var(--text-muted)',
+                        fontFamily: 'var(--font-sans)',
+                        fontSize: 12,
+                        maxWidth: 260,
+                      }}
+                    >
+                      {chip.kind === 'image' && chip.token ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={chip.token}
+                          alt={chip.name}
+                          style={{ width: 24, height: 24, objectFit: 'cover', borderRadius: 6 }}
+                        />
+                      ) : (
+                        <NNIcon
+                          name={chip.kind === 'image' ? 'image' : 'doc'}
+                          size={13}
+                          color="var(--text-dim)"
+                        />
+                      )}
+                      <span
+                        style={{
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          minWidth: 0,
+                        }}
+                      >
+                        {chip.name}
+                      </span>
+                      {chip.uploading ? (
+                        <span className="nn-spin" aria-hidden>
+                          <NNIcon name="sync" size={12} color="var(--text-dim)" />
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          aria-label={t('chat.composer.removeAttachment')}
+                          title={t('chat.composer.removeAttachment')}
+                          onClick={() =>
+                            setAttachChips((prev) => prev.filter((c) => c.key !== chip.key))
+                          }
+                          style={{
+                            display: 'flex',
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            color: 'var(--text-dim)',
+                            padding: 0,
+                          }}
+                        >
+                          <NNIcon name="x" size={12} />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, position: 'relative' }}>
+                {/* Composer popovers (D1/D2) — anchored above the textarea; the
+                    textarea keeps focus, keyboard handled in its onKeyDown. */}
+                {trigger?.kind === 'mention' && mentionResults && (
+                  <MentionPopover
+                    results={mentionResults}
+                    activeIndex={popoverIdx}
+                    onPick={pickMention}
+                    onHover={setPopoverIdx}
+                    isMobile={isMobile}
+                    t={t}
+                  />
+                )}
+                {trigger?.kind === 'slash' && slashCommands.length > 0 && (
+                  <SlashMenu
+                    commands={slashCommands}
+                    activeIndex={popoverIdx}
+                    onPick={pickSlash}
+                    onHover={setPopoverIdx}
+                    isMobile={isMobile}
+                    t={t}
+                  />
+                )}
+                {/* Attach button + hidden file input (images via the media
+                    pipeline; text files inlined). Paste/drop also land here. */}
+                <button
+                  type="button"
+                  aria-label={t('chat.composer.attach')}
+                  title={t('chat.composer.attach')}
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={attachChips.length >= ATTACH_MAX}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 42,
+                    height: 42,
+                    flexShrink: 0,
+                    borderRadius: 'var(--r-md)',
+                    border: '1px solid var(--border-2)',
+                    background: 'var(--surface-2)',
+                    color: attachChips.length >= ATTACH_MAX ? 'var(--text-dim)' : 'var(--text-muted)',
+                    cursor: attachChips.length >= ATTACH_MAX ? 'default' : 'pointer',
+                  }}
+                >
+                  <NNIcon name="clip" size={16} />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  hidden
+                  accept={[
+                    ...(status?.visionEnabled !== false ? (MEDIA_MIME_ALLOWLIST as readonly string[]) : []),
+                    '.txt',
+                    '.md',
+                    '.markdown',
+                    '.csv',
+                    '.json',
+                    '.log',
+                  ].join(',')}
+                  onChange={(e) => {
+                    const files = e.target.files;
+                    if (files && files.length > 0) void addAttachmentFiles(Array.from(files));
+                    e.target.value = '';
+                  }}
+                />
                 <textarea
+                  ref={textareaRef}
                   value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => {
+                    updateDraft(e.target.value, activeId);
+                    refreshTrigger(e.target.value);
+                  }}
+                  onPaste={(e) => {
+                    // Pasted screenshots/files become attachments, not garbled text.
+                    const files = e.clipboardData?.files;
+                    if (files && files.length > 0) {
+                      e.preventDefault();
+                      void addAttachmentFiles(Array.from(files));
+                    }
+                  }}
+                  onClick={() => refreshTrigger(draft)}
+                  onKeyUp={(e) => {
+                    // Caret moves (arrows left/right, Home/End) keep the trigger honest.
+                    if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+                      refreshTrigger(draft);
+                    }
+                  }}
                   onKeyDown={(e) => {
+                    // Popover navigation FIRST (D1/D2): arrows move, Enter/Tab pick,
+                    // Esc closes (and never reaches any other Esc handler).
+                    if (trigger) {
+                      if (e.key === 'Escape') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTrigger(null);
+                        return;
+                      }
+                      if (popoverCount > 0) {
+                        if (e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setPopoverIdx((i) => (i + 1) % popoverCount);
+                          return;
+                        }
+                        if (e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setPopoverIdx((i) => (i - 1 + popoverCount) % popoverCount);
+                          return;
+                        }
+                        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                          e.preventDefault();
+                          if (trigger.kind === 'mention') pickMention(popoverIdx);
+                          else pickSlash(popoverIdx);
+                          return;
+                        }
+                      } else if (e.key === 'Enter' && !e.shiftKey) {
+                        // Zero results: Enter closes the popover and sends (no dead key).
+                        setTrigger(null);
+                      }
+                    }
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       void send();
                     }
                   }}
-                  placeholder={t('chat.composer.placeholder')}
+                  placeholder={t(
+                    research ? 'chat.composer.researchPlaceholder' : 'chat.composer.placeholder',
+                  )}
                   rows={1}
                   style={{
                     flex: 1,
@@ -1322,7 +2012,10 @@ export const NNChat = () => {
                     size="lg"
                     icon="arrow"
                     onClick={() => void send()}
-                    disabled={draft.trim().length === 0}
+                    disabled={
+                      (draft.trim().length === 0 && attachChips.length === 0) ||
+                      attachChips.some((a) => a.uploading)
+                    }
                   >
                     {t('chat.composer.send')}
                   </NNBtn>
@@ -1350,7 +2043,12 @@ interface MessageRowProps {
    * Answer a paused write/SRS tool call (Phase B). Carries the parent assistant
    * message id so the resume targets the right bubble.
    */
-  onConfirm: (assistantMsgId: string, toolCallId: string, decision: 'apply' | 'reject') => void;
+  onConfirm: (
+    assistantMsgId: string,
+    toolCallId: string,
+    decision: 'apply' | 'reject',
+    payload?: ConfirmPayload,
+  ) => void;
   /** Show the regenerate action (only on the last, finished assistant message). */
   canRegenerate?: boolean;
   /** Copy this message's clean prose to the clipboard (assistant only). */
@@ -1363,9 +2061,23 @@ interface MessageRowProps {
   onEdit?: (text: string) => void;
   /** Open a cited card in /cards (jump-to-card, AC3.6). */
   onOpenCard?: (cardId: string) => void;
+  /** Resolve a model id to its picker label (B6) — falls back to the raw id. */
+  modelLabel?: (id: string) => string;
   /** Active locale for absolute-timestamp formatting on hover. */
   locale: string;
   t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+/** Short HH:MM time for the inline message timestamp (B2). */
+function formatTimeShort(iso: string | undefined, locale: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
 }
 
 const MessageRow = ({
@@ -1380,6 +2092,7 @@ const MessageRow = ({
   canEdit = false,
   onEdit,
   onOpenCard,
+  modelLabel,
   locale,
   t,
 }: MessageRowProps) => {
@@ -1445,7 +2158,7 @@ const MessageRow = ({
           />
         ) : (
           <div
-            className="nn-chat-user-bubble"
+            className="nn-chat-user-bubble nn-msg-row"
             title={formatTimestamp(message.createdAt, locale)}
             style={{
               display: 'inline-flex',
@@ -1454,6 +2167,20 @@ const MessageRow = ({
               maxWidth: '78%',
             }}
           >
+            {formatTimeShort(message.createdAt, locale) && (
+              <span
+                className="nn-msg-time"
+                style={{
+                  alignSelf: 'center',
+                  fontSize: 10.5,
+                  color: 'var(--text-dim)',
+                  fontFamily: 'var(--font-sans)',
+                  flexShrink: 0,
+                }}
+              >
+                {formatTimeShort(message.createdAt, locale)}
+              </span>
+            )}
             {canEdit && onEdit && (
               <button
                 type="button"
@@ -1474,21 +2201,115 @@ const MessageRow = ({
                 <NNIcon name="edit" size={14} />
               </button>
             )}
-            <div
-              style={{
-                padding: '10px 14px',
-                borderRadius: 'var(--r-lg)',
-                background: 'var(--surface-3)',
-                color: 'var(--text)',
-                fontFamily: 'var(--font-sans)',
-                fontSize: 14,
-                lineHeight: 1.5,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                minWidth: 0,
-              }}
-            >
-              {message.content}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+              {/* Attachments — image previews + file chips, above the text. */}
+              {(message.attachments ?? []).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
+                  {message.attachments!.map((a, i) =>
+                    a.kind === 'image' ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        key={`${a.mediaId}-${i}`}
+                        src={a.token}
+                        alt={a.name ?? 'attachment'}
+                        title={a.name}
+                        style={{
+                          maxHeight: 180,
+                          maxWidth: 260,
+                          borderRadius: 'var(--r-md)',
+                          border: '1px solid var(--border-2)',
+                          objectFit: 'cover',
+                        }}
+                      />
+                    ) : (
+                      <span
+                        key={`${a.name}-${i}`}
+                        title={a.name}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          padding: '4px 10px',
+                          borderRadius: 'var(--r-pill)',
+                          border: '1px solid var(--border-2)',
+                          background: 'var(--surface-2)',
+                          color: 'var(--text-muted)',
+                          fontFamily: 'var(--font-sans)',
+                          fontSize: 12,
+                          maxWidth: 220,
+                        }}
+                      >
+                        <NNIcon name="doc" size={12} color="var(--text-dim)" />
+                        <span
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            minWidth: 0,
+                          }}
+                        >
+                          {a.name}
+                        </span>
+                      </span>
+                    ),
+                  )}
+                </div>
+              )}
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: 'var(--r-lg)',
+                  background: 'var(--surface-3)',
+                  color: 'var(--text)',
+                  fontFamily: 'var(--font-sans)',
+                  fontSize: 14,
+                  lineHeight: 1.5,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  minWidth: 0,
+                }}
+              >
+                {message.content}
+              </div>
+              {/* Mention chips on a persisted user message (C7/D1). */}
+              {(message.mentions ?? []).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, justifyContent: 'flex-end' }}>
+                  {message.mentions!.map((m) => (
+                    <button
+                      key={m.cardId}
+                      type="button"
+                      onClick={() => onOpenCard?.(m.cardId)}
+                      title={m.front}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        padding: '2px 8px',
+                        borderRadius: 'var(--r-pill)',
+                        border: '1px solid var(--border-2)',
+                        background: 'var(--surface-2)',
+                        color: 'var(--text-dim)',
+                        fontFamily: 'var(--font-sans)',
+                        fontSize: 11,
+                        cursor: onOpenCard ? 'pointer' : 'default',
+                        maxWidth: 200,
+                      }}
+                    >
+                      <NNIcon name="brain" size={11} color="var(--text-dim)" />
+                      <span
+                        style={{
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          minWidth: 0,
+                        }}
+                      >
+                        {(resolveCard(m.cardId)?.renderFrontText || m.front || '').trim() || m.front}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1499,7 +2320,7 @@ const MessageRow = ({
   // Assistant turn: model prose (above) is visibly separate from the cited cards
   // (below), making own-vs-general content distinguishable (AC3).
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div className="nn-msg-row" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div
         title={formatTimestamp(message.createdAt, locale)}
         style={{ display: 'flex', alignItems: 'center', gap: 7 }}
@@ -1517,6 +2338,18 @@ const MessageRow = ({
         >
           {t('chat.stream.assistant')}
         </span>
+        {formatTimeShort(message.createdAt, locale) && (
+          <span
+            className="nn-msg-time"
+            style={{
+              fontSize: 10.5,
+              color: 'var(--text-dim)',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
+            {formatTimeShort(message.createdAt, locale)}
+          </span>
+        )}
       </div>
 
       {/* Collapsible reasoning trace — live-streams while the answer is still
@@ -1542,7 +2375,9 @@ const MessageRow = ({
           answerStarted={answerStarted}
           resolveCard={resolveCard}
           deckNameById={deckNameById}
-          onConfirm={(toolCallId, decision) => onConfirm(message.id, toolCallId, decision)}
+          onConfirm={(toolCallId, decision, payload) =>
+            onConfirm(message.id, toolCallId, decision, payload)
+          }
           onOpenCard={onOpenCard}
           t={t}
         />
@@ -1552,7 +2387,7 @@ const MessageRow = ({
           The inline [card:<id>] grounding tokens are stripped — the sources are
           shown in the collapsible block below. */}
       {answerStarted ? (
-        <AssistantMarkdown content={message.content} />
+        <AssistantMarkdown content={message.content} final={!isStreaming} t={t} />
       ) : isStreaming ? (
         <span style={{ fontSize: 13, color: 'var(--text-dim)', fontStyle: 'italic' }}>
           {phase === 'calling_tool'
@@ -1626,10 +2461,10 @@ const MessageRow = ({
         </div>
       )}
 
-      {/* Per-message actions: copy clean prose + (last assistant only) regenerate.
-          Only on a finished assistant turn that has prose. */}
+      {/* Per-message actions: copy clean prose + (last assistant only) regenerate
+          + a dim model · token badge (B6). Only on a finished turn with prose. */}
       {!isStreaming && answerStarted && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           <NNBtn
             size="sm"
             variant="ghost"
@@ -1651,6 +2486,31 @@ const MessageRow = ({
             >
               {t('chat.message.regenerate')}
             </NNBtn>
+          )}
+          {(message.model || usageTotal(message.usage) > 0) && (
+            <span
+              title={
+                message.usage
+                  ? `${message.usage.promptTokens} in · ${message.usage.completionTokens} out`
+                  : undefined
+              }
+              style={{
+                marginLeft: 'auto',
+                fontSize: 10.5,
+                color: 'var(--text-dim)',
+                fontFamily: 'var(--font-sans)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {[
+                message.model ? (modelLabel?.(message.model) ?? message.model) : null,
+                usageTotal(message.usage) > 0
+                  ? t('chat.message.tokens', { count: usageTotal(message.usage).toLocaleString() })
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </span>
           )}
         </div>
       )}
@@ -1863,8 +2723,9 @@ interface ToolActivityStepProps {
   toolCall: ToolCallVM;
   resolveCard: (cardId: string) => Card | undefined;
   deckNameById: Map<string, string>;
-  /** Answer this step's pending confirmation (Phase B). */
-  onConfirm: (decision: 'apply' | 'reject') => void;
+  /** Answer this step's pending confirmation (Phase B; payload = per-card
+   *  selections + feedback from the confirm editor). */
+  onConfirm: (decision: 'apply' | 'reject', payload?: ConfirmPayload) => void;
   /** Jump to a cited card in /cards (AC3.6). */
   onOpenCard?: (cardId: string) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -1909,10 +2770,19 @@ const ToolActivityStep = ({
   // its bottom margin so the NNCard padding isn't doubled at the bottom.
   const summaryIsLast = !!toolCall.applySummary && !hasResultContent && !toolCall.awaitingConfirmation;
 
-  const statusTone =
-    toolCall.status === 'ok' ? 'lime' : toolCall.status === 'error' ? 'rose' : 'neutral';
-  const statusText =
-    toolCall.status === 'ok'
+  // An undecided pending write is "awaiting confirmation", NOT "running" — on
+  // reload the spinner would otherwise imply server work that isn't happening.
+  const pendingConfirm = !!toolCall.awaitingConfirmation && !toolCall.decision;
+  const statusTone = pendingConfirm
+    ? 'amber'
+    : toolCall.status === 'ok'
+      ? 'lime'
+      : toolCall.status === 'error'
+        ? 'rose'
+        : 'neutral';
+  const statusText = pendingConfirm
+    ? t('chat.tool.awaiting')
+    : toolCall.status === 'ok'
       ? t('chat.tool.done')
       : toolCall.status === 'error'
         ? t('chat.tool.failed')
@@ -1973,9 +2843,12 @@ const ToolActivityStep = ({
             </span>
           )}
         </span>
-        {/* Status chip: spinner while running, ✓/✕ once resolved (reused verbatim). */}
+        {/* Status chip: pause while awaiting approval, spinner while running,
+            ✓/✕ once resolved. */}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
-          {toolCall.status === 'running' ? (
+          {pendingConfirm ? (
+            <NNIcon name="pause" size={13} color="var(--amber-400)" />
+          ) : toolCall.status === 'running' ? (
             <span className="nn-spin" aria-hidden>
               <NNIcon name="sync" size={13} color="var(--text-dim)" />
             </span>
@@ -2070,12 +2943,20 @@ interface PostApplySummaryProps {
 
 const PostApplySummary = ({ summary, deckNameById, onOpenCard, noBottomMargin, t }: PostApplySummaryProps) => {
   const deckName = summary.deckId ? deckNameById.get(summary.deckId) : undefined;
+  // Four create variants: ±deck name (an unresolved deck must NOT leave an
+  // «in  · open» hole) × singular/plural (proper phrasing for count=1).
+  const count = summary.count ?? 1;
+  const createKey =
+    count === 1
+      ? deckName
+        ? 'chat.activity.appliedCreatedOne'
+        : 'chat.activity.appliedCreatedOneNodeck'
+      : deckName
+        ? 'chat.activity.appliedCreated'
+        : 'chat.activity.appliedCreatedNodeck';
   const text =
     summary.kind === 'create'
-      ? t('chat.activity.appliedCreated', {
-          count: summary.count ?? 1,
-          deck: deckName ?? '',
-        })
+      ? t(createKey, { count, deck: deckName ?? '' })
       : t('chat.activity.appliedEdited');
   return (
     <button
@@ -2121,7 +3002,7 @@ interface ToolActivityGroupProps {
   answerStarted: boolean;
   resolveCard: (cardId: string) => Card | undefined;
   deckNameById: Map<string, string>;
-  onConfirm: (toolCallId: string, decision: 'apply' | 'reject') => void;
+  onConfirm: (toolCallId: string, decision: 'apply' | 'reject', payload?: ConfirmPayload) => void;
   onOpenCard?: (cardId: string) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
@@ -2254,7 +3135,7 @@ const ToolActivityGroup = ({
               toolCall={tc}
               resolveCard={resolveCard}
               deckNameById={deckNameById}
-              onConfirm={(decision) => onConfirm(tc.id, decision)}
+              onConfirm={(decision, payload) => onConfirm(tc.id, decision, payload)}
               onOpenCard={onOpenCard}
               t={t}
             />
@@ -2274,18 +3155,90 @@ const ToolActivityGroup = ({
 // guard (the server enforces idempotency atomically too). Once a decision is
 // chosen the controls collapse to a single status chip ("Applied"/"Rejected").
 
+/** Per-card decisions + a note to the model, attached to a confirm answer. */
+type ConfirmPayload = Pick<ChatResumeRequest, 'cardSelections' | 'feedback'>;
+
 interface ConfirmControlsProps {
   toolCall: ToolCallVM;
-  onConfirm: (decision: 'apply' | 'reject') => void;
+  onConfirm: (decision: 'apply' | 'reject', payload?: ConfirmPayload) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
 const ConfirmControls = ({ toolCall, onConfirm, t }: ConfirmControlsProps) => {
   const decided = toolCall.decision != null;
   const impact = toolCall.impact;
-  const willCreate = impact?.willCreateCards ?? 0;
   const willDelete = impact?.willDeleteCards ?? 0;
   const affectsSiblings = impact?.affectsSiblings === true;
+  // Editable per-card draft (create_card only) — parsed from the ORIGINAL args
+  // (full values; the capped impact preview is display-only). Null → read-only
+  // preview as before (other tools / malformed args).
+  const draft = useMemo(
+    () => (toolCall.name === 'create_card' ? createCardDraft(toolCall.args) : null),
+    [toolCall.name, toolCall.args],
+  );
+  const [cards, setCards] = useState<{ include: boolean; fieldValues: Record<string, string> }[]>(
+    () => (draft ?? []).map((d) => ({ include: true, fieldValues: { ...d.fieldValues } })),
+  );
+  const [feedback, setFeedback] = useState('');
+
+  // Wizard (batch only): the user decides cards ONE AT A TIME — accept/exclude/
+  // edit the current card, then advance; the decisions accumulate locally and
+  // leave as ONE resume (`cardSelections`) from the final review step.
+  const wizard = draft !== null && draft.length > 1;
+  const [decisions, setDecisions] = useState<('accepted' | 'excluded' | null)[]>(
+    () => (draft ?? []).map(() => null),
+  );
+  const [step, setStep] = useState(0);
+  const [phase, setPhase] = useState<'cards' | 'review'>('cards');
+  const acceptedCount = decisions.filter((d) => d === 'accepted').length;
+  const excludedCount = decisions.filter((d) => d === 'excluded').length;
+
+  const includedCount = wizard ? acceptedCount : cards.filter((c) => c.include).length;
+  // B4/C8 — before/after previews (edit_card); create_card uses the editor when
+  // the draft parsed, the capped preview rows otherwise.
+  const diffRows = draft ? [] : confirmDiffRows(toolCall.name, impact);
+  const willCreate = draft ? includedCount : (impact?.willCreateCards ?? 0);
+
+  const setField = (cardIdx: number, field: string, value: string) =>
+    setCards((prev) =>
+      prev.map((c, i) =>
+        i === cardIdx ? { ...c, fieldValues: { ...c.fieldValues, [field]: value } } : c,
+      ),
+    );
+  const toggleCard = (cardIdx: number) =>
+    setCards((prev) => prev.map((c, i) => (i === cardIdx ? { ...c, include: !c.include } : c)));
+
+  // Decide the CURRENT wizard card and advance to the next undecided one (or
+  // the review step once every card is decided). Re-deciding a visited card
+  // overwrites and jumps forward to whatever is still undecided.
+  const decide = (action: 'accepted' | 'excluded') => {
+    const next = decisions.map((d, i) => (i === step ? action : d));
+    setDecisions(next);
+    const ni = nextUndecidedIndex(next, step);
+    if (ni === -1) setPhase('review');
+    else setStep(ni);
+  };
+  const jumpTo = (i: number) => {
+    setStep(i);
+    setPhase('cards');
+  };
+
+  const answer = (decision: 'apply' | 'reject') => {
+    const fb = feedback.trim();
+    const state = wizard
+      ? cards.map((c, i) => ({ include: decisions[i] === 'accepted', fieldValues: c.fieldValues }))
+      : cards;
+    const selections = decision === 'apply' && draft ? buildCardSelections(draft, state) : [];
+    const payload: ConfirmPayload = {
+      cardSelections: selections.length > 0 ? selections : undefined,
+      feedback: fb.length > 0 ? fb : undefined,
+    };
+    onConfirm(decision, payload.cardSelections || payload.feedback ? payload : undefined);
+  };
+
+  /** One-line excerpt for the review rows (first non-empty field). */
+  const excerptOf = (fv: Record<string, string>): string =>
+    (Object.values(fv).find((v) => v.trim()) ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
 
   return (
     <div
@@ -2311,8 +3264,226 @@ const ConfirmControls = ({ toolCall, onConfirm, t }: ConfirmControlsProps) => {
         {t('chat.confirm.pendingTitle')}
       </span>
 
-      {/* Blast radius — only the parts the dry-run predicted. DELETE is prominent. */}
-      {(willCreate > 0 || willDelete > 0 || affectsSiblings) && (
+      {/* What exactly changes / will be written — degrades silently when the
+          payload is absent (old persisted rows, reload mid-pause). */}
+      <ConfirmDiff rows={diffRows} proposalOnly={toolCall.name === 'create_card'} t={t} />
+
+      {/* Single-card editor (create_card, one proposal): inline field edits.
+          Built from the ORIGINAL args, so it works live AND after a reload. */}
+      {draft && !wizard && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {cards.map((card, i) => (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 5,
+                opacity: card.include ? 1 : 0.45,
+                transition: 'opacity 120ms ease',
+              }}
+            >
+              {!decided && !card.include && (
+                <NNBtn size="sm" variant="ghost" icon="plus" onClick={() => toggleCard(i)}>
+                  {t('chat.confirm.includeCard')}
+                </NNBtn>
+              )}
+              {Object.entries(card.fieldValues).map(([field, value]) => (
+                <label key={field} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <span
+                    style={{
+                      fontSize: 10.5,
+                      fontWeight: 600,
+                      letterSpacing: 0.6,
+                      textTransform: 'uppercase',
+                      color: 'var(--text-dim)',
+                      fontFamily: 'var(--font-sans)',
+                    }}
+                  >
+                    {field}
+                  </span>
+                  <textarea
+                    value={value}
+                    disabled={decided || !card.include}
+                    onChange={(e) => setField(i, field, e.target.value)}
+                    rows={Math.min(6, Math.max(1, Math.ceil(value.length / 70) + (value.match(/\n/g)?.length ?? 0)))}
+                    style={{
+                      width: '100%',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      padding: '5px 8px',
+                      borderRadius: 'var(--r-xs)',
+                      border: '1px solid color-mix(in srgb, var(--lime-500) 25%, var(--border-2))',
+                      background: 'color-mix(in srgb, var(--lime-500) 8%, transparent)',
+                      color: 'var(--lime-300)',
+                      resize: 'vertical',
+                      outline: 'none',
+                    }}
+                  />
+                </label>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Wizard (batch): ONE card at a time — accept / exclude / edit, then
+          advance; a final review step fires the single resume. */}
+      {wizard && !decided && phase === 'cards' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: 'var(--text)',
+                fontFamily: 'var(--font-sans)',
+              }}
+            >
+              {t('chat.confirm.cardOf', { n: step + 1, total: cards.length })}
+            </span>
+            <span style={{ fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'var(--font-sans)', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <span>✓ {acceptedCount}</span>
+              <span>✕ {excludedCount}</span>
+              {decisions[step] !== null && (
+                <NNBadge tone={decisions[step] === 'accepted' ? 'lime' : 'neutral'} size="xs">
+                  {decisions[step] === 'accepted'
+                    ? t('chat.confirm.acceptedBadge')
+                    : t('chat.confirm.excludedBadge')}
+                </NNBadge>
+              )}
+            </span>
+          </div>
+          {Object.entries(cards[step]?.fieldValues ?? {}).map(([field, value]) => (
+            <label key={`${step}:${field}`} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span
+                style={{
+                  fontSize: 10.5,
+                  fontWeight: 600,
+                  letterSpacing: 0.6,
+                  textTransform: 'uppercase',
+                  color: 'var(--text-dim)',
+                  fontFamily: 'var(--font-sans)',
+                }}
+              >
+                {field}
+              </span>
+              <textarea
+                value={value}
+                onChange={(e) => setField(step, field, e.target.value)}
+                rows={Math.min(8, Math.max(1, Math.ceil(value.length / 70) + (value.match(/\n/g)?.length ?? 0)))}
+                style={{
+                  width: '100%',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  padding: '5px 8px',
+                  borderRadius: 'var(--r-xs)',
+                  border: '1px solid color-mix(in srgb, var(--lime-500) 25%, var(--border-2))',
+                  background: 'color-mix(in srgb, var(--lime-500) 8%, transparent)',
+                  color: 'var(--lime-300)',
+                  resize: 'vertical',
+                  outline: 'none',
+                }}
+              />
+            </label>
+          ))}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <NNBtn size="sm" variant="primary" icon="check" onClick={() => decide('accepted')}>
+              {t('chat.confirm.acceptCard')}
+            </NNBtn>
+            <NNBtn size="sm" variant="ghost" icon="x" onClick={() => decide('excluded')}>
+              {t('chat.confirm.excludeCard')}
+            </NNBtn>
+            <span style={{ flex: 1 }} />
+            {step > 0 && (
+              <NNBtn size="sm" variant="ghost" onClick={() => setStep(step - 1)}>
+                {t('chat.confirm.back')}
+              </NNBtn>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Wizard review: every card decided — a clickable summary, the feedback
+          note, and the single Apply(N)/Reject pair below. */}
+      {wizard && !decided && phase === 'review' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {cards.map((card, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => jumpTo(i)}
+              title={t('chat.confirm.reviewJump')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                width: '100%',
+                textAlign: 'left',
+                background: 'transparent',
+                border: '1px solid var(--border-2)',
+                borderRadius: 'var(--r-xs)',
+                padding: '6px 9px',
+                cursor: 'pointer',
+                opacity: decisions[i] === 'excluded' ? 0.5 : 1,
+              }}
+            >
+              <NNBadge tone={decisions[i] === 'accepted' ? 'lime' : 'neutral'} size="xs">
+                {decisions[i] === 'accepted'
+                  ? t('chat.confirm.acceptedBadge')
+                  : t('chat.confirm.excludedBadge')}
+              </NNBadge>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: 'var(--text-muted)',
+                  fontFamily: 'var(--font-sans)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  minWidth: 0,
+                  textDecoration: decisions[i] === 'excluded' ? 'line-through' : 'none',
+                }}
+              >
+                {t('chat.confirm.cardN', { n: i + 1 })} · {excerptOf(card.fieldValues)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Optional note to the agent — "propose edits" without applying. Lands
+          in the tool result on BOTH apply and reject. In the wizard it appears
+          on the review step only. */}
+      {!decided && (!wizard || phase === 'review') && (
+        <textarea
+          value={feedback}
+          onChange={(e) => setFeedback(e.target.value)}
+          placeholder={t('chat.confirm.feedbackPlaceholder')}
+          rows={1}
+          maxLength={2000}
+          style={{
+            width: '100%',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            padding: '6px 9px',
+            borderRadius: 'var(--r-xs)',
+            border: '1px solid var(--border-2)',
+            background: 'var(--surface-3)',
+            color: 'var(--text)',
+            resize: 'vertical',
+            outline: 'none',
+          }}
+        />
+      )}
+
+      {/* Blast radius — only the parts the dry-run predicted. DELETE is prominent.
+          In the wizard it shows on the review step (live count of accepted cards). */}
+      {(!wizard || phase === 'review' || decided) &&
+        (willCreate > 0 || willDelete > 0 || affectsSiblings) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
           {willCreate > 0 && (
             <span
@@ -2364,26 +3535,30 @@ const ConfirmControls = ({ toolCall, onConfirm, t }: ConfirmControlsProps) => {
             : t('chat.confirm.rejected')}
         </NNBadge>
       ) : (
-        <div style={{ display: 'flex', gap: 8 }}>
-          <NNBtn
-            size="sm"
-            variant="primary"
-            icon="check"
-            disabled={decided}
-            onClick={() => onConfirm('apply')}
-          >
-            {t('chat.confirm.apply')}
-          </NNBtn>
-          <NNBtn
-            size="sm"
-            variant="ghost"
-            icon="x"
-            disabled={decided}
-            onClick={() => onConfirm('reject')}
-          >
-            {t('chat.confirm.reject')}
-          </NNBtn>
-        </div>
+        // The single Apply/Reject pair: hidden mid-wizard (the per-card
+        // accept/exclude buttons drive those steps), shown on review.
+        (!wizard || phase === 'review') && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <NNBtn
+              size="sm"
+              variant="primary"
+              icon="check"
+              disabled={decided || (draft !== null && includedCount === 0)}
+              onClick={() => answer('apply')}
+            >
+              {wizard ? t('chat.confirm.applyN', { count: includedCount }) : t('chat.confirm.apply')}
+            </NNBtn>
+            <NNBtn
+              size="sm"
+              variant="ghost"
+              icon="x"
+              disabled={decided}
+              onClick={() => answer('reject')}
+            >
+              {t('chat.confirm.reject')}
+            </NNBtn>
+          </div>
+        )
       )}
     </div>
   );
@@ -2613,6 +3788,48 @@ const ModelPicker = ({ models, value, onSelect, t }: ModelPickerProps) => {
     />
   );
 };
+
+// ── Deep-research mode toggle ─────────────────────────────────────────────────
+// A pill TOGGLE (not a dropdown) next to the pickers: active ⇒ every turn rides
+// `research: true` (research prompt + raised step/budget caps server-side).
+// Sticky via localStorage; hidden when the server has no fetch_page tool.
+
+interface ResearchToggleProps {
+  active: boolean;
+  onToggle: () => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+const ResearchToggle = ({ active, onToggle, t }: ResearchToggleProps) => (
+  <button
+    type="button"
+    onClick={onToggle}
+    title={t('chat.composer.researchHint')}
+    aria-pressed={active}
+    style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 6,
+      padding: '5px 10px',
+      borderRadius: 'var(--r-pill)',
+      border: active
+        ? '1px solid color-mix(in srgb, var(--violet-400) 55%, transparent)'
+        : '1px solid var(--border-2)',
+      background: active
+        ? 'color-mix(in srgb, var(--violet-500) 16%, var(--surface-2))'
+        : 'var(--surface-2)',
+      color: active ? 'var(--violet-300)' : 'var(--text)',
+      fontFamily: 'var(--font-sans)',
+      fontSize: 12.5,
+      fontWeight: 600,
+      cursor: 'pointer',
+      transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease',
+    }}
+  >
+    <NNIcon name="doc" size={13} color={active ? 'var(--violet-300)' : 'var(--text-dim)'} />
+    <span>{t('chat.composer.research')}</span>
+  </button>
+);
 
 // ── Deck-scope picker (S7 / AC3.7) ───────────────────────────────────────────
 // An optional, clearable deck scope sent as the turn-level deckId. "All cards"

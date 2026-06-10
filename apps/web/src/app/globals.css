@@ -315,3 +315,50 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   font-style: italic;
   text-align: center;
 }
+
+/* ── Chat transcript (agentic-environment pack) ──────────────────────────── */
+
+/* Inline message time (B2): hidden until the row is hovered; always faintly
+   visible on touch devices (no hover). */
+.nn-msg-time {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.nn-msg-row:hover .nn-msg-time {
+  opacity: 1;
+}
+@media (hover: none) {
+  .nn-msg-time {
+    opacity: 0.6;
+  }
+}
+
+/* Code-block copy button (B3) — injected by decorateCodeBlocks() AFTER the
+   sanitized markdown renders (never part of the sanitize pipeline). */
+.nn-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.nn-rendered pre:hover .nn-code-copy {
+  opacity: 1;
+}
+.nn-code-copy:hover {
+  color: var(--text);
+}
+@media (hover: none) {
+  .nn-code-copy {
+    opacity: 0.7;
+  }
+}

@@ -9,6 +9,7 @@ import { humanInterval } from '@/lib/fsrs';
 import { api, ok } from '@/lib/api';
 import { cardFromApi } from '@/lib/mappers';
 import { RichCard } from '@/components/rich-card';
+import { SimilarCardsPanel } from '@/components/similar-cards';
 import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
 import { useUI } from '@/lib/ui-store';
@@ -134,6 +135,9 @@ export const NNReviewClassic = () => {
   const [queue, setQueue] = useState<Card[]>([]);
   const [index, setIndex] = useState(0);
   const [revealed, setRevealed] = useState(false);
+  // Semantic "similar cards" drawer — only offered AFTER reveal (similar cards
+  // would spoil the answer before the flip).
+  const [similarOpen, setSimilarOpen] = useState(false);
   const [completed, setCompleted] = useState(0);
   const [xpGained, setXpGained] = useState(0);
   const [startedAt, setStartedAt] = useState<number>(() => Date.now());
@@ -319,9 +323,14 @@ export const NNReviewClassic = () => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       const inInput = tag === 'INPUT' || tag === 'TEXTAREA';
 
-      // Escape: in zen mode it exits focus (does NOT navigate home); otherwise
-      // it exits the reviewer to home as before.
+      // Escape: an open similar-cards drawer closes FIRST (doesn't exit zen or
+      // navigate); then zen exits focus; otherwise exit the reviewer to home.
       if (e.key === 'Escape') {
+        if (similarOpen) {
+          e.preventDefault();
+          setSimilarOpen(false);
+          return;
+        }
         if (zenMode) {
           e.preventDefault();
           setZen(false);
@@ -405,7 +414,12 @@ export const NNReviewClassic = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [revealed, current, handleGrade, handleUndo, router, queue.length, submitted, handleTypeSubmit, zenMode, toggleZen, setZen]);
+  }, [revealed, current, handleGrade, handleUndo, router, queue.length, submitted, handleTypeSubmit, zenMode, toggleZen, setZen, similarOpen]);
+
+  // Moving to another card closes the similar drawer (it belongs to the card).
+  useEffect(() => {
+    setSimilarOpen(false);
+  }, [current?.id]);
 
   // Save session when queue exhausted
   useEffect(() => {
@@ -634,6 +648,16 @@ export const NNReviewClassic = () => {
             {!isMobile && t('editor.review.undo.button')}
           </NNBtn>
         )}
+        {revealed && (
+          <NNBtn
+            size="sm"
+            variant="ghost"
+            icon="stars"
+            onClick={() => setSimilarOpen((v) => !v)}
+            title={t('review.similar.open')}
+            ariaLabel={t('review.similar.open')}
+          />
+        )}
         <NNBtn
           size="sm"
           variant="ghost"
@@ -643,6 +667,64 @@ export const NNReviewClassic = () => {
           ariaLabel={zenMode ? t('review.exitFocus') : t('review.focusMode')}
         />
       </div>
+
+      {/* Similar-cards drawer — desktop: floating right panel; mobile: bottom
+          sheet. Overlay only (no layout shift), lazily rendered while open.
+          Clicking a similar card jumps to the browser dock (?focus=). */}
+      {similarOpen && current && (
+        <aside
+          role="dialog"
+          aria-label={t('review.similar.title')}
+          style={
+            isMobile
+              ? {
+                  position: 'fixed',
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  maxHeight: '55vh',
+                  zIndex: 60,
+                  background: 'var(--surface)',
+                  borderTop: '1px solid var(--border)',
+                  borderRadius: 'var(--r-xl) var(--r-xl) 0 0',
+                  boxShadow: 'var(--shadow-lg)',
+                  padding: '12px 14px calc(12px + env(safe-area-inset-bottom))',
+                  overflow: 'auto',
+                }
+              : {
+                  position: 'fixed',
+                  right: 16,
+                  top: 76,
+                  bottom: 96,
+                  width: 320,
+                  zIndex: 60,
+                  background: 'var(--surface)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--r-xl)',
+                  boxShadow: 'var(--shadow-lg)',
+                  padding: '12px 14px',
+                  overflow: 'auto',
+                }
+          }
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <NNIcon name="stars" size={14} color="var(--lime-400)" />
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{t('review.similar.title')}</span>
+            <div style={{ flex: 1 }} />
+            <NNBtn
+              size="sm"
+              variant="ghost"
+              icon="x"
+              ariaLabel={t('review.similar.close')}
+              onClick={() => setSimilarOpen(false)}
+            />
+          </div>
+          <SimilarCardsPanel
+            cardId={current.id}
+            onOpen={(id) => router.push(`/cards?focus=${id}`)}
+          />
+        </aside>
+      )}
 
       {/* Card */}
       <div

@@ -11,6 +11,9 @@ const m = {
     clearFind: 'Clear search',
     allDecks: 'All decks',
     hideAll: 'Hide all',
+    edgesLabel: 'Edge source',
+    edgesSemantic: 'Semantic',
+    edgesTags: 'Tags',
     showAll: 'Show all',
   },
   controls: {
@@ -41,6 +44,7 @@ const m = {
     due: 'Due',
     linkedCards: 'Linked cards · {n}',
     noLinks: 'No shared tags with other cards.',
+    similarity: '{pct}% similar',
     tagSingular: 'tag',
     tagPlural: 'tags',
     mastered: 'mastered {pct}%',

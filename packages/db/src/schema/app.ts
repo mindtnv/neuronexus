@@ -14,7 +14,16 @@ import {
   uuid,
   vector,
 } from 'drizzle-orm/pg-core';
-import type { CardTemplate, Citation, FieldValues, NoteField, ToolCallRecord } from '@neuronexus/shared';
+import type {
+  CardTemplate,
+  Citation,
+  FieldValues,
+  MessageAttachment,
+  MessageMention,
+  MessageUsage,
+  NoteField,
+  ToolCallRecord,
+} from '@neuronexus/shared';
 import { user } from './auth.ts';
 
 // Embedding vector dimension baked into the `kb_chunk.embedding` column type.
@@ -85,6 +94,10 @@ export const profile = pgTable('profile', {
   reviewsDoneToday: integer('reviews_done_today').notNull().default(0),
   dailyCountsDate: text('daily_counts_date'),
   desiredRetention: doublePrecision('desired_retention'),
+  // Standing instructions for the agentic chat (settings → injected into the
+  // system prompt as preferences; can never override grounding/confirm rules).
+  // Cap (2000 chars) enforced at the PATCH route, not the column.
+  agentInstructions: text('agent_instructions'),
   plantSpecies: plantSpecies('plant_species').notNull().default('fern'),
   plantStage: integer('plant_stage').notNull().default(0),
   unlockedSpecies: text('unlocked_species')
@@ -355,6 +368,11 @@ export const reviews = pgTable(
   (t) => [
     index('reviews_user_idx').on(t.userId, t.reviewedAt),
     index('reviews_card_idx').on(t.cardId),
+    // Deck-scoped study_stats / retention aggregations filter by
+    // (user_id, deck_id IN (...), reviewed_at >= ...) — this index lets
+    // Postgres enter the right slice directly instead of post-filtering
+    // the (user_id, reviewed_at) scan.
+    index('reviews_user_deck_reviewed_idx').on(t.userId, t.deckId, t.reviewedAt),
   ],
 );
 
@@ -485,6 +503,15 @@ export const conversations = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     title: text('title'),
+    // Pinned threads sort above the date groups. Pin toggles do NOT bump
+    // `updatedAt` (recency must reflect actual conversation activity).
+    pinned: boolean('pinned').notNull().default(false),
+    // Context auto-compression cache: a model-generated summary of the turns
+    // older than `summaryUpto` (the created_at of the last summarized row).
+    // Rebuilt lazily when more rows age past the keep-window; losing it only
+    // costs one extra summarization call.
+    summary: text('summary'),
+    summaryUpto: timestamp('summary_upto', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -525,6 +552,21 @@ export const messages = pgTable(
       .notNull()
       .$type<Citation[]>()
       .default(sql`'[]'::jsonb`),
+    // Accumulated token usage for the turn (final assistant text row; a
+    // suspended turn parks its usage-so-far on the pending tool_calls row).
+    // Null when the provider reports no usage.
+    usage: jsonb('usage').$type<MessageUsage>(),
+    // Effective model for the turn (assistant rows only) — the per-turn picker
+    // choice or the env default at the time of the turn.
+    model: text('model'),
+    // Composer @-mentions (user rows only). Snapshot at send time; the stored
+    // `content` stays clean — the <mentioned_cards> block is appended to the
+    // model-facing content at history-build time.
+    mentions: jsonb('mentions').$type<MessageMention[]>(),
+    // Composer file attachments (user rows only): image refs (`/m/<uuid>` token,
+    // server-resolved from the user-scoped media row) and inline text files.
+    // Model-facing parts/blocks are built at history time; content stays clean.
+    attachments: jsonb('attachments').$type<MessageAttachment[]>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

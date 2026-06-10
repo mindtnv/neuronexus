@@ -85,6 +85,27 @@
       "when": 1780985775678,
       "tag": "0011_curved_sumo",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1781036065538,
+      "tag": "0012_exotic_morgan_stark",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1781043721450,
+      "tag": "0013_goofy_wild_pack",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1781049480487,
+      "tag": "0014_goofy_triathlon",
+      "breakpoints": true
     }
   ]
 }

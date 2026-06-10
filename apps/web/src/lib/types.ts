@@ -168,6 +168,8 @@ export interface Profile {
   dailyGoalMetCount: number;
   dailyGoalMetDate?: string;
   desiredRetention?: number;
+  /** Standing instructions for the agentic chat (C5) — injected into the system prompt. */
+  agentInstructions?: string;
   plantSpecies: PlantSpecies;
   plantStage: 0 | 1 | 2 | 3 | 4 | 5;
   unlockedSpecies: PlantSpecies[];

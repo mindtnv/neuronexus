@@ -102,6 +102,30 @@ export async function deleteObject(key: string): Promise<void> {
   await s3.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: key }));
 }
 
+/**
+ * Full object bytes (chat image attachments → base64 data URLs for the
+ * multimodal gateway request). Callers bound the size BEFORE calling (the
+ * media row's verified `size`), so this never buffers unbounded data.
+ */
+export async function getObjectBytes(key: string): Promise<Uint8Array> {
+  const res = await s3.send(new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }));
+  if (!res.Body) return new Uint8Array(0);
+  const body = res.Body as { transformToByteArray?: () => Promise<Uint8Array> };
+  if (typeof body.transformToByteArray === 'function') {
+    return body.transformToByteArray();
+  }
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk);
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.length;
+  }
+  return out;
+}
+
 /** Public URL for serving an object: `${S3_PUBLIC_BASE_URL}/${key}`. */
 export function publicUrl(key: string): string {
   return `${env.S3_PUBLIC_BASE_URL}/${key}`;

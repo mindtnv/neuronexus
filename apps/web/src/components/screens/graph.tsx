@@ -23,11 +23,13 @@ import { select } from 'd3-selection';
 import { NNIcon, NNBtn, NNBadge } from '@/components/ui';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { useNN } from '@/lib/store';
+import { api, ok } from '@/lib/api';
 import {
   buildGraph,
   countLinks,
   cardMastery,
   hashFloat,
+  semanticToGraphEdges,
   type GraphEdge,
   type GraphNode,
 } from '@/lib/graph';
@@ -99,7 +101,57 @@ export const NNGraphForce = () => {
     };
   }, []);
 
-  const built = useMemo(() => buildGraph(cards, decks, W, H), [cards, decks, W, H]);
+  // ── Edge source: semantic (pgvector neighbours) vs tags ──────────────────
+  // Semantic edges load once per mount; when present they are the DEFAULT.
+  // The user's explicit choice persists in localStorage and is re-validated
+  // against data availability (no embeddings ⇒ silently fall back to tags).
+  const [semEdges, setSemEdges] = useState<GraphEdge[] | null>(null);
+  const [edgePref, setEdgePref] = useState<'semantic' | 'tags' | null>(null);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem('nn:graph:edges');
+      if (stored === 'tags' || stored === 'semantic') setEdgePref(stored);
+    } catch {
+      // localStorage unavailable — keep the default.
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const body = (await ok(
+          await (api as any).graph['semantic-edges'].get({ query: {} }),
+        )) as { edges: { a: string; b: string; score: number }[]; reason?: string };
+        if (cancelled) return;
+        setSemEdges(body.edges.length > 0 ? semanticToGraphEdges(body.edges) : null);
+      } catch {
+        if (!cancelled) setSemEdges(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const semanticAvailable = semEdges !== null && semEdges.length > 0;
+  const edgeSource: 'semantic' | 'tags' =
+    semanticAvailable && edgePref !== 'tags' ? 'semantic' : 'tags';
+  const pickEdgeSource = useCallback((src: 'semantic' | 'tags') => {
+    setEdgePref(src);
+    try {
+      window.localStorage.setItem('nn:graph:edges', src);
+    } catch {
+      // best-effort persistence only
+    }
+  }, []);
+
+  const built = useMemo(
+    () =>
+      buildGraph(cards, decks, W, H, edgeSource === 'semantic' ? (semEdges ?? undefined) : undefined),
+    [cards, decks, W, H, edgeSource, semEdges],
+  );
 
   // deckId → count for legend / toggle.
   const deckCounts = useMemo(() => {
@@ -404,16 +456,25 @@ export const NNGraphForce = () => {
   }, [simNodes]);
 
   const selectedLinks = useMemo(() => {
-    if (!selectedNode) return [] as { id: string; front: string; shared: number; color: string }[];
-    const out: { id: string; front: string; shared: number; color: string }[] = [];
+    if (!selectedNode)
+      return [] as { id: string; front: string; shared: number; color: string; score?: number }[];
+    const out: { id: string; front: string; shared: number; color: string; score?: number }[] = [];
     for (const e of built.edges) {
       const otherId = e.a === selectedNode.id ? e.b : e.b === selectedNode.id ? e.a : null;
       if (!otherId) continue;
       const other = nodesById.get(otherId);
       if (!other) continue;
-      out.push({ id: other.id, front: other.card.renderFrontText, shared: e.weight, color: other.color });
+      out.push({
+        id: other.id,
+        front: other.card.renderFrontText,
+        shared: e.weight,
+        color: other.color,
+        score: e.score,
+      });
     }
-    return out.sort((x, y) => y.shared - x.shared).slice(0, 8);
+    return out
+      .sort((x, y) => (y.score ?? y.shared) - (x.score ?? x.shared))
+      .slice(0, 8);
   }, [selectedNode, built.edges, nodesById]);
 
   // ─── Drive DOM opacity based on visibility / highlight ───
@@ -542,6 +603,44 @@ export const NNGraphForce = () => {
             )}
           </div>
           <div style={{ flex: 1 }} />
+          {/* Edge-source segment control — hidden until semantic data exists. */}
+          {semanticAvailable && (
+            <div
+              role="group"
+              aria-label={t('graph.toolbar.edgesLabel')}
+              style={{
+                display: 'flex',
+                gap: 2,
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 10,
+                padding: 2,
+              }}
+            >
+              {(['semantic', 'tags'] as const).map((src) => {
+                const active = edgeSource === src;
+                return (
+                  <button
+                    key={src}
+                    onClick={() => pickEdgeSource(src)}
+                    aria-pressed={active}
+                    style={{
+                      border: 'none',
+                      borderRadius: 8,
+                      padding: '5px 10px',
+                      fontSize: 11,
+                      cursor: 'pointer',
+                      fontFamily: 'var(--font-sans)',
+                      background: active ? 'var(--surface-3)' : 'transparent',
+                      color: active ? 'var(--text)' : 'var(--text-muted)',
+                    }}
+                  >
+                    {t(src === 'semantic' ? 'graph.toolbar.edgesSemantic' : 'graph.toolbar.edgesTags')}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {!isMobile && (
             <div
               style={{
@@ -1008,7 +1107,7 @@ const NodeDetail = ({
   node: Pick<GraphNode, 'color' | 'mastered' | 'isNew' | 'card'>;
   deckName: string;
   linksCount: number;
-  linkedCards: { id: string; front: string; shared: number; color: string }[];
+  linkedCards: { id: string; front: string; shared: number; color: string; score?: number }[];
   onOpenLink?: (id: string) => void;
 }) => {
   const t = useT();
@@ -1109,7 +1208,9 @@ const NodeDetail = ({
               {l.front}
             </div>
             <NNBadge size="xs" tone={l.color as DeckColor}>
-              {l.shared} {l.shared === 1 ? t('graph.detail.tagSingular') : t('graph.detail.tagPlural')}
+              {l.score != null
+                ? t('graph.detail.similarity', { pct: Math.round(l.score * 100) })
+                : `${l.shared} ${l.shared === 1 ? t('graph.detail.tagSingular') : t('graph.detail.tagPlural')}`}
             </NNBadge>
           </button>
         ))}

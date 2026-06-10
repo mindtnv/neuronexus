@@ -1,0 +1,1 @@
+CREATE INDEX "reviews_user_deck_reviewed_idx" ON "reviews" USING btree ("user_id","deck_id","reviewed_at");

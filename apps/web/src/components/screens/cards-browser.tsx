@@ -15,6 +15,7 @@ import { NNBtn, NNBadge, NNTag, NNIcon, NNSkeleton } from '@/components/ui';
 import type { BadgeTone } from '@/components/ui';
 import { CardsViewSwitcher } from '@/components/cards-view-switcher';
 import { NNCardForm } from '@/components/card-form';
+import { SimilarCardsPanel } from '@/components/similar-cards';
 import { useNN } from '@/lib/store';
 import type { Card } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -132,6 +133,7 @@ export const NNCardsBrowser = () => {
   const bulkCards = useNN((s) => s.bulkCards);
   const forgetCard = useNN((s) => s.forgetCard);
   const setCardDue = useNN((s) => s.setCardDue);
+  const refetchCard = useNN((s) => s.refetchCard);
   const getCardTags = useNN((s) => s.getCardTags);
 
   // Query string: URL `?q=` is the source of truth, mirrored into local state
@@ -979,22 +981,62 @@ export const NNCardsBrowser = () => {
               <NNBtn size="sm" variant="ghost" icon="chevr" ariaLabel={t('cards.panel.next')} onClick={() => movePanel(1)} />
               <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('cards.panel.close')} onClick={() => setFocusedId(null)} />
             </div>
-            <div style={{ flex: 1, overflow: 'auto', display: 'flex' }}>
-              <NNCardForm
-                key={focusedCard.id}
-                card={focusedCard}
-                showFsrsHeader={false}
-                layout="dock"
-                onDeleted={(id) => {
-                  setFocusedId(null);
-                  setSelected((prev) => {
-                    if (!prev.has(id)) return prev;
-                    const next = new Set(prev);
-                    next.delete(id);
-                    return next;
-                  });
+            <div
+              style={{
+                flex: 1,
+                overflow: isMobile ? 'auto' : 'hidden',
+                display: 'flex',
+                flexDirection: isMobile ? 'column' : 'row',
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0, overflow: isMobile ? 'visible' : 'auto', display: 'flex' }}>
+                <NNCardForm
+                  key={focusedCard.id}
+                  card={focusedCard}
+                  showFsrsHeader={false}
+                  layout="dock"
+                  onDeleted={(id) => {
+                    setFocusedId(null);
+                    setSelected((prev) => {
+                      if (!prev.has(id)) return prev;
+                      const next = new Set(prev);
+                      next.delete(id);
+                      return next;
+                    });
+                  }}
+                />
+              </div>
+              {/* Semantic "similar cards" rail — desktop: right column; mobile:
+                  a section under the form. Clicking a card focuses the dock on
+                  it (refetchCard upserts cards outside the 500-row mirror). */}
+              <aside
+                style={{
+                  width: isMobile ? '100%' : 300,
+                  flexShrink: 0,
+                  borderLeft: isMobile ? 'none' : '1px solid var(--border)',
+                  borderTop: isMobile ? '1px solid var(--border)' : 'none',
+                  padding: '10px 12px',
+                  overflow: isMobile ? 'visible' : 'auto',
                 }}
-              />
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--text-dim)',
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.6,
+                    marginBottom: 8,
+                  }}
+                >
+                  {t('cards.panel.similar.title')}
+                </div>
+                <SimilarCardsPanel
+                  cardId={focusedCard.id}
+                  onOpen={(id) => {
+                    void refetchCard(id).then(() => setFocusedId(id));
+                  }}
+                />
+              </aside>
             </div>
           </div>
         )}

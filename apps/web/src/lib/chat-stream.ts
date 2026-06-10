@@ -16,6 +16,8 @@ import type {
   ChatStreamEvent,
   ChatStreamRequest,
   Citation,
+  ConfirmImpact,
+  MessageAttachmentInput,
 } from '@neuronexus/shared';
 
 // Same resolution order as lib/api.ts so the two clients agree on the origin.
@@ -57,11 +59,16 @@ export interface ChatStreamHandlers {
   /**
    * Phase B: the loop paused awaiting human approval of a write/SRS tool. Declared
    * here so the union is stable; the resume transport that answers it lands in B.
+   * `impact` (C8) may carry confirm previews: fieldDiffs / proposedFields / etc.
    */
   onAwaitConfirmation?: (await_: {
     toolCall: { id: string; name: string; args: unknown };
-    impact?: { willDeleteCards?: number; willCreateCards?: number; affectsSiblings?: boolean };
+    impact?: ConfirmImpact;
   }) => void;
+  /** C3 — the server auto-generated a title for this (previously untitled) thread. */
+  onTitle?: (title: string) => void;
+  /** C1 — accumulated token usage for the finished turn (absent when the provider omits it). */
+  onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens?: number }) => void;
 }
 
 /** Dispatch one parsed SSE event to the matching handler. */
@@ -101,6 +108,16 @@ function dispatch(event: ChatStreamEvent, handlers: ChatStreamHandlers): void {
       // Phase B: surfaced to the (optional) confirmation handler. The resume
       // transport that answers it lands in Phase B; harmless to dispatch now.
       handlers.onAwaitConfirmation?.({ toolCall: event.toolCall, impact: event.impact });
+      break;
+    case 'title':
+      handlers.onTitle?.(event.title);
+      break;
+    case 'usage':
+      handlers.onUsage?.({
+        promptTokens: event.promptTokens,
+        completionTokens: event.completionTokens,
+        totalTokens: event.totalTokens,
+      });
       break;
   }
 }
@@ -207,6 +224,12 @@ async function consumeSseResponse(
 export interface ChatTurnOpts {
   model?: string;
   deckId?: string;
+  /** Deep-research mode toggle (research prompt + raised caps server-side). */
+  research?: boolean;
+  /** Composer @-mention card ids for this turn (C7, max 8 server-side). */
+  mentionedCardIds?: string[];
+  /** Composer attachments (image media refs + inline text files, max 4). */
+  attachments?: MessageAttachmentInput[];
   signal?: AbortSignal;
 }
 
@@ -221,7 +244,14 @@ export async function streamChat(
   handlers: ChatStreamHandlers,
   opts?: ChatTurnOpts,
 ): Promise<void> {
-  const body: ChatStreamRequest = { content, model: opts?.model, deckId: opts?.deckId };
+  const body: ChatStreamRequest = {
+    content,
+    model: opts?.model,
+    deckId: opts?.deckId,
+    research: opts?.research,
+    mentionedCardIds: opts?.mentionedCardIds,
+    attachments: opts?.attachments,
+  };
   let res: Response;
   try {
     res = await fetch(`${baseURL}/chat/conversations/${conversationId}/stream`, {
@@ -293,7 +323,7 @@ export async function resumeChat(
  */
 export async function regenerateChat(
   conversationId: string,
-  opts: { model?: string; deckId?: string; content?: string },
+  opts: { model?: string; deckId?: string; research?: boolean; content?: string },
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -305,7 +335,12 @@ export async function regenerateChat(
       headers: { 'Content-Type': 'application/json' },
       // `content` (edit-and-rerun, B2): when present the server UPDATES the last
       // user row in place before replaying; absent ⇒ today's regenerate exactly.
-      body: JSON.stringify({ model: opts.model, deckId: opts.deckId, content: opts.content }),
+      body: JSON.stringify({
+        model: opts.model,
+        deckId: opts.deckId,
+        research: opts.research,
+        content: opts.content,
+      }),
       signal,
     });
   } catch (err) {

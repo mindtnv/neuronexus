@@ -162,6 +162,7 @@ export function profileFromApi(row: any): Profile {
     dailyGoalMetCount: row.dailyGoalMetCount ?? 0,
     dailyGoalMetDate: row.dailyGoalMetDate ?? undefined,
     desiredRetention: row.desiredRetention ?? undefined,
+    agentInstructions: row.agentInstructions ?? undefined,
     plantSpecies: row.plantSpecies ?? 'fern',
     plantStage,
     unlockedSpecies: Array.isArray(row.unlockedSpecies)

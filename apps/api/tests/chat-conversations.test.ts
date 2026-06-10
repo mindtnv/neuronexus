@@ -173,6 +173,73 @@ describe('PATCH /chat/conversations/:id — rename', () => {
     expect(res.status).toBe(400);
     expect((await res.json<{ error: string }>()).error).toBe('ValidationError');
   });
+
+  // ── C4 — pinned threads ──────────────────────────────────────────────────────
+
+  test('pin/unpin round-trips and the list orders pinned first', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const older = await createConversation(cookie, 'Older');
+    const newer = await createConversation(cookie, 'Newer');
+
+    // Pin the OLDER one — it must jump above the newer despite older updatedAt.
+    const res = await callApp(app, 'PATCH', `/chat/conversations/${older}`, {
+      cookie,
+      body: { pinned: true },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json<{ pinned: boolean }>()).pinned).toBe(true);
+
+    const list = await callApp(app, 'GET', '/chat/conversations', { cookie });
+    const items = (await list.json<{ items: { id: string; pinned: boolean }[] }>()).items;
+    expect(items.map((c) => c.id)).toEqual([older, newer]);
+    expect(items[0]!.pinned).toBe(true);
+
+    // Unpin → recency order restored.
+    await callApp(app, 'PATCH', `/chat/conversations/${older}`, {
+      cookie,
+      body: { pinned: false },
+    });
+    const list2 = await callApp(app, 'GET', '/chat/conversations', { cookie });
+    const items2 = (await list2.json<{ items: { id: string }[] }>()).items;
+    expect(items2.map((c) => c.id)).toEqual([newer, older]);
+  });
+
+  test('pin-only PATCH does NOT bump updatedAt (recency must reflect activity)', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const convId = await createConversation(cookie, 'T');
+    const before = await callApp(app, 'GET', '/chat/conversations', { cookie });
+    const updatedBefore = (await before.json<{ items: { updatedAt: string }[] }>()).items[0]!
+      .updatedAt;
+
+    const res = await callApp(app, 'PATCH', `/chat/conversations/${convId}`, {
+      cookie,
+      body: { pinned: true },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json<{ updatedAt: string }>()).updatedAt).toBe(updatedBefore);
+  });
+
+  test('empty PATCH body → 400 nothing_to_update', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const convId = await createConversation(cookie);
+    const res = await callApp(app, 'PATCH', `/chat/conversations/${convId}`, {
+      cookie,
+      body: {},
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: string }>()).error).toBe('nothing_to_update');
+  });
+
+  test('pin a foreign conversation → 404', async () => {
+    const a = await signUpAndCookie(app, uniqueEmail('a'));
+    const b = await signUpAndCookie(app, uniqueEmail('b'));
+    const convId = await createConversation(a.cookie, 'A thread');
+    const res = await callApp(app, 'PATCH', `/chat/conversations/${convId}`, {
+      cookie: b.cookie,
+      body: { pinned: true },
+    });
+    expect(res.status).toBe(404);
+  });
 });
 
 // ── S6 — regenerate + abort tail (AC3.3, AC3.4) ───────────────────────────────

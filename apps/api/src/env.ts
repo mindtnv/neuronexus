@@ -66,15 +66,61 @@ export const env = {
     // provider for now; a second provider would be a clean drop-in (no
     // WEB_SEARCH_PROVIDER selector env — YAGNI).
     BRAVE_SEARCH_API_KEY: process.env.BRAVE_SEARCH_API_KEY,
+    // ── Deep research (fetch_page + Exa) ─────────────────────────────────────
+    // Exa (exa.ai) — OPTIONAL. When set it becomes BOTH the web-search provider
+    // (preferred over Brave) AND the `fetch_page` backend (Exa /contents crawls
+    // the page on THEIR network — the API makes no direct outbound fetch, so
+    // there is no SSRF surface on this path).
+    EXA_API_KEY: process.env.EXA_API_KEY,
+    // Kill-switch for the `fetch_page` tool ('false' ⇒ tool not offered).
+    // Without an Exa key the tool uses a direct SSRF-guarded fetcher.
+    CHAT_FETCH_PAGE: process.env.CHAT_FETCH_PAGE ?? 'true',
+    // Per-fetch_page hard timeout (ms; also Exa's livecrawlTimeout) + byte cap
+    // for the direct fetcher's response body.
+    FETCH_PAGE_TIMEOUT_MS: Number(process.env.FETCH_PAGE_TIMEOUT_MS ?? 10000),
+    FETCH_PAGE_MAX_BYTES: Number(process.env.FETCH_PAGE_MAX_BYTES ?? 2_000_000),
+    // Per-turn tool-result char budget = TOOL_RESULT_MAX_CHARS × this factor.
+    // Default 8 (was a hardcoded ×4) so a deep-research turn can read several
+    // page slices before the loop forces a final answer; ordinary turns never
+    // approach the ceiling.
+    TOOL_RESULT_BUDGET_FACTOR: Number(process.env.TOOL_RESULT_BUDGET_FACTOR ?? 8),
     // Hard ceiling on agent loop iterations (loop-enforced — the cap is the
     // source of truth, NOT the gateway honoring tool_choice:'none').
     AGENT_MAX_STEPS: Number(process.env.AGENT_MAX_STEPS ?? 8),
+    // Deep-research MODE (the composer toggle): a research turn gets a higher
+    // step ceiling + tool-result budget factor so the agent can read many page
+    // slices/subpages before drafting cards. Both optional.
+    RESEARCH_MAX_STEPS: Number(process.env.RESEARCH_MAX_STEPS ?? 16),
+    RESEARCH_TOOL_RESULT_BUDGET_FACTOR: Number(
+      process.env.RESEARCH_TOOL_RESULT_BUDGET_FACTOR ?? 16,
+    ),
     // Per-web_search-call hard timeout (ms) via AbortController so one tool call
     // can't stall the SSE stream.
     WEB_SEARCH_TIMEOUT_MS: Number(process.env.WEB_SEARCH_TIMEOUT_MS ?? 7000),
     // Per-`role:tool` content cap (chars) — bounds how much a single tool result
     // can grow the context window; the loop also tracks the cross-turn total.
     TOOL_RESULT_MAX_CHARS: Number(process.env.TOOL_RESULT_MAX_CHARS ?? 4000),
+    // ── Agentic-environment tunables (all OPTIONAL) ──────────────────────────
+    // Kill-switch for `stream_options: { include_usage: true }` — some
+    // OpenAI-compatible gateways reject unknown params. 'false' ⇒ no usage
+    // accounting (frames/columns simply stay absent — degrade, never crash).
+    CHAT_STREAM_USAGE: process.env.CHAT_STREAM_USAGE ?? 'true',
+    // Auto-title generation timeout (ms). On timeout/error the turn completes
+    // without a `title` frame; the next turn retries (gate is `title IS NULL`).
+    // 10 s default: slow self-hosted gateways routinely take >5 s per completion.
+    CHAT_TITLE_TIMEOUT_MS: Number(process.env.CHAT_TITLE_TIMEOUT_MS ?? 10000),
+    // Context auto-compression: when a conversation exceeds THRESHOLD rows,
+    // turns older than the last KEEP rows are replaced by a model-generated
+    // summary (cached on the conversation row). Summarizer failure ⇒ verbatim
+    // history (current behavior).
+    CHAT_COMPRESS_THRESHOLD: Number(process.env.CHAT_COMPRESS_THRESHOLD ?? 80),
+    CHAT_COMPRESS_KEEP: Number(process.env.CHAT_COMPRESS_KEEP ?? 30),
+    CHAT_SUMMARY_TIMEOUT_MS: Number(process.env.CHAT_SUMMARY_TIMEOUT_MS ?? 8000),
+    // Vision kill-switch: 'false' hides the image-attachment affordance and
+    // replays images as text placeholders (for gateways/models that reject
+    // multimodal `image_url` content parts). Text-file attachments are
+    // unaffected — they never need vision.
+    CHAT_VISION: process.env.CHAT_VISION ?? 'true',
   },
 };
 
@@ -94,7 +140,14 @@ export const embeddingEnabled =
   !aiEnvDisabled && Boolean(env.ai.OPENAI_API_KEY) && env.ai.INDEXING_ENABLED !== 'false';
 export const chatEnabled = !aiEnvDisabled && Boolean(env.ai.CHAT_API_KEY);
 // Gates whether the `web_search` tool is OFFERED to the model. Decoupled from
-// chat: absent Brave key ⇒ tool not in the registry, chat works unchanged.
+// chat: no search key ⇒ tool not in the registry, chat works unchanged.
 // Forced off under test like the others; a fake provider flips it on via the
 // `__setWebSearchProviderForTests` seam (mirrors the isChatEnabled pattern).
-export const webSearchEnabled = !aiEnvDisabled && Boolean(env.ai.BRAVE_SEARCH_API_KEY);
+// Either provider key enables it (Exa preferred at provider-selection time).
+export const webSearchEnabled =
+  !aiEnvDisabled && Boolean(env.ai.BRAVE_SEARCH_API_KEY || env.ai.EXA_API_KEY);
+// Gates the `fetch_page` tool (deep research). On by default — the direct
+// SSRF-guarded fetcher needs no key; `CHAT_FETCH_PAGE='false'` turns it off.
+// Forced off under test; a fake reader flips it on via
+// `__setPageReaderForTests` (page-reader.ts).
+export const fetchPageEnabled = !aiEnvDisabled && env.ai.CHAT_FETCH_PAGE !== 'false';

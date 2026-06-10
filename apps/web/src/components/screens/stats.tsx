@@ -11,6 +11,23 @@ import type { DeckColor, Review } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 
+// Server payloads of the /stats endpoints (see apps/api/src/modules/stats.ts).
+// Forecast buckets are SPARSE (only non-empty days) — the chart zero-fills.
+interface ForecastData {
+  days: number;
+  overdueCount: number;
+  total: number;
+  buckets: { day: string; count: number }[];
+}
+interface IntervalRetentionData {
+  days: number;
+  buckets: { bucket: string; count: number; retentionPct: number | null }[];
+}
+
+const FORECAST_DAYS = 30;
+/** Hide interval buckets with fewer data points than this (too noisy to plot). */
+const MIN_BUCKET_N = 5;
+
 // ─────────────────────────────────────────────
 // STATS / ANALYTICS
 // ─────────────────────────────────────────────
@@ -26,6 +43,8 @@ export const NNStats = () => {
 
   const [reviews30, setReviews30] = useState<Review[]>([]);
   const [reviews7, setReviews7] = useState<Review[]>([]);
+  const [forecast, setForecast] = useState<ForecastData | null>(null);
+  const [intervalRetention, setIntervalRetention] = useState<IntervalRetentionData | null>(null);
 
   useEffect(() => {
     if (!bootstrapped) return;
@@ -35,17 +54,23 @@ export const NNStats = () => {
       const since30 = subDays(now, 30).getTime();
       const since7 = subDays(now, 7).getTime();
       try {
-        const [r30Raw, r7Raw] = await Promise.all([
+        const [r30Raw, r7Raw, forecastRaw, retentionRaw] = await Promise.all([
           ok(await (api as any).reviews.get({ query: { since: String(since30) } })),
           ok(await (api as any).reviews.get({ query: { since: String(since7) } })),
+          ok(await (api as any).stats.forecast.get({ query: { days: String(FORECAST_DAYS) } })),
+          ok(await (api as any).stats.retention.get({ query: {} })),
         ]);
         if (cancelled) return;
         setReviews30((r30Raw as any[]).map(reviewFromApi));
         setReviews7((r7Raw as any[]).map(reviewFromApi));
+        setForecast(forecastRaw as ForecastData);
+        setIntervalRetention(retentionRaw as IntervalRetentionData);
       } catch {
         if (cancelled) return;
         setReviews30([]);
         setReviews7([]);
+        setForecast(null);
+        setIntervalRetention(null);
       }
     })();
     return () => {
@@ -217,6 +242,31 @@ export const NNStats = () => {
     return Math.round((atHour.filter((r) => r.rating >= 3).length / atHour.length) * 100);
   }, [peakHour, hourBuckets, reviews30]);
 
+  // Due-forecast bars: zero-fill the full window — the server only returns
+  // non-empty days, and the buckets are UTC `yyyy-mm-dd` strings (date_trunc in
+  // Postgres), so the axis is generated in UTC too to line up exactly.
+  const forecastBars = useMemo(() => {
+    if (!forecast) return [];
+    const byDay = new Map(forecast.buckets.map((b) => [b.day, b.count]));
+    const out: { day: string; count: number }[] = [];
+    const startMs = Date.now();
+    for (let i = 0; i < forecast.days; i++) {
+      const day = new Date(startMs + i * 86400000).toISOString().slice(0, 10);
+      out.push({ day, count: byDay.get(day) ?? 0 });
+    }
+    return out;
+  }, [forecast]);
+  const forecastMax = useMemo(
+    () => Math.max(1, ...forecastBars.map((b) => b.count)),
+    [forecastBars],
+  );
+
+  // Interval-retention buckets with enough data to be meaningful.
+  const retentionBars = useMemo(
+    () => (intervalRetention?.buckets ?? []).filter((b) => b.count >= MIN_BUCKET_N),
+    [intervalRetention],
+  );
+
   // Sparkline trend arrays from dailyBuckets for KPI row.
   const trends = useMemo(() => {
     const last7 = dailyBuckets.slice(-7);
@@ -353,6 +403,112 @@ export const NNStats = () => {
               </div>
             </div>
           ))}
+        </NNCard>
+      </div>
+
+      {/* Due forecast + retention by interval */}
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr', gap: isMobile ? 10 : 12, marginBottom: isMobile ? 12 : 16 }}>
+        <NNCard padding={20}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{t('stats.forecast.title')}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
+                {t('stats.forecast.subtitle', { days: forecast?.days ?? FORECAST_DAYS })} ·{' '}
+                <span className="mono" style={{ color: 'var(--lime-400)' }}>
+                  {t('stats.forecast.total', { n: forecast?.total ?? 0 })}
+                </span>
+              </div>
+            </div>
+            <div style={{ flex: 1 }} />
+            {forecast != null && forecast.overdueCount > 0 && (
+              <span
+                className="mono"
+                style={{
+                  fontSize: 11,
+                  color: 'var(--rose-400)',
+                  border: '1px solid var(--rose-500)',
+                  borderRadius: 999,
+                  padding: '3px 10px',
+                }}
+              >
+                {t('stats.forecast.overdue', { n: forecast.overdueCount })}
+              </span>
+            )}
+          </div>
+          {forecast == null || forecast.total === 0 ? (
+            <div style={{ padding: '24px 0', fontSize: 12.5, color: 'var(--text-dim)' }}>
+              {t('stats.forecast.empty')}
+            </div>
+          ) : (
+            <svg viewBox="0 0 600 200" style={{ width: '100%', height: 200 }}>
+              {[0, 1, 2, 3].map((i) => (
+                <line key={i} x1="0" y1={i * 50 + 15} x2="600" y2={i * 50 + 15} stroke="var(--border)" strokeWidth="0.5" />
+              ))}
+              {forecastBars.map((b, i) => {
+                const slot = 600 / forecastBars.length;
+                const barW = Math.max(4, slot - 4);
+                const h = (b.count / forecastMax) * 150;
+                return (
+                  <rect
+                    key={b.day}
+                    x={i * slot + (slot - barW) / 2}
+                    y={165 - h}
+                    width={barW}
+                    height={Math.max(b.count > 0 ? 2 : 0, h)}
+                    rx={2}
+                    fill={i === 0 ? 'var(--lime-400)' : 'var(--lime-600)'}
+                  >
+                    <title>{`${b.day}: ${b.count}`}</title>
+                  </rect>
+                );
+              })}
+              {forecastBars.map((b, i) =>
+                i % 7 === 0 ? (
+                  <text
+                    key={`l-${b.day}`}
+                    x={i * (600 / forecastBars.length) + 2}
+                    y="195"
+                    fontSize="10"
+                    fill="var(--text-dim)"
+                    fontFamily="var(--font-mono)"
+                  >
+                    {b.day.slice(5)}
+                  </text>
+                ) : null,
+              )}
+            </svg>
+          )}
+        </NNCard>
+
+        <NNCard padding={20}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>{t('stats.intervalRetention.title')}</div>
+          <div style={{ fontSize: 11.5, color: 'var(--text-dim)', margin: '2px 0 14px' }}>
+            {t('stats.intervalRetention.subtitle')}
+          </div>
+          {retentionBars.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: 'var(--text-dim)' }}>
+              {t('stats.intervalRetention.notEnough')}
+            </div>
+          ) : (
+            retentionBars.map((b) => {
+              const pct = b.retentionPct ?? 0;
+              const color = pct > 80 ? 'lime' : pct > 50 ? 'amber' : 'rose';
+              return (
+                <div key={b.bucket} style={{ marginBottom: 10 }}>
+                  <div style={{ display: 'flex', fontSize: 12, marginBottom: 4 }}>
+                    <span className="mono" style={{ color: 'var(--text)', flex: 1 }}>{b.bucket}</span>
+                    <span className="mono" style={{ color: `var(--${color}-400)` }}>{pct}%</span>
+                    <span style={{ width: 52, textAlign: 'right', color: 'var(--text-dim)' }} className="mono">
+                      {t('stats.intervalRetention.bucketCount', { n: b.count })}
+                    </span>
+                  </div>
+                  <div style={{ height: 5, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${pct}%`, height: '100%', background: `var(--${color}-500)` }} />
+                  </div>
+                </div>
+              );
+            })
+          )}
         </NNCard>
       </div>
 

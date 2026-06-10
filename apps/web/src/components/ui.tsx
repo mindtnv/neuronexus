@@ -10,7 +10,8 @@ export type IconName =
   | 'flame' | 'bolt' | 'settings' | 'check' | 'x' | 'chevr' | 'chevl'
   | 'chevd' | 'tag' | 'clock' | 'sparkle' | 'play' | 'pause' | 'eye'
   | 'edit' | 'link' | 'sync' | 'arrow' | 'trophy' | 'target' | 'mic'
-  | 'image' | 'dots' | 'filter' | 'grid' | 'stars' | 'bulb';
+  | 'image' | 'dots' | 'filter' | 'grid' | 'stars' | 'bulb' | 'pin'
+  | 'clip' | 'doc';
 
 export const NNIcon = ({
   name,
@@ -141,6 +142,9 @@ export const NNIcon = ({
     ),
     stars: <path d="M12 3l1.5 5 5 1.5-5 1.5L12 16l-1.5-5L5.5 9.5l5-1.5L12 3z" {...p} />,
     bulb: <path d="M9 18h6M10 21h4M12 3a6 6 0 00-3.5 11c.5.5 1 1 1 2h5c0-1 .5-1.5 1-2A6 6 0 0012 3z" {...p} />,
+    pin: <path d="M12 21v-6M8 4h8l-1 6 2.5 3h-11L9 10 8 4z" {...p} />,
+    clip: <path d="M20 11.5l-7.8 7.8a5 5 0 01-7-7l8.5-8.5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.4-2.4l7.8-7.8" {...p} />,
+    doc: <path d="M14 3H7a1.5 1.5 0 00-1.5 1.5v15A1.5 1.5 0 007 21h10a1.5 1.5 0 001.5-1.5V7.5L14 3zM14 3v4.5h4.5M9.5 12.5h5M9.5 16h5" {...p} />,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: 'block', flexShrink: 0 }}>

@@ -72,6 +72,12 @@ export const NNSettings = () => {
     setRetentionDraft(retentionPct);
   }, [retentionPct]);
 
+  // Standing agent instructions (C5) — save-on-blur, same idiom as the name field.
+  const [agentDraft, setAgentDraft] = useState(profile?.agentInstructions ?? '');
+  React.useEffect(() => {
+    setAgentDraft(profile?.agentInstructions ?? '');
+  }, [profile?.agentInstructions]);
+
   const dailyGoalOptions = [15, 30, 45, 60];
   const currentGoal = profile?.dailyGoalMinutes ?? 15;
 
@@ -289,6 +295,40 @@ export const NNSettings = () => {
               })}
             </div>
           </Field>
+        </div>
+      </Section>
+
+      {/* ── Agent instructions (C5) — standing preferences for the chat agent ── */}
+      <Section title={t('settings.agent.title')} subtitle={t('settings.agent.subtitle')}>
+        <textarea
+          value={agentDraft}
+          maxLength={2000}
+          rows={5}
+          onChange={(e) => setAgentDraft(e.target.value)}
+          onBlur={() => {
+            const next = agentDraft.trim();
+            if (next !== (profile?.agentInstructions ?? '')) {
+              void updateProfile({ agentInstructions: next });
+            }
+          }}
+          placeholder={t('settings.agent.placeholder')}
+          aria-label={t('settings.agent.title')}
+          style={{ ...inputStyle, resize: 'vertical', minHeight: 96, lineHeight: 1.5 }}
+        />
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 10,
+            marginTop: 6,
+            fontSize: 11,
+            color: 'var(--text-dim)',
+          }}
+        >
+          <span>{t('settings.agent.hint')}</span>
+          <span className="mono" style={{ flexShrink: 0 }}>
+            {agentDraft.length} / 2000
+          </span>
         </div>
       </Section>
 

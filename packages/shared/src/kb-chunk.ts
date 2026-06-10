@@ -76,6 +76,88 @@ export interface ChatStreamRequest {
   model?: string;
   /** Optional per-turn deck scope (AC3.7) — constrains card retrieval to a deck (subtree). */
   deckId?: string;
+  /** Deep-research MODE (composer toggle): research prompt + raised step/budget caps. */
+  research?: boolean;
+  /**
+   * Cards the user explicitly attached via composer @-mentions (max 8).
+   * Resolved server-side (user-scoped; foreign/missing ids silently dropped),
+   * persisted on the user row's `mentions` jsonb, and injected into the
+   * model-facing content as a `<mentioned_cards>` block at history-build time —
+   * the STORED content stays clean for display.
+   */
+  mentionedCardIds?: string[];
+  /**
+   * Composer file attachments (max 4 per message). Images reference an
+   * already-uploaded media object by id ONLY — token/mime are resolved
+   * server-side from the user-scoped `media` row (never trusted from the
+   * client). Text files carry their (client-truncated) content inline; the
+   * server re-caps it. Persisted on the user row's `attachments` jsonb; the
+   * model sees images as multimodal `image_url` parts and text files as an
+   * `<attached_file>` block — the STORED content stays clean.
+   */
+  attachments?: MessageAttachmentInput[];
+}
+
+/** Wire shape of one composer attachment (client → server). */
+export type MessageAttachmentInput =
+  | { kind: 'image'; mediaId: string; name?: string }
+  | { kind: 'text'; name: string; text: string };
+
+/**
+ * One persisted attachment on a user message row (server-resolved snapshot).
+ * `token` is the public `/m/<uuid>` path the web client renders the image from.
+ */
+export type MessageAttachment =
+  | { kind: 'image'; mediaId: string; token: string; mime: string; name?: string }
+  | { kind: 'text'; name: string; text: string };
+
+/**
+ * Token usage for one persisted assistant turn, as reported by the gateway's
+ * `stream_options: { include_usage: true }` final chunk. Accumulated across all
+ * steps of an agentic turn. Absent (null column) when the provider omits usage.
+ */
+export interface MessageUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+/**
+ * One composer @-mention persisted on a user message row. `front` is a snapshot
+ * excerpt taken at send time (a later card edit does NOT rewrite chat history —
+ * deterministic replay wins over freshness).
+ */
+export interface MessageMention {
+  cardId: string;
+  front: string;
+  deckName?: string;
+}
+
+/**
+ * Blast radius + previews for a paused write/SRS tool call (the
+ * `await_confirmation` frame and the tools' `dryRun()` output share this shape
+ * via the `ToolImpact` alias in apps/api). All fields optional — SRS tools emit
+ * no impact at all (frame carries `impact: undefined`).
+ */
+export interface ConfirmImpact {
+  willDeleteCards?: number;
+  willCreateCards?: number;
+  affectsSiblings?: boolean;
+  /** edit_card: changed fields only; values capped ~300 chars, whitespace-collapsed. */
+  fieldDiffs?: { field: string; before: string; after: string }[];
+  /** edit_card: full before/after tag lists when `tags` is part of the proposal. */
+  tagsChange?: { before: string[]; after: string[] };
+  /** edit_card: deck move target (args-only — no DB read in this branch). */
+  deckChange?: { toDeckId: string };
+  /** edit_card: proposed `suspended` value when part of the args. */
+  suspendedChange?: boolean;
+  /** create_card: proposed field values (capped ~300 chars each). */
+  proposedFields?: { field: string; value: string }[];
+  /**
+   * create_card batch (`cards: [...]`): per-card proposed field values, one entry
+   * per card in batch order. Single-card calls keep using `proposedFields`.
+   */
+  proposedCards?: { fields: { field: string; value: string }[] }[];
 }
 
 /**
@@ -90,6 +172,22 @@ export interface ChatResumeRequest {
   resumeToolCallId: string;
   decision: 'apply' | 'reject';
   model?: string;
+  /** Deep-research mode toggle state — keeps a research turn's continuation
+   *  on the raised caps + research prompt. */
+  research?: boolean;
+  /**
+   * Per-card decisions for a pending `create_card` confirm (apply path):
+   * `index` addresses the proposed card (batch order; a single-card proposal is
+   * index 0), `include:false` drops it, `fieldValues` overrides its content
+   * (inline edit). Unmentioned indexes apply as proposed. ALL excluded ⇒ the
+   * apply degrades to a reject. Ignored for other tools.
+   */
+  cardSelections?: { index: number; include: boolean; fieldValues?: Record<string, string> }[];
+  /**
+   * Optional user note passed through to the MODEL in the tool result (both
+   * apply and reject) — "propose edits" without applying anything.
+   */
+  feedback?: string;
 }
 
 /**
@@ -124,14 +222,16 @@ export type ChatStreamEvent =
   | { type: 'tool_call'; id: string; name: string; args: unknown; status: 'running' }
   | { type: 'tool_result'; id: string; ok: boolean; summary?: string; citations?: Citation[] }
   | { type: 'status'; phase: 'thinking' | 'calling_tool' | 'answering' }
+  // Auto-generated thread title (first turn of an untitled conversation).
+  // Emitted before `done`; older clients ignore unknown frames.
+  | { type: 'title'; title: string }
+  // Accumulated token usage for the turn. Emitted before `done`; absent
+  // entirely when the provider reports no usage.
+  | { type: 'usage'; promptTokens: number; completionTokens: number; totalTokens?: number }
   | {
       type: 'await_confirmation';
       toolCall: { id: string; name: string; args: unknown };
-      impact?: {
-        willDeleteCards?: number;
-        willCreateCards?: number;
-        affectsSiblings?: boolean;
-      };
+      impact?: ConfirmImpact;
     };
 
 // ── Model-emitted card-citation token ────────────────────────────────────────

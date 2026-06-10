@@ -5,6 +5,7 @@
 import { describe, expect, test, afterEach } from 'bun:test';
 import { buildToolRegistry, toOpenAiTools, type Tool } from './tools.ts';
 import { __setWebSearchProviderForTests, __resetWebSearchProviderForTests } from './web-search.ts';
+import { __setPageReaderForTests, __resetPageReaderForTests } from './page-reader.ts';
 import { buildAgentSystemPrompt } from '@neuronexus/shared';
 
 // The write/SRS tools always present in Phase B (no extra env gate).
@@ -15,6 +16,7 @@ const READ_TOOLS = [
   'search_cards',
   'card_progress',
   'study_stats',
+  'due_forecast',
   'list_decks',
   'browse_cards',
   'get_card',
@@ -41,6 +43,37 @@ describe('buildToolRegistry — web_search gating', () => {
     __setWebSearchProviderForTests(null);
     const off = buildToolRegistry().map((t) => t.name);
     expect(off).toEqual([...READ_TOOLS, ...WRITE_SRS_TOOLS]);
+  });
+});
+
+describe('buildToolRegistry — fetch_page gating (deep research)', () => {
+  afterEach(() => __resetPageReaderForTests());
+
+  test('fetch_page sits between web_search and the write tools when enabled', () => {
+    const names = buildToolRegistry({ webSearchEnabled: true, fetchPageEnabled: true }).map(
+      (t) => t.name,
+    );
+    expect(names).toEqual([...READ_TOOLS, 'web_search', 'fetch_page', ...WRITE_SRS_TOOLS]);
+  });
+
+  test('absent by default under test env; an injected reader flips it on', () => {
+    expect(buildToolRegistry().map((t) => t.name)).not.toContain('fetch_page');
+    __setPageReaderForTests({
+      async read(url: string) {
+        return { url, text: '', links: [] };
+      },
+    });
+    expect(buildToolRegistry().map((t) => t.name)).toContain('fetch_page');
+    __setPageReaderForTests(null);
+    expect(buildToolRegistry().map((t) => t.name)).not.toContain('fetch_page');
+  });
+
+  test('fetch_page is a read tool (no dryRun, never pauses)', () => {
+    const byName = new Map(
+      buildToolRegistry({ fetchPageEnabled: true }).map((t) => [t.name, t]),
+    );
+    expect(byName.get('fetch_page')!.kind).toBe('read');
+    expect(byName.get('fetch_page')!.dryRun).toBeUndefined();
   });
 });
 
@@ -74,7 +107,7 @@ describe('buildToolRegistry — write/SRS tools (Phase B)', () => {
     expect(byName.get('card_progress')!.dryRun).toBeUndefined();
     expect(byName.get('study_stats')!.kind).toBe('read');
     expect(byName.get('study_stats')!.dryRun).toBeUndefined();
-    for (const name of ['list_decks', 'browse_cards', 'get_card']) {
+    for (const name of ['due_forecast', 'list_decks', 'browse_cards', 'get_card']) {
       expect(byName.get(name)!.kind).toBe('read');
       expect(byName.get(name)!.dryRun).toBeUndefined();
     }
@@ -100,11 +133,15 @@ describe('SRS dryRun — count-neutral (no DB, returns {})', () => {
     await expect(tool.dryRun!(ctx, {})).resolves.toEqual({});
   });
 
-  test('edit_card.dryRun for a deck-move/suspend-only edit → count-neutral {}', async () => {
+  test('edit_card.dryRun for a deck-move/suspend-only edit → count-neutral, args-only preview (C8)', async () => {
     const tool = byName.get('edit_card') as Tool;
-    // No fieldValues/tags → no regeneration → no DB read, empty impact.
+    // No fieldValues/tags → no regeneration → no DB read. The impact now carries
+    // the args-only previews (deckChange/suspendedChange) but stays count-neutral
+    // (no willCreate/willDelete).
     const impact = await tool.dryRun!(ctx, { cardId: 'c1', deckId: 'd2', suspended: true });
-    expect(impact).toEqual({});
+    expect(impact).toEqual({ deckChange: { toDeckId: 'd2' }, suspendedChange: true });
+    expect(impact.willCreateCards).toBeUndefined();
+    expect(impact.willDeleteCards).toBeUndefined();
   });
 });
 
@@ -121,6 +158,7 @@ describe('toOpenAiTools — gateway schema shape', () => {
       'search_cards',
       'card_progress',
       'study_stats',
+      'due_forecast',
       'list_decks',
       'browse_cards',
       'get_card',
@@ -149,6 +187,7 @@ describe('buildAgentSystemPrompt — behavioral contract', () => {
     const p = buildAgentSystemPrompt({ webSearchEnabled: false });
     expect(p).toContain('study_stats');
     expect(p).toContain('card_progress');
+    expect(p).toContain('due_forecast');
     // The no-tool line is narrowed to THIS CONVERSATION (not progress).
     expect(p).toMatch(/THIS CONVERSATION/);
   });
@@ -169,5 +208,79 @@ describe('buildAgentSystemPrompt — behavioral contract', () => {
     expect(scoped).toMatch(/scoped this chat to the deck/i);
     const unscoped = buildAgentSystemPrompt({ webSearchEnabled: false });
     expect(unscoped).not.toMatch(/scoped this chat to the deck/i);
+  });
+
+  test('user instructions (C5): guardrailed section present only when set, capped at 2000', () => {
+    const withIns = buildAgentSystemPrompt({
+      webSearchEnabled: false,
+      userInstructions: 'Always answer in German. Be terse.',
+    });
+    expect(withIns).toContain('<user_instructions>');
+    expect(withIns).toContain('Always answer in German. Be terse.');
+    // Guardrail: instructions are preferences that can never override the rules.
+    expect(withIns).toMatch(/NEVER override/i);
+
+    const without = buildAgentSystemPrompt({ webSearchEnabled: false });
+    expect(without).not.toContain('<user_instructions>');
+    // Whitespace-only behaves like absent.
+    expect(
+      buildAgentSystemPrompt({ webSearchEnabled: false, userInstructions: '   ' }),
+    ).not.toContain('<user_instructions>');
+    // Defensive cap at the call boundary.
+    const long = buildAgentSystemPrompt({
+      webSearchEnabled: false,
+      userInstructions: 'x'.repeat(5000),
+    });
+    const inner = long.split('<user_instructions>\n')[1]!.split('\n</user_instructions>')[0]!;
+    expect(inner.length).toBe(2000);
+  });
+
+  test('mentioned_cards explainer (C7) is unconditional', () => {
+    const p = buildAgentSystemPrompt({ webSearchEnabled: false });
+    expect(p).toContain('<mentioned_cards>');
+    expect(p).toMatch(/explicitly attached/i);
+  });
+
+  test('fetch_page guidance + deep-research workflow appear only when offered', () => {
+    const on = buildAgentSystemPrompt({ webSearchEnabled: true, fetchPageEnabled: true });
+    expect(on).toContain('fetch_page');
+    expect(on).toMatch(/Deep research → flashcards/);
+    expect(on).toMatch(/cards: \[\.\.\.\]/); // batches the proposals
+    const off = buildAgentSystemPrompt({ webSearchEnabled: true });
+    expect(off).not.toContain('fetch_page');
+    expect(off).not.toMatch(/Deep research/);
+  });
+
+  test('multi-card batching guidance replaced the old one-at-a-time rule', () => {
+    const p = buildAgentSystemPrompt({ webSearchEnabled: false });
+    expect(p).toMatch(/batch them into ONE/i);
+    expect(p).not.toMatch(/ONE AT A TIME/);
+  });
+
+  test('rich-content guidance: markdown/tables/mermaid + media-token images, correct math delimiters', () => {
+    const p = buildAgentSystemPrompt({ webSearchEnabled: false });
+    expect(p).toMatch(/pipe tables/i);
+    expect(p).toContain('```mermaid');
+    // KaTeX delimiters are Anki-style \( \) / \[ \] — NOT $...$.
+    expect(p).toContain('NOT $...$');
+    // Images: only real /m/<uuid> media tokens, never external URLs.
+    expect(p).toContain('![](/m/<uuid>)');
+    expect(p).toMatch(/never invent a token/i);
+  });
+
+  test('deep-research MODE section appears only when toggled AND fetch_page is offered', () => {
+    const on = buildAgentSystemPrompt({
+      webSearchEnabled: false,
+      fetchPageEnabled: true,
+      researchMode: true,
+    });
+    expect(on).toContain('<deep_research_mode>');
+    expect(on).toMatch(/research assignment/i);
+    // Toggle without the tool → no mode section (meaningless without fetch_page).
+    const noTool = buildAgentSystemPrompt({ webSearchEnabled: false, researchMode: true });
+    expect(noTool).not.toContain('<deep_research_mode>');
+    // Tool without the toggle → workflow guidance only, no mode section.
+    const noToggle = buildAgentSystemPrompt({ webSearchEnabled: false, fetchPageEnabled: true });
+    expect(noToggle).not.toContain('<deep_research_mode>');
   });
 });

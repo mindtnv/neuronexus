@@ -33,5 +33,18 @@ const m = {
   retentionInline: 'retention',
   weekLine: 'за неделю · {time} · ~{avg} мин/день',
   stabilityDays: '{n}d',
+  forecast: {
+    title: 'Прогноз нагрузки',
+    subtitle: 'Сколько карточек подойдёт к повтору в ближайшие {days} дней',
+    overdue: '{n} просрочено',
+    empty: 'В этом окне пока ничего не запланировано.',
+    total: '{n} к повтору',
+  },
+  intervalRetention: {
+    title: 'Retention по интервалам',
+    subtitle: 'Насколько хорошо вы помните после паузы в…',
+    notEnough: 'Истории повторов пока мало — в каждой корзине нужно минимум 5 повторов.',
+    bucketCount: 'n={n}',
+  },
 };
 export default m;

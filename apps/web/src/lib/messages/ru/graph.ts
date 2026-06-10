@@ -11,6 +11,9 @@ const m = {
     clearFind: 'Очистить поиск',
     allDecks: 'Все колоды',
     hideAll: 'Скрыть все',
+    edgesLabel: 'Источник связей',
+    edgesSemantic: 'Семантика',
+    edgesTags: 'Теги',
     showAll: 'Показать все',
   },
   controls: {
@@ -41,6 +44,7 @@ const m = {
     due: 'К повтору',
     linkedCards: 'Связанные карты · {n}',
     noLinks: 'Общих тегов с другими картами нет.',
+    similarity: '{pct}% сходства',
     tagSingular: 'тег',
     tagPlural: 'тегов',
     mastered: 'освоено {pct}%',

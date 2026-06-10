@@ -628,6 +628,7 @@ export const useNN = create<State>()((set, get) => ({
     if (patch.desiredRetention !== undefined) body.desiredRetention = patch.desiredRetention;
     if (patch.plantStage !== undefined) body.plantStage = patch.plantStage;
     if (patch.plantSpecies !== undefined) body.plantSpecies = patch.plantSpecies;
+    if (patch.agentInstructions !== undefined) body.agentInstructions = patch.agentInstructions;
     const next = profileFromApi(await ok(await (api as any).profile.patch(body)));
     set({ profile: next });
   },

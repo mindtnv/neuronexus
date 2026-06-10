@@ -33,5 +33,18 @@ const m = {
   retentionInline: 'retention',
   weekLine: 'this week · {time} · ~{avg} min/day',
   stabilityDays: '{n}d',
+  forecast: {
+    title: 'Due forecast',
+    subtitle: 'Cards coming due over the next {days} days',
+    overdue: '{n} overdue',
+    empty: 'Nothing scheduled in this window yet.',
+    total: '{n} due',
+  },
+  intervalRetention: {
+    title: 'Retention by interval',
+    subtitle: 'How well you remember after a gap of…',
+    notEnough: 'Not enough review history yet — buckets need at least 5 reviews each.',
+    bucketCount: 'n={n}',
+  },
 };
 export default m;

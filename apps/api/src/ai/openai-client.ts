@@ -34,14 +34,25 @@ export interface ChatMessage {
 }
 
 /**
+ * One multimodal content part (OpenAI wire shape). A `user` message with image
+ * attachments sends `content` as an ARRAY of parts — text first, then
+ * `image_url` parts carrying base64 data URLs (the gateway never gets a
+ * localhost URL it couldn't fetch).
+ */
+export type AgentContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+/**
  * Server-internal message shape for the agentic loop. Extends `ChatMessage`
  * with the OpenAI tool-calling wire fields: an `assistant` row may carry
  * `tool_calls`, and a `tool` result row carries `tool_call_id`. The `role`
  * union widens to include `'tool'` (never exposed to the string consumer).
+ * `content` widens to multimodal parts for user rows with image attachments.
  */
 export interface AgentChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  content: string | AgentContentPart[];
   /** Set on an assistant turn that emitted tool calls (OpenAI wire shape). */
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
   /** Set on a `role:'tool'` result row, linking it to its parent tool call. */
@@ -66,6 +77,12 @@ export interface AgentChatStreamOpts extends ChatStreamOpts {
   tools?: OpenAiToolSpec[];
   /** Tool-choice directive; defaults to `'auto'`. S4's forced-final passes `'none'`. */
   toolChoice?: 'auto' | 'none' | 'required';
+  /**
+   * Turn-level abort (client disconnect / Stop / superseded turn). Aborting
+   * tears the gateway fetch mid-stream — the loop's caller treats it as a
+   * cancelled turn, not an error.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -79,7 +96,21 @@ export type AgentStreamChunk =
   | { type: 'content'; text: string }
   | { type: 'reasoning'; text: string }
   | { type: 'tool_call_delta'; index: number; id?: string; name?: string; argsFragment?: string }
-  | { type: 'finish'; reason: 'stop' | 'tool_calls' | 'length' };
+  | { type: 'finish'; reason: 'stop' | 'tool_calls' | 'length' }
+  // Token usage from the gateway's `stream_options: { include_usage: true }`
+  // final chunk (OpenAI sends it with `choices: []`, AFTER finish_reason).
+  // Never emitted when the provider omits usage — consumers must not rely on it.
+  | { type: 'usage'; promptTokens: number; completionTokens: number; totalTokens: number };
+
+/** Options for the non-streaming `complete()` helper (titles/summaries). */
+export interface CompleteOpts {
+  /** Overrides env.ai.CHAT_MODEL when set. */
+  model?: string;
+  /** Bounded-time abort (callers pass AbortSignal.timeout(...)). */
+  signal?: AbortSignal;
+  /** Optional per-request child logger. */
+  log?: Logger;
+}
 
 /** The injectable surface. A fake (tests) provides any subset of members. */
 export interface AiClient {
@@ -89,6 +120,14 @@ export interface AiClient {
     messages: AgentChatMessage[],
     opts?: AgentChatStreamOpts,
   ) => AsyncIterable<AgentStreamChunk>;
+  /**
+   * Non-streaming completion for auxiliary calls (auto-titles, context
+   * summaries). Deliberately SEPARATE from `chatStreamAgentic` so scripted
+   * agent fakes don't have their turn scripts consumed by aux calls — a fake
+   * that omits `complete` makes aux features skip gracefully (AiDisabledError
+   * is caught at every call site).
+   */
+  complete?: (messages: ChatMessage[], opts?: CompleteOpts) => Promise<string>;
 }
 
 // ── Test-seam state ──────────────────────────────────────────────────────────
@@ -355,6 +394,9 @@ interface AgentChatChunk {
     };
     finish_reason?: 'stop' | 'tool_calls' | 'length' | null;
   }[];
+  // `stream_options: { include_usage: true }` final chunk. OpenAI sends it with
+  // `choices: []` — it MUST be checked before any choices[0] guard.
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }
 
 /**
@@ -394,10 +436,16 @@ export async function* chatStreamAgentic(
       'content-type': 'application/json',
       authorization: `Bearer ${apiKey}`,
     },
+    signal: opts.signal,
     body: JSON.stringify({
       model,
       messages,
       stream: true,
+      // Token accounting (C1). Kill-switch for gateways that reject the param —
+      // without it the usage chunk simply never arrives (graceful degrade).
+      ...(env.ai.CHAT_STREAM_USAGE !== 'false'
+        ? { stream_options: { include_usage: true } }
+        : {}),
       ...(opts.tools && opts.tools.length > 0
         ? { tools: opts.tools, tool_choice: opts.toolChoice ?? 'auto' }
         : {}),
@@ -415,6 +463,18 @@ export async function* chatStreamAgentic(
   for await (const payload of parseSseLines(res.body.getReader())) {
     if (payload === SSE_DONE) break;
     const chunk = payload as AgentChatChunk;
+    // Usage rides a trailing chunk with `choices: []` — handle it BEFORE the
+    // choices[0] guard or it is silently skipped.
+    if (chunk.usage) {
+      const prompt = chunk.usage.prompt_tokens ?? 0;
+      const completion = chunk.usage.completion_tokens ?? 0;
+      yield {
+        type: 'usage',
+        promptTokens: prompt,
+        completionTokens: completion,
+        totalTokens: chunk.usage.total_tokens ?? prompt + completion,
+      };
+    }
     const choice = chunk.choices?.[0];
     if (!choice) continue;
     const delta = choice.delta;
@@ -452,4 +512,53 @@ export async function* chatStreamAgentic(
       // sends trailing keep-alives, but emit no further finish.
     }
   }
+}
+
+// ── Non-streaming completion (aux calls: titles, summaries) ──────────────────
+
+interface CompleteResponse {
+  choices?: { message?: { content?: string | null } }[];
+}
+
+/**
+ * One-shot (non-streaming) chat completion for auxiliary calls — auto-titles
+ * and context summaries. Deliberately NOT built on `chatStreamAgentic`: the
+ * scripted test fakes consume one script turn per stream call, so routing aux
+ * calls through the agent surface would silently eat their scripts. A fake
+ * without `complete` (i.e. every pre-existing test) makes the real path throw
+ * `AiDisabledError('chat')` under test env — call sites catch and skip.
+ *
+ * No retry loop: aux calls are best-effort and time-bounded by the caller's
+ * `signal` (AbortSignal.timeout). Throws on non-2xx / abort; never retries.
+ */
+export async function complete(messages: ChatMessage[], opts: CompleteOpts = {}): Promise<string> {
+  if (injected?.complete) return injected.complete(messages, opts);
+  if (!chatEnabled) throw new AiDisabledError('chat');
+
+  const apiKey = env.ai.CHAT_API_KEY!;
+  const model = opts.model ?? env.ai.CHAT_MODEL;
+  const url = `${env.ai.CHAT_BASE_URL.replace(/\/$/, '')}/chat/completions`;
+  const log = opts.log ?? rootLogger;
+  const started = performance.now();
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ model, messages }),
+    signal: opts.signal,
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    log.error({ status: res.status, detail }, 'ai.complete.failed');
+    throw new Error(`complete_failed:${res.status}`);
+  }
+
+  const json = (await res.json()) as CompleteResponse;
+  const content = json.choices?.[0]?.message?.content ?? '';
+  log.info({ model, latencyMs: Math.round(performance.now() - started) }, 'ai.complete');
+  return content;
 }

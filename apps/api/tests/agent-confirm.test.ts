@@ -45,7 +45,7 @@ import {
   type AgentStreamChunk,
 } from '../src/ai/openai-client.ts';
 import { drainIndexQueue } from '../src/ai/index-queue.ts';
-import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
+import { callApp, resetTestDb, seedNote, signUpAndCookie, uniqueEmail } from './helpers.ts';
 
 const app = buildApp();
 const EMBED_DIM = 1536;
@@ -693,5 +693,87 @@ describe('agentic chat — confirm-before-write (Phase B)', () => {
     const [afterApply] = await db.select().from(cardsTable).where(eq(cardsTable.id, cardId));
     expect(afterApply!.suspended).toBe(true);
     expect(afterApply!.userId).toBe(userId);
+  });
+
+  // ── C8 — confirm previews (fieldDiffs / tagsChange / proposedFields) ─────────
+
+  test('edit_card: await_confirmation carries before/after fieldDiffs + tagsChange (C8)', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+
+    const { cards: seededCards } = await seedNote(app, cookie, {
+      deckId,
+      fields: { Front: 'Old front text', Back: 'Old back' },
+      tags: ['old-tag'],
+    });
+    const cardId = seededCards[0]!.id;
+
+    __setAiClientForTests({
+      embed: fakeEmbed,
+      chatStreamAgentic: scriptedAgentStream([
+        writeTurn({
+          id: 'w_diff',
+          name: 'edit_card',
+          args: {
+            cardId,
+            fieldValues: { Front: 'New front text' },
+            tags: ['new-tag'],
+          },
+        }),
+        answerTurn('Edited.'),
+      ]),
+    });
+
+    const convId = await createConversation(cookie);
+    const streamFrames = await readSse(await streamReq(cookie, convId, 'fix the front'));
+
+    const await_ = streamFrames.find((f) => f.event === 'await_confirmation');
+    expect(await_).toBeTruthy();
+    const impact = (
+      await_!.data as {
+        impact?: {
+          fieldDiffs?: { field: string; before: string; after: string }[];
+          tagsChange?: { before: string[]; after: string[] };
+        };
+      }
+    ).impact;
+    expect(impact).toBeTruthy();
+    // Only the CHANGED field appears (Back is untouched by the partial edit).
+    expect(impact!.fieldDiffs).toEqual([
+      { field: 'Front', before: 'Old front text', after: 'New front text' },
+    ]);
+    expect(impact!.tagsChange).toEqual({ before: ['old-tag'], after: ['new-tag'] });
+  });
+
+  test('create_card: await_confirmation carries proposedFields (C8)', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+
+    __setAiClientForTests({
+      embed: fakeEmbed,
+      chatStreamAgentic: scriptedAgentStream([
+        writeTurn({
+          id: 'w_new',
+          name: 'create_card',
+          args: { deckId, fieldValues: { Front: 'Proposed Q', Back: 'Proposed A' } },
+        }),
+        answerTurn('Created.'),
+      ]),
+    });
+
+    const convId = await createConversation(cookie);
+    const streamFrames = await readSse(await streamReq(cookie, convId, 'add a card'));
+
+    const await_ = streamFrames.find((f) => f.event === 'await_confirmation');
+    const impact = (
+      await_!.data as {
+        impact?: { willCreateCards?: number; proposedFields?: { field: string; value: string }[] };
+      }
+    ).impact;
+    expect(impact!.willCreateCards).toBe(1);
+    expect(impact!.proposedFields).toEqual([
+      { field: 'Front', value: 'Proposed Q' },
+      { field: 'Back', value: 'Proposed A' },
+    ]);
   });
 });

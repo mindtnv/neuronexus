@@ -16,6 +16,7 @@ import {
   type AgentStreamChunk,
 } from '../src/ai/openai-client.ts';
 import { __setChatModelsForTests } from '../src/modules/ai.ts';
+import { db, ensureBuiltins } from '@neuronexus/db';
 import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
 
 const app = buildApp();
@@ -127,7 +128,9 @@ describe('model selector — /ai/status', () => {
         'embeddingDim',
         'embeddingEnabled',
         'embeddingModel',
+        'fetchPageEnabled',
         'models',
+        'visionEnabled',
         'webSearchEnabled',
       ].sort(),
     );
@@ -145,6 +148,10 @@ describe('model selector — /ai/status', () => {
 describe('model selector — stream body validation + threading', () => {
   beforeEach(async () => {
     await resetTestDb();
+    // create_card now VALIDATES before pausing (validate-before-pause) — the
+    // builtin Basic must exist or the write is answered as an error instead of
+    // suspending, which would consume an extra script turn.
+    await ensureBuiltins(db);
     seenModels = [];
   });
   afterEach(() => {

@@ -106,6 +106,56 @@ export class BraveWebSearchProvider implements WebSearchProvider {
   }
 }
 
+// ── Exa provider ──────────────────────────────────────────────────────────────
+// Exa (exa.ai) neural/auto search — the second drop-in the interface was built
+// for. Requested with short `contents.text` so each result carries a snippet
+// (Exa returns no description otherwise). Preferred over Brave when both keys
+// are set: semantic search suits "study this topic" research better.
+
+/** Subset of the Exa /search response we map from. */
+interface ExaSearchResponse {
+  results?: { title?: string | null; url?: string; text?: string }[];
+}
+
+const EXA_SEARCH_ENDPOINT = 'https://api.exa.ai/search';
+
+export class ExaWebSearchProvider implements WebSearchProvider {
+  constructor(private readonly apiKey: string) {}
+
+  async search(query: string, opts: WebSearchOpts = {}): Promise<WebSearchResult[]> {
+    const count = Math.max(1, Math.min(opts.count ?? 5, 20));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), env.ai.WEB_SEARCH_TIMEOUT_MS);
+    const onExternalAbort = () => controller.abort();
+    opts.signal?.addEventListener('abort', onExternalAbort, { once: true });
+    try {
+      const res = await fetch(EXA_SEARCH_ENDPOINT, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': this.apiKey },
+        body: JSON.stringify({
+          query,
+          type: 'auto',
+          numResults: count,
+          contents: { text: { maxCharacters: 300 } },
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`exa search HTTP ${res.status}`);
+      const json = (await res.json()) as ExaSearchResponse;
+      return (json.results ?? [])
+        .filter((r) => r.url)
+        .map((r) => ({
+          title: (r.title ?? r.url ?? '').trim() || (r.url as string),
+          url: r.url as string,
+          snippet: (r.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 300),
+        }));
+    } finally {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onExternalAbort);
+    }
+  }
+}
+
 // ── Provider selection + test seam ────────────────────────────────────────────
 
 let injectedProvider: WebSearchProvider | null = null;
@@ -129,11 +179,14 @@ export function __resetWebSearchProviderForTests(): void {
 
 /**
  * Return the active web-search provider, or `null` when web search is not
- * configured (no Brave key). A test-injected provider takes precedence.
+ * configured (no Exa/Brave key). A test-injected provider takes precedence;
+ * Exa is preferred over Brave when both keys are set.
  */
 export function getWebSearchProvider(): WebSearchProvider | null {
   if (injectedProviderSet) return injectedProvider;
-  if (webSearchEnabled && env.ai.BRAVE_SEARCH_API_KEY) {
+  if (!webSearchEnabled) return null;
+  if (env.ai.EXA_API_KEY) return new ExaWebSearchProvider(env.ai.EXA_API_KEY);
+  if (env.ai.BRAVE_SEARCH_API_KEY) {
     return new BraveWebSearchProvider(env.ai.BRAVE_SEARCH_API_KEY);
   }
   return null;

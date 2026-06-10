@@ -14,6 +14,11 @@ const m = {
   mixedQueue: 'Mixed queue',
   focusMode: 'Focus mode',
   exitFocus: 'Exit focus',
+  similar: {
+    open: 'Similar cards',
+    title: 'Similar cards',
+    close: 'Close similar cards',
+  },
   loading: {
     subtitle: 'Opening your library.',
   },

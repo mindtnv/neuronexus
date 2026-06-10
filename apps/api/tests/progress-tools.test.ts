@@ -9,7 +9,7 @@
 // isChatEnabled() on).
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { db, messages as messagesTable, reviews } from '@neuronexus/db';
+import { cards as cardsTable, db, messages as messagesTable, reviews } from '@neuronexus/db';
 import { asc, eq } from 'drizzle-orm';
 import { buildApp } from '../src/app.ts';
 import {
@@ -141,6 +141,18 @@ async function toolResultText(convId: string): Promise<string> {
 }
 
 const daysAgo = (n: number): Date => new Date(Date.now() - n * 86400000);
+const daysFromNow = (n: number): Date => new Date(Date.now() + n * 86400000);
+
+/** Force a seeded card's scheduling columns (due/state/suspended) directly. */
+async function scheduleCard(
+  cardId: string,
+  opts: { due: Date; state?: 'learning' | 'review' | 'relearning'; suspended?: boolean },
+): Promise<void> {
+  await db
+    .update(cardsTable)
+    .set({ due: opts.due, state: opts.state ?? 'review', suspended: opts.suspended ?? false })
+    .where(eq(cardsTable.id, cardId));
+}
 
 describe('progress read-tools', () => {
   beforeEach(async () => {
@@ -403,6 +415,85 @@ describe('progress read-tools', () => {
     const text = await toolResultText(convId);
     expect(text.toLowerCase()).toContain('no reviews recorded');
     expect(text).not.toContain(`Card ${cardA.id}: state=`);
+  });
+
+  // ── due_forecast ──────────────────────────────────────────────────────────────
+
+  test('due_forecast reports total, busiest day and overdue backlog', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+    const c1 = await seedBasicCard(app, cookie, { deckId, front: 'q1', back: 'a' });
+    const c2 = await seedBasicCard(app, cookie, { deckId, front: 'q2', back: 'a' });
+    const c3 = await seedBasicCard(app, cookie, { deckId, front: 'q3', back: 'a' });
+    const c4 = await seedBasicCard(app, cookie, { deckId, front: 'q4', back: 'a' });
+    await scheduleCard(c1.id, { due: daysFromNow(1) });
+    await scheduleCard(c2.id, { due: daysFromNow(1) });
+    await scheduleCard(c3.id, { due: daysFromNow(2) });
+    await scheduleCard(c4.id, { due: daysAgo(2) }); // overdue backlog
+
+    __setAiClientForTests({
+      chatStreamAgentic: scriptedAgentStream([
+        callTurn([{ id: 'f1', name: 'due_forecast', args: {} }]),
+        answerTurn('ok'),
+      ]),
+    });
+    const convId = await createConversation(cookie);
+    const frames = await readSse(await streamReq(cookie, convId, 'сколько мне предстоит повторить?'));
+    expect(frames.some((f) => f.event === 'tool_call')).toBe(true);
+
+    const text = await toolResultText(convId);
+    expect(text).toContain('3 reviews due');
+    expect(text).toMatch(/Busiest day \d{4}-\d{2}-\d{2} \(2\)/);
+    expect(text).toContain('Overdue backlog: 1');
+  });
+
+  test('due_forecast deckId arg scopes to the subtree (parent + child)', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const parent = await freshDeck(cookie, 'Parent');
+    const child = await freshDeck(cookie, 'Child', parent);
+    const other = await freshDeck(cookie, 'Other');
+    for (const deckId of [parent, child, other]) {
+      const c = await seedBasicCard(app, cookie, { deckId, front: `q-${deckId}`, back: 'a' });
+      await scheduleCard(c.id, { due: daysFromNow(1) });
+    }
+
+    __setAiClientForTests({
+      chatStreamAgentic: scriptedAgentStream([
+        callTurn([{ id: 'f1', name: 'due_forecast', args: { deckId: parent } }]),
+        answerTurn('ok'),
+      ]),
+    });
+    const convId = await createConversation(cookie);
+    await readSse(await streamReq(cookie, convId, 'how busy is this deck next week?'));
+    const text = await toolResultText(convId);
+    expect(text).toContain('2 reviews due'); // parent + child, not Other
+  });
+
+  test('due_forecast foreign deckId → graceful empty, not a global fallback', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+    const c = await seedBasicCard(app, cookie, { deckId, front: 'q', back: 'a' });
+    await scheduleCard(c.id, { due: daysFromNow(1) });
+
+    __setAiClientForTests({
+      chatStreamAgentic: scriptedAgentStream([
+        callTurn([
+          {
+            id: 'f1',
+            name: 'due_forecast',
+            args: { deckId: '00000000-0000-0000-0000-0000000000ff' },
+          },
+        ]),
+        answerTurn('ok'),
+      ]),
+    });
+    const convId = await createConversation(cookie);
+    const frames = await readSse(await streamReq(cookie, convId, 'load for that deck?'));
+    const toolResult = frames.find((f) => f.event === 'tool_result');
+    expect((toolResult!.data as { ok: boolean }).ok).toBe(true); // graceful, not error
+    const text = await toolResultText(convId);
+    expect(text).toContain('No reviews scheduled in this deck');
+    expect(text).not.toContain('1 reviews due');
   });
 
   test('card_progress foreign/missing card → graceful result, not a throw', async () => {

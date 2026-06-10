@@ -64,6 +64,12 @@ export const profileModule = new Elysia({ prefix: '/profile' })
       }
       const patch: Record<string, unknown> = { ...body, updatedAt: new Date() };
       if (species) patch.plantSpecies = species;
+      // C5 — standing agent instructions: whitespace-only ⇒ NULL (cleared), so
+      // the prompt builder's presence check stays meaningful.
+      if (body.agentInstructions !== undefined) {
+        const trimmed = body.agentInstructions.trim();
+        patch.agentInstructions = trimmed.length > 0 ? trimmed : null;
+      }
       const [updated] = await db
         .update(profile)
         .set(patch)
@@ -81,6 +87,8 @@ export const profileModule = new Elysia({ prefix: '/profile' })
           desiredRetention: t.Number({ minimum: MIN_RETENTION, maximum: MAX_RETENTION }),
           plantStage: t.Integer({ minimum: 0, maximum: 5 }),
           plantSpecies: plantSpeciesSchema,
+          // Standing instructions for the agentic chat (C5). Cap 2000 chars.
+          agentInstructions: t.String({ maxLength: 2000 }),
         }),
       ),
     },

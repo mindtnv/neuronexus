@@ -28,6 +28,13 @@ const m = {
     dailyGoal: 'Daily goal',
     minLabel: '{n} min',
   },
+  // Standing instructions for the agentic chat (C5) — settings → system prompt.
+  agent: {
+    title: 'Agent instructions',
+    subtitle: 'Standing preferences for the chat assistant — tone, language, focus.',
+    placeholder: 'E.g. “Always answer in German. Keep answers short. Prefer examples over theory.”',
+    hint: 'Applied to every chat turn. Can never override grounding or confirm-before-write.',
+  },
   algoHeading: 'Algorithm (FSRS-5)',
   algoIntro: 'The Free Spaced Repetition Scheduler v5 tuned to your data. Anki compatibility is preserved for imports.',
   retention: {

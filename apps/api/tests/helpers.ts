@@ -12,7 +12,7 @@
 // packages/db/src/env.ts already enforces this at DB-client construction.
 
 import { db } from '@neuronexus/db/client';
-import { ensureVectorExtension } from '@neuronexus/db';
+import { ensureVectorExtension, kbChunk } from '@neuronexus/db';
 import { sql } from 'drizzle-orm';
 
 const TABLES = [
@@ -273,4 +273,63 @@ export async function seedBasicCard(
     throw new Error(`seedBasicCard expected 1 card, got ${cards.length}`);
   }
   return cards[0]!;
+}
+
+/**
+ * Insert a kb_chunk row DIRECTLY with a pre-computed embedding — the fixture
+ * for the similar-cards / semantic-edges endpoints. Deliberately bypasses the
+ * index queue and the AI client (NODE_ENV=test keeps embeddingEnabled=false):
+ * those endpoints must work from stored data alone. Shape mirrors the
+ * index-queue insert (sourceType='card', parentId=cardId, satisfies the
+ * kb_chunk_card_source_chk check constraint).
+ */
+export async function insertChunkFixture(
+  userId: string,
+  cardId: string,
+  text: string,
+  embedding: number[],
+  position = 0,
+): Promise<void> {
+  await db.insert(kbChunk).values({
+    userId,
+    sourceType: 'card',
+    sourceId: cardId,
+    parentId: cardId,
+    position,
+    text,
+    embedding,
+    embeddingModel: 'test-fixture',
+    sourceHash: `fixture-${cardId}-${position}`,
+    cardId,
+  });
+}
+
+/**
+ * Deterministic unit-ish embedding for tests (same hash-scatter as
+ * retrieve.test.ts): same text → same vector, different text → almost surely
+ * different. Cosine-close texts can be CONSTRUCTED by passing the same text.
+ */
+export function vectorFixtureFor(text: string, dim = 1536): number[] {
+  const v = new Array<number>(dim).fill(0);
+  let h = 0;
+  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < 8; i++) {
+    const idx = (h + i * 131) % dim;
+    v[idx] = ((h >>> (i * 3)) % 100) / 100 + 0.01;
+  }
+  return v;
+}
+
+/**
+ * A vector NEAR `base` but not identical: nudges a few extra slots by `eps`.
+ * Cosine similarity to `base` stays high (≈0.9+ for small eps), while a vector
+ * from an unrelated text stays low — lets tests build "clusters".
+ */
+export function nearVectorFixture(base: number[], eps = 0.05, seed = 1): number[] {
+  const v = base.slice();
+  for (let i = 0; i < 4; i++) {
+    const idx = (seed * 977 + i * 263) % v.length;
+    v[idx] = (v[idx] ?? 0) + eps;
+  }
+  return v;
 }

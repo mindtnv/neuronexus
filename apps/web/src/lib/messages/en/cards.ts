@@ -70,6 +70,12 @@ const m = {
     editing: 'Editing card',
     empty: 'Select a card to edit',
     resize: 'Resize panel',
+    similar: {
+      title: 'Similar cards',
+      loading: 'Looking for similar cards…',
+      empty: 'No similar cards found.',
+      notIndexed: 'This card has no semantic index yet — similar cards appear once embeddings are built.',
+    },
   },
   openCards: 'Browse cards',
   view: {

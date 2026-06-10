@@ -20,12 +20,14 @@
 // via the normal path because nothing was flushed.
 
 import { Elysia, t } from 'elysia';
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
+  cards as cardsTable,
   conversations,
   db,
   decks,
   messages as messagesTable,
+  profile as profileTable,
   type Citation,
   type Db,
 } from '@neuronexus/db';
@@ -34,8 +36,18 @@ import {
   CARD_TOKEN_RE,
   isAllowedModel,
   parseChatModels,
+  type ChatResumeRequest,
   type ChatStreamEvent,
+  type MessageAttachment,
+  type MessageMention,
+  type MessageUsage,
 } from '@neuronexus/shared';
+import {
+  buildUserContent,
+  isVisionEnabled,
+  loadImagePartsMap,
+  resolveAttachments,
+} from '../ai/attachments.ts';
 import { env, embeddingEnabled, chatEnabled } from '../env.ts';
 import { descendantIds } from './cards.ts';
 import { authPlugin } from '../auth-plugin.ts';
@@ -55,6 +67,9 @@ import {
   type ToolResult,
 } from '../ai/tools.ts';
 import { isWebSearchEnabled } from '../ai/web-search.ts';
+import { isFetchPageEnabled } from '../ai/page-reader.ts';
+import { compressHistory } from '../ai/compress.ts';
+import { generateConversationTitle } from '../ai/title.ts';
 import { rootLogger } from '../logger.ts';
 import type { Logger } from 'pino';
 
@@ -66,9 +81,11 @@ const RETRIEVE_K = env.ai.RETRIEVE_K;
 const AGENT_MAX_STEPS = env.ai.AGENT_MAX_STEPS;
 const TOOL_RESULT_MAX_CHARS = env.ai.TOOL_RESULT_MAX_CHARS;
 // Total tool-result chars across a turn before we force a final answer (so a
-// multi-round search loop can't blow the context window). ×4 ≈ four full-size
-// tool rounds before we force a final answer, bounding per-turn context/cost.
-const TOOL_RESULT_BUDGET = TOOL_RESULT_MAX_CHARS * 4;
+// multi-round search loop can't blow the context window). The factor is
+// env-tunable (TOOL_RESULT_BUDGET_FACTOR, default 8) — deep-research turns
+// read several fetch_page slices before drafting cards; ordinary turns never
+// approach the ceiling.
+const TOOL_RESULT_BUDGET = TOOL_RESULT_MAX_CHARS * env.ai.TOOL_RESULT_BUDGET_FACTOR;
 
 // Parsed model allow-list (AC2.1). Computed once at module load; `[]` when
 // CHAT_MODELS is unset ⇒ the picker is hidden and chat uses CHAT_MODEL as today.
@@ -131,6 +148,77 @@ function sseFrame(event: ChatStreamEvent): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
+/**
+ * C5 — the caller's standing agent instructions (profile.agent_instructions),
+ * or undefined. One cheap pre-flush select per turn; absent profile row (lazy
+ * profile creation hasn't happened yet) ⇒ undefined.
+ */
+async function loadAgentInstructions(userId: string): Promise<string | undefined> {
+  const [row] = await db
+    .select({ agentInstructions: profileTable.agentInstructions })
+    .from(profileTable)
+    .where(eq(profileTable.userId, userId))
+    .limit(1);
+  return row?.agentInstructions ?? undefined;
+}
+
+// ── Card mentions (C7) ────────────────────────────────────────────────────────
+
+/** Snapshot excerpt length for a mention's card front. */
+const MENTION_FRONT_CHARS = 200;
+
+/**
+ * Resolve composer @-mention card ids into persisted `MessageMention`
+ * snapshots. ONE user-scoped select (`user_id` first conjunct — the sole
+ * cross-tenant boundary); foreign/missing ids are silently dropped. Preserves
+ * the client's order. Returns `null` when nothing survives (column stays NULL).
+ */
+async function resolveMentions(
+  userId: string,
+  ids: string[] | undefined,
+): Promise<MessageMention[] | null> {
+  if (!ids || ids.length === 0) return null;
+  const unique = [...new Set(ids)];
+  const rows = await db
+    .select({
+      id: cardsTable.id,
+      front: cardsTable.renderFrontText,
+      renderText: cardsTable.renderText,
+      deckName: decks.name,
+    })
+    .from(cardsTable)
+    .leftJoin(decks, eq(cardsTable.deckId, decks.id))
+    .where(and(eq(cardsTable.userId, userId), inArray(cardsTable.id, unique)));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const mentions: MessageMention[] = [];
+  for (const id of unique) {
+    const row = byId.get(id);
+    if (!row) continue; // foreign or missing — dropped, never an error.
+    const front = (row.front || row.renderText || '').replace(/\s+/g, ' ').trim();
+    mentions.push({
+      cardId: id,
+      front: front.slice(0, MENTION_FRONT_CHARS),
+      deckName: row.deckName ?? undefined,
+    });
+  }
+  return mentions.length > 0 ? mentions : null;
+}
+
+/**
+ * Append the model-facing `<mentioned_cards>` block to a user message's
+ * content. The STORED content never carries the block — it is built here, at
+ * history/turn-build time, from the row's `mentions` snapshot (deterministic
+ * replay; a later card edit doesn't rewrite chat history).
+ */
+function appendMentionBlock(content: string, mentions: MessageMention[] | null): string {
+  if (!mentions || mentions.length === 0) return content;
+  const lines = mentions.map((m) => {
+    const deck = m.deckName ? ` (deck: ${m.deckName})` : '';
+    return `[card:${m.cardId}]${deck}\n${m.front}`;
+  });
+  return `${content}\n\n<mentioned_cards>\n${lines.join('\n\n')}\n</mentioned_cards>`;
+}
+
 // ── Agent loop plumbing ───────────────────────────────────────────────────────
 
 /** A persisted message row (the subset the history mapper reads). */
@@ -139,6 +227,12 @@ interface HistoryRow {
   content: string;
   toolCalls: { id: string; name: string; arguments: string }[] | null;
   toolCallId: string | null;
+  /** Composer @-mentions on a user row (C7) — appended at history-build time. */
+  mentions: MessageMention[] | null;
+  /** Composer attachments on a user row — parts/blocks built at history time. */
+  attachments: MessageAttachment[] | null;
+  /** Needed by compression (C6) for the summary-cache boundary. */
+  createdAt: Date;
 }
 
 /** A finalized tool call assembled from streamed `tool_call_delta` chunks. */
@@ -164,28 +258,65 @@ type TranscriptRow =
  *  - assistant text (tool_calls null)    → { role:'assistant', content }
  *  - tool                                → { role:'tool', tool_call_id, content }
  *
- * Dangling-tool_calls guard: if the LAST row is an assistant tool_calls row with
- * no answering `tool` rows, strip it so the gateway doesn't 400 on an unanswered
- * tool_calls tail (Phase A never produces this — read tools always answer in the
- * same turn — but a Phase B suspended turn does, and a torn legacy row might).
+ * Replay sanitizer (generalizes the old trailing-row dangling guard): the
+ * gateway 400s BOTH on a tool call with no `role:tool` output ("No tool output
+ * found for function call …") AND on a `role:tool` row with no preceding call.
+ * A suspended turn legitimately leaves an unanswered tail; a torn turn or two
+ * historical turns interleaved by a same-timestamp reload can leave holes
+ * ANYWHERE. So instead of inspecting only the last row, the whole replay is
+ * made self-consistent:
+ *  - pass 1 simulates the replay in order — a call counts as ANSWERED only when
+ *    a `role:tool` row for it appears AFTER its assistant row;
+ *  - pass 2 keeps only answered calls (an assistant row left with zero calls is
+ *    dropped) and only the FIRST answering `role:tool` row per call.
  *
- * `bypassDanglingToolCallId` (resume path): the resume route has JUST persisted
- * the answering `role:tool` row for that id, so the trailing assistant tool_calls
- * row is no longer dangling — the guard is suppressed for that exact id.
+ * `bypassDanglingToolCallId` (resume path): treated as answered — the resume
+ * route persists the answering row before rebuilding, so this is a safety belt
+ * for exotic orderings, not a behavioral branch.
  */
 function reconstructHistory(
   rows: HistoryRow[],
   bypassDanglingToolCallId?: string,
+  imageDataUrls: Map<string, string> = new Map(),
 ): AgentChatMessage[] {
+  // Pass 1 — which calls are genuinely answered, in replay order.
+  const open = new Set<string>();
+  const answered = new Set<string>();
+  if (bypassDanglingToolCallId) answered.add(bypassDanglingToolCallId);
+  for (const r of rows) {
+    if (r.role === 'assistant' && r.toolCalls && r.toolCalls.length > 0) {
+      for (const tc of r.toolCalls) open.add(tc.id);
+    } else if (r.role === 'tool' && r.toolCallId && open.has(r.toolCallId)) {
+      answered.add(r.toolCallId);
+    }
+  }
+
+  // Pass 2 — rebuild, keeping the replay self-consistent: a `role:tool` row is
+  // emitted only AFTER its call's assistant row, exactly once.
   const out: AgentChatMessage[] = [];
+  const emittedCalls = new Set<string>();
+  const emittedResults = new Set<string>();
   for (const r of rows) {
     if (r.role === 'user') {
-      out.push({ role: 'user', content: r.content });
+      // C7 — a user row's mention snapshot becomes a model-facing block; the
+      // stored content itself stays clean for display. Attachments become an
+      // <attached_file> block + image parts (for images in `imageDataUrls`).
+      out.push({
+        role: 'user',
+        content: buildUserContent(
+          appendMentionBlock(r.content, r.mentions),
+          r.attachments,
+          imageDataUrls,
+        ),
+      });
     } else if (r.role === 'assistant' && r.toolCalls && r.toolCalls.length > 0) {
+      const kept = r.toolCalls.filter((tc) => answered.has(tc.id));
+      if (kept.length === 0) continue; // fully unanswered (pending/torn) — dropped.
+      for (const tc of kept) emittedCalls.add(tc.id);
       out.push({
         role: 'assistant',
         content: '',
-        tool_calls: r.toolCalls.map((tc) => ({
+        tool_calls: kept.map((tc) => ({
           id: tc.id,
           type: 'function',
           function: { name: tc.name, arguments: tc.arguments },
@@ -194,21 +325,11 @@ function reconstructHistory(
     } else if (r.role === 'assistant') {
       out.push({ role: 'assistant', content: r.content });
     } else if (r.role === 'tool' && r.toolCallId) {
+      if (!emittedCalls.has(r.toolCallId) || emittedResults.has(r.toolCallId)) continue;
+      emittedResults.add(r.toolCallId);
       out.push({ role: 'tool', content: r.content, tool_call_id: r.toolCallId });
     }
     // system rows (none today) are ignored — we set the system prompt ourselves.
-  }
-
-  // Dangling-tool_calls guard: drop a trailing unanswered assistant tool_calls row.
-  const last = out[out.length - 1];
-  if (last && last.role === 'assistant' && last.tool_calls && last.tool_calls.length > 0) {
-    const answered = new Set(
-      out.filter((m) => m.role === 'tool' && m.tool_call_id).map((m) => m.tool_call_id),
-    );
-    const allAnswered = last.tool_calls.every(
-      (tc) => answered.has(tc.id) || tc.id === bypassDanglingToolCallId,
-    );
-    if (!allAnswered) out.pop();
   }
   return out;
 }
@@ -239,6 +360,19 @@ interface RunAgentTurnArgs {
   model?: string;
   /** Per-turn deck retrieval scope (AC3.7) — `[deckId, ...descendants]` or undefined. */
   deckIds?: string[];
+  /**
+   * Turn-level abort (the conversation lock's signal): checked between steps and
+   * threaded into the gateway fetch, so a disconnected/stopped turn stops doing
+   * work instead of running to completion as a zombie. An aborted turn persists
+   * NOTHING (identical to today's torn-turn semantics).
+   */
+  signal?: AbortSignal;
+  /**
+   * Deep-research MODE (the composer toggle): raises the step ceiling to
+   * RESEARCH_MAX_STEPS and the tool-result budget to the research factor so the
+   * turn can read many fetch_page slices before the loop forces an answer.
+   */
+  research?: boolean;
 }
 
 /**
@@ -258,8 +392,24 @@ interface RunAgentTurnArgs {
  * or — for a suspended turn — exactly at the confirmation boundary).
  */
 async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
-  const { userId, conversationId, log, emit, startMessages, webSearchEnabled, model, deckIds } =
-    args;
+  const {
+    userId,
+    conversationId,
+    log,
+    emit,
+    startMessages,
+    webSearchEnabled,
+    model,
+    deckIds,
+    signal,
+    research,
+  } = args;
+
+  // Per-turn loop limits: a deep-research turn gets more steps + budget.
+  const maxSteps = research ? env.ai.RESEARCH_MAX_STEPS : AGENT_MAX_STEPS;
+  const toolBudget = research
+    ? TOOL_RESULT_MAX_CHARS * env.ai.RESEARCH_TOOL_RESULT_BUDGET_FACTOR
+    : TOOL_RESULT_BUDGET;
 
   const registry: Tool[] = buildToolRegistry({ webSearchEnabled });
   const toolByName = new Map(registry.map((tl) => [tl.name, tl]));
@@ -277,11 +427,26 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
   let finalText = '';
   let toolResultChars = 0;
   let answeringEmitted = false;
+  // Token usage accumulated across ALL steps of this turn (C1). `usageSeen`
+  // distinguishes "provider reports zeros" from "provider reports nothing" —
+  // no frame / null column in the latter case.
+  let usageSeen = false;
+  let usagePrompt = 0;
+  let usageCompletion = 0;
+  let usageTotal = 0;
+  // Effective model persisted on assistant rows: the per-turn picker choice or
+  // the env default at the time of the turn.
+  const effectiveModel = model ?? env.ai.CHAT_MODEL;
 
   emit({ type: 'status', phase: 'thinking' });
 
-  for (let step = 0; step < AGENT_MAX_STEPS; step++) {
-    const isFinalStep = step === AGENT_MAX_STEPS - 1 || toolResultChars >= TOOL_RESULT_BUDGET;
+  for (let step = 0; step < maxSteps; step++) {
+    // Cancelled turn (Stop / disconnect / superseded) — bail before more work.
+    // Persists nothing; sseResponse recognizes the aborted signal and closes
+    // quietly (the trailing-user recovery affordance covers the UX).
+    if (signal?.aborted) throw new Error('turn_aborted');
+
+    const isFinalStep = step === maxSteps - 1 || toolResultChars >= toolBudget;
     const toolChoice = isFinalStep ? 'none' : 'auto';
 
     const partials = new Map<number, { id: string; name: string; args: string }>();
@@ -292,6 +457,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
       toolChoice,
       log,
       model,
+      signal,
     })) {
       if (chunk.type === 'reasoning') {
         emit({ type: 'reasoning', delta: chunk.text });
@@ -308,6 +474,11 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
         if (chunk.name) cur.name = chunk.name;
         if (chunk.argsFragment) cur.args += chunk.argsFragment;
         partials.set(chunk.index, cur);
+      } else if (chunk.type === 'usage') {
+        usageSeen = true;
+        usagePrompt += chunk.promptTokens;
+        usageCompletion += chunk.completionTokens;
+        usageTotal += chunk.totalTokens;
       } else if (chunk.type === 'finish') {
         finishReason = chunk.reason;
       }
@@ -335,25 +506,155 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
 
     if (assembled.length === 0) break;
 
-    // ── Write/SRS pause (Phase B) ──────────────────────────────────────────────
-    // If ANY finalized call is a write/SRS tool, the turn pauses for confirmation.
-    // We only support ONE pending write at a time: pause on the FIRST write call
-    // in this batch, attaching just that call as the pending assistant tool_calls
-    // row (the model rarely batches a write with other calls; if it does, we
-    // surface the first write — the rest are dropped, the model re-proposes on
-    // resume if still needed).
+    // ── Batch split (C2) ───────────────────────────────────────────────────────
+    // READ tools execute first — CONCURRENTLY — as their own fully-answered
+    // assistant tool_calls row. A write/SRS call (at most ONE pending at a time:
+    // the FIRST one in the batch) then pauses the turn as a SECOND assistant
+    // tool_calls row. Unknown tool names take the read path (graceful error
+    // result), exactly as before. Extra writes beyond the first are dropped —
+    // the model re-proposes on resume if still needed.
+    const reads = assembled.filter((c) => {
+      const tl = toolByName.get(c.name);
+      return !tl || tl.kind === 'read';
+    });
     const firstWrite = assembled.find((c) => {
       const tl = toolByName.get(c.name);
       return tl && tl.kind !== 'read';
     });
 
+    if (reads.length > 0) {
+      messages.push({
+        role: 'assistant',
+        content: '',
+        tool_calls: reads.map((tc) => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: tc.arguments },
+        })),
+      });
+      transcript.push({ role: 'assistant', content: '', toolCalls: reads });
+
+      emit({ type: 'status', phase: 'calling_tool' });
+
+      // All tool_call frames go out up-front (batch order) so the client shows
+      // every step running; tool_result frames arrive per-completion. Everything
+      // ORDER-SENSITIVE (citation dedup, result caps, char budget, persisted
+      // role:tool rows) happens AFTER the Promise.all, in batch order —
+      // deterministic regardless of completion interleaving.
+      for (const call of reads) {
+        emit({ type: 'tool_call', id: call.id, name: call.name, args: call.arguments, status: 'running' });
+      }
+
+      const settled = await Promise.all(
+        reads.map(async (call) => {
+          let parsedArgs: unknown = {};
+          let parseFailed = false;
+          try {
+            parsedArgs = call.arguments ? JSON.parse(call.arguments) : {};
+          } catch {
+            parseFailed = true;
+          }
+
+          const tool = toolByName.get(call.name);
+          let result: ToolResult;
+          if (parseFailed) {
+            result = { ok: false, error: `invalid tool arguments for ${call.name}` };
+          } else if (!tool) {
+            result = { ok: false, error: `unknown tool: ${call.name}` };
+          } else {
+            try {
+              result = await tool.execute(toolCtx, parsedArgs);
+            } catch (toolErr) {
+              result = {
+                ok: false,
+                error: toolErr instanceof Error ? toolErr.message : 'tool_failed',
+              };
+            }
+          }
+
+          const resultCitations = result.ok ? (result.citations ?? []) : [];
+          // Success carries the (capped) model-facing text so every step is
+          // inspectable in the live activity feed — the SAME content the reload
+          // path reads back from the persisted role:tool row.
+          emit({
+            type: 'tool_result',
+            id: call.id,
+            ok: result.ok,
+            summary: result.ok ? capToolResult(result.text) : result.error,
+            citations: result.ok && resultCitations.length > 0 ? resultCitations : undefined,
+          });
+          return { call, result, resultCitations };
+        }),
+      );
+
+      for (const { call, result, resultCitations } of settled) {
+        for (const c of resultCitations) {
+          const key = c.chunkId || c.cardId;
+          if (!citationAcc.has(key)) citationAcc.set(key, c);
+        }
+        const toolContent = capToolResult(
+          result.ok ? result.text : JSON.stringify({ ok: false, error: result.error }),
+        );
+        toolResultChars += toolContent.length;
+        messages.push({ role: 'tool', content: toolContent, tool_call_id: call.id });
+        transcript.push({ role: 'tool', content: toolContent, toolCallId: call.id });
+      }
+    }
+
+    // ── Write/SRS pause (Phase B) ──────────────────────────────────────────────
+    // The pending write goes out as its OWN assistant tool_calls row — the reads
+    // above are already fully answered, so the dangling-tool_calls guard (which
+    // only inspects the LAST row) and the resume bypass behave exactly as before.
     if (firstWrite) {
       const tool = toolByName.get(firstWrite.name)!;
+
+      // Validate-before-pause: a write proposal that CANNOT succeed (bad uuid,
+      // foreign deck, unknown note type/field) must not stall the user on a
+      // doomed confirm card — the error goes straight back to the model as a
+      // fully-answered tool call so it can self-correct in the next step.
+      let parsedWriteArgs: unknown = {};
+      let invalidWrite: string | null = null;
+      try {
+        parsedWriteArgs = firstWrite.arguments ? JSON.parse(firstWrite.arguments) : {};
+      } catch {
+        invalidWrite = `invalid tool arguments for ${firstWrite.name}`;
+      }
+      if (!invalidWrite && tool.validate) {
+        try {
+          const v = await tool.validate(toolCtx, parsedWriteArgs);
+          if (!v.ok) invalidWrite = v.error;
+        } catch (err) {
+          // Validation infrastructure failure — fall through to the normal
+          // confirm pause (execute remains the authority).
+          log.warn({ err, tool: firstWrite.name }, 'ai.tool.validate_failed');
+        }
+      }
+      if (invalidWrite) {
+        messages.push({
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: firstWrite.id,
+              type: 'function',
+              function: { name: firstWrite.name, arguments: firstWrite.arguments },
+            },
+          ],
+        });
+        transcript.push({ role: 'assistant', content: '', toolCalls: [firstWrite] });
+        emit({ type: 'tool_call', id: firstWrite.id, name: firstWrite.name, args: firstWrite.arguments, status: 'running' });
+        const content = capToolResult(JSON.stringify({ ok: false, error: invalidWrite }));
+        toolResultChars += content.length;
+        messages.push({ role: 'tool', content, tool_call_id: firstWrite.id });
+        transcript.push({ role: 'tool', content, toolCallId: firstWrite.id });
+        emit({ type: 'tool_result', id: firstWrite.id, ok: false, summary: invalidWrite });
+        continue; // next step — the model sees the error and retries.
+      }
+
       // Compute the blast radius WITHOUT mutating.
       let impact: ToolImpact = {};
       try {
-        const parsed = firstWrite.arguments ? JSON.parse(firstWrite.arguments) : {};
-        impact = (await tool.dryRun?.(toolCtx, parsed)) ?? {};
+        impact = (await tool.dryRun?.(toolCtx, parsedWriteArgs)) ?? {};
       } catch (err) {
         log.warn({ err, tool: firstWrite.name }, 'ai.tool.dryRun_failed');
       }
@@ -381,73 +682,20 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
 
       // Commit everything so far (parent + so-far children + this pending
       // tool_calls row) in ONE transaction (Principle 5 — no orphan tool row).
-      await persistTranscript({ tx: undefined, transcript, userId, conversationId });
+      // The turn's usage-so-far parks on the pending tool_calls row (the LAST
+      // assistant row in the buffer); the resume continuation persists its own.
+      await persistTranscript({
+        tx: undefined,
+        transcript,
+        userId,
+        conversationId,
+        model: effectiveModel,
+        usage: usageSeen
+          ? { promptTokens: usagePrompt, completionTokens: usageCompletion, totalTokens: usageTotal }
+          : null,
+      });
       log.info({ tool: firstWrite.name, toolCallId: firstWrite.id }, 'ai.agent.suspended');
       return { kind: 'suspended' };
-    }
-
-    // ── Read tools — auto-execute server-side ──────────────────────────────────
-    messages.push({
-      role: 'assistant',
-      content: '',
-      tool_calls: assembled.map((tc) => ({
-        id: tc.id,
-        type: 'function',
-        function: { name: tc.name, arguments: tc.arguments },
-      })),
-    });
-    transcript.push({ role: 'assistant', content: '', toolCalls: assembled });
-
-    emit({ type: 'status', phase: 'calling_tool' });
-
-    for (const call of assembled) {
-      emit({ type: 'tool_call', id: call.id, name: call.name, args: call.arguments, status: 'running' });
-
-      let parsedArgs: unknown = {};
-      let parseFailed = false;
-      try {
-        parsedArgs = call.arguments ? JSON.parse(call.arguments) : {};
-      } catch {
-        parseFailed = true;
-      }
-
-      const tool = toolByName.get(call.name);
-      let result: ToolResult;
-      if (parseFailed) {
-        result = { ok: false, error: `invalid tool arguments for ${call.name}` };
-      } else if (!tool) {
-        result = { ok: false, error: `unknown tool: ${call.name}` };
-      } else {
-        try {
-          result = await tool.execute(toolCtx, parsedArgs);
-        } catch (toolErr) {
-          result = {
-            ok: false,
-            error: toolErr instanceof Error ? toolErr.message : 'tool_failed',
-          };
-        }
-      }
-
-      const resultCitations = result.ok ? (result.citations ?? []) : [];
-      for (const c of resultCitations) {
-        const key = c.chunkId || c.cardId;
-        if (!citationAcc.has(key)) citationAcc.set(key, c);
-      }
-
-      emit({
-        type: 'tool_result',
-        id: call.id,
-        ok: result.ok,
-        summary: result.ok ? undefined : result.error,
-        citations: result.ok && resultCitations.length > 0 ? resultCitations : undefined,
-      });
-
-      const toolContent = capToolResult(
-        result.ok ? result.text : JSON.stringify({ ok: false, error: result.error }),
-      );
-      toolResultChars += toolContent.length;
-      messages.push({ role: 'tool', content: toolContent, tool_call_id: call.id });
-      transcript.push({ role: 'tool', content: toolContent, toolCallId: call.id });
     }
   }
 
@@ -470,7 +718,21 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
     finalText = "I couldn't complete the request within the step limit.";
   }
 
+  // A turn aborted right at the finish line still persists nothing — keeping
+  // the Stop semantics single: aborted ⇒ trailing-user recovery, never a half
+  // answer that raced the Stop click.
+  if (signal?.aborted) throw new Error('turn_aborted');
+
   emit({ type: 'citation', citations });
+  // Usage frame (C1) — before `done`, only when the provider reported anything.
+  if (usageSeen) {
+    emit({
+      type: 'usage',
+      promptTokens: usagePrompt,
+      completionTokens: usageCompletion,
+      totalTokens: usageTotal,
+    });
+  }
   transcript.push({ role: 'assistant', content: finalText, citations });
 
   const finalMessageId = await persistTranscript({
@@ -478,6 +740,10 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
     transcript,
     userId,
     conversationId,
+    model: effectiveModel,
+    usage: usageSeen
+      ? { promptTokens: usagePrompt, completionTokens: usageCompletion, totalTokens: usageTotal }
+      : null,
   });
   return { kind: 'done', messageId: finalMessageId! };
 }
@@ -489,17 +755,47 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
  * transaction (resume atomicity); otherwise a fresh transaction is opened.
  * Returns the id of the LAST assistant text row inserted (the `done` messageId),
  * or `null` if the buffer held no final text row (a suspended turn).
+ *
+ * `model` stamps every assistant row; `usage` stamps the LAST assistant row of
+ * the buffer (the final text row at `done`, or the pending tool_calls row of a
+ * suspended turn — so a confirmation-split turn loses nothing: summing `usage`
+ * over a conversation's assistant rows yields true totals).
  */
 async function persistTranscript(args: {
   tx: Tx | undefined;
   transcript: TranscriptRow[];
   userId: string;
   conversationId: string;
+  model?: string;
+  usage?: MessageUsage | null;
 }): Promise<string | null> {
-  const { transcript, userId, conversationId } = args;
+  const { transcript, userId, conversationId, model, usage } = args;
+  const lastAssistantIdx = (() => {
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (transcript[i]!.role === 'assistant') return i;
+    }
+    return -1;
+  })();
   const run = async (tx: Tx): Promise<string | null> => {
     let lastAssistantId: string | null = null;
-    for (const row of transcript) {
+    // Explicit strictly-increasing timestamps: Postgres `now()` is FIXED for the
+    // whole transaction, so DEFAULT-stamped rows of one turn all TIE on
+    // created_at and `ORDER BY created_at` returns them in arbitrary order on
+    // reload — which both garbles the rendered transcript and (worse) replays
+    // tool results out of order to the gateway. One millisecond per row keeps
+    // the insert order the sort order, always.
+    //
+    // The base is anchored on the conversation's MAX(created_at), NOT the JS
+    // clock alone: the user row is stamped by POSTGRES's clock, which can
+    // drift from the host's (Docker VM time, e.g. after host sleep). A
+    // Postgres clock AHEAD of the host would otherwise sort the whole turn
+    // BEFORE the user row that started it. max+1 keeps new rows strictly
+    // after everything already persisted, whatever the skew.
+    const base = Math.max(Date.now(), (await maxCreatedAt(tx, conversationId)) + 1);
+    for (let i = 0; i < transcript.length; i++) {
+      const row = transcript[i]!;
+      const usageHere = i === lastAssistantIdx ? (usage ?? null) : null;
+      const createdAt = new Date(base + i);
       if (row.role === 'assistant' && row.content === '' && 'toolCalls' in row) {
         await tx.insert(messagesTable).values({
           conversationId,
@@ -511,6 +807,9 @@ async function persistTranscript(args: {
             name: tc.name,
             arguments: tc.arguments,
           })),
+          model: model ?? null,
+          usage: usageHere,
+          createdAt,
         });
       } else if (row.role === 'tool') {
         await tx.insert(messagesTable).values({
@@ -519,6 +818,7 @@ async function persistTranscript(args: {
           role: 'tool',
           content: row.content,
           toolCallId: row.toolCallId,
+          createdAt,
         });
       } else {
         const [msg] = await tx
@@ -529,6 +829,9 @@ async function persistTranscript(args: {
             role: 'assistant',
             content: row.content,
             citations: 'citations' in row ? row.citations : [],
+            model: model ?? null,
+            usage: usageHere,
+            createdAt,
           })
           .returning({ id: messagesTable.id });
         lastAssistantId = msg!.id;
@@ -543,6 +846,105 @@ async function persistTranscript(args: {
   return args.tx ? run(args.tx) : db.transaction(run);
 }
 
+// ── Per-card confirm decisions (batch create_card) ───────────────────────────
+
+/** Outcome of merging the user's per-card selections into the pending args. */
+type CardSelectionOutcome =
+  | { kind: 'unchanged' }
+  | { kind: 'reject' }
+  | { kind: 'apply'; args: Record<string, unknown>; excluded: number; edited: number };
+
+/**
+ * Merge per-card confirm decisions into a pending `create_card`'s original
+ * args. Unmentioned indexes apply as proposed; `include:false` drops a card;
+ * `fieldValues` replaces a card's content (inline edit). Single-card proposals
+ * are addressed as index 0. ALL excluded ⇒ `reject`. Pure — no DB access; the
+ * edited args still go through the tool's own validation at execute time.
+ */
+function applyCreateCardSelections(
+  rawArgs: unknown,
+  selections: ChatResumeRequest['cardSelections'],
+): CardSelectionOutcome {
+  if (!selections || selections.length === 0) return { kind: 'unchanged' };
+  const args = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as Record<string, unknown>;
+  const byIndex = new Map(selections.map((s) => [s.index, s]));
+
+  if (Array.isArray(args.cards)) {
+    const entries = args.cards as unknown[];
+    let excluded = 0;
+    let edited = 0;
+    const kept: unknown[] = [];
+    for (let i = 0; i < entries.length; i++) {
+      const sel = byIndex.get(i);
+      if (sel && sel.include === false) {
+        excluded += 1;
+        continue;
+      }
+      if (sel?.fieldValues) {
+        edited += 1;
+        const entry = (
+          entries[i] && typeof entries[i] === 'object' ? entries[i] : {}
+        ) as Record<string, unknown>;
+        kept.push({ ...entry, fieldValues: sel.fieldValues });
+      } else {
+        kept.push(entries[i]);
+      }
+    }
+    if (kept.length === 0) return { kind: 'reject' };
+    if (excluded === 0 && edited === 0) return { kind: 'unchanged' };
+    return { kind: 'apply', args: { ...args, cards: kept }, excluded, edited };
+  }
+
+  // Single-card shape — index 0 governs.
+  const sel = byIndex.get(0);
+  if (!sel) return { kind: 'unchanged' };
+  if (sel.include === false) return { kind: 'reject' };
+  if (sel.fieldValues) {
+    return { kind: 'apply', args: { ...args, fieldValues: sel.fieldValues }, excluded: 0, edited: 1 };
+  }
+  return { kind: 'unchanged' };
+}
+
+/** Model-facing suffix describing what the user changed at confirm time. */
+function confirmSelectionNote(
+  selection: CardSelectionOutcome,
+  feedback: string | undefined,
+): string {
+  const parts: string[] = [];
+  if (selection.kind === 'apply') {
+    if (selection.excluded > 0) {
+      parts.push(
+        `User excluded ${selection.excluded} of the proposed card(s) — do not re-propose them unless asked.`,
+      );
+    }
+    if (selection.edited > 0) {
+      parts.push(`User edited ${selection.edited} card(s) before applying.`);
+    }
+  }
+  if (feedback) parts.push(`User feedback: ${feedback}`);
+  return parts.length > 0 ? `\n${parts.join(' ')}` : '';
+}
+
+/**
+ * The conversation's latest persisted `created_at` in epoch ms (0 when empty).
+ * Anchor for every explicit row stamp — see the clock-skew note in
+ * `persistTranscript`. Works on a transaction or the root db handle.
+ */
+async function maxCreatedAt(ex: Tx | Db, conversationId: string): Promise<number> {
+  const [tip] = await ex
+    .select({ maxAt: sql<Date | string | null>`max(${messagesTable.createdAt})` })
+    .from(messagesTable)
+    .where(eq(messagesTable.conversationId, conversationId));
+  if (!tip?.maxAt) return 0;
+  const t = new Date(tip.maxAt).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** A `created_at` strictly after everything persisted in the conversation. */
+async function nextMessageStamp(ex: Tx | Db, conversationId: string): Promise<Date> {
+  return new Date(Math.max(Date.now(), (await maxCreatedAt(ex, conversationId)) + 1));
+}
+
 /** Load the full persisted transcript for a conversation (oldest-first). */
 async function loadHistoryRows(conversationId: string): Promise<HistoryRow[]> {
   const rows = await db
@@ -551,10 +953,16 @@ async function loadHistoryRows(conversationId: string): Promise<HistoryRow[]> {
       content: messagesTable.content,
       toolCalls: messagesTable.toolCalls,
       toolCallId: messagesTable.toolCallId,
+      mentions: messagesTable.mentions,
+      attachments: messagesTable.attachments,
+      createdAt: messagesTable.createdAt,
     })
     .from(messagesTable)
     .where(eq(messagesTable.conversationId, conversationId))
-    .orderBy(asc(messagesTable.createdAt))
+    // `id` tie-breaker: legacy rows persisted before explicit stamping share one
+    // transaction-fixed created_at — without a tie-breaker their order flips
+    // between reloads (arbitrary but stable beats arbitrary and shifting).
+    .orderBy(asc(messagesTable.createdAt), asc(messagesTable.id))
     .limit(500);
   return rows as HistoryRow[];
 }
@@ -575,6 +983,7 @@ async function deleteTrailingAssistantTurn(
   conversationId: string,
   userId: string,
   content?: string,
+  mentions?: MessageMention[] | null,
 ): Promise<{ ok: true; deleted: number } | { ok: false }> {
   return db.transaction(async (tx) => {
     const rows = await tx
@@ -586,7 +995,7 @@ async function deleteTrailingAssistantTurn(
           eq(messagesTable.userId, userId),
         ),
       )
-      .orderBy(asc(messagesTable.createdAt))
+      .orderBy(asc(messagesTable.createdAt), asc(messagesTable.id))
       .limit(1000);
 
     let lastUserIdx = -1;
@@ -603,11 +1012,16 @@ async function deleteTrailingAssistantTurn(
     // resolved and BEFORE the delete loop. User-scoped, single row; it does NOT
     // change the row's role or tail position, so the torn-tail recovery invariant
     // is untouched and TX2 replays over the edited user row → clean history. Absent
-    // `content` ⇒ no UPDATE ⇒ behavior IDENTICAL to today's regenerate.
-    if (content !== undefined) {
+    // `content` ⇒ no UPDATE ⇒ behavior IDENTICAL to today's regenerate. Same rule
+    // for `mentions` (C7): `undefined` ⇒ keep the stored snapshot (replay-faithful);
+    // a resolved value (incl. null) ⇒ overwrite.
+    if (content !== undefined || mentions !== undefined) {
+      const set: { content?: string; mentions?: MessageMention[] | null } = {};
+      if (content !== undefined) set.content = content;
+      if (mentions !== undefined) set.mentions = mentions;
       await tx
         .update(messagesTable)
-        .set({ content })
+        .set(set)
         .where(and(eq(messagesTable.id, rows[lastUserIdx]!.id), eq(messagesTable.userId, userId)));
     }
 
@@ -657,9 +1071,107 @@ async function lastAssistantTextId(conversationId: string): Promise<string | nul
         isNull(messagesTable.toolCalls),
       ),
     )
-    .orderBy(desc(messagesTable.createdAt))
+    .orderBy(desc(messagesTable.createdAt), desc(messagesTable.id))
     .limit(1);
   return row?.id ?? null;
+}
+
+/**
+ * C3 — kick off auto-titling for an untitled conversation, CONCURRENTLY with
+ * the agent turn. Returns a promise resolving to the new title or `null`;
+ * never rejects. Resolves `null` immediately when the conversation is already
+ * titled. The title source is the OLDEST user message (covers both the first
+ * turn and a retry after a previously-failed titling) — for `/stream` the
+ * caller has already inserted the current user row.
+ */
+function maybeStartTitle(args: {
+  conv: { id: string; title: string | null };
+  userId: string;
+  model: string | undefined;
+  log: Logger;
+}): Promise<string | null> {
+  const { conv, userId, model, log } = args;
+  if (conv.title !== null) return Promise.resolve(null);
+  return (async () => {
+    const [oldest] = await db
+      .select({ content: messagesTable.content })
+      .from(messagesTable)
+      .where(
+        and(
+          eq(messagesTable.userId, userId),
+          eq(messagesTable.conversationId, conv.id),
+          eq(messagesTable.role, 'user'),
+        ),
+      )
+      .orderBy(asc(messagesTable.createdAt))
+      .limit(1);
+    if (!oldest || oldest.content.trim().length === 0) return null;
+    return generateConversationTitle(oldest.content, { model, log });
+  })().catch(() => null);
+}
+
+/**
+ * Await the title promise after the agent turn, persist it (the `title IS NULL`
+ * guard yields to a concurrent manual rename), and emit the `title` frame —
+ * before the caller's `done`. Best-effort: never throws into the stream.
+ */
+async function finishTitle(
+  titlePromise: Promise<string | null>,
+  conversationId: string,
+  userId: string,
+  emit: (event: ChatStreamEvent) => void,
+): Promise<void> {
+  try {
+    const title = await titlePromise;
+    if (!title) return;
+    const [updated] = await db
+      .update(conversations)
+      .set({ title })
+      .where(
+        and(
+          eq(conversations.id, conversationId),
+          eq(conversations.userId, userId),
+          isNull(conversations.title),
+        ),
+      )
+      .returning({ id: conversations.id });
+    if (updated) emit({ type: 'title', title });
+  } catch {
+    // Best-effort — a titling failure must never disturb the turn.
+  }
+}
+
+// ── Per-conversation turn serialization ───────────────────────────────────────
+// Two agent turns running concurrently on ONE conversation interleave their
+// persisted rows and corrupt the replay history (observed in the wild: refresh
+// mid-stream → the abandoned server loop keeps running → regenerate starts a
+// second live turn → the gateway 400s the next resume with "No tool output
+// found"). In-memory, single-instance — same scaling caveat + swap path as
+// rate-limit.ts (Redis for multi-instance).
+interface TurnLock {
+  controller: AbortController;
+  since: number;
+}
+const activeTurns = new Map<string, TurnLock>();
+/** A lock older than this is presumed leaked/zombie: abort it and take over. */
+const TURN_LOCK_TTL_MS = 5 * 60_000;
+
+/** Acquire the per-conversation turn lock, or `null` when a live turn holds it. */
+function acquireTurnLock(conversationId: string): AbortController | null {
+  const cur = activeTurns.get(conversationId);
+  if (cur) {
+    if (Date.now() - cur.since < TURN_LOCK_TTL_MS) return null;
+    cur.controller.abort(); // zombie — kill it and take over.
+  }
+  const controller = new AbortController();
+  activeTurns.set(conversationId, { controller, since: Date.now() });
+  return controller;
+}
+
+/** Release the lock — only if this controller still owns it (no steal-release). */
+function releaseTurnLock(conversationId: string, controller: AbortController): void {
+  const cur = activeTurns.get(conversationId);
+  if (cur && cur.controller === controller) activeTurns.delete(conversationId);
 }
 
 /**
@@ -669,16 +1181,34 @@ async function lastAssistantTextId(conversationId: string): Promise<string | nul
  * `.onError` (which can't rewrite an event-stream body). `run` returns the turn
  * outcome — a `done` outcome already emitted its `done` frame inside the loop;
  * a `suspended` outcome closes the stream WITHOUT a `done`.
+ *
+ * `opts.abort` is the turn's lock controller: a client disconnect (the request
+ * signal aborting, or Bun cancelling the ReadableStream) aborts it so the
+ * server loop STOPS instead of running on as a zombie writer; an aborted turn
+ * closes quietly (no error frame — there is no reader). `opts.onSettled` always
+ * runs once the turn settles (lock release).
  */
 function sseResponse(
   log: Logger,
   run: (emit: (event: ChatStreamEvent) => void) => Promise<AgentTurnOutcome>,
+  opts: { abort?: AbortController; requestSignal?: AbortSignal; onSettled?: () => void } = {},
 ): Response {
   const encoder = new TextEncoder();
+  const abort = opts.abort;
+  if (opts.requestSignal && abort) {
+    if (opts.requestSignal.aborted) abort.abort();
+    else opts.requestSignal.addEventListener('abort', () => abort.abort(), { once: true });
+  }
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let dead = false;
       const emit = (event: ChatStreamEvent) => {
-        controller.enqueue(encoder.encode(sseFrame(event)));
+        if (dead || abort?.signal.aborted) return;
+        try {
+          controller.enqueue(encoder.encode(sseFrame(event)));
+        } catch {
+          dead = true; // consumer gone — keep the turn logic running silently.
+        }
       };
       try {
         const outcome = await run(emit);
@@ -686,24 +1216,30 @@ function sseResponse(
           emit({ type: 'done', messageId: outcome.messageId });
         }
         // 'suspended' → close WITHOUT a `done` (the turn is paused for confirm).
-        controller.close();
       } catch (err) {
-        log.error({ err }, 'ai.chat.stream_failed');
-        const code =
-          err instanceof Error && /^(chat_stream_torn|chat_failed|ai_disabled)/.test(err.message)
-            ? err.message
-            : 'chat_failed';
-        try {
+        if (abort?.signal.aborted) {
+          // Cancelled turn (Stop / disconnect / superseded) — not an error.
+          log.info({ err: err instanceof Error ? err.message : err }, 'ai.chat.turn_aborted');
+        } else {
+          log.error({ err }, 'ai.chat.stream_failed');
+          const code =
+            err instanceof Error && /^(chat_stream_torn|chat_failed|ai_disabled)/.test(err.message)
+              ? err.message
+              : 'chat_failed';
           emit({ type: 'error', message: code });
-        } catch {
-          // controller already closed — nothing to do.
         }
+      } finally {
+        opts.onSettled?.();
         try {
           controller.close();
         } catch {
           // already closed.
         }
       }
+    },
+    cancel() {
+      // The consumer went away (client disconnect) — stop the turn.
+      abort?.abort();
     },
   });
   return new Response(stream, {
@@ -725,6 +1261,13 @@ export const aiModule = new Elysia({ prefix: '/ai' })
       embeddingEnabled: embeddingEnabled && !embeddingDegraded(),
       chatEnabled,
       webSearchEnabled: isWebSearchEnabled(),
+      // Gates the composer's deep-research toggle: the mode is meaningless
+      // without the fetch_page tool (CHAT_FETCH_PAGE kill-switch).
+      fetchPageEnabled: isFetchPageEnabled(),
+      // Image attachments offered only when vision is on (CHAT_VISION
+      // kill-switch for gateways without multimodal support). Text-file
+      // attachments don't need it and are always available with chat.
+      visionEnabled: isVisionEnabled(),
       embeddingModel: env.ai.EMBEDDING_MODEL,
       chatModel: env.ai.CHAT_MODEL,
       embeddingDim: env.ai.EMBEDDING_DIM,
@@ -754,7 +1297,7 @@ export const aiModule = new Elysia({ prefix: '/ai' })
 // convention the rest of apps/api uses.
 export const chatModule = new Elysia({ prefix: '/chat' })
   .use(authPlugin)
-  // List the caller's conversations, newest-first.
+  // List the caller's conversations — pinned first, then newest-first (C4).
   .get(
     '/conversations',
     async ({ user }) => {
@@ -762,7 +1305,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         .select()
         .from(conversations)
         .where(eq(conversations.userId, user.id))
-        .orderBy(desc(conversations.updatedAt));
+        .orderBy(desc(conversations.pinned), desc(conversations.updatedAt));
       return { items: rows };
     },
     { auth: true },
@@ -797,21 +1340,30 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         .select()
         .from(messagesTable)
         .where(eq(messagesTable.conversationId, conv.id))
-        .orderBy(asc(messagesTable.createdAt));
+        .orderBy(asc(messagesTable.createdAt), asc(messagesTable.id));
       return { conversation: conv, messages: msgs };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   )
-  // Rename a conversation (AC3.1). User-scoped via `and(...userId)` — a foreign
-  // id matches 0 rows → 404. `title` is length-bounded (1..200); an empty or
-  // over-200 title fails Elysia body validation → 400 ValidationError (this app
-  // maps VALIDATION → 400, see app.ts onError).
+  // Rename and/or pin a conversation (AC3.1 + C4). User-scoped via
+  // `and(...userId)` — a foreign id matches 0 rows → 404. `title` is
+  // length-bounded (1..200); an empty or over-200 title fails Elysia body
+  // validation → 400 ValidationError. A body carrying NEITHER field → 400
+  // `nothing_to_update`. `updatedAt` bumps ONLY on a title change — pin/unpin
+  // must not reshuffle recency in the thread rail's date groups.
   .patch(
     '/conversations/:id',
     async ({ user, params, body, status }) => {
+      const set: { title?: string; pinned?: boolean; updatedAt?: Date } = {};
+      if (body.title !== undefined) {
+        set.title = body.title;
+        set.updatedAt = new Date();
+      }
+      if (body.pinned !== undefined) set.pinned = body.pinned;
+      if (Object.keys(set).length === 0) return status(400, { error: 'nothing_to_update' });
       const [row] = await db
         .update(conversations)
-        .set({ title: body.title, updatedAt: new Date() })
+        .set(set)
         .where(and(eq(conversations.id, params.id), eq(conversations.userId, user.id)))
         .returning();
       if (!row) return status(404, { error: 'not_found' });
@@ -820,7 +1372,10 @@ export const chatModule = new Elysia({ prefix: '/chat' })
     {
       auth: true,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),
-      body: t.Object({ title: t.String({ minLength: 1, maxLength: 200 }) }),
+      body: t.Object({
+        title: t.Optional(t.String({ minLength: 1, maxLength: 200 })),
+        pinned: t.Optional(t.Boolean()),
+      }),
     },
   )
   // Delete a conversation (messages cascade). 404 if foreign.
@@ -854,11 +1409,16 @@ export const chatModule = new Elysia({ prefix: '/chat' })
   // `event: error` frame (NEVER reach app.ts's `.onError`).
   .post(
     '/conversations/:id/stream',
-    async ({ user, params, body, status, store }) => {
+    async ({ user, params, body, status, store, request }) => {
       // Pre-flush gate: chat off → 503 (effective check so the injected test stub
       // flips it on). Nothing flushed yet, so a normal JSON body is fine.
       if (!isChatEnabled()) {
         return status(503, { error: 'ai_disabled' });
+      }
+
+      // An empty message with NO attachments has nothing to answer.
+      if (body.content.trim().length === 0 && !(body.attachments && body.attachments.length > 0)) {
+        return status(400, { error: 'empty_message' });
       }
 
       // Pre-flush: validate the requested model against the allow-list. Unknown
@@ -875,54 +1435,151 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         .limit(1);
       if (!conv) return status(404, { error: 'not_found' });
 
+      // Pre-flush: per-conversation serialization. A live turn already running
+      // on this conversation → 409 BEFORE the user row is inserted (the client
+      // keeps the draft and surfaces a "turn in progress" notice).
+      const lock = acquireTurnLock(conv.id);
+      if (!lock) return status(409, { error: 'turn_in_progress' });
+
       const userQuery = body.content;
       const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
 
-      // Resolve the per-turn deck scope (AC3.7) BEFORE streaming. Foreign deck ⇒
-      // empty scope (not global fallback); absent ⇒ undefined (global).
-      const { deckIds, deckName } = await resolveDeckScope(user.id, body.deckId);
+      try {
+        // Resolve the per-turn deck scope (AC3.7), composer mentions (C7),
+        // attachments and the user's standing instructions (C5) BEFORE
+        // streaming. Foreign deck ⇒ empty scope (not global fallback); absent ⇒
+        // undefined (global). Foreign/unverified attachment media is dropped.
+        const [{ deckIds, deckName }, mentions, attachments, userInstructions] = await Promise.all([
+          resolveDeckScope(user.id, body.deckId),
+          resolveMentions(user.id, body.mentionedCardIds),
+          resolveAttachments(user.id, body.attachments),
+          loadAgentInstructions(user.id),
+        ]);
 
-      // Persist the user's message BEFORE streaming (it always happened).
-      await db.insert(messagesTable).values({
-        conversationId: conv.id,
-        userId: user.id,
-        role: 'user',
-        content: userQuery,
-      });
-
-      const webOn = isWebSearchEnabled();
-
-      return sseResponse(log, async (emit) => {
-        // Build messages = [system, ...history, user]. History is the full
-        // persisted transcript minus the user turn we just inserted.
-        const priorRows = await loadHistoryRows(conv.id);
-        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn, deckScopeName: deckName });
-        const startMessages: AgentChatMessage[] = [
-          { role: 'system', content: system },
-          ...reconstructHistory(priorRows.slice(0, -1)),
-          { role: 'user', content: userQuery },
-        ];
-
-        const outcome = await runAgentTurn({
-          userId: user.id,
+        // Persist the user's message BEFORE streaming (it always happened). The
+        // stored content stays clean — mentions/attachments ride their columns.
+        // Explicit stamp: a Postgres clock BEHIND the host would otherwise sort
+        // this row before the PREVIOUS turn's (host-stamped) answer rows.
+        await db.insert(messagesTable).values({
           conversationId: conv.id,
-          log,
-          emit,
-          startMessages,
-          webSearchEnabled: webOn,
-          model,
-          deckIds,
+          userId: user.id,
+          role: 'user',
+          content: userQuery,
+          mentions,
+          attachments,
+          createdAt: await nextMessageStamp(db, conv.id),
         });
-        return outcome;
-      });
+
+        const webOn = isWebSearchEnabled();
+
+        // C3 — start auto-titling concurrently with the turn (no-op when titled).
+        const titlePromise = maybeStartTitle({ conv, userId: user.id, model, log });
+
+        return sseResponse(
+          log,
+          async (emit) => {
+            // Build messages = [system, (summary), ...history, user]. History is
+            // the full persisted transcript minus the user turn we just inserted;
+            // past the compression threshold the older turns replay as ONE cached
+            // summary note instead of verbatim rows (C6).
+            const priorRows = await loadHistoryRows(conv.id);
+            const { recentRows, summaryNote } = await compressHistory(
+              conv,
+              priorRows.slice(0, -1),
+              { model, log },
+            );
+            // Data URLs for the most recent images across the replayed history
+            // + this turn (older ones degrade to text placeholders).
+            const imageDataUrls = await loadImagePartsMap([
+              ...recentRows.map((r) => (r.role === 'user' ? r.attachments : null)),
+              attachments,
+            ]);
+            // Deep-research MODE (composer toggle): meaningless without the
+            // fetch_page tool, so the flag is effective only when it's offered.
+            const researchOn = body.research === true && isFetchPageEnabled();
+            const system = buildAgentSystemPrompt({
+              webSearchEnabled: webOn,
+              fetchPageEnabled: isFetchPageEnabled(),
+              researchMode: researchOn,
+              deckScopeName: deckName,
+              userInstructions,
+            });
+            const startMessages: AgentChatMessage[] = [
+              { role: 'system', content: system },
+              ...(summaryNote ? [{ role: 'system' as const, content: summaryNote }] : []),
+              ...reconstructHistory(recentRows, undefined, imageDataUrls),
+              {
+                role: 'user',
+                content: buildUserContent(
+                  appendMentionBlock(userQuery, mentions),
+                  attachments,
+                  imageDataUrls,
+                ),
+              },
+            ];
+
+            const outcome = await runAgentTurn({
+              userId: user.id,
+              conversationId: conv.id,
+              log,
+              emit,
+              startMessages,
+              webSearchEnabled: webOn,
+              model,
+              deckIds,
+              signal: lock.signal,
+              research: researchOn,
+            });
+            // Title frame (if any) lands before the caller's `done` — also on a
+            // suspended outcome (the stream is still open until close).
+            await finishTitle(titlePromise, conv.id, user.id, emit);
+            return outcome;
+          },
+          {
+            abort: lock,
+            requestSignal: request.signal,
+            onSettled: () => releaseTurnLock(conv.id, lock),
+          },
+        );
+      } catch (err) {
+        // Pre-flush failure after the lock was taken — release it or the
+        // conversation stays 409-locked until the TTL.
+        releaseTurnLock(conv.id, lock);
+        throw err;
+      }
     },
     {
       auth: true,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),
       body: t.Object({
-        content: t.String({ minLength: 1, maxLength: 8000 }),
+        // minLength 0: an attachment-only message is valid (the handler 400s an
+        // empty message with NO attachments).
+        content: t.String({ maxLength: 8000 }),
         model: t.Optional(t.String({ maxLength: 200 })),
         deckId: t.Optional(t.String({ format: 'uuid' })),
+        // Deep-research mode toggle (raised step/budget caps + research prompt).
+        research: t.Optional(t.Boolean()),
+        // Composer @-mentions (C7) — user-scoped, foreign ids silently dropped.
+        mentionedCardIds: t.Optional(t.Array(t.String({ format: 'uuid' }), { maxItems: 8 })),
+        // Composer attachments: image media refs (resolved + ownership-checked
+        // server-side) and inline text files (re-capped server-side).
+        attachments: t.Optional(
+          t.Array(
+            t.Union([
+              t.Object({
+                kind: t.Literal('image'),
+                mediaId: t.String({ format: 'uuid' }),
+                name: t.Optional(t.String({ maxLength: 200 })),
+              }),
+              t.Object({
+                kind: t.Literal('text'),
+                name: t.String({ minLength: 1, maxLength: 200 }),
+                text: t.String({ minLength: 1, maxLength: 20000 }),
+              }),
+            ]),
+            { maxItems: 4 },
+          ),
+        ),
       }),
     },
   )
@@ -941,7 +1598,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
   // `done` (never double-execute), backed by the partial unique index.
   .post(
     '/conversations/:id/resume',
-    async ({ user, params, body, status, store }) => {
+    async ({ user, params, body, status, store, request }) => {
       if (!isChatEnabled()) {
         return status(503, { error: 'ai_disabled' });
       }
@@ -959,11 +1616,21 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         .limit(1);
       if (!conv) return status(404, { error: 'not_found' });
 
+      // Per-conversation serialization (same as /stream).
+      const lock = acquireTurnLock(conv.id);
+      if (!lock) return status(409, { error: 'turn_in_progress' });
+
       const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
       const { resumeToolCallId, decision } = body;
 
-      // Resolve the per-turn deck scope for the continuation (AC3.7).
-      const { deckIds, deckName } = await resolveDeckScope(user.id, body.deckId);
+      // Resolve the per-turn deck scope for the continuation (AC3.7) + the
+      // user's standing instructions (C5 — the continuation prompt must match).
+      // NOTE: a throw between the lock acquire and sseResponse leaks the lock —
+      // self-healed by the TTL takeover (5 min), acceptable for a DB-down edge.
+      const [{ deckIds, deckName }, userInstructions] = await Promise.all([
+        resolveDeckScope(user.id, body.deckId),
+        loadAgentInstructions(user.id),
+      ]);
 
       // Load the full transcript ONCE (history mapping + validation share it).
       const priorRows = await loadHistoryRows(conv.id);
@@ -973,8 +1640,30 @@ export const chatModule = new Elysia({ prefix: '/chat' })
       const pending = findPendingToolCall(priorRows, resumeToolCallId);
       if (!pending) {
         // No assistant tool_calls row in this conversation names that id → 404.
+        releaseTurnLock(conv.id, lock);
         return status(404, { error: 'unknown_tool_call' });
       }
+
+      // Per-card confirm decisions (create_card only): merge the user's
+      // selections into the pending args. ALL cards excluded ⇒ the apply
+      // degrades to a plain reject. `feedback` rides into the tool result on
+      // BOTH paths so the model can act on requested edits.
+      const feedback =
+        typeof body.feedback === 'string' && body.feedback.trim().length > 0
+          ? body.feedback.trim()
+          : undefined;
+      let selection: CardSelectionOutcome = { kind: 'unchanged' };
+      if (pending.name === 'create_card' && decision === 'apply') {
+        let parsedForSelection: unknown = {};
+        try {
+          parsedForSelection = pending.arguments ? JSON.parse(pending.arguments) : {};
+        } catch {
+          // Unparseable args fail inside the apply path as before.
+        }
+        selection = applyCreateCardSelections(parsedForSelection, body.cardSelections);
+      }
+      const effectiveDecision = selection.kind === 'reject' ? 'reject' : decision;
+      const selectionNote = confirmSelectionNote(selection, feedback);
 
       // Idempotency (app-level check; the partial unique index is the backstop):
       // an already-answered tool call → terminal no-op `done` carrying the latest
@@ -998,7 +1687,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         const toolCtx: ToolContext = { userId: user.id, log };
         let toolCardIds: string[] | undefined;
 
-        if (decision === 'apply') {
+        if (effectiveDecision === 'apply') {
           const registry = buildToolRegistry({ webSearchEnabled: webOn });
           const tool = registry.find((tl) => tl.name === pending.name);
 
@@ -1018,15 +1707,19 @@ export const chatModule = new Elysia({ prefix: '/chat' })
             if (parseFailed) {
               result = { ok: false, error: `invalid tool arguments for ${pending.name}` };
             } else {
+              // Per-card selections override the executed args (the PERSISTED
+              // assistant row keeps the model's original proposal — the result
+              // text tells the model what the user actually applied/changed).
+              const execArgs = selection.kind === 'apply' ? selection.args : parsedArgs;
               // ONE transaction: the mutation + the role:tool insert. A duplicate
               // (conversation_id, tool_call_id) for role='tool' violates
               // messages_tool_result_uq → the whole tx (incl. the mutation) rolls
               // back. So a racing/double Apply never double-executes.
               try {
                 result = await db.transaction(async (tx) => {
-                  const r = await tool.execute({ ...toolCtx, tx }, parsedArgs);
+                  const r = await tool.execute({ ...toolCtx, tx }, execArgs);
                   const content = capToolResult(
-                    r.ok ? r.text : JSON.stringify({ ok: false, error: r.error }),
+                    r.ok ? `${r.text}${selectionNote}` : JSON.stringify({ ok: false, error: r.error }),
                   );
                   await tx.insert(messagesTable).values({
                     conversationId: conv.id,
@@ -1034,6 +1727,9 @@ export const chatModule = new Elysia({ prefix: '/chat' })
                     role: 'tool',
                     content,
                     toolCallId: resumeToolCallId,
+                    // Explicit stamp (not the DB default): Postgres clock skew
+                    // must never sort this row BEFORE its pending assistant row.
+                    createdAt: await nextMessageStamp(tx, conv.id),
                   });
                   return r;
                 });
@@ -1057,6 +1753,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
                     role: 'tool',
                     content: capToolResult(JSON.stringify({ ok: false, error: result.error })),
                     toolCallId: resumeToolCallId,
+                    createdAt: await nextMessageStamp(db, conv.id),
                   });
                 } catch {
                   // already answered by a racing resume — fine.
@@ -1070,15 +1767,23 @@ export const chatModule = new Elysia({ prefix: '/chat' })
             type: 'tool_result',
             id: pending.id,
             ok: result.ok,
-            summary: result.ok ? undefined : result.error,
+            // The applied write's result text (e.g. "Created 5 notes …") is
+            // inspectable in the step body, same as read tools.
+            summary: result.ok ? capToolResult(`${result.text}${selectionNote}`) : result.error,
           });
 
           // RAG index hook — enqueue created/updated cards AFTER the commit.
           enqueueToolCardsForIndex(toolCardIds);
         } else {
-          // Reject: record a "user rejected" tool result so the model can answer
-          // without the mutation. Idempotent via the partial unique index.
-          const rejectionContent = JSON.stringify({ ok: false, error: 'user_rejected' });
+          // Reject (explicit, or an apply whose per-card selections excluded
+          // EVERY card): record a "user rejected" tool result so the model can
+          // answer without the mutation. `feedback` rides along so "propose
+          // edits" reaches the model. Idempotent via the partial unique index.
+          const rejectionContent = JSON.stringify({
+            ok: false,
+            error: 'user_rejected',
+            ...(feedback ? { feedback } : {}),
+          });
           try {
             await db.insert(messagesTable).values({
               conversationId: conv.id,
@@ -1086,22 +1791,46 @@ export const chatModule = new Elysia({ prefix: '/chat' })
               role: 'tool',
               content: rejectionContent,
               toolCallId: resumeToolCallId,
+              createdAt: await nextMessageStamp(db, conv.id),
             });
           } catch {
             // already answered — idempotent.
           }
-          emit({ type: 'tool_result', id: pending.id, ok: false, summary: 'user_rejected' });
+          emit({
+            type: 'tool_result',
+            id: pending.id,
+            ok: false,
+            summary: feedback ? `user_rejected — ${feedback}` : 'user_rejected',
+          });
         }
 
         // Continue the shared loop. Rebuild messages from the NOW-updated
         // persisted transcript; the dangling-tool_calls guard is bypassed for
         // the exact id we just answered (so the pending assistant tool_calls row
-        // is kept — it now has its answering role:tool row).
+        // is kept — it now has its answering role:tool row). Compression (C6)
+        // never touches the tail, so the pending cluster stays verbatim.
         const updatedRows = await loadHistoryRows(conv.id);
-        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn, deckScopeName: deckName });
+        const { recentRows, summaryNote } = await compressHistory(conv, updatedRows, {
+          model,
+          log,
+        });
+        const imageDataUrls = await loadImagePartsMap(
+          recentRows.map((r) => (r.role === 'user' ? r.attachments : null)),
+        );
+        // The web sends the toggle state on resume too, so a research turn's
+        // post-confirmation continuation keeps the raised caps + prompt.
+        const researchOn = body.research === true && isFetchPageEnabled();
+        const system = buildAgentSystemPrompt({
+          webSearchEnabled: webOn,
+          fetchPageEnabled: isFetchPageEnabled(),
+          researchMode: researchOn,
+          deckScopeName: deckName,
+          userInstructions,
+        });
         const startMessages: AgentChatMessage[] = [
           { role: 'system', content: system },
-          ...reconstructHistory(updatedRows, resumeToolCallId),
+          ...(summaryNote ? [{ role: 'system' as const, content: summaryNote }] : []),
+          ...reconstructHistory(recentRows, resumeToolCallId, imageDataUrls),
         ];
 
         return runAgentTurn({
@@ -1113,7 +1842,13 @@ export const chatModule = new Elysia({ prefix: '/chat' })
           webSearchEnabled: webOn,
           model,
           deckIds,
+          signal: lock.signal,
+          research: researchOn,
         });
+      }, {
+        abort: lock,
+        requestSignal: request.signal,
+        onSettled: () => releaseTurnLock(conv.id, lock),
       });
     },
     {
@@ -1124,6 +1859,21 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         decision: t.Union([t.Literal('apply'), t.Literal('reject')]),
         model: t.Optional(t.String({ maxLength: 200 })),
         deckId: t.Optional(t.String({ format: 'uuid' })),
+        research: t.Optional(t.Boolean()),
+        // Per-card decisions for a pending create_card (apply path): exclude /
+        // inline-edit individual cards of the proposed batch.
+        cardSelections: t.Optional(
+          t.Array(
+            t.Object({
+              index: t.Integer({ minimum: 0, maximum: 99 }),
+              include: t.Boolean(),
+              fieldValues: t.Optional(t.Record(t.String(), t.String({ maxLength: 8000 }))),
+            }),
+            { maxItems: 40 },
+          ),
+        ),
+        // Optional note to the model ("propose edits") — lands in the tool result.
+        feedback: t.Optional(t.String({ maxLength: 2000 })),
       }),
     },
   )
@@ -1143,7 +1893,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
   //     one "stopped — regenerate?" recovery affordance covers both.
   .post(
     '/conversations/:id/regenerate',
-    async ({ user, params, body, status, store }) => {
+    async ({ user, params, body, status, store, request }) => {
       if (!isChatEnabled()) {
         return status(503, { error: 'ai_disabled' });
       }
@@ -1159,28 +1909,66 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         .limit(1);
       if (!conv) return status(404, { error: 'not_found' });
 
+      // Per-conversation serialization — MUST precede TX1: a regenerate racing a
+      // live turn would otherwise delete that turn's rows out from under it (the
+      // observed history-corruption incident).
+      const lock = acquireTurnLock(conv.id);
+      if (!lock) return status(409, { error: 'turn_in_progress' });
+
       const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+
+      // C7 — re-resolve mentions ONLY when the body carries them; `undefined`
+      // keeps the stored snapshot (replay-faithful).
+      const newMentions =
+        body.mentionedCardIds !== undefined
+          ? await resolveMentions(user.id, body.mentionedCardIds)
+          : undefined;
 
       // TX1 — delete the trailing assistant turn (and, with an edited `content`,
       // UPDATE the last user row in place — additive, single-row, user-scoped).
       // 400 when there is no user row.
-      const deleted = await deleteTrailingAssistantTurn(conv.id, user.id, body.content);
-      if (!deleted.ok) return status(400, { error: 'nothing_to_regenerate' });
+      const deleted = await deleteTrailingAssistantTurn(conv.id, user.id, body.content, newMentions);
+      if (!deleted.ok) {
+        releaseTurnLock(conv.id, lock);
+        return status(400, { error: 'nothing_to_regenerate' });
+      }
 
-      const { deckIds, deckName } = await resolveDeckScope(user.id, body.deckId);
+      const [{ deckIds, deckName }, userInstructions] = await Promise.all([
+        resolveDeckScope(user.id, body.deckId),
+        loadAgentInstructions(user.id),
+      ]);
       const webOn = isWebSearchEnabled();
 
+      // C3 — a regenerate also titles a still-untitled thread (covers the
+      // abort-tail recovery path, whose affordance IS regenerate).
+      const titlePromise = maybeStartTitle({ conv, userId: user.id, model, log });
+
       // TX2 — replay. After TX1 the trailing row is the last user message; rebuild
-      // [system, ...full-history] (which now ends at that user row) and re-run.
+      // [system, (summary), ...history-through-that-user-row] and re-run.
       return sseResponse(log, async (emit) => {
         const priorRows = await loadHistoryRows(conv.id);
-        const system = buildAgentSystemPrompt({ webSearchEnabled: webOn, deckScopeName: deckName });
+        const { recentRows, summaryNote } = await compressHistory(conv, priorRows, {
+          model,
+          log,
+        });
+        const imageDataUrls = await loadImagePartsMap(
+          recentRows.map((r) => (r.role === 'user' ? r.attachments : null)),
+        );
+        const researchOn = body.research === true && isFetchPageEnabled();
+        const system = buildAgentSystemPrompt({
+          webSearchEnabled: webOn,
+          fetchPageEnabled: isFetchPageEnabled(),
+          researchMode: researchOn,
+          deckScopeName: deckName,
+          userInstructions,
+        });
         const startMessages: AgentChatMessage[] = [
           { role: 'system', content: system },
-          ...reconstructHistory(priorRows),
+          ...(summaryNote ? [{ role: 'system' as const, content: summaryNote }] : []),
+          ...reconstructHistory(recentRows, undefined, imageDataUrls),
         ];
 
-        return runAgentTurn({
+        const outcome = await runAgentTurn({
           userId: user.id,
           conversationId: conv.id,
           log,
@@ -1189,7 +1977,15 @@ export const chatModule = new Elysia({ prefix: '/chat' })
           webSearchEnabled: webOn,
           model,
           deckIds,
+          signal: lock.signal,
+          research: researchOn,
         });
+        await finishTitle(titlePromise, conv.id, user.id, emit);
+        return outcome;
+      }, {
+        abort: lock,
+        requestSignal: request.signal,
+        onSettled: () => releaseTurnLock(conv.id, lock),
       });
     },
     {
@@ -1198,9 +1994,13 @@ export const chatModule = new Elysia({ prefix: '/chat' })
       body: t.Object({
         model: t.Optional(t.String({ maxLength: 200 })),
         deckId: t.Optional(t.String({ format: 'uuid' })),
+        research: t.Optional(t.Boolean()),
         // Edit-and-rerun (B2 / AC4.2): the edited last-user text. Absent ⇒ today's
         // regenerate (strictly additive, backward-compatible).
         content: t.Optional(t.String({ maxLength: 8000 })),
+        // C7 — replacement mentions for the replayed user row. Absent ⇒ the
+        // stored snapshot replays unchanged.
+        mentionedCardIds: t.Optional(t.Array(t.String({ format: 'uuid' }), { maxItems: 8 })),
       }),
     },
   );

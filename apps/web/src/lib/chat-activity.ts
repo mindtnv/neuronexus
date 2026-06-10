@@ -15,7 +15,13 @@
 // `summarizeSteps`, `groupHeaderState`, `applySummaryFrom`, `dropTrailingExchange`,
 // `TOOL_ICON_KEY`.
 
-import type { Citation } from '@neuronexus/shared';
+import type {
+  Citation,
+  ConfirmImpact,
+  MessageAttachment,
+  MessageMention,
+  MessageUsage,
+} from '@neuronexus/shared';
 import type { IconName } from '@/components/ui';
 
 // ── View models (Eden serializes dates → ISO strings) ────────────────────────
@@ -40,8 +46,11 @@ export interface ToolCallVM {
    * The card renders Apply/Reject controls + the blast-radius summary.
    */
   awaitingConfirmation?: boolean;
-  /** Dry-run blast radius from the `await_confirmation` frame (rendered above Apply). */
-  impact?: { willDeleteCards?: number; willCreateCards?: number; affectsSiblings?: boolean };
+  /**
+   * Dry-run blast radius + confirm previews (C8: fieldDiffs / proposedFields /
+   * tagsChange / deckChange / suspendedChange) from the `await_confirmation` frame.
+   */
+  impact?: ConfirmImpact;
   /**
    * The decision the user picked, once clicked. Set IMMEDIATELY on click so both
    * buttons disable and a double-apply can't be issued from the UI side (the
@@ -78,6 +87,15 @@ export interface MessageVM {
   turnStartedAt?: number;
   /** Computed turn duration: `Date.now() - turnStartedAt`, set only at onDone/onError. */
   elapsedMs?: number;
+  // ── Agentic-environment additions ────────────────────────────────────────────
+  /** Accumulated token usage for a finished assistant turn (C1; persisted row / usage frame). */
+  usage?: MessageUsage;
+  /** Effective model for an assistant turn (C1; the picker choice or env default). */
+  model?: string;
+  /** Composer @-mentions on a user message (C7) — rendered as chips under the bubble. */
+  mentions?: MessageMention[];
+  /** Composer attachments on a user message — image previews + file chips. */
+  attachments?: MessageAttachment[];
 }
 
 // Persisted-row wire shape (Eden serializes message rows verbatim).
@@ -89,6 +107,10 @@ export interface PersistedMessageRow {
   toolCalls?: { id: string; name: string; arguments: string }[] | null;
   toolCallId?: string | null;
   createdAt?: string | null;
+  usage?: MessageUsage | null;
+  model?: string | null;
+  mentions?: MessageMention[] | null;
+  attachments?: MessageAttachment[] | null;
 }
 
 // ── Tool label / icon maps ────────────────────────────────────────────────────
@@ -99,15 +121,29 @@ export const TOOL_LABEL_KEY: Record<string, string> = {
   web_search: 'chat.tool.web_search',
   card_progress: 'chat.tool.card_progress',
   study_stats: 'chat.tool.study_stats',
+  due_forecast: 'chat.tool.due_forecast',
   list_decks: 'chat.tool.list_decks',
   browse_cards: 'chat.tool.browse_cards',
   get_card: 'chat.tool.get_card',
+  fetch_page: 'chat.tool.fetch_page',
+  // Write/SRS tools (B5) — previously fell back to the raw key string.
+  create_card: 'chat.tool.create_card',
+  edit_card: 'chat.tool.edit_card',
+  suspend: 'chat.tool.suspend',
+  set_due: 'chat.tool.set_due',
+  forget: 'chat.tool.forget',
 };
 
 // Tool names that have a `chat.tool.<name>_n` plural key for contiguous-run header
 // phrases (AC2.2: "Reviewed 7 cards"). Single source — `ToolActivityGroup` imports
 // this instead of maintaining a local Set.
-export const PLURAL_TOOL_NAMES = new Set(['get_card', 'card_progress', 'browse_cards']);
+export const PLURAL_TOOL_NAMES = new Set([
+  'get_card',
+  'card_progress',
+  'browse_cards',
+  'due_forecast',
+  'fetch_page',
+]);
 
 // Tool-type icon map (AC3.1) — parallel to TOOL_LABEL_KEY. Reuses existing
 // NNIcon names only (no new icons). Default fallback is `bolt`.
@@ -117,8 +153,15 @@ export const TOOL_ICON_KEY: Record<string, IconName> = {
   list_decks: 'stack',
   browse_cards: 'stack',
   study_stats: 'target',
+  due_forecast: 'target',
   web_search: 'link',
+  fetch_page: 'doc',
   search_cards: 'search',
+  create_card: 'plus',
+  edit_card: 'edit',
+  suspend: 'pause',
+  set_due: 'clock',
+  forget: 'sync',
 };
 
 /** Resolve a tool's icon, falling back to `bolt` for unknown tool names. */
@@ -174,25 +217,40 @@ export const WRITE_SRS_TOOL_NAMES = new Set([
 // Folds the persisted wire shape back into the grouped UI view models WITHOUT
 // ever leaking a sentinel or a JSON-in-content tool row as a blank/garbled bubble:
 //   • user                              → a user bubble
-//   • assistant w/ non-null toolCalls   → an assistant VM carrying tool-call cards
-//   • role:'tool'                       → folded into its parent's matching tool call
-//   • assistant w/ null toolCalls       → prose
+//   • assistant rows of ONE turn        → MERGED into a single assistant VM
+//     (tool_calls rows append steps; the final prose row becomes its content) —
+//     exactly the shape the live streaming path builds, so a reloaded turn
+//     renders as one activity feed instead of N stacked "Assistant" blocks
+//   • role:'tool'                       → folded into the matching tool call
+//     (searched across the whole transcript so far — robust to legacy rows
+//     whose same-timestamp order shuffled)
 export function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
   const out: MessageVM[] = [];
-  // The last assistant VM that carries tool calls — role:'tool' rows attach here.
-  let pendingToolHost: MessageVM | null = null;
+  // The assistant VM accumulating the CURRENT turn (closed by a user/system row).
+  let turnVM: MessageVM | null = null;
   // Tool calls still awaiting a role:'tool' row across the whole transcript; the
   // post-pass promotes the unresolved write/SRS ones to awaitingConfirmation.
   const unresolved: ToolCallVM[] = [];
+
+  const findCall = (id: string | null | undefined): ToolCallVM | undefined => {
+    if (!id) return undefined;
+    // Current turn first, then earlier assistant VMs (legacy shuffled rows).
+    const inTurn = turnVM?.toolCalls?.find((c) => c.id === id);
+    if (inTurn) return inTurn;
+    for (let i = out.length - 1; i >= 0; i--) {
+      const tc = out[i]!.toolCalls?.find((c) => c.id === id);
+      if (tc) return tc;
+    }
+    return undefined;
+  };
 
   for (const row of rows) {
     const citations = Array.isArray(row.citations) ? row.citations : [];
 
     if (row.role === 'tool') {
-      // A tool-result row — fold into its parent's matching tool call. Never a bubble.
+      // A tool-result row — fold into the matching tool call. Never a bubble.
       const parsed = parseToolResultContent(row.content);
-      const host = pendingToolHost;
-      const tc = host?.toolCalls?.find((c) => c.id === row.toolCallId);
+      const tc = findCall(row.toolCallId);
       if (tc) {
         tc.status = parsed.ok ? 'ok' : 'error';
         if (parsed.summary !== undefined) tc.result = parsed.summary;
@@ -203,39 +261,56 @@ export function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
       continue;
     }
 
-    if (row.role === 'assistant' && row.toolCalls && row.toolCalls.length > 0) {
-      // Tool-call row — render as tool-call cards regardless of content (sentinel).
-      // Start each call as `running`; a following role:'tool' row resolves it.
-      const calls: ToolCallVM[] = row.toolCalls.map((c) => ({
-        id: c.id,
-        name: c.name,
-        args: parseToolArgs(c.arguments),
-        status: 'running' as const,
-      }));
-      const vm: MessageVM = {
-        id: row.id,
-        role: 'assistant',
-        content: '',
-        citations: [],
-        toolCalls: calls,
-        createdAt: row.createdAt ?? undefined,
-      };
-      out.push(vm);
-      pendingToolHost = vm;
-      for (const c of calls) unresolved.push(c);
+    if (row.role === 'assistant') {
+      if (!turnVM) {
+        turnVM = {
+          id: row.id,
+          role: 'assistant',
+          content: '',
+          citations: [],
+          createdAt: row.createdAt ?? undefined,
+          model: row.model ?? undefined,
+        };
+        out.push(turnVM);
+      }
+      if (row.model) turnVM.model = row.model;
+      // Usage may land on several rows of one turn (a suspended turn parks its
+      // usage-so-far on the pending row; the continuation stamps its own on the
+      // final row) — summing them yields the turn totals.
+      if (row.usage) turnVM.usage = addUsage(turnVM.usage, row.usage);
+
+      if (row.toolCalls && row.toolCalls.length > 0) {
+        // Tool-call row — append steps; a following role:'tool' row resolves them.
+        const calls: ToolCallVM[] = row.toolCalls.map((c) => ({
+          id: c.id,
+          name: c.name,
+          args: parseToolArgs(c.arguments),
+          status: 'running' as const,
+        }));
+        turnVM.toolCalls = [...(turnVM.toolCalls ?? []), ...calls];
+        for (const c of calls) unresolved.push(c);
+      } else {
+        // Prose row — the turn's answer text (or, degenerately, a second text
+        // row in a corrupted turn — appended, never dropped).
+        turnVM.content = turnVM.content ? `${turnVM.content}\n\n${row.content}` : row.content;
+        if (citations.length > 0) turnVM.citations = [...turnVM.citations, ...citations];
+      }
       continue;
     }
 
-    // user OR assistant-prose OR system → a normal bubble.
+    // user OR system → a normal bubble; closes the current assistant turn.
     out.push({
       id: row.id,
       role: row.role,
       content: row.content,
       citations,
       createdAt: row.createdAt ?? undefined,
+      usage: row.usage ?? undefined,
+      model: row.model ?? undefined,
+      mentions: row.mentions ?? undefined,
+      attachments: row.attachments ?? undefined,
     });
-    // A fresh prose/user turn closes the tool-result attachment window.
-    pendingToolHost = null;
+    turnVM = null;
   }
 
   // Post-pass: any unresolved tool call is a tool that never got its result row.
@@ -252,6 +327,16 @@ export function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
   }
 
   return out;
+}
+
+/** Sum two usage payloads (per-row stamps of one turn → turn totals). */
+function addUsage(a: MessageUsage | undefined, b: MessageUsage): MessageUsage {
+  if (!a) return b;
+  return {
+    promptTokens: (a.promptTokens ?? 0) + (b.promptTokens ?? 0),
+    completionTokens: (a.completionTokens ?? 0) + (b.completionTokens ?? 0),
+    totalTokens: (a.totalTokens ?? 0) + (b.totalTokens ?? 0),
+  };
 }
 
 // The abort/regenerate cliff: the user row is pre-committed server-side (before
@@ -332,11 +417,305 @@ export function toolLabel(name: string, args: unknown, ctx: ToolLabelCtx = {}): 
       const query = nonEmptyString(a.query) ?? '';
       return { labelKey, params: { query }, argMono: query || undefined };
     }
+    case 'fetch_page': {
+      // Compact URL (scheme/www stripped, truncated) — readable, never raw JSON.
+      const url = nonEmptyString(a.url);
+      const shortened = url ? url.replace(/^https?:\/\//i, '').replace(/^www\./i, '') : '';
+      const display = shortened.length > 60 ? `${shortened.slice(0, 60)}…` : shortened;
+      return { labelKey, params: {}, argMono: display || undefined };
+    }
+    // Write/SRS tools (B5) — card-targeting ones resolve the card front; the
+    // creator resolves the deck name. Never a UUID, never raw JSON.
+    case 'edit_card':
+    case 'suspend':
+    case 'set_due':
+    case 'forget': {
+      const cardId = nonEmptyString(a.cardId);
+      const front = cardId ? ctx.resolveCardFront?.(cardId) : undefined;
+      const display = front ?? (cardId ? cardId.slice(0, 8) : '');
+      return { labelKey, params: { front: display } };
+    }
+    case 'create_card': {
+      const deckId = nonEmptyString(a.deckId);
+      const deck = deckId ? ctx.deckName?.(deckId) : undefined;
+      // A `cards: [...]` batch reads as "Drafted N cards", not "Drafted a card".
+      const batch = Array.isArray(a.cards) ? a.cards.length : 0;
+      if (batch > 1) {
+        return deck
+          ? { labelKey: 'chat.tool.create_card_batch', params: { count: batch, deck } }
+          : { labelKey: 'chat.tool.create_card_batch_nodeck', params: { count: batch } };
+      }
+      // Unresolvable deck → the deck-less phrasing, never an empty «» hole.
+      if (!deck) return { labelKey: 'chat.tool.create_card_nodeck', params: {} };
+      return { labelKey, params: { deck } };
+    }
     default: {
-      // Unknown tool — emit the bare label key only, never raw args.
-      return { labelKey, params: {} };
+      // Unknown tool — bare label key + a COMPACT readable arg line (B5: never
+      // `[object Object]`, never raw JSON).
+      return { labelKey, params: {}, argMono: formatToolArgs(args) };
     }
   }
+}
+
+// ── Compact tool-arg formatting (B5) ──────────────────────────────────────────
+
+export interface FormatToolArgsOpts {
+  /** Max key:value pairs rendered (rest collapses to `…`). Default 4. */
+  maxPairs?: number;
+  /** Max chars per rendered value. Default 40. */
+  maxValueLen?: number;
+}
+
+// A full-UUID value never renders verbatim (the no-UUID-leak invariant of the
+// activity feed) — it collapses to its first 8 chars, like the label resolvers.
+const UUID_VALUE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function maskUuid(s: string): string {
+  return UUID_VALUE_RE.test(s) ? s.slice(0, 8) : s;
+}
+
+function formatArgValue(v: unknown, maxLen: number): string {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'string') {
+    const s = maskUuid(v.replace(/\s+/g, ' ').trim());
+    return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
+  }
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v)) {
+    if (v.length <= 3 && v.every((x) => typeof x === 'string' || typeof x === 'number')) {
+      const joined = v.map((x) => (typeof x === 'string' ? maskUuid(x) : String(x))).join(', ');
+      return joined.length > maxLen ? `[${v.length}]` : joined;
+    }
+    return `[${v.length}]`;
+  }
+  return '{…}';
+}
+
+/**
+ * Render a tool's arg object as a compact `key: value; key2: value2` line —
+ * NEVER `[object Object]`, never multi-line JSON. Strings truncate, arrays show
+ * a short join or `[N]`, nested objects collapse to `{…}`, null/undefined are
+ * skipped. Non-object args render via String(). Returns undefined for empty.
+ */
+export function formatToolArgs(args: unknown, opts: FormatToolArgsOpts = {}): string | undefined {
+  const maxPairs = opts.maxPairs ?? 4;
+  const maxValueLen = opts.maxValueLen ?? 40;
+  if (args === null || args === undefined) return undefined;
+  if (typeof args !== 'object') {
+    const s = String(args).replace(/\s+/g, ' ').trim();
+    return s.length > 0 ? (s.length > maxValueLen ? `${s.slice(0, maxValueLen)}…` : s) : undefined;
+  }
+  const entries = Object.entries(args as Record<string, unknown>).filter(
+    ([, v]) => v !== null && v !== undefined,
+  );
+  if (entries.length === 0) return undefined;
+  const shown = entries.slice(0, maxPairs);
+  const parts = shown.map(([k, v]) => {
+    const rendered = formatArgValue(v, maxValueLen);
+    return rendered.length > 0 ? `${k}: ${rendered}` : k;
+  });
+  if (entries.length > maxPairs) parts.push('…');
+  return parts.join('; ');
+}
+
+// ── Confirm-preview rows (B4 / C8) ────────────────────────────────────────────
+
+export interface ConfirmDiffRow {
+  field: string;
+  /** Present for edit_card diffs (rose, leading −). */
+  before?: string;
+  /** Present for edit diffs AND create proposals (lime, leading +). */
+  after?: string;
+  /** Batch create (`proposedCards`): 0-based index of the card this row belongs to. */
+  cardIndex?: number;
+}
+
+/**
+ * Normalize a paused tool's `impact` previews into render-ready rows:
+ *   • edit_card  → fieldDiffs (before/after) + a tags row when tagsChange present
+ *   • create_card → proposedFields (after-only), or per-card rows tagged with
+ *     `cardIndex` for a `cards: [...]` batch (proposedCards)
+ * Absent/old payloads → `[]` (the confirm card degrades to blast-radius-only).
+ */
+export function confirmDiffRows(name: string, impact: ConfirmImpact | undefined): ConfirmDiffRow[] {
+  if (!impact) return [];
+  const rows: ConfirmDiffRow[] = [];
+  if (name === 'edit_card') {
+    for (const d of impact.fieldDiffs ?? []) {
+      rows.push({ field: d.field, before: d.before, after: d.after });
+    }
+    if (impact.tagsChange) {
+      rows.push({
+        field: 'tags',
+        before: impact.tagsChange.before.join(', '),
+        after: impact.tagsChange.after.join(', '),
+      });
+    }
+  } else if (name === 'create_card') {
+    if (impact.proposedCards && impact.proposedCards.length > 0) {
+      impact.proposedCards.forEach((card, i) => {
+        for (const p of card.fields) {
+          rows.push({ field: p.field, after: p.value, cardIndex: i });
+        }
+      });
+    } else {
+      for (const p of impact.proposedFields ?? []) {
+        rows.push({ field: p.field, after: p.value });
+      }
+    }
+  }
+  return rows;
+}
+
+// ── Editable create_card confirm draft (per-card accept/edit/exclude) ────────
+
+export interface ConfirmCardDraft {
+  fieldValues: Record<string, string>;
+}
+
+/**
+ * Parse a pending `create_card`'s ORIGINAL args into editable per-card drafts
+ * (full values — the impact preview is capped for display, so the editor reads
+ * the args instead). Batch `cards: [...]` → N entries; the single `fieldValues`
+ * shape → one entry. Null for other tools / malformed args (the confirm card
+ * degrades to the read-only preview).
+ */
+export function createCardDraft(args: unknown): ConfirmCardDraft[] | null {
+  const a = argRecord(args);
+  const toDraft = (fv: unknown): ConfirmCardDraft | null => {
+    if (!fv || typeof fv !== 'object' || Array.isArray(fv)) return null;
+    const fieldValues: Record<string, string> = {};
+    for (const [k, v] of Object.entries(fv as Record<string, unknown>)) {
+      if (typeof v === 'string') fieldValues[k] = v;
+    }
+    return Object.keys(fieldValues).length > 0 ? { fieldValues } : null;
+  };
+  if (Array.isArray(a.cards)) {
+    const out: ConfirmCardDraft[] = [];
+    for (const item of a.cards) {
+      const d = toDraft((item as { fieldValues?: unknown } | null)?.fieldValues);
+      if (!d) return null; // one malformed entry degrades the whole editor
+      out.push(d);
+    }
+    return out.length > 0 ? out : null;
+  }
+  const single = toDraft(a.fieldValues);
+  return single ? [single] : null;
+}
+
+/**
+ * Build the resume `cardSelections` payload from the confirm editor's state:
+ * excluded cards are sent as `include:false`, edited ones carry their full
+ * `fieldValues`; untouched cards are OMITTED (the server applies them as
+ * proposed). An empty result means "apply exactly as proposed".
+ */
+export function buildCardSelections(
+  original: ConfirmCardDraft[],
+  state: { include: boolean; fieldValues: Record<string, string> }[],
+): { index: number; include: boolean; fieldValues?: Record<string, string> }[] {
+  const out: { index: number; include: boolean; fieldValues?: Record<string, string> }[] = [];
+  for (let i = 0; i < original.length && i < state.length; i++) {
+    const st = state[i]!;
+    if (!st.include) {
+      out.push({ index: i, include: false });
+      continue;
+    }
+    const orig = original[i]!.fieldValues;
+    const keys = new Set([...Object.keys(orig), ...Object.keys(st.fieldValues)]);
+    const changed = [...keys].some((k) => (orig[k] ?? '') !== (st.fieldValues[k] ?? ''));
+    if (changed) out.push({ index: i, include: true, fieldValues: st.fieldValues });
+  }
+  return out;
+}
+
+/**
+ * The confirm wizard's "next card to decide" — the first undecided index AFTER
+ * `after` (wrapping to the start), or -1 when every card is decided (→ the
+ * review step). Re-deciding an earlier card therefore jumps forward to the
+ * remaining undecided ones instead of marching through already-decided cards.
+ */
+export function nextUndecidedIndex(
+  decisions: ('accepted' | 'excluded' | null)[],
+  after: number,
+): number {
+  const n = decisions.length;
+  for (let offset = 1; offset <= n; offset++) {
+    const i = (after + offset) % n;
+    if (decisions[i] === null) return i;
+  }
+  return -1;
+}
+
+// ── Usage badge helper (B6) ───────────────────────────────────────────────────
+
+/** Total token count for the badge; guards NaN/partial payloads → 0. */
+export function usageTotal(usage: MessageUsage | undefined): number {
+  if (!usage) return 0;
+  const total =
+    Number.isFinite(usage.totalTokens) && usage.totalTokens > 0
+      ? usage.totalTokens
+      : (Number.isFinite(usage.promptTokens) ? usage.promptTokens : 0) +
+        (Number.isFinite(usage.completionTokens) ? usage.completionTokens : 0);
+  return Number.isFinite(total) && total > 0 ? total : 0;
+}
+
+// ── Day separators (B2) ───────────────────────────────────────────────────────
+
+/** LOCAL calendar-day key (YYYY-MM-DD) for an ISO timestamp; null when absent/invalid. */
+export function dayKey(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** True when a separator should render between two adjacent messages. */
+export function needsDaySeparator(prevIso: string | undefined, currIso: string | undefined): boolean {
+  const curr = dayKey(currIso);
+  if (!curr) return false;
+  const prev = dayKey(prevIso);
+  // First dated message gets a separator; same-day neighbours don't.
+  return prev !== curr;
+}
+
+/**
+ * Human day label: today/yesterday via i18n keys, otherwise a locale date
+ * (day + month, + year when not the current year).
+ */
+export function formatDayLabel(iso: string, locale: string, t: T, now = new Date()): string {
+  const key = dayKey(iso);
+  const todayKey = localKeyOf(now);
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const yesterdayKey = localKeyOf(yesterday);
+  if (key === todayKey) return t('chat.stream.today');
+  if (key === yesterdayKey) return t('chat.stream.yesterday');
+  const d = new Date(iso);
+  const sameYear = d.getFullYear() === now.getFullYear();
+  return new Intl.DateTimeFormat(locale, {
+    day: 'numeric',
+    month: 'long',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  }).format(d);
+}
+
+function localKeyOf(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// ── Follow-up queue guard (D4) ────────────────────────────────────────────────
+
+/** True while ANY tool call is paused awaiting confirmation (undecided). */
+export function hasPendingConfirmation(messages: MessageVM[]): boolean {
+  return messages.some((m) =>
+    (m.toolCalls ?? []).some((tc) => tc.awaitingConfirmation === true && !tc.decision),
+  );
 }
 
 // ── Elapsed-time formatting (AC1.5) ──────────────────────────────────────────
@@ -458,16 +837,18 @@ export interface ApplySummary {
 
 /**
  * Derive a post-apply write summary from an APPLIED create/edit tool's name+args
- * (used by the S5 render path). Reads only `cardIds`/`deckId`/`cardId` already on
- * the tool args. Returns null for reject/other tools so nothing renders.
+ * (used by the S5 render path). Reads only `cards`/`cardIds`/`deckId`/`cardId`
+ * already on the tool args. Returns null for reject/other tools so nothing renders.
  */
 export function applySummaryFrom(name: string, args: unknown): ApplySummary | null {
   const a = argRecord(args);
   if (name === 'create_card') {
     const deckId = nonEmptyString(a.deckId);
-    // create_card may carry a single card or a `cardIds` batch — count what's there.
+    // A `cards: [...]` batch carries its count in the args; legacy `cardIds`
+    // kept as a fallback; a single fieldValues call counts 1.
+    const batch = Array.isArray(a.cards) ? a.cards.length : undefined;
     const cardIds = Array.isArray(a.cardIds) ? a.cardIds.length : undefined;
-    const count = cardIds ?? 1;
+    const count = batch ?? cardIds ?? 1;
     return { kind: 'create', count, deckId };
   }
   if (name === 'edit_card') {

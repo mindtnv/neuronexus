@@ -15,6 +15,16 @@ const m = {
     relativeMinutes: '{count} мин',
     relativeHours: '{count} ч',
     relativeDays: '{count} дн',
+    // Поиск + группы по датам + закрепление (агентская среда, A1/A2/C4).
+    searchPlaceholder: 'Поиск по беседам…',
+    searchNoResults: 'Ничего не найдено.',
+    groupPinned: 'Закреплённые',
+    groupToday: 'Сегодня',
+    groupYesterday: 'Вчера',
+    groupWeek: 'Последние 7 дней',
+    groupOlder: 'Ранее',
+    pin: 'Закрепить',
+    unpin: 'Открепить',
   },
   // Message stream (right pane)
   stream: {
@@ -27,10 +37,15 @@ const m = {
     sources: 'Из ваших карточек',
     sourcesCount: 'Использовано карточек: {count}',
     sourceDeck: 'Колода',
+    // Умный скролл (B1) + разделители дней (B2).
+    jumpToBottom: 'К последнему',
+    newMessages: 'Новые сообщения',
+    today: 'Сегодня',
+    yesterday: 'Вчера',
   },
   // Composer
   composer: {
-    placeholder: 'Задайте вопрос о ваших карточках…',
+    placeholder: 'Спросите о карточках или попросите что-то сделать…',
     send: 'Отправить',
     sending: 'Отправка…',
     // Остановить текущий поток (заменяет «Отправить» во время генерации).
@@ -40,6 +55,43 @@ const m = {
     // Необязательная привязка хода к колоде.
     deckScope: 'В колоде',
     allDecks: 'Все карточки',
+    // Секции @-меншен поповера (D1).
+    mentionDecks: 'Колоды',
+    mentionCards: 'Карточки',
+    mentionNoResults: 'Совпадений нет',
+    removeMention: 'Убрать упоминание',
+    // Тумблер режима дипресёрча (виден, когда сервер предлагает fetch_page).
+    research: 'Дипресёрч',
+    researchHint: 'Режим глубокого исследования: агент тщательно читает страницы перед ответом и черновиками карточек',
+    researchPlaceholder: 'Вставьте ссылку или назовите тему для глубокого изучения…',
+    attach: 'Прикрепить файл',
+    removeAttachment: 'Убрать вложение',
+    attachLimit: 'Не больше 4 вложений в сообщении',
+    attachTooBig: 'Файл слишком большой',
+    attachUnsupported: 'Неподдерживаемый тип файла',
+    attachFailed: 'Не удалось загрузить файл',
+  },
+  // Шаблоны slash-команд (D2) — `/` в начале черновика открывает меню; выбор
+  // вставляет локализованный шаблон ({deck} = самая большая колода).
+  slash: {
+    quizLabel: 'Квиз',
+    quizTemplate: 'Проверь мои знания по «{deck}»: 5 вопросов, по одному, оценивай мои ответы.',
+    forecastLabel: 'Прогноз',
+    forecastTemplate: 'Какая у меня нагрузка повторений на ближайшие 2 недели?',
+    statsLabel: 'Статистика',
+    statsTemplate: 'Как я занимался последние 30 дней? Что стоит улучшить?',
+    reviewLabel: 'Повторение',
+    reviewTemplate: 'Что мне сегодня повторить в «{deck}» и почему?',
+    researchLabel: 'Рисёрч',
+    researchTemplate: 'Глубоко изучи эту страницу и нарежь её на атомарные карточки: ',
+  },
+  // Подсказки первых вопросов — пилюли на пустом экране НОВОЙ беседы, собираются
+  // на клиенте из зеркала store (имена колод / due-счётчики). Клик = отправить.
+  suggested: {
+    dueToday: 'Что мне сегодня повторить?',
+    deckProgress: 'Как мои успехи в колоде {name}?',
+    failing: 'Что я чаще всего заваливаю?',
+    quiz: 'Проверь мои знания по «{name}»',
   },
   // Setup notice (chatEnabled === false)
   setup: {
@@ -68,6 +120,12 @@ const m = {
     edit: 'Изменить',
     editSave: 'Сохранить и перезапустить',
     editCancel: 'Отменить правку',
+    // Кнопки копирования код-блоков (B3) + бейдж модель · токены (B6) + очередь (D4).
+    codeCopy: 'Копировать код',
+    codeCopied: 'Скопировано',
+    tokens: '{count} ток',
+    queued: 'В очереди',
+    queuedCancel: 'Отменить отложенное сообщение',
   },
   // Agentic tool calls (search_cards / web_search) surfaced as cards in the stream
   tool: {
@@ -75,16 +133,31 @@ const m = {
     web_search: 'Поиск в интернете',
     card_progress: 'Проверка прогресса карточки',
     study_stats: 'Проверка статистики занятий',
+    due_forecast: 'Прогноз предстоящей нагрузки',
     list_decks: 'Список ваших колод',
     browse_cards: 'Просмотр ваших карточек',
     get_card: 'Открыта карточка',
+    fetch_page: 'Прочитана страница',
+    // Лейблы write/SRS-тулов (B5) — `{front}` = фронт карточки, `{deck}` =
+    // имя колоды; никогда не UUID.
+    create_card: 'Черновик карточки для «{deck}»',
+    create_card_nodeck: 'Черновик карточки',
+    create_card_batch: 'Черновики карточек ({count}) для «{deck}»',
+    create_card_batch_nodeck: 'Черновики карточек ({count})',
+    edit_card: 'Правка «{front}»',
+    suspend: 'Приостановлена «{front}»',
+    set_due: 'Перенесена «{front}»',
+    forget: 'Сброшена «{front}»',
     // Множественные формы для серии одинаковых вызовов подряд (свёртка AC2.2).
     get_card_n: 'Просмотрено карточек: {count}',
     card_progress_n: 'Проверен прогресс карточек: {count}',
     browse_cards_n: 'Просмотров карточек: {count}',
+    due_forecast_n: 'Прогноз нагрузки запрошен {count} раз(а)',
+    fetch_page_n: 'Прочитано страниц: {count}',
     running: 'Выполняется…',
     done: 'Готово',
     failed: 'Ошибка',
+    awaiting: 'Ждёт подтверждения',
     resultToggle: 'Показать результат',
   },
   // Свёрнутая группа активности (редизайн в стиле Codex) — таймированный,
@@ -98,7 +171,10 @@ const m = {
     workedHours: '{h} ч {m} мин',
     steps: 'шагов: {count}',
     step: 'шаг: {count}',
-    appliedCreated: 'Создано {count} карточек в {deck} · открыть',
+    appliedCreated: 'Создано карточек: {count} — в {deck} · открыть',
+    appliedCreatedNodeck: 'Создано карточек: {count} · открыть',
+    appliedCreatedOne: 'Карточка создана в {deck} · открыть',
+    appliedCreatedOneNodeck: 'Карточка создана · открыть',
     appliedEdited: 'Карточка обновлена · открыть',
   },
   // Confirm-before-write controls (Phase B) — a write/SRS tool pauses the turn
@@ -113,11 +189,29 @@ const m = {
     willCreate: 'Будет создано карточек: {count}',
     willDelete: 'Будет УДАЛЕНО карточек: {count} — история FSRS потеряна',
     affectsSiblings: 'Затрагивает другие карточки этой заметки',
+    // Превью подтверждения (B4/C8): строки до/после + предлагаемое содержимое.
+    changes: 'Предлагаемые изменения',
+    proposed: 'Содержимое новой карточки',
+    // Заголовок секции карточки в батч-превью create_card.
+    cardN: 'Карточка {n}',
+    // Пер-карточный confirm-редактор: включить/убрать + правки инлайн + заметка агенту.
+    applyN: 'Применить ({count})',
+    excludeCard: 'Убрать',
+    includeCard: 'Вернуть',
+    feedbackPlaceholder: 'Заметка агенту — что поправить (необязательно)…',
+    // Пошаговый confirm-визард (батч): по одной карточке за раз.
+    cardOf: 'Карточка {n} из {total}',
+    acceptCard: 'Принять',
+    back: 'Назад',
+    acceptedBadge: 'Принята',
+    excludedBadge: 'Убрана',
+    reviewJump: 'Открыть карточку ещё раз',
   },
   // Errors surfaced in the stream
   errors: {
     generic: 'Что-то пошло не так. Попробуйте ещё раз.',
     disabled: 'Чат отключён на сервере.',
+    turnInProgress: 'В этой беседе уже идёт ответ — дождитесь завершения.',
   },
 };
 
