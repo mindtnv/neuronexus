@@ -134,6 +134,17 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   100% { background-position: -200% 0; }
 }
 
+/* M4 PDF reader — off-screen page placeholder shimmer. Kept as a class (not an
+   inline style) so the prefers-reduced-motion guard below can disable it. */
+.nn-pdf-page-shimmer {
+  background: linear-gradient(90deg, rgba(200,200,200,0.10) 25%, rgba(200,200,200,0.22) 50%, rgba(200,200,200,0.10) 75%);
+  background-size: 200% 100%;
+  animation: nn-shimmer 2s ease infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-pdf-page-shimmer { animation: none; }
+}
+
 @keyframes nn-select-in {
   from { opacity: 0; transform: scaleY(.97) translateY(-4px); }
   to { opacity: 1; transform: none; }
@@ -175,6 +186,103 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 @media (prefers-reduced-motion: reduce) {
   .nn-pdf-page-flash { animation: none; }
+}
+
+/* M5 — pdf.js text layer. Sits above the canvas, below the ink layer.
+   Spans use `color: transparent` so the glyphs are invisible but selectable.
+   `::selection` shows a lime tint to indicate where text was selected.
+   `pointer-events: none` on the container keeps ink drawing unblocked in
+   drawing mode; the container itself gets pe:auto only in hand/read tool. */
+.nn-textlayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 1;
+  line-height: 1;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 2; /* canvas z0, highlights z1, text z2, ink canvas z3 */
+  /* pdf.js-standard model: the container NEVER intercepts pointer events, so
+     the full-page text layer can't swallow clicks meant for note pins /
+     highlights below it. In hand mode the glyph spans opt back in (rule below)
+     to keep text selectable while clicks in the gaps fall through. */
+  pointer-events: none;
+}
+/* The variable chain below is the OFFICIAL pdf.js text-layer CSS contract
+   (pdf_viewer.css of the vendored version, adapted to .nn-textlayer). The
+   vendored TextLayer sets per-span `--font-height` (+ left/top in % of the
+   page) and the layer-level `--total-scale-factor`; the FONT SIZE ITSELF must
+   come from the `calc(var(--text-scale-factor) * var(--font-height))` rule —
+   without it spans inherit a fixed font-size and every line renders compressed
+   /offset (the "selection is crooked" bug). Do NOT hand-roll/simplify this. */
+.nn-textlayer {
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.nn-textlayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.nn-textlayer > :not(.markedContent),
+.nn-textlayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.nn-textlayer .markedContent {
+  display: contents;
+}
+.nn-textlayer span[role='img'] {
+  user-select: none;
+  cursor: default;
+}
+.nn-textlayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.nn-textlayer.selecting .endOfContent {
+  top: 0;
+}
+/* Hand mode: only the glyph spans receive pointer events (selection works);
+   gaps between spans stay click-through so pins/highlights are reachable. The
+   endOfContent sentinel also opts in — during an active drag (`.selecting`,
+   toggled on pointerdown) it stretches over the page so the selection keeps
+   extending when the pointer drifts past a line's last glyph. */
+.nn-textlayer[data-hand="1"] span,
+.nn-textlayer[data-hand="1"] .endOfContent {
+  pointer-events: auto;
+}
+.nn-textlayer ::selection {
+  background: color-mix(in srgb, var(--lime-500) 38%, transparent);
+  /* The GLOBAL `::selection { color: #fff }` would repaint the transparent
+     glyph spans WHITE while selected (a ghost double of the canvas text) —
+     keep them invisible: only the tint band shows. */
+  color: transparent;
+}
+/* M5 — mark highlight flash (brief outline on the highlight rect when user
+   jumps to it from the Разметка panel). */
+@keyframes nn-mark-flash {
+  0% { outline: 2px solid var(--lime-500); outline-offset: 1px; }
+  100% { outline: 2px solid transparent; outline-offset: 1px; }
+}
+.nn-mark-flash {
+  animation: nn-mark-flash 1400ms ease forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-mark-flash { animation: none; }
 }
 
 /* Shared rendered-card display CSS — applied via `nn-rendered` on every SafeHtml
@@ -359,6 +467,234 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-msg-time {
     opacity: 0.6;
   }
+}
+
+/* ── Notebook workspace — production polish (M5-T3) ─────────────────────── */
+
+/* Thin themed scrollbars for the three workspace panels + marks panel +
+   chat transcript. Apply .nn-scroll (already declared above for webkit)
+   — this block widens the definition for Firefox via scrollbar-width. */
+.nn-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
+}
+
+/* Workspace panel separators: strictly 1-px ink-200 lines. */
+.nn-panel-sep {
+  border: none;
+  width: 1px;
+  background: var(--border);
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+/* Reader background — a touch darker than surface to visually ground the page
+   sheets, while remaining comfortable for reading. */
+.nn-reader-bg {
+  background: var(--ink-950);
+}
+[data-theme="light"] .nn-reader-bg {
+  background: var(--surface-3);
+}
+
+/* PDF page sheet — elevated card look. The page wrapper gets a border + shadow
+   so it reads as a physical sheet floating above the reader chrome. Zoom
+   transition: scale commits are instant; the CSS transition gives a 120 ms
+   settle feel without blocking interaction. */
+.nn-pdf-page {
+  background: #ffffff; /* PDF content is always on white */
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(0,0,0,0.06);
+  transition: box-shadow 150ms ease;
+}
+[data-theme="light"] .nn-pdf-page {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12), 0 4px 16px rgba(0,0,0,0.08);
+  border-color: rgba(0,0,0,0.1);
+}
+
+/* Frosted toolbar container — one compact sticky row above the reader. Uses
+   backdrop-filter when available; falls back to a solid surface. */
+.nn-reader-toolbar {
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-reader-toolbar { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--surface); }
+}
+[data-theme="light"] .nn-reader-toolbar {
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+/* Toolbar group separator (1-px vertical rule between groups). */
+.nn-tb-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  flex-shrink: 0;
+  margin: 0 1px;
+}
+
+/* 36-px icon button inside the toolbar — compact, touch-friendly.
+   Active state: lime tint.  Disabled: dim + no pointer events. */
+.nn-tb-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+}
+.nn-tb-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.nn-tb-btn.active,
+.nn-tb-btn[aria-pressed="true"] {
+  border-color: var(--lime-500);
+  background: color-mix(in srgb, var(--lime-500) 16%, transparent);
+  color: var(--lime-300);
+}
+.nn-tb-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Save-state dot: pulse animation when saving. */
+@keyframes nn-save-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.nn-save-dot-saving {
+  animation: nn-save-pulse 1s ease infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-save-dot-saving { animation: none; }
+}
+
+/* Sources rail rows — quiet, sidebar-style. Selected row = 3-px lime left bar
+   + subtle surface-2 bg. Hover reveals rename/delete (nn-deck-row-actions pattern). */
+.nn-source-row {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: background 100ms ease;
+  position: relative;
+  border-left: 3px solid transparent;
+}
+.nn-source-row:hover {
+  background: var(--surface-2);
+}
+.nn-source-row.active {
+  border-left-color: var(--lime-500);
+  background: color-mix(in srgb, var(--lime-500) 7%, var(--surface-2));
+}
+.nn-source-row-actions {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.nn-source-row:hover .nn-source-row-actions,
+.nn-source-row-actions:focus-within {
+  opacity: 1;
+}
+
+/* SelectionPopover — arrow indicator below the pill. */
+.nn-sel-arrow {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 12px;
+  height: 6px;
+  overflow: hidden;
+}
+.nn-sel-arrow::after {
+  content: '';
+  display: block;
+  width: 10px;
+  height: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transform: rotate(45deg) translateY(-7px);
+  transform-origin: center;
+  box-shadow: var(--shadow-sm);
+}
+
+/* MarksPanel row hover — reveal action icons. */
+.nn-mark-row { position: relative; }
+.nn-mark-row-actions {
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+.nn-mark-row:hover .nn-mark-row-actions {
+  opacity: 1;
+}
+
+/* QuickCardDialog backdrop blur. */
+.nn-dialog-backdrop {
+  backdrop-filter: blur(4px) brightness(0.7);
+  -webkit-backdrop-filter: blur(4px) brightness(0.7);
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-dialog-backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(0,0,0,0.6); }
+}
+
+/* Mobile workspace tab bar — active indicator as a lime underline pill. */
+.nn-ws-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  position: relative;
+  transition: color 100ms ease;
+  white-space: nowrap;
+}
+.nn-ws-tab:hover { color: var(--text); }
+.nn-ws-tab.active {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+/* Empty state — one consistent pattern: muted icon centred + 1-line hint. */
+.nn-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 1;
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--text-dim);
+}
+.nn-empty-state-icon {
+  opacity: 0.45;
+}
+.nn-empty-state-hint {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  max-width: 240px;
+  margin: 0;
 }
 
 /* Code-block copy button (B3) — injected by decorateCodeBlocks() AFTER the

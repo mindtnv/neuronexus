@@ -22,7 +22,7 @@
 // embedding; these routes only enqueue.
 
 import { Elysia, t } from 'elysia';
-import { and, asc, count, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNull, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import {
   cardSources,
@@ -33,17 +33,25 @@ import {
   notebooks,
   sourceAnnotations,
   sourceChunks,
+  sourceMarks,
   sources,
+  type Db,
   type Source,
 } from '@neuronexus/db';
 import {
   ANNOTATION_MAX_POINTS,
   ANNOTATION_MAX_STROKES,
+  MARK_NOTE_MAX,
+  MARK_QUOTE_MAX,
+  MARK_RECTS_MAX,
   MARKED_TEXT_MAX,
+  SOURCE_MARK_COLORS,
   SOURCE_MIME_ALLOWLIST,
   SOURCE_MIME_TO_KIND,
   type InkStroke,
+  type MarkRect,
   type PageAnnotations,
+  type SourceMarkKind,
   type SourceMime,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
@@ -51,6 +59,10 @@ import { env } from '../env.ts';
 import { rootLogger } from '../logger.ts';
 import { deleteObject, getObjectBytes, headSize, presignUpload } from '../storage.ts';
 import { enqueueSource, stashInlineText } from '../ai/source-ingest.ts';
+import { isChatEnabled } from '../ai/openai-client.ts';
+import { suggestCard } from '../ai/suggest-card.ts';
+import { resolveNoteTypeForCreate, enqueueToolCardsForIndex } from '../ai/tools.ts';
+import { resolveNoteCreate, insertNoteAndCards } from './notes.ts';
 
 /** S3 key for an uploaded source's bytes — `source/{uuid}` namespace (T3). */
 function sourceKeyFor(sourceId: string): string {
@@ -89,6 +101,21 @@ function withProgress(source: Source, indexed: number): Record<string, unknown> 
 const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
 
 /**
+ * Leniency band for normalized coordinates (S3 / M5.1): `setPointerCapture`
+ * keeps streaming pointermoves slightly OUTSIDE the canvas, so an ink point or
+ * selection rect can land at e.g. -0.004 / 1.012. We CLAMP such small overflows
+ * into [0,1] (mutating the validated-and-persisted copy) instead of rejecting
+ * the whole page payload; only a GROSS overflow beyond this band (or a
+ * NaN/±Inf/non-number) is rejected. Mirrors the web-side `canvasToNorm` clamp.
+ */
+const COORD_OVERFLOW_TOLERANCE = 0.05;
+
+/** Clamp a value into [0,1]. Caller guarantees `n` is a finite number. */
+function clamp01(n: number): number {
+  return n < 0 ? 0 : n > 1 ? 1 : n;
+}
+
+/**
  * Structural validation of a PUT annotations body's strokes (M4). Rejects
  * malformed ink before it reaches the DB: each stroke must declare a known tool,
  * a `#rrggbb` color, a finite positive width, and a flat `points` list of finite
@@ -118,11 +145,52 @@ function validateStrokes(body: unknown): boolean {
     for (let i = 0; i < s.points.length; i++) {
       const n = s.points[i];
       if (typeof n !== 'number' || !Number.isFinite(n)) return false;
-      // x/y (i % 3 === 0 or 1) are normalized page coordinates clamped to [0,1].
-      if (i % 3 !== 2 && (n < 0 || n > 1)) return false;
+      // x/y (i % 3 === 0 or 1) are normalized page coordinates. A small overflow
+      // (|n| within the tolerance band) is CLAMPED into [0,1] in place — the
+      // persisted strokes carry the clamped values; a gross overflow rejects.
+      if (i % 3 !== 2 && (n < 0 || n > 1)) {
+        if (n < -COORD_OVERFLOW_TOLERANCE || n > 1 + COORD_OVERFLOW_TOLERANCE) return false;
+        s.points[i] = clamp01(n);
+      }
     }
     totalPoints += s.points.length / 3;
     if (totalPoints > ANNOTATION_MAX_POINTS) return false;
+  }
+  return true;
+}
+
+/** A Drizzle transaction handle (the arg passed to `db.transaction`). */
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
+
+/** Per-source cap on the number of marks (DoS guard) → 409 over the line. */
+const MARKS_PER_SOURCE_CAP = 2000;
+
+const MARK_KINDS = new Set<SourceMarkKind>(['highlight', 'note']);
+const MARK_COLORS = new Set<string>(SOURCE_MARK_COLORS);
+
+/**
+ * Structural validation of a mark's `rects` payload (M5). Mirrors
+ * `validateStrokes`'s plain-boolean style: 1..MARK_RECTS_MAX rects, each with
+ * finite x/y/w/h in [0,1] (normalized page coords). Returns `true` for a
+ * well-formed `MarkRect[]`. The kind/color/quote/note caps are checked at the
+ * route (they map to distinct error fields); this guards only the geometry.
+ */
+function validateMarkRects(raw: unknown): raw is MarkRect[] {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > MARK_RECTS_MAX) return false;
+  for (const r of raw) {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
+    const rect = r as Partial<MarkRect>;
+    // Same S3 leniency as validateStrokes: a small overflow is CLAMPED into
+    // [0,1] in place (the persisted rect carries the clamped value); a gross
+    // overflow or a non-finite value rejects.
+    for (const k of ['x', 'y', 'w', 'h'] as const) {
+      const v = rect[k];
+      if (typeof v !== 'number' || !Number.isFinite(v)) return false;
+      if (v < 0 || v > 1) {
+        if (v < -COORD_OVERFLOW_TOLERANCE || v > 1 + COORD_OVERFLOW_TOLERANCE) return false;
+        rect[k] = clamp01(v);
+      }
+    }
   }
   return true;
 }
@@ -760,7 +828,431 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
         markedText: t.Optional(t.String()),
       }),
     },
+  )
+  // ── reading-workflow text marks (M5): highlight / note CRUD ──────────────────
+  // A `source_marks` row is a TEXT-selection highlight or place-anchored note
+  // (distinct from the M4 ink `source_annotations`). All routes are user-scoped
+  // (a foreign source / mark is a 404), validate geometry/kind/color in-handler
+  // (→ 400 `invalid_mark`), and feed `list_marked_passages` + quick-card.
+
+  // List a source's text marks, ordered (page ASC, created_at ASC). user-scoped 404.
+  .get(
+    '/:id/marks',
+    async ({ user, params, status }) => {
+      const [source] = await db
+        .select({ id: sources.id })
+        .from(sources)
+        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
+        .limit(1);
+      if (!source) return status(404, { error: 'not_found' });
+
+      const items = await db
+        .select()
+        .from(sourceMarks)
+        .where(and(eq(sourceMarks.sourceId, params.id), eq(sourceMarks.userId, user.id)))
+        .orderBy(asc(sourceMarks.page), asc(sourceMarks.createdAt));
+      return { items };
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+  // Create a text mark. Body `{ page, kind, quote, rects, color?, note? }`.
+  // kind 'note' allows an empty note body (''); kind 'highlight' stores null.
+  // Per-source cap → 409 `too_many_marks`. user-scoped 404 on a foreign source.
+  .post(
+    '/:id/marks',
+    async ({ user, params, body, status }) => {
+      const [source] = await db
+        .select({ id: sources.id })
+        .from(sources)
+        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
+        .limit(1);
+      if (!source) return status(404, { error: 'not_found' });
+
+      // Validation → 400 `invalid_mark`. Note kind 'card' is NOT in MARK_KINDS,
+      // so a client trying to create a card-marker directly is rejected here
+      // (card markers are OUTPUTS, written only by the quick-card route, S1).
+      if (!MARK_KINDS.has(body.kind as SourceMarkKind)) return status(400, { error: 'invalid_mark' });
+      const color = body.color ?? 'lime';
+      if (!MARK_COLORS.has(color)) return status(400, { error: 'invalid_mark' });
+      if (!validateMarkRects(body.rects)) return status(400, { error: 'invalid_mark' });
+      const quote = body.quote.slice(0, MARK_QUOTE_MAX);
+      if (quote.trim().length === 0) return status(400, { error: 'invalid_mark' });
+
+      // Per-source cap (DoS guard).
+      const [{ n }] = await db
+        .select({ n: count() })
+        .from(sourceMarks)
+        .where(and(eq(sourceMarks.sourceId, params.id), eq(sourceMarks.userId, user.id)));
+      if (n >= MARKS_PER_SOURCE_CAP) return status(409, { error: 'too_many_marks' });
+
+      const note =
+        body.kind === 'note' ? (body.note ?? '').slice(0, MARK_NOTE_MAX) : null;
+
+      const [row] = await db
+        .insert(sourceMarks)
+        .values({
+          userId: user.id,
+          sourceId: params.id,
+          page: body.page,
+          kind: body.kind,
+          quote,
+          rects: body.rects as MarkRect[],
+          color,
+          note,
+        })
+        .returning();
+      return row!;
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        // 1-based page (pdf.js convention); bounded to a sane ceiling.
+        page: t.Integer({ minimum: 1, maximum: 10000 }),
+        kind: t.String({ maxLength: 16 }),
+        quote: t.String({ minLength: 1, maxLength: MARK_QUOTE_MAX + 1 }),
+        // Geometry validated in-handler (validateMarkRects) — keep permissive so
+        // a bad shape returns our `invalid_mark` 400, not Elysia's generic error.
+        rects: t.Unknown(),
+        color: t.Optional(t.String({ maxLength: 16 })),
+        note: t.Optional(t.String({ maxLength: MARK_NOTE_MAX + 1 })),
+      }),
+    },
+  )
+  // Patch a mark's color and/or note (the popover editor). Nothing to change →
+  // 400 `nothing_to_update`. user-scoped 404 on a foreign source/mark. A kind
+  // 'card' marker is IMMUTABLE (it is an output, not a user emphasis) → any PATCH
+  // on it is rejected 400 `invalid_mark` (DELETE is still allowed). S1 / M5.1.
+  .patch(
+    '/:id/marks/:markId',
+    async ({ user, params, body, status }) => {
+      const hasColor = body.color !== undefined;
+      const hasNote = body.note !== undefined;
+      if (!hasColor && !hasNote) return status(400, { error: 'nothing_to_update' });
+      if (hasColor && !MARK_COLORS.has(body.color!)) return status(400, { error: 'invalid_mark' });
+
+      // Reject edits to a 'card' marker (immutable); 404 a foreign/missing mark.
+      const [existing] = await db
+        .select({ kind: sourceMarks.kind })
+        .from(sourceMarks)
+        .where(
+          and(
+            eq(sourceMarks.id, params.markId),
+            eq(sourceMarks.sourceId, params.id),
+            eq(sourceMarks.userId, user.id),
+          ),
+        )
+        .limit(1);
+      if (!existing) return status(404, { error: 'not_found' });
+      if (existing.kind === 'card') return status(400, { error: 'invalid_mark' });
+
+      const set: Record<string, unknown> = { updatedAt: new Date() };
+      if (hasColor) set.color = body.color;
+      if (hasNote) set.note = (body.note ?? '').slice(0, MARK_NOTE_MAX);
+
+      const [row] = await db
+        .update(sourceMarks)
+        .set(set)
+        .where(
+          and(
+            eq(sourceMarks.id, params.markId),
+            eq(sourceMarks.sourceId, params.id),
+            eq(sourceMarks.userId, user.id),
+          ),
+        )
+        .returning();
+      if (!row) return status(404, { error: 'not_found' });
+      return row;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        markId: t.String({ format: 'uuid' }),
+      }),
+      body: t.Object({
+        color: t.Optional(t.String({ maxLength: 16 })),
+        note: t.Optional(t.String({ maxLength: MARK_NOTE_MAX + 1 })),
+      }),
+    },
+  )
+  // Delete a mark. user-scoped 404 on a foreign source/mark.
+  .delete(
+    '/:id/marks/:markId',
+    async ({ user, params, status }) => {
+      const [row] = await db
+        .delete(sourceMarks)
+        .where(
+          and(
+            eq(sourceMarks.id, params.markId),
+            eq(sourceMarks.sourceId, params.id),
+            eq(sourceMarks.userId, user.id),
+          ),
+        )
+        .returning({ id: sourceMarks.id });
+      if (!row) return status(404, { error: 'not_found' });
+      return { ok: true };
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        markId: t.String({ format: 'uuid' }),
+      }),
+    },
+  )
+  // ── quick card with reading provenance (M5) ──────────────────────────────────
+  // Create ONE Basic flashcard from a reading selection + auto-link it to the
+  // source passage(s) it came from — note+cards insert AND provenance edges in
+  // ONE transaction. The note type resolves LIVE (reuse resolveNoteTypeForCreate);
+  // chunks resolve user-scoped by (source_id, page) exact match (capped
+  // CARD_SOURCE_LINK_CAP). With NO page or no page-matched chunk we still write
+  // ONE edge carrying sourceId + notebookId (sourceChunkId NULL — manual reading
+  // provenance, allowed by the schema). Returns `{ noteId, cardIds }`.
+  .post(
+    '/:id/quick-card',
+    async ({ user, params, body, status }) => {
+      const [source] = await db
+        .select({ id: sources.id, notebookId: sources.notebookId })
+        .from(sources)
+        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
+        .limit(1);
+      if (!source) return status(404, { error: 'not_found' });
+
+      // Resolve the builtin Basic note type LIVE (legacy-id-safe, M-hardening).
+      const noteType = await resolveNoteTypeForCreate(user.id, null);
+      if (!noteType.ok) return status(400, { error: 'note_type_not_found' });
+
+      // Map front/back onto the Basic type's REAL field names case-insensitively.
+      const byLower = new Map(noteType.fields.map((f) => [f.name.toLowerCase(), f.name]));
+      const frontKey = byLower.get('front');
+      const backKey = byLower.get('back');
+      if (!frontKey || !backKey) return status(400, { error: 'note_type_not_found' });
+      const fieldValues = { [frontKey]: body.front, [backKey]: body.back };
+
+      // Authorize deck + sanitize + generate (the SAME path as POST /notes).
+      const resolved = await resolveNoteCreate(user.id, {
+        deckId: body.deckId,
+        noteTypeId: noteType.id,
+        fieldValues,
+      });
+      if (!resolved.ok) return status(400, { error: resolved.error });
+      if (resolved.generated.length === 0) return status(400, { error: 'empty_card' });
+
+      // Resolve the page-matched source chunks (user-scoped) for provenance — at
+      // most CARD_SOURCE_LINK_CAP, in position order. Only when a page is given.
+      const chunkRows =
+        body.page !== undefined
+          ? await db
+              .select({ id: sourceChunks.id })
+              .from(sourceChunks)
+              .where(
+                and(
+                  eq(sourceChunks.userId, user.id),
+                  eq(sourceChunks.sourceId, params.id),
+                  eq(sourceChunks.page, body.page),
+                ),
+              )
+              .orderBy(asc(sourceChunks.position))
+              .limit(env.ai.CARD_SOURCE_LINK_CAP)
+          : [];
+
+      // A card MARKER (S1 / M5.1): when the client passes the selection `rects`
+      // (and a page), drop a kind:'card' source_marks row anchored at the
+      // selection so the reader can show WHERE this card was created. Validate
+      // the geometry up front (→ 400 invalid_mark) so a bad payload never aborts
+      // the in-tx insert; the marker quote is the card's Back excerpt (≤300),
+      // falling back to the request quote. No rects/page ⇒ no marker (graceful).
+      const wantMarker = body.rects !== undefined && body.page !== undefined;
+      if (body.rects !== undefined && !validateMarkRects(body.rects)) {
+        return status(400, { error: 'invalid_mark' });
+      }
+      const markerQuote = excerptFront(body.back || body.quote || body.front, 300);
+
+      const now = new Date();
+      const result = await db.transaction(async (tx) => {
+        const created = await insertNoteAndCards(tx, {
+          userId: user.id,
+          deckId: body.deckId,
+          noteTypeId: noteType.id,
+          sanitized: resolved.sanitized,
+          tags: [],
+          generated: resolved.generated,
+          now,
+        });
+        const cardIds = created.cards.map((c) => c.id);
+        await writeQuickCardProvenance(tx, {
+          userId: user.id,
+          cardIds,
+          chunkIds: chunkRows.map((c) => c.id),
+          sourceId: params.id,
+          notebookId: source.notebookId,
+        });
+        // Insert the card marker AFTER the note/cards + provenance, in the SAME
+        // tx, anchored to the FIRST card. The quote is non-empty (front is a
+        // required non-empty body field, so the fallback chain never yields '').
+        let markId: string | undefined;
+        if (wantMarker && cardIds.length > 0) {
+          const [markRow] = await tx
+            .insert(sourceMarks)
+            .values({
+              userId: user.id,
+              sourceId: params.id,
+              page: body.page!,
+              kind: 'card',
+              quote: markerQuote,
+              rects: body.rects as MarkRect[],
+              color: 'lime',
+              cardId: cardIds[0]!,
+            })
+            .returning({ id: sourceMarks.id });
+          markId = markRow?.id;
+        }
+        return { noteId: created.note.id, cardIds, markId };
+      });
+
+      // RAG index enqueue AFTER commit (same discipline as the notes route/tools).
+      enqueueToolCardsForIndex(result.cardIds);
+      rootLogger.info(
+        { sourceId: params.id, noteId: result.noteId, cards: result.cardIds.length },
+        'source.quick_card',
+      );
+      return result;
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        deckId: t.String({ format: 'uuid' }),
+        front: t.String({ minLength: 1, maxLength: 65536 }),
+        back: t.String({ maxLength: 65536 }),
+        page: t.Optional(t.Integer({ minimum: 1, maximum: 10000 })),
+        quote: t.Optional(t.String({ maxLength: MARK_QUOTE_MAX + 1 })),
+        // Selection rects → a kind:'card' marker anchored in the reader (S1).
+        // Geometry validated in-handler; keep permissive so a bad shape returns
+        // our `invalid_mark` 400, not Elysia's generic error. Marker is written
+        // only when BOTH rects and page are present.
+        rects: t.Optional(t.Unknown()),
+      }),
+    },
+  )
+  // ── AI formulate (M5): excerpt → {front, back} suggestion ─────────────────────
+  // 503 `ai_disabled` PRE-FLUSH when chat is off; otherwise the cheap non-stream
+  // complete() (timeout CHAT_TITLE_TIMEOUT_MS) with STRICT-JSON defensive parsing.
+  // NEVER throws into Elysia: a parse/gateway failure → 502 `suggest_failed` so the
+  // client keeps the user's manual Front/Back values. user-scoped 404 on the source.
+  .post(
+    '/:id/suggest-card',
+    async ({ user, params, body, status, store }) => {
+      if (!isChatEnabled()) return status(503, { error: 'ai_disabled' });
+
+      const [source] = await db
+        .select({ title: sources.title })
+        .from(sources)
+        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
+        .limit(1);
+      if (!source) return status(404, { error: 'not_found' });
+
+      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+      // Cards are written in the USER'S language (S2 / M5.1), not the source's —
+      // the body carries the active app locale; absent defaults to 'ru' (the
+      // n=1 RU-primary app default).
+      const suggestion = await suggestCard(body.quote, {
+        sourceTitle: source.title,
+        locale: body.locale ?? 'ru',
+        log,
+      });
+      if (!suggestion) return status(502, { error: 'suggest_failed' });
+      return suggestion;
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        quote: t.String({ minLength: 1, maxLength: MARK_QUOTE_MAX + 1 }),
+        page: t.Optional(t.Integer({ minimum: 1, maximum: 10000 })),
+        locale: t.Optional(t.Union([t.Literal('en'), t.Literal('ru')])),
+      }),
+    },
   );
+
+/**
+ * Write quick-card reading provenance inside the caller's tx. Mirrors
+ * ai/provenance.ts `writeCardProvenance` but for the MANUAL reading path:
+ *  - page-matched chunks (capped CARD_SOURCE_LINK_CAP) → one edge per
+ *    (card × chunk) with the full chain (sourceChunkId, sourceId, notebookId),
+ *    conversationId/messageId NULL.
+ *  - NO page / no matching chunk → ONE fallback edge per card carrying only
+ *    sourceId + notebookId (sourceChunkId NULL — allowed; the partial unique
+ *    `card_sources_card_chunk_uq` only covers non-NULL chunk edges, so we
+ *    CHECK-then-INSERT to avoid duplicating the fallback edge on a re-run).
+ */
+async function writeQuickCardProvenance(
+  tx: Tx,
+  args: {
+    userId: string;
+    cardIds: string[];
+    chunkIds: string[];
+    sourceId: string;
+    notebookId: string;
+  },
+): Promise<void> {
+  const { userId, cardIds, chunkIds, sourceId, notebookId } = args;
+  if (cardIds.length === 0) return;
+
+  if (chunkIds.length > 0) {
+    const values = cardIds.flatMap((cardId) =>
+      chunkIds.map((chunkId) => ({
+        userId,
+        cardId,
+        sourceChunkId: chunkId,
+        sourceId,
+        notebookId,
+        conversationId: null,
+        messageId: null,
+      })),
+    );
+    // Idempotent on the live-edge partial unique (cardId, sourceChunkId) WHERE
+    // source_chunk_id IS NOT NULL — pass the predicate via `where` (the same
+    // arbiter rule as ai/provenance.ts).
+    await tx
+      .insert(cardSources)
+      .values(values)
+      .onConflictDoNothing({
+        target: [cardSources.cardId, cardSources.sourceChunkId],
+        where: sql`source_chunk_id IS NOT NULL`,
+      });
+    return;
+  }
+
+  // Fallback (no page / no page-matched chunk): one source-only edge per card.
+  // The partial unique does NOT cover NULL-chunk rows, so check-then-insert
+  // (inside this tx) keeps a re-run from duplicating the fallback edge.
+  for (const cardId of cardIds) {
+    const [existing] = await tx
+      .select({ id: cardSources.id })
+      .from(cardSources)
+      .where(
+        and(
+          eq(cardSources.userId, userId),
+          eq(cardSources.cardId, cardId),
+          eq(cardSources.sourceId, sourceId),
+          isNull(cardSources.sourceChunkId),
+        ),
+      )
+      .limit(1);
+    if (existing) continue;
+    await tx.insert(cardSources).values({
+      userId,
+      cardId,
+      sourceChunkId: null,
+      sourceId,
+      notebookId,
+      conversationId: null,
+      messageId: null,
+    });
+  }
+}
 
 /** One-line front excerpt: collapse whitespace, cap to `max` chars. */
 function excerptFront(text: string, max: number): string {

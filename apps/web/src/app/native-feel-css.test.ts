@@ -15,23 +15,31 @@ const cssNoComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
 
 // ── (a) user-select:none / -webkit-touch-callout:none must ONLY appear inside
 //        a .nn-chrome selector block — never on body, html, .nn-rendered, etc.
-// Strategy: split on .nn-chrome { ... } blocks, remove them, then assert the
-// dangerous properties are absent from the remainder.
+// Exception (M5.1): `.nn-textlayer …` rules — the OFFICIAL pdf.js text-layer
+// CSS contract requires user-select:none on `span[role='img']` (non-text
+// image-role spans) and `.endOfContent` (a selection sentinel). The text layer
+// is exactly the surface where selectability is deliberately MANAGED — glyph
+// spans stay selectable; only the non-text helpers opt out. Removing those
+// rules breaks pdf.js selection mechanics, so they are allow-listed here.
+// Strategy: split on .nn-chrome { ... } / .nn-textlayer… { ... } blocks,
+// remove them, then assert the dangerous properties are absent elsewhere.
+const ALLOWED_BLOCKS_RE = /(?:\.nn-chrome|\.nn-textlayer[^{]*)\s*\{[^}]*\}/g;
+
 describe('PM-2 invariant: user-select:none scoped ONLY to .nn-chrome', () => {
   test('user-select:none does not appear outside a .nn-chrome block', () => {
-    // Remove all .nn-chrome { ... } rule blocks (handles one level of nesting)
-    const withoutChrome = cssNoComments.replace(/\.nn-chrome\s*\{[^}]*\}/g, '');
+    // Remove all allow-listed rule blocks (handles one level of nesting)
+    const withoutChrome = cssNoComments.replace(ALLOWED_BLOCKS_RE, '');
     // Must find no bare user-select:none outside chrome blocks
     expect(withoutChrome).not.toMatch(/user-select\s*:\s*none/);
   });
 
   test('-webkit-touch-callout:none does not appear outside a .nn-chrome block', () => {
-    const withoutChrome = cssNoComments.replace(/\.nn-chrome\s*\{[^}]*\}/g, '');
+    const withoutChrome = cssNoComments.replace(ALLOWED_BLOCKS_RE, '');
     expect(withoutChrome).not.toMatch(/-webkit-touch-callout\s*:\s*none/);
   });
 
   test('-webkit-user-select:none does not appear outside a .nn-chrome block', () => {
-    const withoutChrome = cssNoComments.replace(/\.nn-chrome\s*\{[^}]*\}/g, '');
+    const withoutChrome = cssNoComments.replace(ALLOWED_BLOCKS_RE, '');
     expect(withoutChrome).not.toMatch(/-webkit-user-select\s*:\s*none/);
   });
 });

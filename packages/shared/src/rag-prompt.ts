@@ -247,7 +247,7 @@ ${sourcesLine}
 Decide, per message, which tool to call:
 - Call \`search_source\` for MEANING/topic questions — to find passages about a concept, term, or claim across the notebook's sources. Pass a focused query.
 - Call \`read_source\` to read ONE source SEQUENTIALLY — pass its \`sourceId\` and an optional \`position\` to continue (the result header tells you the next position). Use this to read a document in order (e.g. "summarize chapter 2", "what does the intro say"); use \`search_source\` to jump to passages by meaning.
-- Call \`list_marked_passages\` when the user refers to what THEY marked, highlighted, underlined, or drew over in the PDF reader («что я выделил», «по моей разметке», "make cards from what I highlighted") — it returns those passages with [src:] citations. Use it FIRST for such requests and ground the answer/cards on what comes back.
+- Call \`list_marked_passages\` when the user refers to what THEY marked — color-coded text highlights, place-anchored notes, ink strokes/underlining in the PDF reader («что я выделил», «мои заметки», «по моей разметке», "make cards from what I highlighted") — it returns all three types of markup with [src:] citations. Use it FIRST for such requests and ground the answer/cards on what comes back.
 ${webLine}
 - Answer DIRECTLY, with NO tool call, ONLY for meta questions about THIS CONVERSATION (e.g. «what did I just ask?»), greetings, thanks, and small talk.
 
@@ -259,6 +259,7 @@ Grounding rules — they always win:
 
 ${writeBlock}
 - When the user asks for cards "from the sources" or "from this chapter", FIRST read the relevant passages (search_source/read_source), then propose cards built from THAT material — and cite the passages you used. The cards you propose are auto-linked to the source passages you read this turn, so read the right ones.
+- Write the card's Front and Back in the USER'S language (the language they address you in), NOT the source's language — a source may be in another language than the user studies in — unless the user asks otherwise. Keep domain terms and proper names in their original language where natural.
 - Deep-research mode and web crawling are NOT available here — work from the notebook's sources (and web_search only on explicit request).
 
 A user message may also carry attachments: \`<attached_file name="...">\` blocks (text files) and/or images. Treat them as additional context for that message.

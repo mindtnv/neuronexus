@@ -20,6 +20,7 @@ import {
   noteTypes,
   sourceAnnotations,
   sourceChunks,
+  sourceMarks,
   sources,
   type Citation,
   type Db,
@@ -1265,14 +1266,18 @@ async function sourceChunkCount(userId: string, sourceId: string): Promise<numbe
 
 // ── list_marked_passages (read, NOTEBOOK mode) ───────────────────────────────
 //
-// Read the user's PDF-reader INK markup: the text they highlighted/underlined in
-// the reader, per source/page (`source_annotations.marked_text`, extracted on the
-// client from under the strokes). Use this when the user refers to what THEY
+// Read the user's reader markup — three sources MERGED per (source, page) in page
+// order (M5): (1) INK marked_text (`source_annotations.marked_text`, extracted on
+// the client from under the highlighter/pen strokes — the M4 path), (2) TEXT
+// HIGHLIGHTS and (3) place-anchored NOTES (`source_marks`, the M5 selection
+// popover). Highlight/note rows carry the selected `quote` (+ note body); ink
+// rows carry the under-stroke text. Use this when the user refers to what THEY
 // marked ("что я выделил", "по моей разметке", "make cards from what I
-// highlighted"). Grounding: each annotated page's `marked_text` is matched to the
-// page's `source_chunks` (exact page match, user-scoped) so [src:] citations +
-// card provenance work just like search_source/read_source. Registered ONLY in
-// notebook mode (after read_source).
+// highlighted"). Grounding: each MARKED page's `source_chunks` are matched ONCE
+// per page (exact page match, user-scoped) so [src:] citations + card provenance
+// work just like search_source/read_source — a page with both ink and a mark
+// contributes its chunks once (deduped). Registered ONLY in notebook mode (after
+// read_source).
 
 /** Per-row cap on the rendered marked text (the whole result is capText'd too). */
 const MARKED_PASSAGE_ROW_CHARS = 400;
@@ -1328,9 +1333,9 @@ const listMarkedPassages: Tool = {
     }
 
     try {
-      // Annotated pages with non-empty marked text, JOINed to the source title.
-      // user-scoped + source_id IN scope; ordered by source then page.
-      const rows = await db
+      // (1) INK marked_text rows (M4) — non-empty, user-scoped + source_id IN
+      // scope, JOINed to the source title; ordered by source then page.
+      const inkRows = await db
         .select({
           sourceId: sourceAnnotations.sourceId,
           page: sourceAnnotations.page,
@@ -1348,51 +1353,131 @@ const listMarkedPassages: Tool = {
         )
         .orderBy(asc(sourceAnnotations.sourceId), asc(sourceAnnotations.page));
 
-      if (rows.length === 0) {
+      // (2)+(3) TEXT highlight/note marks (M5) — non-empty quote, user-scoped +
+      // source_id IN scope, JOINed to the title; ordered by source, page, created.
+      const markRows = await db
+        .select({
+          sourceId: sourceMarks.sourceId,
+          page: sourceMarks.page,
+          kind: sourceMarks.kind,
+          quote: sourceMarks.quote,
+          note: sourceMarks.note,
+          sourceTitle: sources.title,
+          createdAt: sourceMarks.createdAt,
+        })
+        .from(sourceMarks)
+        .innerJoin(sources, eq(sources.id, sourceMarks.sourceId))
+        .where(
+          and(
+            eq(sourceMarks.userId, ctx.userId),
+            inArray(sourceMarks.sourceId, scope),
+            sql`length(trim(${sourceMarks.quote})) > 0`,
+            // EXCLUDE kind:'card' markers (M5.1) — they are OUTPUTS (where a card
+            // was created), not the user's emphasis, so they must not feed the
+            // model as "marked passages".
+            sql`${sourceMarks.kind} <> 'card'`,
+          ),
+        )
+        .orderBy(asc(sourceMarks.sourceId), asc(sourceMarks.page), asc(sourceMarks.createdAt));
+
+      if (inkRows.length === 0 && markRows.length === 0) {
         return { ok: true, text: 'No marked passages yet — the user has not highlighted anything in the reader.', citations: [] };
       }
 
-      // For each annotated page, resolve the page's source_chunks (exact page
-      // match, user-scoped) for grounding/citations. A page with no matching chunk
-      // is still rendered (the marked text is shown) but contributes no citation.
+      // Merge per (source, page): collect every marked-text line (ink first, then
+      // highlight/note marks) grouped by page, AND the distinct set of marked
+      // pages per source (so each page's source_chunks resolve ONCE — a page with
+      // both ink and a mark grounds its chunks a single time). Build the ordered
+      // page list per source from BOTH streams.
+      const cap = (s: string): string =>
+        s.length > MARKED_PASSAGE_ROW_CHARS ? `${s.slice(0, MARKED_PASSAGE_ROW_CHARS)}…` : s;
+
+      // Per-source ordered page list (dedup, ascending) + title.
+      const sourceOrder: string[] = [];
+      const titleBySource = new Map<string, string>();
+      const pagesBySource = new Map<string, number[]>();
+      const noteByPage = (sourceId: string, page: number) => `${sourceId}#${page}`;
+      // Marked-text lines keyed by (source, page) so they render together in page
+      // order under their page.
+      const linesByPage = new Map<string, string[]>();
+
+      const ensureSource = (sourceId: string, title: string): void => {
+        if (!titleBySource.has(sourceId)) {
+          titleBySource.set(sourceId, title);
+          sourceOrder.push(sourceId);
+          pagesBySource.set(sourceId, []);
+        }
+      };
+      const addPage = (sourceId: string, page: number): void => {
+        const pages = pagesBySource.get(sourceId)!;
+        if (!pages.includes(page)) pages.push(page);
+      };
+      const addLine = (sourceId: string, page: number, line: string): void => {
+        const key = noteByPage(sourceId, page);
+        const arr = linesByPage.get(key) ?? [];
+        arr.push(line);
+        linesByPage.set(key, arr);
+      };
+
+      for (const row of inkRows) {
+        ensureSource(row.sourceId, row.sourceTitle);
+        addPage(row.sourceId, row.page);
+        const marked = cap((row.markedText ?? '').trim());
+        addLine(row.sourceId, row.page, `«${row.sourceTitle}» — p.${row.page}: "${marked}"`);
+      }
+      for (const row of markRows) {
+        ensureSource(row.sourceId, row.sourceTitle);
+        addPage(row.sourceId, row.page);
+        const quote = cap(row.quote.trim());
+        if (row.kind === 'note') {
+          const note = (row.note ?? '').trim();
+          const suffix = note ? ` — ${cap(note)}` : '';
+          addLine(row.sourceId, row.page, `«${row.sourceTitle}» — p.${row.page} [заметка]: "${quote}"${suffix}`);
+        } else {
+          addLine(row.sourceId, row.page, `«${row.sourceTitle}» — p.${row.page} [выделение]: "${quote}"`);
+        }
+      }
+
+      // Render lines in (source, page) order; resolve each marked page's chunks
+      // ONCE for grounding/citations. A page with no matching chunk still renders
+      // its text but contributes no citation (unchanged mechanics).
       const lines: string[] = [];
       const citations: SourceCitation[] = [];
       const groundChunkIds: string[] = [];
-      for (const row of rows) {
-        const marked = (row.markedText ?? '').trim();
-        const capped =
-          marked.length > MARKED_PASSAGE_ROW_CHARS
-            ? `${marked.slice(0, MARKED_PASSAGE_ROW_CHARS)}…`
-            : marked;
-        lines.push(`«${row.sourceTitle}» — p.${row.page}: "${capped}"`);
+      for (const sourceId of sourceOrder) {
+        const pages = pagesBySource.get(sourceId)!.slice().sort((a, b) => a - b);
+        const title = titleBySource.get(sourceId)!;
+        for (const page of pages) {
+          for (const line of linesByPage.get(noteByPage(sourceId, page)) ?? []) lines.push(line);
 
-        const chunks = await db
-          .select({
-            id: sourceChunks.id,
-            position: sourceChunks.position,
-            text: sourceChunks.text,
-          })
-          .from(sourceChunks)
-          .where(
-            and(
-              eq(sourceChunks.userId, ctx.userId),
-              eq(sourceChunks.sourceId, row.sourceId),
-              eq(sourceChunks.page, row.page),
-            ),
-          )
-          .orderBy(asc(sourceChunks.position));
-        for (const c of chunks) {
-          groundChunkIds.push(c.id);
-          citations.push(
-            toSourceCitation(nb.notebookId, {
-              sourceChunkId: c.id,
-              sourceId: row.sourceId,
-              position: c.position,
-              page: row.page,
-              sourceTitle: row.sourceTitle,
-              text: c.text,
-            }),
-          );
+          const chunks = await db
+            .select({
+              id: sourceChunks.id,
+              position: sourceChunks.position,
+              text: sourceChunks.text,
+            })
+            .from(sourceChunks)
+            .where(
+              and(
+                eq(sourceChunks.userId, ctx.userId),
+                eq(sourceChunks.sourceId, sourceId),
+                eq(sourceChunks.page, page),
+              ),
+            )
+            .orderBy(asc(sourceChunks.position));
+          for (const c of chunks) {
+            groundChunkIds.push(c.id);
+            citations.push(
+              toSourceCitation(nb.notebookId, {
+                sourceChunkId: c.id,
+                sourceId,
+                position: c.position,
+                page,
+                sourceTitle: title,
+                text: c.text,
+              }),
+            );
+          }
         }
       }
 
@@ -1511,7 +1596,7 @@ function describeNoteTypes(rows: { name: string; fields: { name: string }[] }[])
  * name; `null` (omitted) resolves to the builtin Basic by `kind`. The error
  * message lists the available types so the model can self-correct.
  */
-async function resolveNoteTypeForCreate(
+export async function resolveNoteTypeForCreate(
   userId: string,
   noteTypeRef: string | null,
 ): Promise<

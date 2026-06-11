@@ -82,6 +82,9 @@ const notebooks = {
     cardsCount: '{count} cards',
     cardsLoading: 'Loading…',
     cardsEmpty: 'No cards from this source yet.',
+    // W5(a) — collapsible chat column.
+    chatCollapse: 'Collapse chat',
+    chatExpand: 'Expand chat',
   },
 
   // Center reader (M2 text mode + M4 PDF mode) — the active source's content.
@@ -106,6 +109,7 @@ const notebooks = {
     toolPen: 'Pen',
     toolHighlighter: 'Highlighter',
     toolEraser: 'Eraser',
+    toolSmartCard: 'Smart Card — drag to select, AI proposes a flashcard',
     fingerDraw: 'Draw with finger',
     undo: 'Undo',
     redo: 'Redo',
@@ -132,6 +136,50 @@ const notebooks = {
     tombstone: 'Source removed',
     untitled: 'Source',
     page: 'p. {n}',
+  },
+
+  // M5 — selection marks (highlights + notes) in the PDF reader.
+  marks: {
+    panelTitle: 'Markup',
+    panelEmpty: 'Select text in the PDF to highlight it or add a note.',
+    panelInkPage: 'p. {n} — drawing',
+    pageGroup: 'Page {n}',
+    highlight: 'Highlight',
+    note: 'Note',
+    delete: 'Delete',
+    deleteConfirm: 'Delete this mark?',
+    notePlaceholder: 'Add a note…',
+    noteSave: 'Save',
+    copyAction: 'Copy',
+    askAction: 'Ask',
+    cardAction: 'Card',
+    openCard: 'Open card',
+    color_lime: 'Lime',
+    color_amber: 'Amber',
+    color_rose: 'Rose',
+    color_sky: 'Sky',
+    color_violet: 'Violet',
+  },
+
+  // M5 — Quick card dialog (selection → flashcard).
+  quickcard: {
+    title: 'New card',
+    deckLabel: 'Deck',
+    deckPlaceholder: 'Select a deck…',
+    frontLabel: 'Front',
+    frontPlaceholder: 'Question…',
+    backLabel: 'Back',
+    backPlaceholder: 'Answer…',
+    formulateBtn: '✨ Formulate',
+    formulateHint: 'Generate with AI',
+    formulateError: 'Could not generate. Fill in manually.',
+    createBtn: 'Create card',
+    creating: 'Creating…',
+    createError: 'Could not create the card. Try again.',
+    created: 'Card created',
+    createdOpen: 'open',
+    source: 'p. {n} · {title}',
+    noDeck: 'No deck selected',
   },
 
   // Status badge + machine error codes (errorCode → status.<code>).

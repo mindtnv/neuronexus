@@ -18,6 +18,7 @@ import type {
   CardTemplate,
   Citation,
   FieldValues,
+  MarkRect,
   MessageAttachment,
   MessageGrounding,
   MessageMention,
@@ -787,6 +788,56 @@ export const sourceAnnotations = pgTable(
   ],
 );
 
+// ── source_marks ─────────────────────────────────────────────────────────────
+// Reading-workflow TEXT markup (M5): one row per text-selection highlight/note
+// in a source's reader. UNLIKE source_annotations (one row per page holding the
+// whole page's VECTOR ink), a mark is INDIVIDUALLY addressable (its own id —
+// the popover edits/deletes one mark) and anchors a TEXT selection: the
+// selected `quote` + the selection's bounding `rects` (normalized page coords,
+// the render anchor) + a palette `color`; `kind:'note'` adds a freeform `note`
+// body, `kind:'highlight'` leaves it null. `page` is 1-BASED (pdf.js). Both FKs
+// CASCADE (delete source/user drops its marks); `user_id` stays the first
+// conjunct on every query. Marks feed `list_marked_passages` alongside ink and
+// are the substrate for quick-card provenance.
+
+export const sourceMarks = pgTable(
+  'source_marks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    sourceId: uuid('source_id')
+      .notNull()
+      .references(() => sources.id, { onDelete: 'cascade' }),
+    // 1-based page index (pdf.js convention), matching source_annotations.
+    page: integer('page').notNull(),
+    kind: text('kind').notNull(), // 'highlight' | 'note' | 'card'
+    // Selected text (server-capped MARK_QUOTE_MAX); the AI-visible passage. For a
+    // 'card' marker (M5.1) this is the card's Back excerpt (or the request quote).
+    quote: text('quote').notNull(),
+    // Selection quads in normalized page coords (0..1) — the render anchor.
+    rects: jsonb('rects').notNull().$type<MarkRect[]>(),
+    // One of SOURCE_MARK_COLORS; defaults to the palette's first entry.
+    color: text('color').notNull().default('lime'),
+    // Freeform body for kind 'note' (capped MARK_NOTE_MAX); null for highlights.
+    note: text('note'),
+    // For kind 'card' (M5.1): the flashcard this marker anchors. ON DELETE
+    // CASCADE — a marker without its card is meaningless, so the marker dies with
+    // the card. NULL for highlight/note marks.
+    cardId: uuid('card_id').references(() => cards.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Per-source listing ordered (page, created_at) — the «Разметка» panel + the
+    // list_marked_passages merge both read by source then page.
+    index('source_marks_source_page_idx').on(t.sourceId, t.page),
+    index('source_marks_user_idx').on(t.userId),
+    index('source_marks_card_idx').on(t.cardId),
+  ],
+);
+
 // ── relations ──────────────────────────────────────────────────────────────
 
 export const profileRelations = relations(profile, ({ one }) => ({
@@ -882,6 +933,12 @@ export const sourceAnnotationsRelations = relations(sourceAnnotations, ({ one })
   source: one(sources, { fields: [sourceAnnotations.sourceId], references: [sources.id] }),
 }));
 
+export const sourceMarksRelations = relations(sourceMarks, ({ one }) => ({
+  user: one(user, { fields: [sourceMarks.userId], references: [user.id] }),
+  source: one(sources, { fields: [sourceMarks.sourceId], references: [sources.id] }),
+  card: one(cards, { fields: [sourceMarks.cardId], references: [cards.id] }),
+}));
+
 export const sourceChunksRelations = relations(sourceChunks, ({ one }) => ({
   user: one(user, { fields: [sourceChunks.userId], references: [user.id] }),
   source: one(sources, { fields: [sourceChunks.sourceId], references: [sources.id] }),
@@ -940,3 +997,5 @@ export type CardSource = typeof cardSources.$inferSelect;
 export type NewCardSource = typeof cardSources.$inferInsert;
 export type SourceAnnotation = typeof sourceAnnotations.$inferSelect;
 export type NewSourceAnnotation = typeof sourceAnnotations.$inferInsert;
+export type SourceMark = typeof sourceMarks.$inferSelect;
+export type NewSourceMark = typeof sourceMarks.$inferInsert;

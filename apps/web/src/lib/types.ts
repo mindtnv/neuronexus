@@ -3,9 +3,12 @@ import type {
   CardTemplate,
   FieldValues,
   IngestErrorCode,
+  MarkRect,
   NoteField,
   RenderKind,
   SourceKind,
+  SourceMarkColor,
+  SourceMarkKind,
   SourceStatus,
 } from '@neuronexus/shared';
 
@@ -215,6 +218,43 @@ export interface SourceLinkedCard {
   deckName: string;
   count: number;
   createdAt: string;
+}
+
+// ── Reading-workflow marks (M5) ───────────────────────────────────────────────
+
+/** One text-selection mark on a source (GET /sources/:id/marks). The server
+ *  returns the full row (including `userId` — the caller's own id, not a leak),
+ *  but the client only consumes the fields below; `rects` are normalized page
+ *  coords. */
+export interface SourceMark {
+  id: string;
+  sourceId: string;
+  /** 1-based page index (pdf.js convention). */
+  page: number;
+  kind: SourceMarkKind;
+  quote: string;
+  rects: MarkRect[];
+  color: SourceMarkColor;
+  /** Freeform body for kind 'note'; null for highlights. */
+  note: string | null;
+  /** W4: present for kind 'card' — the id of the linked card. */
+  cardId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /sources/:id/quick-card → the created note + its cards. */
+export interface QuickCardResult {
+  noteId: string;
+  cardIds: string[];
+  /** W4: set when the server created a source_marks row for the card. */
+  markId?: string;
+}
+
+/** POST /sources/:id/suggest-card → the AI-formulated front/back. */
+export interface SuggestCardResult {
+  front: string;
+  back: string;
 }
 
 export type Rating = 1 | 2 | 3 | 4;

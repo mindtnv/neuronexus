@@ -287,6 +287,8 @@ export const InkLayer = ({
   return (
     <canvas
       ref={canvasRef}
+      // M5 — marker for text-layer insertion-before and z-index ordering (z3).
+      data-ink-layer="1"
       width={Math.round(cssW * dpr)}
       height={Math.round(cssH * dpr)}
       onPointerDown={onPointerDown}
@@ -298,6 +300,7 @@ export const InkLayer = ({
         inset: 0,
         width: cssW,
         height: cssH,
+        zIndex: 3,
         // Hand tool → let the PDF scroll/zoom through; drawing tools → keep
         // scroll/pinch native but receive pointerdown for inking.
         pointerEvents: interactive ? 'auto' : 'none',

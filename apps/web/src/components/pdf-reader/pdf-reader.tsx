@@ -8,6 +8,13 @@
 // a devicePixelRatio ink overlay (InkLayer) persisted per (source,page) via a
 // debounced PUT; the under-stroke text is extracted (pdf-ink.ts) from the page's
 // lazily-cached text layer and stored as markedText so the AI can read the markup.
+//
+// M5 — adds:
+//  • pdf.js TextLayer per page (lazy, cached, freed with virtualization)
+//  • Highlights layer rendering from SourceMark rects
+//  • «Разметка» (marks) panel with page-grouped marks + ink pages
+//  • SelectionPopover (hand tool) for highlight / note / card / ask / copy actions
+//  • QuickCardDialog for creating flashcards from selections or marks
 
 import React, {
   forwardRef,
@@ -18,16 +25,26 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import type { InkStroke, PageAnnotations } from '@neuronexus/shared';
+import { useRouter } from 'next/navigation';
+import type { InkStroke, MarkRect, PageAnnotations, SourceMarkColor } from '@neuronexus/shared';
 import { ANNOTATION_MAX_STROKES, MARKED_TEXT_MAX } from '@neuronexus/shared';
-import { extractMarkedText, type PdfTextItem } from '@/lib/pdf-ink';
+import { extractMarkedText, textItemBBox, type PdfTextItem } from '@/lib/pdf-ink';
 import {
+  createMark,
+  deleteMark,
   fetchAnnotations,
+  fetchMarks,
   fetchSourceFile,
   saveAnnotation,
+  updateMark,
 } from '@/lib/pdf-annotations';
+import type { SourceMark } from '@/lib/types';
+import { useLocale } from '@/lib/i18n';
 import { InkLayer } from './ink-layer';
+import { MarksPanel } from './marks-panel';
+import { QuickCardDialog } from './quick-card';
 import { ReaderToolbar } from './toolbar';
+import { SelectionPopover, type SelectionInfo } from './selection-popover';
 import {
   DEFAULT_TOOL_SETTINGS,
   loadToolSettings,
@@ -55,11 +72,17 @@ export interface PdfReaderHandle {
 
 interface PdfReaderProps {
   sourceId: string;
+  sourceName: string;
   /** Initial page to scroll to (1-based) — from a citation / ?page= deep link. */
   initialPage?: number;
+  /** If defined, scroll + highlight this mark on mount (from ?mark= deep link). */
+  initialMarkId?: string;
   t: (key: string, params?: Record<string, string | number>) => string;
   /** Switch the reader panel back to the text-chunk view. */
   onMode: (m: 'pdf' | 'text') => void;
+  /** Called by «Спросить» to prefill the chat composer with a quote block. */
+  onAskChat?: (quote: string) => void;
+  chatEnabled?: boolean;
 }
 
 interface PageState {
@@ -74,12 +97,17 @@ const SAVE_DEBOUNCE_MS = 800;
 const POS_KEY = (id: string) => `nn:pdf:pos:${id}`;
 
 export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
-  ({ sourceId, initialPage, t, onMode }, ref) => {
+  ({ sourceId, sourceName, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false }, ref) => {
+    const router = useRouter();
+    const { locale } = useLocale();
     const containerRef = useRef<HTMLDivElement>(null);
     const pageElsRef = useRef<Map<number, HTMLDivElement>>(new Map());
     const pdfjsRef = useRef<any>(null);
     const docRef = useRef<PdfDocument | null>(null);
     const textCacheRef = useRef<Map<number, PdfTextItem[]>>(new Map());
+    // M5 — text layer DOM containers keyed by page number, freed with virtualization.
+    const textLayerEls = useRef<Map<number, HTMLDivElement>>(new Map());
+    const textLayerInstances = useRef<Map<number, any>>(new Map());
     const renderedRef = useRef<Map<number, { canvas: HTMLCanvasElement; scale: number; task: any }>>(new Map());
     const saveTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -95,8 +123,186 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     const [tools, setTools] = useState<ToolSettings>(DEFAULT_TOOL_SETTINGS);
     const [pages, setPages] = useState<Map<number, PageState>>(new Map());
     const [saveState, setSaveState] = useState<SaveState>('idle');
+    // M5 — marks state.
+    const [marks, setMarks] = useState<SourceMark[]>([]);
+    const [marksPanelOpen, setMarksPanelOpen] = useState(false);
+    // M5 — QuickCardDialog state. Opened from a text selection (the popover),
+    // from an existing mark («В карточку» in the Разметка panel), or from the
+    // W3 smart-card marquee tool. rects are for the card marker (W4).
+    const [quickCardState, setQuickCardState] = useState<
+      { page?: number; quote: string; prefillBack?: string; rects?: MarkRect[] } | null
+    >(null);
+    // W3 — smart-card marquee drag state (null when not dragging).
+    const [marquee, setMarquee] = useState<{
+      page: number;
+      x0: number; y0: number; // CSS px within the page div, start corner
+      x1: number; y1: number; // CSS px within the page div, current corner
+    } | null>(null);
+    const marqueeRef = useRef(marquee);
+    useEffect(() => { marqueeRef.current = marquee; }, [marquee]);
 
     const pendingInitialPageRef = useRef<number | undefined>(initialPage);
+    const pendingInitialMarkRef = useRef<string | undefined>(initialMarkId);
+
+    // ── M5 — Marks: fetch on source change ────────────────────────────────────────
+    useEffect(() => {
+      let cancelled = false;
+      void (async () => {
+        try {
+          const items = await fetchMarks(sourceId);
+          if (!cancelled) setMarks(items);
+        } catch {
+          /* best-effort */
+        }
+      })();
+      return () => { cancelled = true; };
+    }, [sourceId]);
+
+    // ── M5 — Mark CRUD helpers ────────────────────────────────────────────────────
+    const handleHighlight = useCallback(async (info: SelectionInfo, color: SourceMarkColor) => {
+      try {
+        const mark = await createMark(sourceId, {
+          page: info.page,
+          kind: 'highlight',
+          quote: info.text,
+          rects: info.rects,
+          color,
+        });
+        setMarks((prev) => [...prev, mark]);
+      } catch {
+        /* ignore */
+      }
+    }, [sourceId]);
+
+    const handleNote = useCallback(async (info: SelectionInfo, noteText: string) => {
+      try {
+        const mark = await createMark(sourceId, {
+          page: info.page,
+          kind: 'note',
+          quote: info.text,
+          rects: info.rects,
+          color: 'lime',
+          note: noteText,
+        });
+        setMarks((prev) => [...prev, mark]);
+      } catch {
+        /* ignore */
+      }
+    }, [sourceId]);
+
+    const handleMarkDelete = useCallback(async (markId: string) => {
+      setMarks((prev) => prev.filter((m) => m.id !== markId));
+      try {
+        await deleteMark(sourceId, markId);
+      } catch {
+        // Re-fetch on error.
+        fetchMarks(sourceId).then((items) => setMarks(items)).catch(() => {});
+      }
+    }, [sourceId]);
+
+    const handleMarkColorChange = useCallback(async (markId: string, color: SourceMarkColor) => {
+      setMarks((prev) => prev.map((m) => m.id === markId ? { ...m, color } : m));
+      try {
+        const updated = await updateMark(sourceId, markId, { color });
+        setMarks((prev) => prev.map((m) => m.id === markId ? updated : m));
+      } catch {
+        fetchMarks(sourceId).then((items) => setMarks(items)).catch(() => {});
+      }
+    }, [sourceId]);
+
+    const handleMarkNoteChange = useCallback(async (markId: string, note: string) => {
+      setMarks((prev) => prev.map((m) => m.id === markId ? { ...m, note } : m));
+      try {
+        const updated = await updateMark(sourceId, markId, { note });
+        setMarks((prev) => prev.map((m) => m.id === markId ? updated : m));
+      } catch {
+        fetchMarks(sourceId).then((items) => setMarks(items)).catch(() => {});
+      }
+    }, [sourceId]);
+
+    const handleMarkClick = useCallback((mark: SourceMark) => {
+      scrollToPage(mark.page, false);
+      // Flash the mark's highlight rects.
+      const pageEl = pageElsRef.current.get(mark.page);
+      if (!pageEl) return;
+      const hlEls = pageEl.querySelectorAll<HTMLElement>(`[data-mark-id="${mark.id}"]`);
+      for (const el of hlEls) {
+        el.classList.remove('nn-mark-flash');
+        void el.offsetWidth; // reflow
+        el.classList.add('nn-mark-flash');
+        window.setTimeout(() => el.classList.remove('nn-mark-flash'), 1400);
+      }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const handleAsk = useCallback((info: SelectionInfo) => {
+      onAskChat?.(`> ${info.text}`);
+    }, [onAskChat]);
+
+    // M5 — «В карточку» from an existing mark: open the QuickCardDialog with the
+    // mark's quote prefilled into the Back and its page for provenance.
+    const handleMarkToCard = useCallback((mark: SourceMark) => {
+      setQuickCardState({ page: mark.page, quote: mark.quote, prefillBack: mark.quote });
+    }, []);
+
+    // W3 — smart-card marquee: on release, extract text under the rect, AI-suggest
+    // a card, and open QuickCardDialog with both fields pre-filled.
+    const handleMarqueeRelease = useCallback(async (
+      page: number,
+      x0: number, y0: number, x1: number, y1: number,
+    ) => {
+      const w = pageDims[page - 1]?.width ?? 612;
+      const h = pageDims[page - 1]?.height ?? 792;
+      const scaledW = w * scale;
+      const scaledH = h * scale;
+      if (scaledW <= 0 || scaledH <= 0) return;
+      // Normalize marquee to [0,1] rect (x/y min, w/h).
+      const nx = Math.min(x0, x1) / scaledW;
+      const ny = Math.min(y0, y1) / scaledH;
+      const nw = Math.abs(x1 - x0) / scaledW;
+      const nh = Math.abs(y1 - y0) / scaledH;
+      if (nw < 0.01 || nh < 0.01) return; // too small — ignore tap
+      const rect: MarkRect = { x: nx, y: ny, w: nw, h: nh };
+
+      // Extract text items under the marquee from the text cache.
+      let extractedText = '';
+      const items = textCacheRef.current.get(page) ?? [];
+      if (items.length > 0) {
+        const pdfPageW = w;
+        const pdfPageH = h;
+        const hits: PdfTextItem[] = [];
+        for (const item of items) {
+          const bb = textItemBBox(item, pdfPageW, pdfPageH);
+          if (!bb) continue;
+          // Overlap check in normalized coords.
+          const overlapX = bb.minX < rect.x + rect.w && bb.maxX > rect.x;
+          const overlapY = bb.minY < rect.y + rect.h && bb.maxY > rect.y;
+          if (overlapX && overlapY) hits.push(item);
+        }
+        // Sort in reading order: top-to-bottom, then left-to-right.
+        hits.sort((a, b) => {
+          const ba = textItemBBox(a, pdfPageW, pdfPageH)!;
+          const bb2 = textItemBBox(b, pdfPageW, pdfPageH)!;
+          const dy = ba.minY - bb2.minY;
+          if (Math.abs(dy) > 0.005) return dy;
+          return ba.minX - bb2.minX;
+        });
+        extractedText = hits.map((i) => i.str).join(' ').trim();
+      }
+      const quote = extractedText;
+      // Open dialog — AI will suggest on demand via «✨ Сформулировать».
+      // If AI suggestion fails or there's no quote, user edits manually.
+      setQuickCardState({ page, quote, rects: [rect] });
+      // Kick off AI suggestion proactively (result piped back via prefillFront/Back
+      // when the dialog opens — but the dialog has its own «Сформулировать» button
+      // so we just open blank and let user trigger it).
+      // (No auto-suggest here — keeps it simple and avoids double calls.)
+    }, [pageDims, scale]);
+
+    // W4 — open the cards browser focused on a card marker's linked card.
+    const handleOpenCard = useCallback((cardId: string) => {
+      router.push(`/cards?focus=${cardId}`);
+    }, [router]);
 
     // ── Tool settings hydrate / persist ──────────────────────────────────────────
     useEffect(() => {
@@ -367,6 +573,102 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
       }
     }, [visible, scale, loadState, renderPage]);
 
+    // ── M5 — Text layer: render per visible page (lazy, cached, freed with virt) ───
+    const renderTextLayer = useCallback(
+      async (n: number, host: HTMLDivElement) => {
+        const pdfjs = pdfjsRef.current;
+        const doc = docRef.current;
+        if (!pdfjs || !doc) return;
+        // One text layer per page; recreate on scale change.
+        const existing = textLayerEls.current.get(n);
+        if (existing?.dataset.scale === String(scale) && existing.isConnected) return;
+        // Remove stale layer.
+        existing?.remove();
+        textLayerInstances.current.get(n)?.cancel?.();
+        try {
+          const page = await doc.getPage(n);
+          const vp = page.getViewport({ scale });
+          const container = document.createElement('div');
+          container.className = 'nn-textlayer';
+          container.dataset.scale = String(scale);
+          // W1: pdf.js v5 TextLayer expects --total-scale-factor on the container.
+          // All per-span font-sizes are `calc(Npx * var(--total-scale-factor))`.
+          // setLayerDimensions (called inside TextLayer constructor) also rewrites
+          // width/height via calc(), so our explicit px sizes are overwritten —
+          // but we keep them as a safe fallback for browsers that don't support
+          // CSS round().
+          container.style.setProperty('--total-scale-factor', String(scale));
+          container.style.width = `${vp.width}px`;
+          container.style.height = `${vp.height}px`;
+          // pdf.js-standard model: the CONTAINER never receives pointer events
+          // (so the full-page text layer can't swallow clicks meant for note
+          // pins / highlights below it). In hand mode the glyph SPANS opt back
+          // in via the `.nn-textlayer[data-hand="1"] span` CSS rule, which keeps
+          // text selectable while clicks in the gaps fall through.
+          const isHand = tools.tool === 'hand';
+          if (isHand) container.dataset.hand = '1';
+          else delete container.dataset.hand;
+          container.style.userSelect = isHand ? 'text' : 'none';
+          // Insert BEFORE the ink canvas (z2 < z3).
+          const inkEl = host.querySelector('[data-ink-layer]');
+          if (inkEl) host.insertBefore(container, inkEl);
+          else host.appendChild(container);
+          textLayerEls.current.set(n, container);
+          // pdf.js v5 TextLayer API.
+          const layer = new pdfjs.TextLayer({
+            textContentSource: page.streamTextContent(),
+            container,
+            viewport: vp,
+          });
+          textLayerInstances.current.set(n, layer);
+          await layer.render();
+          // Official pdf.js selection mechanic: an `endOfContent` sentinel that
+          // the `.selecting` class (toggled on pointerdown in hand mode)
+          // stretches over the whole page — so a drag that wanders slightly
+          // PAST a line's last glyph still extends the selection instead of
+          // requiring pixel-perfect pointer placement on the glyph edge.
+          if (!container.querySelector('.endOfContent')) {
+            const end = document.createElement('div');
+            end.className = 'endOfContent';
+            container.appendChild(end);
+          }
+        } catch {
+          /* if TextLayer unavailable, silently skip — still usable without selection */
+        }
+      },
+      [scale, tools.tool],
+    );
+
+    // Toggle hand-mode on existing text layers when the tool changes. The
+    // container stays pointer-events:none ALWAYS; `data-hand` re-enables span
+    // pointer events (CSS) so note pins / highlights below stay clickable.
+    useEffect(() => {
+      const isHand = tools.tool === 'hand';
+      for (const el of textLayerEls.current.values()) {
+        if (isHand) el.dataset.hand = '1';
+        else delete el.dataset.hand;
+        el.style.userSelect = isHand ? 'text' : 'none';
+      }
+    }, [tools.tool]);
+
+    // Trigger text layer renders for visible pages.
+    useEffect(() => {
+      if (loadState !== 'ready') return;
+      for (const n of visible) {
+        const host = pageElsRef.current.get(n);
+        if (host) void renderTextLayer(n, host);
+      }
+      // Free text layers for pages no longer in range.
+      for (const n of textLayerEls.current.keys()) {
+        if (!visible.has(n)) {
+          textLayerInstances.current.get(n)?.cancel?.();
+          textLayerEls.current.get(n)?.remove();
+          textLayerEls.current.delete(n);
+          textLayerInstances.current.delete(n);
+        }
+      }
+    }, [visible, scale, loadState, renderTextLayer]);
+
     // ── scrollToPage (exposed) ────────────────────────────────────────────────────
     const scrollToPage = useCallback((page: number, flash = false) => {
       const el = pageElsRef.current.get(page);
@@ -381,6 +683,19 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     }, []);
 
     useImperativeHandle(ref, () => ({ scrollToPage }), [scrollToPage]);
+
+    // M5 — jump to initial mark after marks are loaded.
+    useEffect(() => {
+      const markId = pendingInitialMarkRef.current;
+      if (!markId || marks.length === 0) return;
+      const mark = marks.find((m) => m.id === markId);
+      if (!mark) return;
+      pendingInitialMarkRef.current = undefined;
+      requestAnimationFrame(() => {
+        scrollToPage(mark.page, false);
+        setTimeout(() => handleMarkClick(mark), 300);
+      });
+    }, [marks, scrollToPage, handleMarkClick]);
 
     // ── Zoom ──────────────────────────────────────────────────────────────────────
     const applyZoom = useCallback((delta: number) => {
@@ -558,11 +873,29 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
 
     const curState = getPageState(currentPage);
 
+    // M5 — ink pages (pages that have strokes) for the Разметка panel.
+    const inkPages = useMemo(
+      () => [...pages.entries()].filter(([, s]) => s.strokes.length > 0).map(([n]) => n),
+      [pages],
+    );
+
+    // M5 — mark color CSS map.
+    // SOLID per-color fills — the alpha lives on the per-mark compositing GROUP
+    // (opacity 0.38 + multiply), so rects overlapping inside one mark paint the
+    // same flat color instead of double-tinting into dark slivers.
+    const MARK_SOLID: Record<string, string> = {
+      lime:   'var(--lime-500)',
+      amber:  'var(--amber-400)',
+      rose:   'var(--rose-400)',
+      sky:    'var(--sky-400)',
+      violet: 'var(--violet-400)',
+    };
+
     // ── Render ─────────────────────────────────────────────────────────────────────
     if (loadState === 'error') {
       return (
-        <div style={errorBoxStyle}>
-          <p style={{ fontSize: 14, color: 'var(--text-dim)', marginBottom: 12 }}>
+        <div className="nn-empty-state" style={{ flex: 1 }}>
+          <p className="nn-empty-state-hint">
             {t('notebooks.reader.loadError')}
           </p>
           <button type="button" onClick={() => onMode('text')} style={modeFallbackBtn}>
@@ -574,8 +907,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-        <div style={{ padding: '8px 10px', flexShrink: 0 }}>
-          <ReaderToolbar
+        <ReaderToolbar
             tool={tools.tool}
             color={tools.color}
             widthIdx={tools.widthIdx}
@@ -587,6 +919,9 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             canUndo={curState.undo.length > 0}
             canRedo={curState.redo.length > 0}
             mode="pdf"
+            marksCount={marks.length + inkPages.length}
+            marksPanelOpen={marksPanelOpen}
+            onToggleMarksPanel={() => setMarksPanelOpen((v) => !v)}
             onTool={(tool) => updateTools({ tool })}
             onColor={(color) => updateTools({ color })}
             onWidth={(widthIdx) => updateTools({ widthIdx })}
@@ -600,117 +935,330 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             onRetrySave={retrySave}
             t={t}
           />
-        </div>
 
         {loadState === 'loading' ? (
-          <div style={errorBoxStyle}>
-            <div style={{ width: 200, height: 6, borderRadius: 99, background: 'var(--surface-3)', overflow: 'hidden' }}>
+          <div className="nn-empty-state nn-reader-bg" style={{ flex: 1 }}>
+            <div style={{ width: 180, height: 4, borderRadius: 99, background: 'var(--surface-3)', overflow: 'hidden' }}>
               <div
                 style={{
                   height: '100%',
                   background: 'var(--lime-500)',
+                  borderRadius: 99,
                   width:
                     loadProgress.total && loadProgress.total > 0
                       ? `${Math.min(100, Math.round((loadProgress.loaded / loadProgress.total) * 100))}%`
-                      : '40%',
-                  transition: 'width 120ms linear',
+                      : '35%',
+                  transition: 'width 150ms linear',
                 }}
               />
             </div>
-            <p style={{ fontSize: 12.5, color: 'var(--text-dim)', marginTop: 10 }}>
-              {loadProgress.total
-                ? t('notebooks.reader.loadingBytes', {
-                    loaded: Math.round(loadProgress.loaded / 1024),
-                    total: Math.round(loadProgress.total / 1024),
-                  })
+            <p className="nn-empty-state-hint" style={{ marginTop: 8 }}>
+              {loadProgress.total && loadProgress.total > 0
+                ? `${Math.round(loadProgress.loaded / 1024)} / ${Math.round(loadProgress.total / 1024)} KB`
                 : t('notebooks.reader.loading')}
             </p>
           </div>
         ) : (
-          <div
-            ref={containerRef}
-            className="nn-scroll"
-            tabIndex={0}
-            onFocus={() => (focusRef.current = true)}
-            onBlur={() => (focusRef.current = false)}
-            onPointerDownCapture={onContainerPointerDown}
-            onPointerMoveCapture={onContainerPointerMove}
-            onPointerUp={endPinch}
-            onPointerCancel={endPinch}
-            style={{ flex: 1, overflow: 'auto', padding: '16px 0', outline: 'none', touchAction: 'pan-x pan-y pinch-zoom' }}
-          >
-            <div data-pages-wrap style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-              {Array.from({ length: numPages }, (_, i) => i + 1).map((n) => {
-                const dims = pageDims[n - 1] ?? { width: 612, height: 792 };
-                const w = dims.width * scale;
-                const h = dims.height * scale;
-                const isVisible = visible.has(n);
-                const pst = pages.get(n);
-                return (
-                  <div
-                    key={n}
-                    data-page={n}
-                    ref={(el) => {
-                      if (el) pageElsRef.current.set(n, el);
-                      else pageElsRef.current.delete(n);
-                    }}
-                    style={{
-                      position: 'relative',
-                      width: w,
-                      height: h,
-                      background: 'var(--surface)',
-                      boxShadow: 'var(--shadow-md)',
-                      borderRadius: 2,
-                    }}
-                  >
-                    <div data-canvas-slot style={{ position: 'absolute', inset: 0 }} />
-                    {isVisible && (
-                      <InkLayer
-                        strokes={pst?.strokes ?? []}
-                        cssW={w}
-                        cssH={h}
-                        tool={tools.tool}
-                        color={tools.color}
-                        widthIdx={tools.widthIdx}
-                        fingerDraw={tools.fingerDraw}
-                        onChange={(next) => commitStrokes(n, next)}
-                      />
-                    )}
-                    {!isVisible && (
-                      <span
-                        style={{
-                          position: 'absolute',
-                          top: 8,
-                          left: 10,
-                          fontSize: 11,
-                          color: 'var(--text-dim)',
-                          fontFamily: 'var(--font-mono)',
-                        }}
-                      >
-                        {n}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
+          // Reader body: relative container so the Разметка panel can be absolute.
+          <div style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+            <div
+              ref={containerRef}
+              className="nn-scroll nn-reader-bg"
+              tabIndex={0}
+              onFocus={() => (focusRef.current = true)}
+              onBlur={() => (focusRef.current = false)}
+              onPointerDownCapture={onContainerPointerDown}
+              onPointerMoveCapture={onContainerPointerMove}
+              onPointerUp={endPinch}
+              onPointerCancel={endPinch}
+              style={{ position: 'absolute', inset: 0, overflow: 'auto', padding: '20px 0 32px', outline: 'none', touchAction: 'pan-x pan-y pinch-zoom' }}
+            >
+              <div data-pages-wrap style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
+                {Array.from({ length: numPages }, (_, i) => i + 1).map((n) => {
+                  const dims = pageDims[n - 1] ?? { width: 612, height: 792 };
+                  const w = dims.width * scale;
+                  const h = dims.height * scale;
+                  const isVisible = visible.has(n);
+                  const pst = pages.get(n);
+                  // M5 — marks for this page.
+                  const pageMarks = marks.filter((m) => m.page === n);
+                  // W3 — smart-card marquee pointer handlers (per-page).
+                  const isSmartCard = tools.tool === 'smart-card';
+                  const onPagePointerDown = isSmartCard ? (e: React.PointerEvent<HTMLDivElement>) => {
+                    if (e.pointerType === 'touch' && !tools.fingerDraw) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    setMarquee({ page: n, x0: x, y0: y, x1: x, y1: y });
+                  } : tools.tool === 'hand' ? (e: React.PointerEvent<HTMLDivElement>) => {
+                    // Hand mode: while a drag is live, stretch the page's
+                    // endOfContent sentinel over the page (`.selecting`) so the
+                    // selection keeps extending when the pointer drifts past a
+                    // line's last glyph (official pdf.js viewer behavior).
+                    if (!e.isPrimary) return;
+                    const layer = textLayerEls.current.get(n);
+                    if (!layer) return;
+                    layer.classList.add('selecting');
+                    const clear = () => {
+                      for (const el of textLayerEls.current.values()) el.classList.remove('selecting');
+                      window.removeEventListener('pointerup', clear);
+                      window.removeEventListener('pointercancel', clear);
+                    };
+                    window.addEventListener('pointerup', clear);
+                    window.addEventListener('pointercancel', clear);
+                  } : undefined;
+                  const onPagePointerMove = isSmartCard ? (e: React.PointerEvent<HTMLDivElement>) => {
+                    if (!marqueeRef.current || marqueeRef.current.page !== n) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setMarquee((prev) => prev ? { ...prev, x1: e.clientX - rect.left, y1: e.clientY - rect.top } : null);
+                  } : undefined;
+                  const onPagePointerUp = isSmartCard ? (e: React.PointerEvent<HTMLDivElement>) => {
+                    const m = marqueeRef.current;
+                    setMarquee(null);
+                    if (!m || m.page !== n) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const x1 = e.clientX - rect.left;
+                    const y1 = e.clientY - rect.top;
+                    void handleMarqueeRelease(n, m.x0, m.y0, x1, y1);
+                  } : undefined;
+
+                  return (
+                    <div
+                      key={n}
+                      data-page={n}
+                      ref={(el) => {
+                        if (el) pageElsRef.current.set(n, el);
+                        else pageElsRef.current.delete(n);
+                      }}
+                      className="nn-pdf-page"
+                      style={{
+                        position: 'relative',
+                        width: w,
+                        height: h,
+                        cursor: isSmartCard ? 'crosshair' : undefined,
+                      }}
+                      onPointerDown={onPagePointerDown}
+                      onPointerMove={onPagePointerMove}
+                      onPointerUp={onPagePointerUp}
+                    >
+                      {/* z0: canvas slot */}
+                      <div data-canvas-slot style={{ position: 'absolute', inset: 0 }} />
+                      {/* z1: highlight rects layer (below text layer) */}
+                      {isVisible && pageMarks.length > 0 && (
+                        <div style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}>
+                          {pageMarks.map((m) => (
+                            // ONE compositing group per mark: the children carry
+                            // SOLID colors and the group applies opacity+multiply
+                            // ONCE — overlapping rects inside a mark (bold vs
+                            // regular spans yield intersecting boxes) no longer
+                            // double-tint into dark slivers.
+                            <div
+                              key={m.id}
+                              data-mark-id={m.id}
+                              style={{
+                                position: 'absolute',
+                                inset: 0,
+                                mixBlendMode: 'multiply',
+                                opacity: 0.38,
+                                pointerEvents: 'none',
+                              }}
+                            >
+                              {m.rects.map((r, ri) => (
+                                <div
+                                  key={ri}
+                                  style={{
+                                    position: 'absolute',
+                                    left: r.x * w,
+                                    top: r.y * h,
+                                    width: r.w * w,
+                                    height: r.h * h,
+                                    background: MARK_SOLID[m.color] ?? MARK_SOLID.lime,
+                                    borderRadius: 2,
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          ))}
+                          {/* Note pin: 📝 icon at first rect's left for 'note' marks */}
+                          {pageMarks.filter((m) => m.kind === 'note').map((m) => {
+                            const r = m.rects[0];
+                            if (!r) return null;
+                            return (
+                              <span
+                                key={`pin-${m.id}`}
+                                title={m.note ?? m.quote}
+                                style={{
+                                  position: 'absolute',
+                                  left: r.x * w - 18,
+                                  top: r.y * h,
+                                  fontSize: 13,
+                                  pointerEvents: 'auto',
+                                  cursor: 'pointer',
+                                  userSelect: 'none',
+                                  lineHeight: 1,
+                                }}
+                                onClick={() => handleMarkClick(m)}
+                              >
+                                📝
+                              </span>
+                            );
+                          })}
+                          {/* W4 — card marker chip (lime card icon) at first rect's line for 'card' marks */}
+                          {pageMarks.filter((m) => m.kind === 'card').map((m) => {
+                            const r = m.rects[0];
+                            if (!r) return null;
+                            return (
+                              <span
+                                key={`card-chip-${m.id}`}
+                                title={m.quote || t('notebooks.marks.openCard')}
+                                style={{
+                                  position: 'absolute',
+                                  left: r.x * w - 20,
+                                  top: r.y * h,
+                                  width: 18,
+                                  height: 18,
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  borderRadius: 3,
+                                  background: 'color-mix(in srgb, var(--lime-500) 25%, var(--surface))',
+                                  border: '1px solid var(--lime-500)',
+                                  color: 'var(--lime-400)',
+                                  pointerEvents: 'auto',
+                                  cursor: 'pointer',
+                                  userSelect: 'none',
+                                  lineHeight: 1,
+                                  zIndex: 2,
+                                }}
+                                onClick={() => m.cardId && handleOpenCard(m.cardId)}
+                              >
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                  <rect x="2" y="5" width="20" height="14" rx="2" />
+                                  <line x1="2" y1="10" x2="22" y2="10" />
+                                </svg>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {/* W3 — smart-card marquee overlay (live lime dashed rect while dragging). */}
+                      {isSmartCard && marquee && marquee.page === n && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: Math.min(marquee.x0, marquee.x1),
+                            top: Math.min(marquee.y0, marquee.y1),
+                            width: Math.abs(marquee.x1 - marquee.x0),
+                            height: Math.abs(marquee.y1 - marquee.y0),
+                            border: '2px dashed var(--lime-500)',
+                            background: 'color-mix(in srgb, var(--lime-500) 12%, transparent)',
+                            borderRadius: 3,
+                            pointerEvents: 'none',
+                            zIndex: 10,
+                          }}
+                        />
+                      )}
+                      {/* z2: text layer (rendered by renderTextLayer effect) */}
+                      {/* z3: ink canvas — data-ink-layer is on the <canvas> element inside InkLayer */}
+                      {isVisible && (
+                        <InkLayer
+                          strokes={pst?.strokes ?? []}
+                          cssW={w}
+                          cssH={h}
+                          tool={tools.tool}
+                          color={tools.color}
+                          widthIdx={tools.widthIdx}
+                          fingerDraw={tools.fingerDraw}
+                          onChange={(next) => commitStrokes(n, next)}
+                        />
+                      )}
+                      {!isVisible && (
+                        <>
+                          {/* Shimmer placeholder: full-page skeleton while page is off-screen.
+                              The shimmer animation lives in .nn-pdf-page-shimmer so the
+                              prefers-reduced-motion guard in globals.css can disable it. */}
+                          <div
+                            className="nn-pdf-page-shimmer"
+                            style={{ position: 'absolute', inset: 0, borderRadius: 'inherit' }}
+                          />
+                          <span
+                            style={{
+                              position: 'absolute',
+                              bottom: 8,
+                              right: 10,
+                              fontSize: 10,
+                              color: 'rgba(100,100,100,0.5)',
+                              fontFamily: 'var(--font-mono)',
+                              userSelect: 'none',
+                            }}
+                          >
+                            {n}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
+
+            {/* M5 — «Разметка» sliding panel (absolute over the reader body). */}
+            <MarksPanel
+              open={marksPanelOpen}
+              onClose={() => setMarksPanelOpen(false)}
+              marks={marks}
+              inkPages={inkPages}
+              onMarkClick={handleMarkClick}
+              onMarkDelete={(id) => void handleMarkDelete(id)}
+              onMarkColorChange={(id, c) => void handleMarkColorChange(id, c)}
+              onMarkNoteChange={(id, note) => void handleMarkNoteChange(id, note)}
+              onMarkToCard={handleMarkToCard}
+              onOpenCard={handleOpenCard}
+              t={t}
+            />
+
+            {/* M5 — Selection popover (hand mode only). */}
+            <SelectionPopover
+              pageEls={pageElsRef.current}
+              handMode={tools.tool === 'hand'}
+              onHighlight={(info, color) => void handleHighlight(info, color)}
+              onNote={(info, noteText) => void handleNote(info, noteText)}
+              onCard={(info) => setQuickCardState({ page: info.page, quote: info.text, rects: info.rects })}
+              onAsk={handleAsk}
+              t={t}
+            />
           </div>
+        )}
+
+        {/* M5 — QuickCardDialog (portal outside the scroll area). */}
+        {quickCardState && (
+          <QuickCardDialog
+            open={true}
+            onClose={() => setQuickCardState(null)}
+            sourceId={sourceId}
+            sourceName={sourceName}
+            page={quickCardState.page}
+            quote={quickCardState.quote}
+            prefillBack={quickCardState.prefillBack}
+            rects={quickCardState.rects}
+            locale={locale}
+            chatEnabled={chatEnabled}
+            onCreated={(result, cardId) => {
+              // W4: if the server planted a card marker, refresh marks so it appears.
+              if (result.markId) {
+                fetchMarks(sourceId).then((items) => setMarks(items)).catch(() => {});
+              }
+              if (cardId) router.push(`/cards?focus=${cardId}`);
+            }}
+            t={t}
+          />
         )}
       </div>
     );
   },
 );
 PdfReader.displayName = 'PdfReader';
-
-const errorBoxStyle: React.CSSProperties = {
-  flex: 1,
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: 24,
-  textAlign: 'center',
-};
 
 const modeFallbackBtn: React.CSSProperties = {
   height: 36,

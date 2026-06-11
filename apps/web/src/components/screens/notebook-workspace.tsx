@@ -51,8 +51,9 @@ import {
   statusTone,
   type AddKind,
 } from '@/components/screens/notebooks';
-import { ChatPanel } from '@/components/chat/chat-panel';
+import { ChatPanel, type ComposerPrefillHandle } from '@/components/chat/chat-panel';
 import { PdfReader, type PdfReaderHandle } from '@/components/pdf-reader/pdf-reader';
+import { api, ok } from '@/lib/api';
 
 type WorkspaceTab = 'sources' | 'reader' | 'chat';
 
@@ -81,7 +82,7 @@ const ReaderChunk = ({
       data-chunk-pos={chunk.position}
       className="nn-reader-chunk"
       style={{
-        padding: '12px 14px',
+        padding: '10px 12px',
         borderRadius: 'var(--r-md)',
         border: '1px solid transparent',
         transition: 'outline-color 600ms ease, background 600ms ease',
@@ -92,21 +93,32 @@ const ReaderChunk = ({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 8,
-            marginBottom: 6,
-            fontSize: 11,
-            color: 'var(--text-dim)',
+            gap: 6,
+            marginBottom: 5,
             fontFamily: 'var(--font-sans)',
           }}
         >
           {chunk.page != null && (
-            <NNBadge tone="sky" size="xs">
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: '0.04em',
+                color: 'var(--text-dim)',
+                background: 'var(--surface-3)',
+                padding: '1px 5px',
+                borderRadius: 'var(--r-xs)',
+                flexShrink: 0,
+              }}
+            >
               {t('notebooks.reader.page', { n: chunk.page })}
-            </NNBadge>
+            </span>
           )}
           {chunk.heading && (
             <span
               style={{
+                fontSize: 11,
+                color: 'var(--text-dim)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -123,7 +135,7 @@ const ReaderChunk = ({
         style={{
           fontFamily: 'var(--font-sans)',
           fontSize: 14,
-          lineHeight: 1.65,
+          lineHeight: 1.7,
           color: 'var(--text)',
           wordBreak: 'break-word',
         }}
@@ -171,6 +183,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const pdfReaderRef = useRef<PdfReaderHandle>(null);
   // A pending page jump (from a citation / ?page=) fulfilled once the PDF mounts.
   const pendingPageRef = useRef<number | undefined>(undefined);
+  // A pending mark to scroll+flash (from ?mark=), fulfilled once the PDF mounts
+  // (PdfReader consumes initialMarkId after the marks load).
+  const pendingMarkRef = useRef<string | undefined>(undefined);
   const [chunks, setChunks] = useState<SourceChunkRow[]>([]);
   const [chunkTotal, setChunkTotal] = useState(0);
   const [nextFrom, setNextFrom] = useState<number | null>(0);
@@ -179,6 +194,52 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   // Chat thread selection (notebook mode — the workspace owns the switcher).
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+
+  // M5 — composer prefill ref (chat ← reader «Спросить» action).
+  const composerPrefillRef = useRef<ComposerPrefillHandle | null>(null);
+
+  // M5 — chatEnabled for the quick-card AI formulate button.
+  const [chatEnabled, setChatEnabled] = useState(false);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const s = (await ok(await (api as any).ai.status.get())) as { chatEnabled: boolean };
+        setChatEnabled(Boolean(s.chatEnabled));
+      } catch {
+        /* degrade — hide AI formulate */
+      }
+    })();
+  }, []);
+
+  // W5(a) — collapsible chat column (desktop only). Default: open on desktop, collapsed on tablet.
+  const chatCollapseKey = `nn:nb:chat:${notebookId}`;
+  const [chatCollapsed, setChatCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const stored = localStorage.getItem(chatCollapseKey);
+      if (stored !== null) return stored === 'true';
+    } catch { /* ignore */ }
+    // Default: collapsed on tablet, open on desktop (resolved at runtime).
+    return false;
+  });
+  const toggleChatCollapsed = useCallback(() => {
+    setChatCollapsed((prev) => {
+      const next = !prev;
+      try { localStorage.setItem(chatCollapseKey, String(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, [chatCollapseKey]);
+  // On first mount (client), set default by breakpoint if no stored value.
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(chatCollapseKey) === null) {
+        const defaultCollapsed = window.innerWidth < 1100;
+        setChatCollapsed(defaultCollapsed);
+      }
+    } catch { /* ignore */ }
+  // Run once on mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Mobile/tablet tab.
   const [tab, setTab] = useState<WorkspaceTab>('reader');
@@ -199,6 +260,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const chunkParam = searchParams.get('chunk');
   const posParam = searchParams.get('pos');
   const pageParam = searchParams.get('page');
+  const markParam = searchParams.get('mark');
   const threadParam = searchParams.get('thread');
   // Pending scroll-to target, set from the URL or a citation; cleared once done.
   const pendingScrollRef = useRef<{ chunkId?: string; pos?: number } | null>(null);
@@ -391,21 +453,26 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     [activeSourceId],
   );
 
-  // Consume ?source=&chunk=&pos=&page= once sources have loaded.
+  // Consume ?source=&chunk=&pos=&page=&mark= once sources have loaded.
   const consumedSourceParamRef = useRef<string | null>(null);
   useEffect(() => {
     if (!sourcesLoaded || !sourceParam) return;
-    const token = `${sourceParam}:${chunkParam ?? ''}:${posParam ?? ''}:${pageParam ?? ''}`;
+    const token = `${sourceParam}:${chunkParam ?? ''}:${posParam ?? ''}:${pageParam ?? ''}:${markParam ?? ''}`;
     if (consumedSourceParamRef.current === token) return;
     consumedSourceParamRef.current = token;
     const src = sources.find((s) => s.id === sourceParam);
     if (!src) return;
     setActiveSourceId(sourceParam);
     if (!isDesktop) setTab('reader');
-    // A ?page= deep link opens a PDF source in PDF mode at that page; otherwise
-    // fall back to the text-chunk jump (chunk id / position).
+    // A ?mark= deep link opens a PDF source in PDF mode and stashes the mark id
+    // for PdfReader to scroll+flash once its marks load. A ?page= deep link
+    // opens a PDF source in PDF mode at that page; otherwise fall back to the
+    // text-chunk jump (chunk id / position).
     const pageNum = pageParam != null ? Number(pageParam) : undefined;
-    if (src.kind === 'pdf' && pageNum != null && Number.isFinite(pageNum) && pageNum >= 1) {
+    if (src.kind === 'pdf' && markParam) {
+      setReaderModePersisted('pdf');
+      pendingMarkRef.current = markParam;
+    } else if (src.kind === 'pdf' && pageNum != null && Number.isFinite(pageNum) && pageNum >= 1) {
       setReaderModePersisted('pdf');
       pendingPageRef.current = pageNum;
       jumpToPage(pageNum);
@@ -418,6 +485,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     chunkParam,
     posParam,
     pageParam,
+    markParam,
     sources,
     isDesktop,
     openChunk,
@@ -640,6 +708,12 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       onReaderMode={setReaderModePersisted}
       pdfReaderRef={pdfReaderRef}
       pendingPage={pendingPageRef.current}
+      pendingMark={pendingMarkRef.current}
+      onAskChat={(quote) => {
+        composerPrefillRef.current?.prefill(`> ${quote}`);
+        if (!isDesktop) setTab('chat');
+      }}
+      chatEnabled={chatEnabled}
       t={t}
     />
   );
@@ -650,6 +724,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       notebookId={notebookId}
       sourceIds={scopeIds}
       activeThreadId={activeThreadId}
+      composerPrefillRef={composerPrefillRef}
       onThreadChange={onThreadChange}
       onSourceCitation={(c) => {
         if (!c.sourceId) return;
@@ -673,13 +748,15 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   // ── Layout ─────────────────────────────────────────────────────────────────────
   const header = (
     <div
+      className="nn-chrome"
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 10,
-        padding: '10px 14px',
+        gap: 8,
+        padding: '7px 12px',
         borderBottom: '1px solid var(--border)',
         flexShrink: 0,
+        minHeight: 44,
       }}
     >
       <NNBtn variant="ghost" size="sm" icon="chevl" onClick={() => router.push('/notebooks')}>
@@ -687,7 +764,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       </NNBtn>
       <h2
         style={{
-          fontSize: 16,
+          fontSize: 14,
           fontWeight: 700,
           fontFamily: 'var(--font-sans)',
           color: 'var(--text)',
@@ -697,6 +774,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          letterSpacing: '-0.01em',
         }}
       >
         {notebook?.title ?? t('notebooks.sources.heading')}
@@ -723,17 +801,97 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {readerPanel}
           </div>
+          {/* W5(a) — collapsible chat column. Collapsed = 44px vertical rail. */}
           <div
             style={{
-              width: 420,
+              width: chatCollapsed ? 44 : 420,
               flexShrink: 0,
               borderLeft: '1px solid var(--border)',
               display: 'flex',
               flexDirection: 'column',
               minHeight: 0,
+              transition: 'width 200ms ease',
+              overflow: 'hidden',
+              position: 'relative',
             }}
           >
-            {chatPanel}
+            {chatCollapsed ? (
+              /* Slim 44px rail: only the toggle button visible. */
+              <button
+                type="button"
+                onClick={toggleChatCollapsed}
+                title={t('notebooks.workspace.chatExpand')}
+                aria-label={t('notebooks.workspace.chatExpand')}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
+                {/* Chat icon */}
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+                </svg>
+                {/* Expand chevron */}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+              </button>
+            ) : (
+              /* Full chat panel with collapse toggle in header. */
+              <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                {/* Chat panel header with collapse toggle */}
+                <div
+                  className="nn-chrome"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'flex-end',
+                    padding: '0 8px',
+                    borderBottom: '1px solid var(--border)',
+                    height: 36,
+                    flexShrink: 0,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={toggleChatCollapsed}
+                    title={t('notebooks.workspace.chatCollapse')}
+                    aria-label={t('notebooks.workspace.chatCollapse')}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      borderRadius: 'var(--r-sm)',
+                      border: 'none',
+                      background: 'transparent',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                  </button>
+                </div>
+                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                  {chatPanel}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -745,24 +903,29 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       {header}
       <div
+        className="nn-chrome"
         style={{
           display: 'flex',
-          gap: 6,
-          padding: '8px 12px',
+          gap: 4,
+          padding: '6px 10px',
           borderBottom: '1px solid var(--border)',
           flexShrink: 0,
+          overflowX: 'auto',
         }}
       >
-        {(['sources', 'reader', 'chat'] as WorkspaceTab[]).map((tk) => (
-          <NNBtn
+        {([
+          { key: 'sources', icon: '📚', labelKey: 'notebooks.workspace.tabSources' },
+          { key: 'reader', icon: '📄', labelKey: 'notebooks.workspace.tabReader' },
+          { key: 'chat', icon: '💬', labelKey: 'notebooks.workspace.tabChat' },
+        ] as { key: WorkspaceTab; icon: string; labelKey: string }[]).map(({ key: tk, labelKey }) => (
+          <button
             key={tk}
-            size="sm"
-            variant={tab === tk ? 'soft' : 'ghost'}
-            active={tab === tk}
+            type="button"
+            className={`nn-ws-tab${tab === tk ? ' active' : ''}`}
             onClick={() => setTab(tk)}
           >
-            {t(`notebooks.workspace.tab${tk === 'sources' ? 'Sources' : tk === 'reader' ? 'Reader' : 'Chat'}`)}
-          </NNBtn>
+            {t(labelKey)}
+          </button>
         ))}
       </div>
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -813,21 +976,24 @@ const SourcesPanel = ({
   onOpenCard,
   t,
 }: SourcesPanelProps) => (
-  <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+  <div style={{ padding: '10px 8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+    {/* Panel header — matches sidebar section style */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 4px', marginBottom: 2 }}>
       <span
+        className="nn-chrome"
         style={{
-          fontSize: 12,
+          fontSize: 11,
           fontWeight: 700,
           textTransform: 'uppercase',
-          letterSpacing: 0.6,
+          letterSpacing: '0.07em',
           color: 'var(--text-dim)',
           flex: 1,
+          userSelect: 'none',
         }}
       >
         {t('notebooks.sources.heading')}
       </span>
-      <NNBtn variant="primary" size="sm" icon="plus" onClick={onOpenAdd}>
+      <NNBtn variant="ghost" size="sm" icon="plus" onClick={onOpenAdd}>
         {t('notebooks.sources.add')}
       </NNBtn>
     </div>
@@ -835,16 +1001,18 @@ const SourcesPanel = ({
     {addOpen && <AddSourceForm {...addProps} />}
 
     {!loaded ? (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <NNSkeleton style={{ height: 52 }} />
-        <NNSkeleton style={{ height: 52 }} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <NNSkeleton style={{ height: 44 }} />
+        <NNSkeleton style={{ height: 44 }} />
+        <NNSkeleton style={{ height: 44 }} />
       </div>
     ) : sources.length === 0 ? (
-      <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '12px 0' }}>
-        {t('notebooks.sources.empty')}
-      </p>
+      <div className="nn-empty-state" style={{ paddingTop: 24, paddingBottom: 24 }}>
+        <span className="nn-empty-state-icon"><NNIcon name="stack" size={28} color="var(--text-dim)" /></span>
+        <p className="nn-empty-state-hint">{t('notebooks.sources.empty')}</p>
+      </div>
     ) : (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {sources.map((src) => (
           <WorkspaceSourceRow
             key={src.id}
@@ -915,17 +1083,9 @@ const WorkspaceSourceRow = ({
   }, [cardsOpen, cards, cardsLoading, listSourceCards, source.id]);
 
   return (
-    <NNCard
-      padding={10}
-      style={{
-        background: active ? 'var(--surface-3)' : 'var(--surface-2)',
-        border: active ? '1px solid var(--lime-500)' : '1px solid var(--border)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 8,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <div className={`nn-source-row${active ? ' active' : ''}`}>
+      {/* Main row: checkbox + icon + title + status badge */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         {/* In-chat scope checkbox (ready sources only). */}
         <input
           type="checkbox"
@@ -934,7 +1094,7 @@ const WorkspaceSourceRow = ({
           onChange={onToggleScope}
           aria-label={t('notebooks.workspace.inChat')}
           title={t('notebooks.workspace.inChat')}
-          style={{ width: 15, height: 15, cursor: ready ? 'pointer' : 'default', accentColor: 'var(--lime-500)' }}
+          style={{ width: 14, height: 14, cursor: ready ? 'pointer' : 'default', accentColor: 'var(--lime-500)', flexShrink: 0 }}
         />
         <button
           type="button"
@@ -942,7 +1102,7 @@ const WorkspaceSourceRow = ({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 8,
+            gap: 6,
             flex: 1,
             minWidth: 0,
             background: 'transparent',
@@ -952,78 +1112,84 @@ const WorkspaceSourceRow = ({
             textAlign: 'left',
           }}
         >
-          <NNIcon name={sourceIcon(source.kind)} size={15} color="var(--text-muted)" />
+          <NNIcon name={sourceIcon(source.kind)} size={13} color="var(--text-muted)" />
           <span
             style={{
               fontSize: 13,
-              fontWeight: 600,
-              color: 'var(--text)',
+              fontWeight: active ? 600 : 500,
+              color: active ? 'var(--text)' : 'var(--text-muted)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
               minWidth: 0,
               flex: 1,
+              transition: 'color 100ms',
             }}
           >
             {source.title}
           </span>
         </button>
-        <NNBadge tone={statusTone(source.status)} size="xs">
-          {statusLabel}
-        </NNBadge>
+        {/* Status badge — only for non-ready */}
+        {source.status !== 'ready' && (
+          <NNBadge tone={statusTone(source.status)} size="xs">
+            {statusLabel}
+          </NNBadge>
+        )}
+        {/* Hover-revealed actions */}
+        <div className="nn-source-row-actions" style={{ display: 'flex', gap: 0, flexShrink: 0 }}>
+          <NNBtn
+            variant="ghost"
+            size="sm"
+            icon="edit"
+            ariaLabel={t('notebooks.sources.rename')}
+            title={t('notebooks.sources.rename')}
+            onClick={onRename}
+          />
+          <NNBtn
+            variant="ghost"
+            size="sm"
+            icon="x"
+            ariaLabel={t('notebooks.sources.delete')}
+            title={t('notebooks.sources.delete')}
+            onClick={onDelete}
+          />
+        </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-        {ready && (
+      {/* Cards counter row (ready sources only) */}
+      {ready && (
+        <div style={{ display: 'flex', alignItems: 'center', marginTop: 4, paddingLeft: 20 }}>
           <button
             type="button"
             onClick={toggleCards}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
-              gap: 4,
+              gap: 3,
               background: 'transparent',
               border: 'none',
               cursor: 'pointer',
               color: 'var(--text-dim)',
               fontFamily: 'var(--font-sans)',
-              fontSize: 11.5,
-              padding: '2px 0',
+              fontSize: 11,
+              padding: '1px 4px',
+              borderRadius: 'var(--r-xs)',
             }}
           >
-            <NNIcon name="stack" size={12} color="var(--text-dim)" />
+            <NNIcon name="stack" size={11} color="var(--text-dim)" />
             {cards === null
               ? t('notebooks.workspace.cardsButton')
               : t('notebooks.workspace.cardsCount', { count: cards.length })}
           </button>
-        )}
-        <span style={{ flex: 1 }} />
-        <NNBtn
-          variant="ghost"
-          size="sm"
-          icon="edit"
-          ariaLabel={t('notebooks.sources.rename')}
-          title={t('notebooks.sources.rename')}
-          onClick={onRename}
-        />
-        <NNBtn
-          variant="ghost"
-          size="sm"
-          icon="x"
-          ariaLabel={t('notebooks.sources.delete')}
-          title={t('notebooks.sources.delete')}
-          onClick={onDelete}
-        />
-      </div>
+        </div>
+      )}
 
       {cardsOpen && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4, paddingLeft: 20 }}>
           {cardsLoading ? (
-            <span style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>
-              {t('notebooks.workspace.cardsLoading')}
-            </span>
+            <NNSkeleton style={{ height: 28 }} />
           ) : (cards ?? []).length === 0 ? (
-            <span style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)', padding: '2px 0' }}>
               {t('notebooks.workspace.cardsEmpty')}
             </span>
           ) : (
@@ -1036,11 +1202,11 @@ const WorkspaceSourceRow = ({
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 6,
-                  padding: '5px 7px',
-                  background: 'var(--surface)',
+                  gap: 5,
+                  padding: '4px 6px',
+                  background: 'var(--surface-2)',
                   border: '1px solid var(--border)',
-                  borderRadius: 'var(--r-sm)',
+                  borderRadius: 'var(--r-xs)',
                   cursor: 'pointer',
                   textAlign: 'left',
                   width: '100%',
@@ -1048,7 +1214,7 @@ const WorkspaceSourceRow = ({
               >
                 <span
                   style={{
-                    fontSize: 11.5,
+                    fontSize: 11,
                     color: 'var(--text-muted)',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
@@ -1059,13 +1225,13 @@ const WorkspaceSourceRow = ({
                 >
                   {c.front}
                 </span>
-                <NNIcon name="chevr" size={11} color="var(--text-dim)" />
+                <NNIcon name="chevr" size={10} color="var(--text-dim)" />
               </button>
             ))
           )}
         </div>
       )}
-    </NNCard>
+    </div>
   );
 };
 
@@ -1083,6 +1249,10 @@ interface ReaderPanelProps {
   onReaderMode: (m: 'pdf' | 'text') => void;
   pdfReaderRef: React.RefObject<PdfReaderHandle | null>;
   pendingPage?: number;
+  pendingMark?: string;
+  // M5 marks / quick-card.
+  onAskChat?: (quote: string) => void;
+  chatEnabled?: boolean;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
@@ -1099,6 +1269,9 @@ const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
       onReaderMode,
       pdfReaderRef,
       pendingPage,
+      pendingMark,
+      onAskChat,
+      chatEnabled = false,
       t,
     },
     ref,
@@ -1120,33 +1293,27 @@ const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
 
     if (!source) {
       return (
-        <div
-          style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: 'var(--text-dim)',
-            fontSize: 14,
-            padding: 24,
-            textAlign: 'center',
-          }}
-        >
-          {t('notebooks.reader.empty')}
+        <div className="nn-empty-state" style={{ flex: 1 }}>
+          <span className="nn-empty-state-icon"><NNIcon name="doc" size={32} color="var(--text-dim)" /></span>
+          <p className="nn-empty-state-hint">{t('notebooks.reader.empty')}</p>
         </div>
       );
     }
 
-    // M4 — native PDF reader (pdf.js + ink). Mounts only for a ready PDF source in
-    // PDF mode; pdf.js is dynamically imported INSIDE PdfReader (never SSR'd).
+    // M4+M5 — native PDF reader (pdf.js + ink + marks). Mounts only for a ready
+    // PDF source in PDF mode; pdf.js is dynamically imported INSIDE PdfReader.
     if (source.kind === 'pdf' && readerMode === 'pdf' && source.status === 'ready') {
       return (
         <PdfReader
           key={source.id}
           ref={pdfReaderRef}
           sourceId={source.id}
+          sourceName={source.title}
           initialPage={pendingPage}
+          initialMarkId={pendingMark}
           onMode={onReaderMode}
+          onAskChat={onAskChat}
+          chatEnabled={chatEnabled}
           t={t}
         />
       );
@@ -1156,13 +1323,13 @@ const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
       <div
         ref={ref}
         className="nn-scroll"
-        style={{ flex: 1, overflowY: 'auto', padding: '18px 22px' }}
+        style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 40px' }}
       >
-        <div style={{ maxWidth: 760, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
+        <div style={{ maxWidth: 680, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
             <h3
               style={{
-                fontSize: 16,
+                fontSize: 15,
                 fontWeight: 700,
                 fontFamily: 'var(--font-sans)',
                 color: 'var(--text)',
@@ -1172,6 +1339,7 @@ const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
+                letterSpacing: '-0.01em',
               }}
             >
               {source.title}
@@ -1183,14 +1351,14 @@ const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
                 onClick={() => onReaderMode('pdf')}
                 style={{
                   flexShrink: 0,
-                  height: 28,
-                  padding: '0 10px',
-                  borderRadius: 'var(--r-md)',
+                  height: 26,
+                  padding: '0 9px',
+                  borderRadius: 'var(--r-sm)',
                   border: '1px solid var(--border)',
                   background: 'var(--surface-2)',
                   color: 'var(--text-muted)',
                   cursor: 'pointer',
-                  fontSize: 12,
+                  fontSize: 11.5,
                   fontWeight: 600,
                   fontFamily: 'var(--font-sans)',
                 }}
@@ -1199,23 +1367,24 @@ const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
               </button>
             )}
             {total > 0 && (
-              <span style={{ fontSize: 11.5, color: 'var(--text-dim)', flexShrink: 0 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>
                 {t('notebooks.reader.chunkCount', { count: total })}
               </span>
             )}
           </div>
 
           {source.status !== 'ready' ? (
-            <p style={{ fontSize: 13, color: 'var(--text-dim)' }}>
+            <p style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>
               {t('notebooks.reader.notReady')}
             </p>
           ) : chunks.length === 0 && loading ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <NNSkeleton style={{ height: 80 }} />
-              <NNSkeleton style={{ height: 80 }} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <NNSkeleton style={{ height: 72 }} />
+              <NNSkeleton style={{ height: 72 }} />
+              <NNSkeleton style={{ height: 72 }} />
             </div>
           ) : chunks.length === 0 ? (
-            <p style={{ fontSize: 13, color: 'var(--text-dim)' }}>
+            <p style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>
               {t('notebooks.reader.noText')}
             </p>
           ) : (

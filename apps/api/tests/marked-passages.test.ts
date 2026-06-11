@@ -35,8 +35,10 @@ import {
   notebooks as notebooksTable,
   sourceAnnotations as sourceAnnotationsTable,
   sourceChunks as sourceChunksTable,
+  sourceMarks as sourceMarksTable,
   sources as sourcesTable,
 } from '@neuronexus/db';
+import type { MarkRect, SourceMarkKind } from '@neuronexus/shared';
 import { asc, eq } from 'drizzle-orm';
 import { buildApp } from '../src/app.ts';
 import {
@@ -250,6 +252,28 @@ async function seedAnnotation(
   });
 }
 
+/** Insert one source_marks row directly (the selection popover's POST did this, M5). */
+async function seedMark(
+  userId: string,
+  sourceId: string,
+  page: number,
+  kind: SourceMarkKind,
+  quote: string,
+  note: string | null = null,
+): Promise<void> {
+  const rects: MarkRect[] = [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }];
+  await db.insert(sourceMarksTable).values({
+    userId,
+    sourceId,
+    page,
+    kind,
+    quote,
+    rects,
+    color: 'lime',
+    note,
+  });
+}
+
 async function createConversation(cookie: string, body: Record<string, unknown> = {}): Promise<string> {
   const res = await callApp(app, 'POST', '/chat/conversations', { cookie, body });
   expect(res.status).toBe(200);
@@ -460,6 +484,38 @@ describe('list_marked_passages — result content', () => {
     expect((result!.data as { summary: string }).summary.toLowerCase()).toContain('no marked passages');
   });
 
+  test('kind:"card" markers are EXCLUDED (outputs, not user emphasis)', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const notebookId = await freshNotebook(userId, 'NB');
+    const { sourceId } = await seedReadySource(userId, notebookId, 'Doc', [{ text: 'chunk', page: 1 }]);
+    // A real user HIGHLIGHT (should appear) + a kind:'card' marker (should NOT).
+    await seedMark(userId, sourceId, 1, 'highlight', 'the user highlighted this');
+    await db.insert(sourceMarksTable).values({
+      userId,
+      sourceId,
+      page: 1,
+      kind: 'card',
+      quote: 'the card-marker quote that must never reach the model',
+      rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }] as MarkRect[],
+      color: 'lime',
+    });
+
+    __setAiClientForTests({
+      embed: fakeEmbed,
+      chatStreamAgentic: scriptedAgentStream([
+        toolTurn([{ id: 'm1', name: 'list_marked_passages', args: {} }]),
+        answerTurn('ok'),
+      ]),
+    });
+
+    const convId = await createConversation(cookie, { notebookId });
+    const frames = await readSse(await streamReq(cookie, convId, 'what did I mark?'));
+    const summary = (frames.find((f) => f.event === 'tool_result')!.data as { summary: string }).summary;
+    expect(summary).toContain('the user highlighted this');
+    // The card marker's quote is filtered out at the SQL level.
+    expect(summary).not.toContain('the card-marker quote that must never reach the model');
+  });
+
   test('sourceId in scope limits to that source only (multi-source notebook)', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const notebookId = await freshNotebook(userId, 'Two');
@@ -649,5 +705,86 @@ describe('list_marked_passages — grounding → card provenance (end to end)', 
     const edges = await edgesFor(userId);
     expect(edges.length).toBe(1);
     expect(edges[0]!.sourceChunkId).toBe(chunkIds[0]);
+  });
+
+  test('M5 merge: ink + highlight + note on different pages → all three labeled in page order; grounds a HIGHLIGHT page chunk → provenance edge', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const notebookId = await freshNotebook(userId, 'Reader');
+    const deckId = await freshDeck(cookie);
+    // One source, three pages each with its own chunk:
+    //   page 2 → an INK marked_text (M4 source_annotations).
+    //   page 5 → a TEXT HIGHLIGHT (M5 source_marks, kind 'highlight').
+    //   page 8 → a place-anchored NOTE (M5 source_marks, kind 'note').
+    const { sourceId, chunkIds } = await seedReadySource(userId, notebookId, 'Reader Doc', [
+      { text: 'ink chunk on page two', page: 2 }, // chunk 0
+      { text: 'highlight chunk on page five', page: 5 }, // chunk 1
+      { text: 'note chunk on page eight', page: 8 }, // chunk 2
+    ]);
+    await seedAnnotation(userId, sourceId, 2, 'ink underline on page two');
+    await seedMark(userId, sourceId, 5, 'highlight', 'the highlighted span on page five');
+    await seedMark(userId, sourceId, 8, 'note', 'the noted span on page eight', 'my margin note');
+
+    __setAiClientForTests({
+      embed: fakeEmbed,
+      chatStreamAgentic: scriptedAgentStream([
+        toolTurn([{ id: 'm1', name: 'list_marked_passages', args: {} }]),
+        // A create_card grounded on ALL marked pages (paused for confirm).
+        toolTurn([
+          {
+            id: 'w1',
+            name: 'create_card',
+            args: { deckId, fieldValues: { Front: 'What did I mark?', Back: 'Three passages.' } },
+          },
+        ]),
+        answerTurn('Created a card from your markup.'),
+      ]),
+    });
+
+    const convId = await createConversation(cookie, { notebookId });
+    const frames = await readSse(await streamReq(cookie, convId, 'make a card from everything I marked'));
+
+    const markedResult = frames.find((f) => f.event === 'tool_result')!;
+    expect((markedResult.data as { ok: boolean }).ok).toBe(true);
+    const summary = (markedResult.data as { summary: string }).summary;
+
+    // All three entries are present, each labeled by its kind.
+    expect(summary).toContain('ink underline on page two'); // ink (no [kind] tag)
+    expect(summary).toContain('[выделение]'); // highlight label
+    expect(summary).toContain('the highlighted span on page five');
+    expect(summary).toContain('[заметка]'); // note label
+    expect(summary).toContain('the noted span on page eight');
+    expect(summary).toContain('my margin note'); // the note body rides along
+
+    // Page-ordered: p.2 (ink) < p.5 (highlight) < p.8 (note).
+    const idxInk = summary.indexOf('p.2');
+    const idxHi = summary.indexOf('p.5');
+    const idxNote = summary.indexOf('p.8');
+    expect(idxInk).toBeGreaterThanOrEqual(0);
+    expect(idxHi).toBeGreaterThan(idxInk);
+    expect(idxNote).toBeGreaterThan(idxHi);
+
+    // Grounding covers each marked page's chunk — including the HIGHLIGHT page (5)
+    // and the NOTE page (8), not just the ink page (2).
+    const citations = (markedResult.data as { citations?: { sourceChunkId: string; page?: number }[] }).citations!;
+    const citedChunkIds = citations.map((c) => c.sourceChunkId).sort();
+    expect(citedChunkIds).toEqual([chunkIds[0]!, chunkIds[1]!, chunkIds[2]!].sort());
+
+    const rows = await db
+      .select()
+      .from(messagesTable)
+      .where(eq(messagesTable.conversationId, convId))
+      .orderBy(asc(messagesTable.createdAt));
+    const pendingRow = rows.find(
+      (r) => r.role === 'assistant' && r.toolCalls?.[0]?.name === 'create_card',
+    )!;
+    const grounded = [...(pendingRow.grounding as { chunkIds: string[] }).chunkIds].sort();
+    expect(grounded).toEqual([chunkIds[0]!, chunkIds[1]!, chunkIds[2]!].sort());
+
+    // Apply → an edge per grounding chunk; the HIGHLIGHT page's chunk is among them.
+    await readSse(await resumeReq(cookie, convId, { resumeToolCallId: 'w1', decision: 'apply' }));
+    const edges = await edgesFor(userId);
+    const edgeChunks = edges.map((e) => e.sourceChunkId);
+    expect(edgeChunks).toContain(chunkIds[1]); // the highlight-page chunk has provenance
+    expect(edgeChunks.slice().sort()).toEqual([chunkIds[0]!, chunkIds[1]!, chunkIds[2]!].sort());
   });
 });

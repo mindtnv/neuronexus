@@ -252,6 +252,12 @@ const MODEL_LS_KEY = 'nn:chat:model';
 // localStorage key for the deep-research mode toggle (sticky across sessions).
 const RESEARCH_LS_KEY = 'nn:chat:research';
 
+/** Imperative composer control exposed to a parent (M5 reader → «Спросить»). */
+export interface ComposerPrefillHandle {
+  /** Append text to the composer draft and focus it (no auto-send). */
+  prefill: (text: string) => void;
+}
+
 export interface ChatPanelProps {
   /** 'global' = the /chat screen (rail + extras); 'notebook' = workspace panel. */
   mode?: 'global' | 'notebook';
@@ -266,6 +272,9 @@ export interface ChatPanelProps {
   onThreadChange?: (id: string | null) => void;
   /** A source citation chip was clicked — workspace scrolls the reader to it. */
   onSourceCitation?: (c: SourceCitation) => void;
+  /** Parent-owned ref the panel populates with an imperative `prefill(text)`
+   *  (M5 reader «Спросить»). Additive — the global chat never passes it. */
+  composerPrefillRef?: React.MutableRefObject<ComposerPrefillHandle | null>;
 }
 
 export const ChatPanel = ({
@@ -275,6 +284,7 @@ export const ChatPanel = ({
   activeThreadId,
   onThreadChange,
   onSourceCitation,
+  composerPrefillRef,
 }: ChatPanelProps = {}) => {
   const t = useT();
   const { locale } = useLocale();
@@ -1180,6 +1190,39 @@ export const ChatPanel = ({
   }, [sendContent]);
 
   const send = useCallback(() => sendContent(draft.trim()), [sendContent, draft]);
+
+  // M5 — expose an imperative `prefill(text)` so the notebook reader's «Спросить»
+  // action can seed the composer (e.g. a `> quote…` block) + focus it. Additive:
+  // populated only when the parent passes `composerPrefillRef`; the global chat
+  // never does, so its behavior is untouched. Reads the live draft via a ref so
+  // the registered handle stays stable.
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+  const activeIdRef = useRef(activeId);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
+  useEffect(() => {
+    if (!composerPrefillRef) return;
+    const ref = composerPrefillRef;
+    ref.current = {
+      prefill: (text: string) => {
+        const cur = draftRef.current;
+        const next = cur.trim().length > 0 ? `${cur.replace(/\s+$/, '')}\n\n${text}` : text;
+        updateDraft(next, activeIdRef.current);
+        requestAnimationFrame(() => {
+          const el = textareaRef.current;
+          el?.focus();
+          el?.setSelectionRange(next.length, next.length);
+        });
+      },
+    };
+    return () => {
+      if (ref.current) ref.current = null;
+    };
+  }, [composerPrefillRef, updateDraft]);
 
   // The user's biggest deck (by mirrored card count) — used by the suggested
   // prompts AND the slash-command templates (D2).

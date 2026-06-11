@@ -7,16 +7,20 @@ import {
   bboxesIntersect,
   canvasToNorm,
   clamp01,
+  clientRectsToMarkRects,
+  clientRectToMarkRect,
   eraserHitsStroke,
   extractMarkedText,
   inflateBBox,
+  mergeSameLineRects,
   normToCanvas,
   pointToStrokeDistance,
   strokeBBox,
   textItemBBox,
+  type ClientRectLike,
   type PdfTextItem,
 } from './pdf-ink';
-import { MARKED_TEXT_MAX, type InkStroke } from '@neuronexus/shared';
+import { MARK_RECTS_MAX, MARKED_TEXT_MAX, type InkStroke, type MarkRect } from '@neuronexus/shared';
 
 describe('coord transforms', () => {
   test('normToCanvas / canvasToNorm roundtrip', () => {
@@ -151,5 +155,101 @@ describe('extractMarkedText', () => {
     const stroke: InkStroke = { tool: 'highlighter', color: '#f3b655', width: 0.02, points: [0.0, 0.09, 1, 1.0, 0.09, 1] };
     const out = extractMarkedText(many, 1000, 1000, [stroke]);
     expect(out.length).toBeLessThanOrEqual(MARKED_TEXT_MAX);
+  });
+});
+
+describe('selection rect geometry (M5 marks)', () => {
+  const page = { left: 100, top: 50, width: 800, height: 1000 };
+
+  test('clientRectToMarkRect normalizes against the page box (0..1, y down)', () => {
+    const m = clientRectToMarkRect({ left: 300, top: 150, width: 400, height: 20 }, page)!;
+    expect(m.x).toBeCloseTo(0.25, 6); // (300-100)/800
+    expect(m.y).toBeCloseTo(0.1, 6); // (150-50)/1000
+    expect(m.w).toBeCloseTo(0.5, 6); // 400/800
+    expect(m.h).toBeCloseTo(0.02, 6); // 20/1000
+  });
+
+  test('clientRectToMarkRect drops zero-area + degenerate page', () => {
+    expect(clientRectToMarkRect({ left: 0, top: 0, width: 0, height: 10 }, page)).toBeNull();
+    expect(clientRectToMarkRect({ left: 0, top: 0, width: 10, height: 0 }, page)).toBeNull();
+    expect(
+      clientRectToMarkRect({ left: 0, top: 0, width: 10, height: 10 }, { left: 0, top: 0, width: 0, height: 0 }),
+    ).toBeNull();
+  });
+
+  test('clientRectToMarkRect clamps out-of-page coords to [0,1]', () => {
+    const m = clientRectToMarkRect({ left: 50, top: 20, width: 2000, height: 20 }, page)!;
+    expect(m.x).toBe(0); // left of the page → clamped
+    expect(m.y).toBe(0);
+    expect(m.w).toBe(1); // wider than the page → clamped
+  });
+
+  test('mergeSameLineRects merges adjacent same-line fragments', () => {
+    const rects: MarkRect[] = [
+      { x: 0.1, y: 0.2, w: 0.1, h: 0.02 },
+      { x: 0.2, y: 0.2, w: 0.1, h: 0.02 }, // adjacent → merges into the first
+      { x: 0.1, y: 0.3, w: 0.1, h: 0.02 }, // different line → kept separate
+    ];
+    const out = mergeSameLineRects(rects);
+    expect(out).toHaveLength(2);
+    expect(out[0]!.x).toBeCloseTo(0.1, 6);
+    expect(out[0]!.w).toBeCloseTo(0.2, 6); // 0.1..0.3
+    expect(out[1]!.y).toBeCloseTo(0.3, 6);
+  });
+
+  test('mergeSameLineRects does not merge a wide horizontal gap on the same line', () => {
+    const rects: MarkRect[] = [
+      { x: 0.1, y: 0.2, w: 0.1, h: 0.02 },
+      { x: 0.6, y: 0.2, w: 0.1, h: 0.02 }, // far away horizontally → separate
+    ];
+    expect(mergeSameLineRects(rects)).toHaveLength(2);
+  });
+
+  test('mergeSameLineRects unifies OVERLAPPING different-height rects on one line (bold vs regular)', () => {
+    // A bold span's box is taller and x-overlaps the regular span's box on the
+    // SAME line — the old equal-y/equal-h matching kept both, which painted a
+    // double-tinted dark sliver. The line-grouping merge must emit ONE band at
+    // the unified height — never self-intersecting output.
+    const rects: MarkRect[] = [
+      { x: 0.10, y: 0.200, w: 0.15, h: 0.024 }, // bold: taller box
+      { x: 0.22, y: 0.204, w: 0.30, h: 0.018 }, // regular: x-overlaps [0.22..0.25]
+    ];
+    const out = mergeSameLineRects(rects);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.x).toBeCloseTo(0.10, 5);
+    expect(out[0]!.w).toBeCloseTo(0.42, 5); // 0.52 - 0.10
+    expect(out[0]!.y).toBeCloseTo(0.2, 5);
+    expect(out[0]!.h).toBeCloseTo(0.024, 5); // unified line height
+  });
+
+  test('mergeSameLineRects keeps adjacent text LINES separate (no vertical merge)', () => {
+    const rects: MarkRect[] = [
+      { x: 0.1, y: 0.2, w: 0.4, h: 0.018 },
+      { x: 0.1, y: 0.222, w: 0.4, h: 0.018 }, // next line: no vertical overlap
+    ];
+    expect(mergeSameLineRects(rects)).toHaveLength(2);
+  });
+
+  test('clientRectsToMarkRects normalizes + merges + caps', () => {
+    const out = clientRectsToMarkRects(
+      [
+        { left: 100, top: 250, width: 80, height: 20 }, // line 1, x 0..0.1
+        { left: 180, top: 250, width: 80, height: 20 }, // line 1, adjacent → merge
+        { left: 100, top: 0, width: 0, height: 20 }, // zero-width → dropped
+      ],
+      page,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.x).toBeCloseTo(0, 6);
+    expect(out[0]!.w).toBeCloseTo(0.2, 6);
+  });
+
+  test('clientRectsToMarkRects caps at MARK_RECTS_MAX', () => {
+    const rects: ClientRectLike[] = [];
+    // Distinct lines (no merge) so each survives → exceed the cap.
+    for (let i = 0; i < MARK_RECTS_MAX + 20; i++) {
+      rects.push({ left: 100, top: 60 + i * 30, width: 80, height: 20 });
+    }
+    expect(clientRectsToMarkRects(rects, page).length).toBeLessThanOrEqual(MARK_RECTS_MAX);
   });
 });

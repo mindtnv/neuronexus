@@ -2,7 +2,7 @@
 // (Toolbar UI state, not persisted server data — that's @neuronexus/shared
 // InkStroke/PageAnnotations.)
 
-export type InkTool = 'hand' | 'pen' | 'highlighter' | 'eraser';
+export type InkTool = 'hand' | 'pen' | 'highlighter' | 'eraser' | 'smart-card';
 
 /** Toolbar state persisted GLOBALLY (not per source) under `nn:pdf:tools`. */
 export interface ToolSettings {
@@ -45,7 +45,7 @@ export function loadToolSettings(): ToolSettings {
     const tool: InkTool =
       parsed.tool === 'pen' || parsed.tool === 'highlighter' || parsed.tool === 'eraser'
         ? parsed.tool
-        : 'hand';
+        : 'hand'; // 'smart-card' is transient — never persisted
     const color =
       typeof parsed.color === 'string' && /^#[0-9a-f]{6}$/i.test(parsed.color)
         ? parsed.color

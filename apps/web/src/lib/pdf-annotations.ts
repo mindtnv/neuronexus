@@ -5,8 +5,14 @@
 // JSON routes go through Eden via the loose `(api as any)` path (the store's
 // established escape hatch for endpoints Eden's path inference chokes on).
 
-import type { PageAnnotations } from '@neuronexus/shared';
+import type {
+  MarkRect,
+  PageAnnotations,
+  SourceMarkColor,
+  SourceMarkKind,
+} from '@neuronexus/shared';
 import { api, ok } from '@/lib/api';
+import type { QuickCardResult, SourceMark, SuggestCardResult } from '@/lib/types';
 
 // Same origin resolution as lib/api.ts / chat-stream.ts.
 const baseURL =
@@ -93,4 +99,78 @@ export async function saveAnnotation(
       .annotations({ page })
       .put({ strokes, markedText }),
   );
+}
+
+// ── Reading-workflow marks (M5) ───────────────────────────────────────────────
+// Text-selection highlights/notes. Like the annotation JSON routes above, these
+// ride Eden through the loose `(api as any)` path (the store's escape hatch).
+
+/** GET /sources/:id/marks → all marks (ordered page ASC, createdAt ASC). */
+export async function fetchMarks(sourceId: string): Promise<SourceMark[]> {
+  const body = (await ok(await (api as any).sources({ id: sourceId }).marks.get())) as {
+    items: SourceMark[];
+  };
+  return body.items ?? [];
+}
+
+export interface CreateMarkInput {
+  page: number;
+  kind: SourceMarkKind;
+  quote: string;
+  rects: MarkRect[];
+  color?: SourceMarkColor;
+  note?: string;
+}
+
+/** POST /sources/:id/marks → the created mark row. */
+export async function createMark(sourceId: string, input: CreateMarkInput): Promise<SourceMark> {
+  return (await ok(
+    await (api as any).sources({ id: sourceId }).marks.post(input),
+  )) as SourceMark;
+}
+
+/** PATCH /sources/:id/marks/:markId → the updated mark row. */
+export async function updateMark(
+  sourceId: string,
+  markId: string,
+  patch: { color?: SourceMarkColor; note?: string },
+): Promise<SourceMark> {
+  return (await ok(
+    await (api as any).sources({ id: sourceId }).marks({ markId }).patch(patch),
+  )) as SourceMark;
+}
+
+/** DELETE /sources/:id/marks/:markId. */
+export async function deleteMark(sourceId: string, markId: string): Promise<void> {
+  await ok(await (api as any).sources({ id: sourceId }).marks({ markId }).delete());
+}
+
+// ── Quick card + AI formulate (M5) ────────────────────────────────────────────
+
+export interface QuickCardInput {
+  deckId: string;
+  front: string;
+  back: string;
+  page?: number;
+  quote?: string;
+  /** W4: selection/marquee rects → server inserts a source_marks row + returns markId. */
+  rects?: MarkRect[];
+}
+
+/** POST /sources/:id/quick-card → { noteId, cardIds } (provenance written tx-side). */
+export async function quickCard(sourceId: string, input: QuickCardInput): Promise<QuickCardResult> {
+  return (await ok(
+    await (api as any).sources({ id: sourceId })['quick-card'].post(input),
+  )) as QuickCardResult;
+}
+
+/** POST /sources/:id/suggest-card → { front, back }. Throws on 503 (ai off) / 502
+ *  (parse fail) — the caller keeps the user's manual values + shows a toast. */
+export async function suggestCard(
+  sourceId: string,
+  input: { quote: string; page?: number; locale?: string },
+): Promise<SuggestCardResult> {
+  return (await ok(
+    await (api as any).sources({ id: sourceId })['suggest-card'].post(input),
+  )) as SuggestCardResult;
 }

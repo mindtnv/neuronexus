@@ -1,0 +1,449 @@
+'use client';
+
+// M5 — QuickCardDialog: selection → flashcard.
+// Opened from the selection popover («В карточку») or a mark's edit popover.
+// Deck picker uses the same NNSelect + buildDeckTree/flattenTree/deckPathLabel
+// pattern as card-form.tsx; last-used deck persisted to localStorage.
+//
+// M5-T3 polish: backdrop blur, clear header/body/footer hierarchy, lime CTA,
+// ⌘Enter hint in the footer.
+
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { useNN } from '@/lib/store';
+import { buildDeckTree, deckPathLabel, flattenTree } from '@/lib/decks';
+import { NNSelect, type NNSelectOption } from '@/components/nn-select';
+import { quickCard, suggestCard } from '@/lib/pdf-annotations';
+import type { Deck, QuickCardResult } from '@/lib/types';
+import type { MarkRect } from '@neuronexus/shared';
+
+const DECK_KEY = 'nn:nb:quickdeck';
+
+type T = (key: string, params?: Record<string, string | number>) => string;
+
+export interface QuickCardDialogProps {
+  open: boolean;
+  onClose: () => void;
+  sourceId: string;
+  sourceName: string;
+  page?: number;
+  quote?: string;
+  prefillFront?: string;
+  prefillBack?: string;
+  /** W4: marquee/selection rects so the server can plant a card marker. */
+  rects?: MarkRect[];
+  /** Locale (e.g. 'en'|'ru') — passed to suggest-card so AI writes in the user's language. */
+  locale?: string;
+  onCreated: (result: QuickCardResult, firstCardId: string) => void;
+  chatEnabled: boolean;
+  t: T;
+}
+
+export function QuickCardDialog({
+  open,
+  onClose,
+  sourceId,
+  sourceName,
+  page,
+  quote,
+  prefillFront,
+  prefillBack,
+  rects,
+  locale,
+  onCreated,
+  chatEnabled,
+  t,
+}: QuickCardDialogProps) {
+  const decks = useNN((s) => s.decks);
+
+  const [deckId, setDeckId] = useState<string>('');
+  const [front, setFront] = useState('');
+  const [back, setBack] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState(false);
+
+  const frontRef = useRef<HTMLTextAreaElement>(null);
+
+  const deckOptions = useMemo<NNSelectOption<string>[]>(
+    () =>
+      flattenTree(buildDeckTree(decks), new Set(decks.map((d: Deck) => d.id))).map((node) => ({
+        value: node.deck.id,
+        label: node.deck.name,
+        depth: node.depth,
+        searchText: deckPathLabel(decks, node.deck.id),
+      })),
+    [decks],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    setFront(prefillFront ?? '');
+    setBack(prefillBack ?? quote ?? '');
+    setSuggestError(false);
+    setSubmitError(false);
+    try {
+      const saved = localStorage.getItem(DECK_KEY);
+      if (saved && decks.some((d: Deck) => d.id === saved)) {
+        setDeckId(saved);
+      } else if (decks.length > 0) {
+        setDeckId(decks[0]!.id);
+      } else {
+        setDeckId('');
+      }
+    } catch {
+      if (decks.length > 0) setDeckId(decks[0]!.id);
+    }
+    requestAnimationFrame(() => frontRef.current?.focus());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const handleDeckChange = useCallback((id: string) => {
+    setDeckId(id);
+    try { localStorage.setItem(DECK_KEY, id); } catch { /* ignore */ }
+  }, []);
+
+  const handleFormulate = useCallback(async () => {
+    if (!quote || suggesting) return;
+    setSuggesting(true);
+    setSuggestError(false);
+    try {
+      const r = await suggestCard(sourceId, { quote, page, locale });
+      setFront(r.front);
+      setBack(r.back);
+    } catch {
+      setSuggestError(true);
+    } finally {
+      setSuggesting(false);
+    }
+  }, [sourceId, quote, page, locale, suggesting]);
+
+  const handleSubmit = useCallback(async () => {
+    if (!deckId || submitting || !front.trim()) return;
+    setSubmitting(true);
+    setSubmitError(false);
+    try {
+      const result = await quickCard(sourceId, {
+        deckId,
+        front: front.trim(),
+        back: back.trim(),
+        page,
+        quote,
+        rects,
+      });
+      const firstCardId = result.cardIds[0] ?? '';
+      onCreated(result, firstCardId);
+      onClose();
+    } catch {
+      // Leave dialog open + surface an inline failure line so the user can retry.
+      setSubmitError(true);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [sourceId, deckId, front, back, page, quote, rects, submitting, onCreated, onClose]);
+
+  const onKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if ((e.key === 'Enter' && (e.metaKey || e.ctrlKey))) {
+      e.preventDefault();
+      void handleSubmit();
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onClose();
+    }
+  }, [handleSubmit, onClose]);
+
+  if (!open) return null;
+
+  const canSubmit = !!deckId && !!front.trim() && !submitting;
+
+  return (
+    // Backdrop with blur
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('notebooks.quickcard.title')}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      className="nn-dialog-backdrop"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1200,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        background: 'rgba(0,0,0,0.45)',
+      }}
+    >
+      {/* Dialog box */}
+      <div
+        onKeyDown={onKeyDown}
+        style={{
+          width: '100%',
+          maxWidth: 480,
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-xl)',
+          boxShadow: 'var(--shadow-lg)',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '14px 18px 12px',
+            borderBottom: '1px solid var(--border)',
+          }}
+        >
+          <span
+            style={{
+              fontSize: 15,
+              fontWeight: 700,
+              color: 'var(--text)',
+              fontFamily: 'var(--font-sans)',
+              letterSpacing: '-0.01em',
+            }}
+          >
+            {t('notebooks.quickcard.title')}
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              width: 30,
+              height: 30,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 'var(--r-md)',
+              border: 'none',
+              background: 'transparent',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              fontSize: 16,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Deck picker */}
+          <div>
+            <label
+              style={{
+                display: 'block',
+                fontSize: 10.5,
+                fontWeight: 700,
+                color: 'var(--text-dim)',
+                marginBottom: 5,
+                textTransform: 'uppercase',
+                letterSpacing: '0.07em',
+              }}
+            >
+              {t('notebooks.quickcard.deckLabel')}
+            </label>
+            <NNSelect<string>
+              value={deckId}
+              onChange={handleDeckChange}
+              options={deckOptions}
+              placeholder={t('notebooks.quickcard.deckPlaceholder')}
+            />
+          </div>
+
+          {/* Front */}
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: 5,
+              }}
+            >
+              <label
+                style={{
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                  color: 'var(--text-dim)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.07em',
+                }}
+              >
+                {t('notebooks.quickcard.frontLabel')}
+              </label>
+              {chatEnabled && quote && (
+                <button
+                  type="button"
+                  onClick={() => void handleFormulate()}
+                  disabled={suggesting}
+                  title={t('notebooks.quickcard.formulateHint')}
+                  style={{
+                    height: 26,
+                    padding: '0 9px',
+                    borderRadius: 'var(--r-sm)',
+                    border: '1px solid var(--lime-500)',
+                    background: suggesting
+                      ? 'var(--surface-2)'
+                      : 'color-mix(in srgb, var(--lime-500) 12%, var(--surface))',
+                    color: suggesting ? 'var(--text-dim)' : 'var(--lime-400)',
+                    cursor: suggesting ? 'default' : 'pointer',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    fontFamily: 'var(--font-sans)',
+                    opacity: suggesting ? 0.6 : 1,
+                    transition: 'opacity 100ms',
+                  }}
+                >
+                  {suggesting ? '…' : t('notebooks.quickcard.formulateBtn')}
+                </button>
+              )}
+            </div>
+            {suggestError && (
+              <p style={{ margin: '0 0 5px', fontSize: 11.5, color: 'var(--rose-400)' }}>
+                {t('notebooks.quickcard.formulateError')}
+              </p>
+            )}
+            <textarea
+              ref={frontRef}
+              value={front}
+              onChange={(e) => setFront(e.target.value)}
+              placeholder={t('notebooks.quickcard.frontPlaceholder')}
+              rows={2}
+              style={{
+                width: '100%',
+                padding: '8px 10px',
+                borderRadius: 'var(--r-md)',
+                border: '1px solid var(--border)',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
+                fontSize: 13,
+                fontFamily: 'var(--font-sans)',
+                resize: 'vertical',
+                lineHeight: 1.5,
+                boxSizing: 'border-box',
+                outline: 'none',
+                transition: 'border-color 100ms',
+              }}
+              onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--lime-500)')}
+              onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
+            />
+          </div>
+
+          {/* Back */}
+          <div>
+            <label
+              style={{
+                display: 'block',
+                fontSize: 10.5,
+                fontWeight: 700,
+                color: 'var(--text-dim)',
+                marginBottom: 5,
+                textTransform: 'uppercase',
+                letterSpacing: '0.07em',
+              }}
+            >
+              {t('notebooks.quickcard.backLabel')}
+            </label>
+            <textarea
+              value={back}
+              onChange={(e) => setBack(e.target.value)}
+              placeholder={t('notebooks.quickcard.backPlaceholder')}
+              rows={3}
+              style={{
+                width: '100%',
+                padding: '8px 10px',
+                borderRadius: 'var(--r-md)',
+                border: '1px solid var(--border)',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
+                fontSize: 13,
+                fontFamily: 'var(--font-sans)',
+                resize: 'vertical',
+                lineHeight: 1.5,
+                boxSizing: 'border-box',
+                outline: 'none',
+                transition: 'border-color 100ms',
+              }}
+              onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--lime-500)')}
+              onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
+            />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 18px 12px',
+            borderTop: '1px solid var(--border)',
+            gap: 10,
+            background: 'var(--surface-2)',
+          }}
+        >
+          {/* Provenance hint — replaced by an inline failure line on a create error. */}
+          <span
+            style={{
+              fontSize: 11,
+              color: submitError ? 'var(--rose-400)' : 'var(--text-dim)',
+              flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {submitError
+              ? t('notebooks.quickcard.createError')
+              : page != null
+                ? t('notebooks.quickcard.source', { n: page, title: sourceName })
+                : sourceName}
+          </span>
+          {/* ⌘Enter hint */}
+          <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 0, fontFamily: 'var(--font-mono)' }}>
+            ⌘↵
+          </span>
+          {/* Submit CTA */}
+          <button
+            type="button"
+            onClick={() => void handleSubmit()}
+            disabled={!canSubmit}
+            style={{
+              height: 36,
+              padding: '0 16px',
+              borderRadius: 'var(--r-md)',
+              border: 'none',
+              background: canSubmit ? 'var(--lime-500)' : 'var(--surface-3)',
+              color: canSubmit ? '#0d1608' : 'var(--text-dim)',
+              cursor: canSubmit ? 'pointer' : 'default',
+              fontSize: 13,
+              fontWeight: 700,
+              fontFamily: 'var(--font-sans)',
+              flexShrink: 0,
+              transition: 'background 100ms, color 100ms',
+            }}
+          >
+            {submitting ? t('notebooks.quickcard.creating') : t('notebooks.quickcard.createBtn')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

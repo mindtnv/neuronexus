@@ -127,6 +127,20 @@
       "when": 1781182694708,
       "tag": "0017_faulty_vampiro",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1781190341423,
+      "tag": "0018_rapid_maddog",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1781194426345,
+      "tag": "0019_flippant_colleen_wing",
+      "breakpoints": true
     }
   ]
 }

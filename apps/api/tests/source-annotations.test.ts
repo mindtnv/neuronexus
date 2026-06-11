@@ -267,6 +267,40 @@ describe('PUT /sources/:id/annotations/:page — structural validation', () => {
     }
   });
 
+  test('a small coordinate overflow (1.01 / -0.01) is CLAMPED into [0,1], not rejected; persisted strokes carry the clamped values', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const sourceId = await seedSource(userId, await freshNotebook(userId));
+    // x = 1.01 (just over 1) and y = -0.01 (just under 0) — both within the
+    // ±0.05 tolerance band → CLAMPED to 1 / 0, accepted.
+    const res = await putAnnotation(cookie, sourceId, 1, {
+      strokes: validBody([validStroke({ points: [1.01, -0.01, 0.5] })]),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json<{ ok: boolean; cleared: boolean }>()).cleared).toBe(false);
+
+    // The PERSISTED strokes carry the clamped coordinates (not the raw 1.01/-0.01).
+    const stored = (
+      await db
+        .select({ strokes: sourceAnnotationsTable.strokes })
+        .from(sourceAnnotationsTable)
+        .where(eq(sourceAnnotationsTable.sourceId, sourceId))
+    )[0]!.strokes;
+    const pts = stored.strokes[0]!.points;
+    expect(pts[0]).toBe(1); // 1.01 → 1
+    expect(pts[1]).toBe(0); // -0.01 → 0
+    expect(pts[2]).toBe(0.5); // pressure untouched
+  });
+
+  test('a gross coordinate overflow (5.0) is still rejected → 400 invalid_annotation', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const sourceId = await seedSource(userId, await freshNotebook(userId));
+    const res = await putAnnotation(cookie, sourceId, 1, {
+      strokes: validBody([validStroke({ points: [5.0, 0.2, 0.5] })]),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: string }>()).error).toBe('invalid_annotation');
+  });
+
   test('page param out of range: 0 → 4xx; large (<=10000) accepted', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const sourceId = await seedSource(userId, await freshNotebook(userId));

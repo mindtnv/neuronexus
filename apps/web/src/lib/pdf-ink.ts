@@ -11,7 +11,12 @@
 //  • pdf.js text space: y UP, origin bottom-left; item.transform = [a,b,c,d,e,f]
 //    places the glyph run origin at (e,f). We flip y against the page height.
 
-import { MARKED_TEXT_MAX, type InkStroke } from '@neuronexus/shared';
+import {
+  MARK_RECTS_MAX,
+  MARKED_TEXT_MAX,
+  type InkStroke,
+  type MarkRect,
+} from '@neuronexus/shared';
 
 // ── Coordinate transforms ────────────────────────────────────────────────────
 
@@ -259,4 +264,120 @@ export function extractMarkedText(
 function needsSpace(s: string): boolean {
   const last = s[s.length - 1];
   return last !== ' ' && last !== '\n';
+}
+
+// ── Selection rect geometry (M5 text marks) ───────────────────────────────────
+//
+// A text selection's `range.getClientRects()` yields one viewport-space rect per
+// line fragment. We normalize each against the page element's box (0..1, y down —
+// the same model ink strokes persist in) so a mark replays at any zoom, drop
+// zero-area fragments, MERGE rects that sit on the same visual line (a multi-span
+// line can produce several adjacent fragments), and cap the count. PURE: callers
+// pass plain rect shapes + the page box so the whole thing is unit-testable.
+
+/** The minimal viewport-rect shape we read (a DOMRect is structurally assignable). */
+export interface ClientRectLike {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** The page element's viewport box (its getBoundingClientRect). */
+export interface PageBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Normalize one viewport rect against the page box → MarkRect (0..1, y down).
+ * `null` when the rect is zero-area or the page box is degenerate.
+ */
+export function clientRectToMarkRect(r: ClientRectLike, page: PageBox): MarkRect | null {
+  if (page.width <= 0 || page.height <= 0) return null;
+  if (r.width <= 0 || r.height <= 0) return null;
+  const x = clamp01((r.left - page.left) / page.width);
+  const y = clamp01((r.top - page.top) / page.height);
+  const w = clamp01(r.width / page.width);
+  const h = clamp01(r.height / page.height);
+  if (w <= 0 || h <= 0) return null;
+  return { x, y, w, h };
+}
+
+/**
+ * Merge MarkRects into clean per-line bands. Pure.
+ *
+ * Pass 1 groups rects into visual LINES by VERTICAL OVERLAP — not by equal
+ * y/h: mixed spans on one line (bold vs regular, different font sizes) yield
+ * boxes of different heights whose x-ranges INTERSECT, and equality matching
+ * left them as separate rects that double-tinted into dark slivers when
+ * painted. A rect joins a line when their vertical ranges overlap by at least
+ * half the smaller height (epsY slack for sub-pixel jitter).
+ *
+ * Pass 2 unions each line's x-intervals (bridging word gaps ≤ epsX) into
+ * NON-OVERLAPPING segments at the line's unified top/height — the output can
+ * never self-intersect, so painting is overlap-free by construction.
+ */
+export function mergeSameLineRects(rects: MarkRect[], epsY = 0.006, epsX = 0.02): MarkRect[] {
+  if (rects.length <= 1) return rects.slice();
+
+  interface Line {
+    top: number;
+    bottom: number;
+    xs: { x0: number; x1: number }[];
+  }
+  const lines: Line[] = [];
+  const sorted = [...rects].sort((a, b) => a.y - b.y || a.x - b.x);
+  for (const r of sorted) {
+    const top = r.y;
+    const bottom = r.y + r.h;
+    const line = lines.find((l) => {
+      const overlap = Math.min(l.bottom, bottom) - Math.max(l.top, top);
+      return overlap + epsY >= 0.5 * Math.min(l.bottom - l.top, r.h);
+    });
+    if (line) {
+      line.top = Math.min(line.top, top);
+      line.bottom = Math.max(line.bottom, bottom);
+      line.xs.push({ x0: r.x, x1: r.x + r.w });
+    } else {
+      lines.push({ top, bottom, xs: [{ x0: r.x, x1: r.x + r.w }] });
+    }
+  }
+
+  const out: MarkRect[] = [];
+  for (const l of lines) {
+    l.xs.sort((a, b) => a.x0 - b.x0);
+    let cur = { ...l.xs[0]! };
+    for (let i = 1; i < l.xs.length; i++) {
+      const s = l.xs[i]!;
+      if (s.x0 <= cur.x1 + epsX) {
+        cur.x1 = Math.max(cur.x1, s.x1);
+      } else {
+        out.push({ x: cur.x0, y: l.top, w: cur.x1 - cur.x0, h: l.bottom - l.top });
+        cur = { ...s };
+      }
+    }
+    out.push({ x: cur.x0, y: l.top, w: cur.x1 - cur.x0, h: l.bottom - l.top });
+  }
+  out.sort((a, b) => a.y - b.y || a.x - b.x);
+  return out;
+}
+
+/**
+ * Convert a selection's client rects (relative to a page box) into the persisted
+ * MarkRect[] — normalize, drop empties, merge same-line fragments, cap to
+ * MARK_RECTS_MAX (keeping the first, reading-order rects). Returns [] when the
+ * selection produced no usable geometry.
+ */
+export function clientRectsToMarkRects(rects: Iterable<ClientRectLike>, page: PageBox): MarkRect[] {
+  const norm: MarkRect[] = [];
+  for (const r of rects) {
+    const m = clientRectToMarkRect(r, page);
+    if (m) norm.push(m);
+  }
+  if (norm.length === 0) return [];
+  const merged = mergeSameLineRects(norm);
+  return merged.length > MARK_RECTS_MAX ? merged.slice(0, MARK_RECTS_MAX) : merged;
 }

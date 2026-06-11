@@ -37,3 +37,42 @@ export const ANNOTATION_MAX_STROKES = 500;
 
 /** Max total points (x/y/p triples) persisted per page. */
 export const ANNOTATION_MAX_POINTS = 20000;
+
+// ── Source marks (M5): text selection → highlight / note ──────────────────────
+//
+// A `source_marks` row anchors a TEXT selection (not vector ink — that is the
+// M4 `source_annotations` path) inside a source's reader. Each mark carries the
+// selected `quote`, the selection's bounding rects (`MarkRect[]`, normalized
+// page coordinates — the render anchor), a `color`, and — for `kind:'note'` — a
+// freeform `note` body. A mark is the substrate for the selection popover's
+// highlight/note actions AND feeds `list_marked_passages` alongside ink markup.
+
+/** What a source mark is: a colored highlight, a place-anchored note, or a
+ *  'card' marker (an OUTPUT — anchors where a flashcard was created, written by
+ *  the quick-card route, never by the client directly). */
+export type SourceMarkKind = 'highlight' | 'note' | 'card';
+
+/** One selection quad in NORMALIZED page coordinates (0..1, y down) — the
+ *  render anchor for a highlight rect / note pin. Mirrors the ink stroke
+ *  coordinate convention (zoom-independent). */
+export interface MarkRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Server-capped length of a mark's selected text (`quote`). */
+export const MARK_QUOTE_MAX = 2000;
+
+/** Server-capped length of a `kind:'note'` mark's body (`note`). */
+export const MARK_NOTE_MAX = 4000;
+
+/** Max selection rects persisted per mark (multi-line selections merge to a
+ *  handful of line rects; the cap bounds the row size). */
+export const MARK_RECTS_MAX = 64;
+
+/** The mark highlight palette — the only colors a mark may carry. The default
+ *  (first entry) is 'lime'. Stored verbatim; the web maps each to a CSS var. */
+export const SOURCE_MARK_COLORS = ['lime', 'amber', 'rose', 'sky', 'violet'] as const;
+export type SourceMarkColor = (typeof SOURCE_MARK_COLORS)[number];

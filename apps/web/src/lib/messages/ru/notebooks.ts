@@ -71,6 +71,9 @@ const notebooks = {
     cardsCount: '{count} карточек',
     cardsLoading: 'Загрузка…',
     cardsEmpty: 'Из этого источника пока нет карточек.',
+    // W5(a) — сворачиваемая колонка чата.
+    chatCollapse: 'Свернуть чат',
+    chatExpand: 'Развернуть чат',
   },
 
   // Центральная читалка (M2 текст + M4 PDF) — содержимое активного источника.
@@ -95,6 +98,7 @@ const notebooks = {
     toolPen: 'Ручка',
     toolHighlighter: 'Маркер',
     toolEraser: 'Ластик',
+    toolSmartCard: 'Умная карточка — выделите область, ИИ предложит карточку',
     fingerDraw: 'Рисовать пальцем',
     undo: 'Отменить',
     redo: 'Повторить',
@@ -121,6 +125,50 @@ const notebooks = {
     tombstone: 'Источник удалён',
     untitled: 'Источник',
     page: 'стр. {n}',
+  },
+
+  // M5 — выделения (подсветки + заметки) в PDF-читалке.
+  marks: {
+    panelTitle: 'Разметка',
+    panelEmpty: 'Выделите текст в PDF, чтобы добавить подсветку или заметку.',
+    panelInkPage: 'стр. {n} — рисунок',
+    pageGroup: 'Страница {n}',
+    highlight: 'Подсветка',
+    note: 'Заметка',
+    delete: 'Удалить',
+    deleteConfirm: 'Удалить эту метку?',
+    notePlaceholder: 'Добавить заметку…',
+    noteSave: 'Сохранить',
+    copyAction: 'Копировать',
+    askAction: 'Спросить',
+    cardAction: 'Карточка',
+    openCard: 'Открыть карточку',
+    color_lime: 'Лаймовый',
+    color_amber: 'Янтарный',
+    color_rose: 'Розовый',
+    color_sky: 'Голубой',
+    color_violet: 'Фиолетовый',
+  },
+
+  // M5 — Быстрая карточка (выделение → флэшкарта).
+  quickcard: {
+    title: 'Новая карточка',
+    deckLabel: 'Колода',
+    deckPlaceholder: 'Выберите колоду…',
+    frontLabel: 'Лицо',
+    frontPlaceholder: 'Вопрос…',
+    backLabel: 'Оборот',
+    backPlaceholder: 'Ответ…',
+    formulateBtn: '✨ Сформулировать',
+    formulateHint: 'Сгенерировать с помощью ИИ',
+    formulateError: 'Не удалось сгенерировать. Заполните вручную.',
+    createBtn: 'Создать карточку',
+    creating: 'Создание…',
+    createError: 'Не удалось создать карточку. Попробуйте ещё раз.',
+    created: 'Карточка создана',
+    createdOpen: 'открыть',
+    source: 'стр. {n} · {title}',
+    noDeck: 'Колода не выбрана',
   },
 
   status: {
