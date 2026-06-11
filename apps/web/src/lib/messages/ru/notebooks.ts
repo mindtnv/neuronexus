@@ -143,6 +143,7 @@ const notebooks = {
     askAction: 'Спросить',
     cardAction: 'Карточка',
     openCard: 'Открыть карточку',
+    export: 'Экспорт в Markdown',
     color_lime: 'Лаймовый',
     color_amber: 'Янтарный',
     color_rose: 'Розовый',

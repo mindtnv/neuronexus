@@ -5,12 +5,13 @@
 // create/presign/finalize/delete/attach logic — it lives here so neither side
 // copy-pastes ~200 lines. Every query is `user.id`-FIRST-conjunct scoped.
 
-import { and, count, eq, sql } from 'drizzle-orm';
+import { and, count, eq, inArray, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import {
   db,
   kbChunk,
   notebookSources,
+  sourceChunks,
   sources,
   type Db,
   type Source,
@@ -318,4 +319,78 @@ export async function deleteSourceCompletely(userId: string, sourceId: string): 
   await db.delete(sources).where(and(eq(sources.id, sourceId), eq(sources.userId, userId)));
   if (source.storageKey) await deleteObject(source.storageKey).catch(() => {});
   return true;
+}
+
+// ── reingest ─────────────────────────────────────────────────────────────────
+
+export type ReingestResult =
+  | { ok: true }
+  | { ok: false; status: 400 | 404 | 409; error: string };
+
+/**
+ * Re-run the ingest pipeline for an already-ingested source through the existing
+ * CAS state machine (L4 §4.1). Only valid on a TERMINAL status (`ready`/`error`)
+ * — a non-terminal source (pending/parsing/indexing) is mid-flight → 409
+ * `not_terminal`. `text` sources have NO external carrier (the raw text only
+ * survives in source_chunks, which we wipe) so a re-parse is meaningless → 400
+ * `not_reingestable`. One tx: wipe `source_chunks` + the document `kb_chunk`
+ * rows (by source_id — no FK) + CAS `ready|error → pending` resetting the
+ * progress metadata. The CAS `status IN ('ready','error')` guard means a
+ * concurrent reingest (or a source that raced into `pending`) updates 0 rows →
+ * 409. After commit the standard worker is kicked. Grounding-safety is
+ * by-construction: the chat scope intersects `status='ready'`, so the source
+ * drops out of every notebook's chat while it re-ingests.
+ */
+export async function reingestSource(userId: string, sourceId: string): Promise<ReingestResult> {
+  const [source] = await db
+    .select({ id: sources.id, kind: sources.kind, status: sources.status })
+    .from(sources)
+    .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
+    .limit(1);
+  if (!source) return { ok: false, status: 404, error: 'not_found' };
+  if (source.kind === 'text') return { ok: false, status: 400, error: 'not_reingestable' };
+  if (source.status !== 'ready' && source.status !== 'error') {
+    return { ok: false, status: 409, error: 'not_terminal' };
+  }
+
+  const reset = await db.transaction(async (tx) => {
+    // CAS first — a concurrent reingest / a source already racing back to
+    // pending loses here (0 rows) and the whole tx is a no-op.
+    const moved = await tx
+      .update(sources)
+      .set({
+        status: 'pending',
+        errorCode: null,
+        charCount: null,
+        chunkCount: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(sources.id, sourceId),
+          eq(sources.userId, userId),
+          inArray(sources.status, ['ready', 'error']),
+        ),
+      )
+      .returning({ id: sources.id });
+    if (moved.length === 0) return false;
+
+    // Wipe the SoT chunks (the parse phase rewrites them) + the document
+    // kb_chunk vectors (no FK on kb_chunk.source_id → explicit cleanup).
+    await tx.delete(sourceChunks).where(eq(sourceChunks.sourceId, sourceId));
+    await tx
+      .delete(kbChunk)
+      .where(
+        and(
+          eq(kbChunk.userId, userId),
+          eq(kbChunk.sourceType, 'document'),
+          eq(kbChunk.sourceId, sourceId),
+        ),
+      );
+    return true;
+  });
+
+  if (!reset) return { ok: false, status: 409, error: 'not_terminal' };
+  enqueueSource(sourceId);
+  return { ok: true };
 }

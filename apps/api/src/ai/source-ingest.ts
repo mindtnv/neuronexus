@@ -301,6 +301,23 @@ async function indexPhase(sourceId: string): Promise<void> {
     return; // status stays at 'indexing'; resume finishes it later
   }
 
+  await embedUnembeddedChunks(sourceId);
+
+  // All chunks embedded → CAS indexing → ready (a delete-race loses → skip).
+  await casStatus(sourceId, ['indexing'], 'ready');
+}
+
+/**
+ * Embed every `embedded=false` source_chunk of one source in EMBED_BATCH-sized
+ * batches. Each batch is ONE tx: upsert the kb_chunk document rows (conflict
+ * target `(source_id, position) WHERE source_type='document'`, `parentId =
+ * sourceId` per §3.4) AND flip the matching source_chunks.embedded=true, so
+ * progress = COUNT(embedded=true) is crash-safe. A vanished/`deleting` source
+ * is a clean TerminalSkip. Shared by the ingest index-phase AND the
+ * document-reconcile pass (which re-stamps stale chunks `embedded=false` first
+ * so they flow back through here) — NOT copy-pasted (L4 §5).
+ */
+async function embedUnembeddedChunks(sourceId: string): Promise<void> {
   const model = env.ai.EMBEDDING_MODEL;
 
   for (;;) {
@@ -348,6 +365,10 @@ async function indexPhase(sourceId: string): Promise<void> {
         const c = batch[i]!;
         const vector = vectors[i];
         if (!vector) continue;
+        // The chunk's stored hash may be stale (a model change re-stamped it
+        // embedded=false but the SoT hash still reads the OLD model); always
+        // recompute against the CURRENT model so the kb_chunk hash is fresh.
+        const freshHash = computeSourceHash(c.text, model);
         await tx
           .insert(kbChunk)
           .values({
@@ -360,7 +381,7 @@ async function indexPhase(sourceId: string): Promise<void> {
             text: c.text,
             embedding: vector,
             embeddingModel: model,
-            sourceHash: c.sourceHash ?? computeSourceHash(c.text, model),
+            sourceHash: freshHash,
             cardId: null,
           })
           .onConflictDoUpdate({
@@ -370,28 +391,25 @@ async function indexPhase(sourceId: string): Promise<void> {
               text: c.text,
               embedding: vector,
               embeddingModel: model,
-              sourceHash: c.sourceHash ?? computeSourceHash(c.text, model),
+              sourceHash: freshHash,
               userId: source.userId,
               parentId: source.id,
               updatedAt: new Date(),
             },
           });
-        embeddedIds.push(c.id);
-      }
-      if (embeddedIds.length > 0) {
+        // Re-stamp the SoT hash to the current model in the SAME tx (so a
+        // reconcile is idempotent — the next pass sees a matching hash + skips).
         await tx
           .update(sourceChunks)
-          .set({ embedded: true })
-          .where(inArray(sourceChunks.id, embeddedIds));
+          .set({ embedded: true, sourceHash: freshHash })
+          .where(eq(sourceChunks.id, c.id));
+        embeddedIds.push(c.id);
       }
     });
     if (deletedDuringEmbed) throw new TerminalSkip();
 
     rootLogger.info({ sourceId, batch: batch.length, model }, 'ai.source_ingest.embed');
   }
-
-  // All chunks embedded → CAS indexing → ready (a delete-race loses → skip).
-  await casStatus(sourceId, ['indexing'], 'ready');
 }
 
 /**
@@ -458,5 +476,109 @@ export async function resumeSourceIngestOnStartup(): Promise<void> {
     for (const { id } of rows) enqueueSource(id);
   } catch (err) {
     rootLogger.error({ err }, 'ai.source_ingest.resume_failed — degrading');
+  }
+}
+
+// ── Document re-embed on model change (L4 §5 — closes the runbook gap) ─────────
+
+/**
+ * Re-embed library document vectors after an EMBEDDING_MODEL change. The card
+ * `reconcileOnStartup`/`POST /ai/reindex` paths walk `cards` ONLY, so document
+ * `kb_chunk` rows go stale on a model swap (their `source_hash` still encodes the
+ * old model). This reads `source_chunks.text` (the SoT — never a re-parse/
+ * re-download), finds every `ready` source whose chunks are stale, re-stamps
+ * those chunks `embedded=false`, and re-embeds them through the SAME
+ * `embedUnembeddedChunks` ingest helper (kb_chunk upsert + SoT hash re-stamp,
+ * parentId=sourceId per §3.4). A chunk is stale when its SoT `source_hash` ≠
+ * hash(text + current model) OR its kb_chunk row is missing / on a different
+ * `embedding_model`. Parks (no-op) when embeddings are off / dim-degraded —
+ * never churns. NEVER throws into the caller.
+ *
+ * `scope` selects the corpus: `{ all: true }` (reconcileOnStartup — all users)
+ * or `{ userId }` (POST /ai/reindex — one user). Returns the count of sources
+ * that had stale chunks re-embedded.
+ */
+export async function reconcileDocumentsOnStartup(
+  scope: { all: true } | { userId: string },
+): Promise<number> {
+  try {
+    // Mirror canIndex(): no embedder OR dim mismatch ⇒ park (leave vectors stale).
+    if (!isEmbeddingEnabled() || embeddingDegraded()) return 0;
+
+    const model = env.ai.EMBEDDING_MODEL;
+
+    // Candidate ready sources (user-scoped when reindexing a single user).
+    const readyRows = await db
+      .select({ id: sources.id })
+      .from(sources)
+      .where(
+        and(
+          eq(sources.status, 'ready'),
+          'userId' in scope ? eq(sources.userId, scope.userId) : undefined,
+        ),
+      );
+    if (readyRows.length === 0) return 0;
+
+    let reembedded = 0;
+    for (const { id: sourceId } of readyRows) {
+      // A chunk is stale when its SoT hash ≠ hash(text + current model) OR its
+      // kb_chunk row is absent / on a different embedding_model. LEFT JOIN so a
+      // missing kb_chunk row (kc.embeddingModel IS NULL) counts as stale.
+      const chunkRows = (await db
+        .select({
+          id: sourceChunks.id,
+          text: sourceChunks.text,
+          sourceHash: sourceChunks.sourceHash,
+          kbModel: kbChunk.embeddingModel,
+        })
+        .from(sourceChunks)
+        .leftJoin(
+          kbChunk,
+          and(
+            eq(kbChunk.sourceId, sourceChunks.sourceId),
+            eq(kbChunk.position, sourceChunks.position),
+            eq(kbChunk.sourceType, 'document'),
+          ),
+        )
+        .where(eq(sourceChunks.sourceId, sourceId))) as Array<{
+        id: string;
+        text: string;
+        sourceHash: string | null;
+        kbModel: string | null;
+      }>;
+
+      const staleIds = chunkRows
+        .filter(
+          (c) =>
+            c.kbModel !== model || c.sourceHash !== computeSourceHash(c.text, model),
+        )
+        .map((c) => c.id);
+      if (staleIds.length === 0) continue;
+
+      // Re-stamp stale chunks embedded=false so they flow back through the
+      // ingest embed helper (which re-embeds + re-stamps the SoT hash). The
+      // helper re-checks the live source per batch (deleting-race safe).
+      for (let i = 0; i < staleIds.length; i += EMBED_BATCH) {
+        await db
+          .update(sourceChunks)
+          .set({ embedded: false })
+          .where(inArray(sourceChunks.id, staleIds.slice(i, i + EMBED_BATCH)));
+      }
+      try {
+        await embedUnembeddedChunks(sourceId);
+        reembedded += 1;
+      } catch (err) {
+        if (err instanceof TerminalSkip) continue; // vanished/deleting — clean
+        throw err;
+      }
+    }
+
+    if (reembedded > 0) {
+      rootLogger.info({ reembedded, model }, 'ai.source_ingest.doc_reconcile.done');
+    }
+    return reembedded;
+  } catch (err) {
+    rootLogger.error({ err }, 'ai.source_ingest.doc_reconcile_failed — degrading');
+    return 0;
   }
 }

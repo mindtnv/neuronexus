@@ -158,6 +158,17 @@ const library = {
     confirm: 'Remove',
   },
 
+  // ── Reingest (re-run parsing + indexing) ──────────────────────────────────────
+  reingest: {
+    action: 'Reindex',
+    title: 'Reindex this material?',
+    message: 'The material will be re-parsed and re-indexed. Its highlights, notes and ink stay; chat is briefly unavailable until indexing finishes.',
+    messageUrl: 'The page will be re-fetched and re-indexed. Your highlights, notes and ink stay; chat is briefly unavailable until indexing finishes.',
+    confirm: 'Reindex',
+    started: 'Reindexing started.',
+    failed: 'Could not reindex. Try again.',
+  },
+
   // ── Duplicate-on-upload dialog ────────────────────────────────────────────────
   duplicate: {
     title: 'Already in your library',
@@ -219,6 +230,15 @@ const library = {
     handoffEmpty: 'Create a notebook first.',
     handoffNewNotebook: 'New notebook',
     handoffFailed: 'Could not open a notebook chat. Try again.',
+    // Cards badge + drawer (L4 §8.4).
+    cardsBadge: '{n} cards',
+    cardsTitle: 'Cards from this source',
+    cardsEmpty: 'No cards yet.',
+    // Markup export (L4 §8.4) — Markdown section labels.
+    exportPage: 'Page',
+    exportInk: '[ink]',
+    exportCards: '{n} cards created from this source',
+    exportDone: 'Markup exported.',
   },
 
   // ── Citation viewer (notebook chat [src:] click) ──────────────────────────────

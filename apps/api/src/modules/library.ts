@@ -39,6 +39,7 @@ import {
   deleteSourceCompletely,
   finalizeUploadSource,
   presignUploadSource,
+  reingestSource,
 } from './sources-shared.ts';
 
 const LIBRARY_PAGE = env.ai.LIBRARY_PAGE;
@@ -673,6 +674,21 @@ export const libraryModule = new Elysia({ prefix: '/library' })
     async ({ user, params, status }) => {
       const ok = await deleteSourceCompletely(user.id, params.id);
       if (!ok) return status(404, { error: 'not_found' });
+      return { ok: true };
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+  // ── reingest ───────────────────────────────────────────────────────────────────
+  // Re-run ingest through the CAS state machine (§4.1): 409 `not_terminal` if the
+  // source is mid-flight, 400 `not_reingestable` for text (no external carrier),
+  // 404 if foreign. Wipes source_chunks + document kb_chunk vectors + CAS
+  // ready|error → pending, then kicks the worker. The source falls out of every
+  // notebook's chat scope (status ≠ ready) until it re-indexes.
+  .post(
+    '/items/:id/reingest',
+    async ({ user, params, status }) => {
+      const res = await reingestSource(user.id, params.id);
+      if (!res.ok) return status(res.status, { error: res.error });
       return { ok: true };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },

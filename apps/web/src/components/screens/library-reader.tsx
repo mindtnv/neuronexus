@@ -19,7 +19,13 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { NNBadge, NNBtn, NNIcon, NNSkeleton } from '@/components/ui';
 import { api, ok } from '@/lib/api';
 import { useNN } from '@/lib/store';
-import type { LibraryItemDetail, Source, SourceChunkRow } from '@/lib/types';
+import type {
+  LibraryItemDetail,
+  Source,
+  SourceChunkRow,
+  SourceLinkedCard,
+  SourceMark,
+} from '@/lib/types';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
@@ -31,6 +37,7 @@ import {
   prefillKey,
   type HandoffNotebook,
 } from '@/lib/library-handoff';
+import { buildMarkupMarkdown, downloadMarkdown } from '@/lib/markup-export';
 
 type Tr = (key: string, params?: Record<string, string | number>) => string;
 
@@ -61,6 +68,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
   const attachSources = useNN((s) => s.attachSources);
   const patchLibraryItem = useNN((s) => s.patchLibraryItem);
   const uploadMedia = useNN((s) => s.uploadMedia);
+  const listSourceCards = useNN((s) => s.listSourceCards);
 
   const [source, setSource] = useState<Source | null>(null);
   const [detail, setDetail] = useState<LibraryItemDetail | null>(null);
@@ -81,6 +89,9 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
 
   // ── «Спросить» handoff state ────────────────────────────────────────────────────
   const [handoffQuote, setHandoffQuote] = useState<string | null>(null);
+
+  // ── Cards drawer (L4 §8.4 — «N карточек» badge → list of source's cards) ──────────
+  const [cardsDrawerOpen, setCardsDrawerOpen] = useState(false);
 
   // Deep-link params (?page=&chunk=&pos=&mark=) — consume-and-clear once.
   const pageParam = searchParams.get('page');
@@ -449,6 +460,29 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
     [router, source, sourceId, createNotebook, attachSources, t],
   );
 
+  // ── L4 §8.4 — «Экспорт в Markdown» ────────────────────────────────────────────
+  // Pure assembly (marks + ink markedText come from the reader) → blob download.
+  const onExportMarkup = useCallback(
+    (data: { marks: SourceMark[]; ink: { page: number; markedText: string | null }[] }) => {
+      const title = source?.title ?? 'markup';
+      const md = buildMarkupMarkdown({
+        title,
+        author: detail?.author ?? null,
+        marks: data.marks,
+        ink: data.ink,
+        cardCount: detail?.cardCount ?? 0,
+        labels: {
+          pageHeading: t('library.reader.exportPage'),
+          inkLabel: t('library.reader.exportInk'),
+          cardsFooter: (n) => t('library.reader.exportCards', { n }),
+        },
+      });
+      downloadMarkdown(title, md);
+      raiseToast({ kind: 'info', title: t('library.reader.exportDone') });
+    },
+    [source, detail, t],
+  );
+
   const onAskChat = useCallback(
     (quote: string) => {
       // Strip a leading "> " block marker the reader prepends — we re-format.
@@ -487,6 +521,8 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
         source={source}
         author={detail?.author ?? null}
         coverUrl={detail?.coverUrl ?? null}
+        cardCount={detail?.cardCount ?? 0}
+        onOpenCards={() => setCardsDrawerOpen(true)}
         onBack={() => router.push('/library')}
         onDetails={() => router.push(`/library?focus=${sourceId}`)}
         t={t}
@@ -521,6 +557,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
               chatEnabled={chatEnabled}
               onPageChange={onPdfPageChange}
               onDocInfo={onDocInfo}
+              onExportMarkup={onExportMarkup}
               tocOpen={tocOpen}
               tocAvailable={tocAvailable}
               onToggleToc={onToggleToc}
@@ -560,6 +597,17 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
           t={t}
         />
       )}
+
+      {/* Cards drawer (L4 §8.4) — the «N карточек» badge in the header. */}
+      {cardsDrawerOpen && (
+        <CardsDrawer
+          sourceId={sourceId}
+          listSourceCards={listSourceCards}
+          onOpenCard={(cardId) => router.push(`/cards?focus=${cardId}`)}
+          onClose={() => setCardsDrawerOpen(false)}
+          t={t}
+        />
+      )}
     </div>
   );
 };
@@ -570,6 +618,8 @@ const ReaderHeader = ({
   source,
   author,
   coverUrl,
+  cardCount,
+  onOpenCards,
   onBack,
   onDetails,
   t,
@@ -577,6 +627,8 @@ const ReaderHeader = ({
   source: Source | null;
   author: string | null;
   coverUrl: string | null;
+  cardCount: number;
+  onOpenCards: () => void;
   onBack: () => void;
   onDetails: () => void;
   t: Tr;
@@ -639,6 +691,36 @@ const ReaderHeader = ({
       <NNBadge tone={source.status === 'error' ? 'rose' : 'sky'} size="xs">
         {t(`library.status.${source.status}`)}
       </NNBadge>
+    )}
+    {cardCount > 0 && (
+      <button
+        type="button"
+        onClick={onOpenCards}
+        title={t('library.reader.cardsBadge', { n: cardCount })}
+        className="nn-tb-btn"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          height: 26,
+          padding: '0 9px',
+          width: 'auto',
+          borderRadius: 'var(--r-sm)',
+          border: '1px solid var(--lime-500)',
+          background: 'color-mix(in srgb, var(--lime-500) 10%, var(--surface))',
+          color: 'var(--lime-400)',
+          fontSize: 11.5,
+          fontWeight: 600,
+          fontFamily: 'var(--font-sans)',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="5" width="20" height="14" rx="2" />
+          <line x1="2" y1="10" x2="22" y2="10" />
+        </svg>
+        {t('library.reader.cardsBadge', { n: cardCount })}
+      </button>
     )}
     <NNBtn variant="ghost" size="sm" icon="dots" ariaLabel={t('library.reader.details')} title={t('library.reader.details')} onClick={onDetails} />
   </div>
@@ -902,6 +984,117 @@ const HandoffPicker = ({
                 </button>
               ))}
             </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+};
+
+// ── Cards drawer (L4 §8.4 — «N карточек» list from GET /sources/:id/cards) ─────
+
+const CardsDrawer = ({
+  sourceId,
+  listSourceCards,
+  onOpenCard,
+  onClose,
+  t,
+}: {
+  sourceId: string;
+  listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
+  onOpenCard: (cardId: string) => void;
+  onClose: () => void;
+  t: Tr;
+}) => {
+  const [rows, setRows] = useState<SourceLinkedCard[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const items = await listSourceCards(sourceId);
+        if (!cancelled) setRows(items);
+      } catch {
+        if (!cancelled) setRows([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceId, listSourceCards]);
+
+  return (
+    <>
+      <div
+        className="nn-dialog-backdrop"
+        onClick={onClose}
+        style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }}
+      />
+      <div
+        className="nn-scroll"
+        style={{
+          position: 'fixed',
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: 360,
+          maxWidth: '100%',
+          zIndex: 91,
+          background: 'var(--surface)',
+          borderLeft: '1px solid var(--border)',
+          boxShadow: 'var(--shadow-lg)',
+          display: 'flex',
+          flexDirection: 'column',
+          overflowY: 'auto',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '12px 14px',
+            borderBottom: '1px solid var(--border)',
+            position: 'sticky',
+            top: 0,
+            background: 'var(--surface)',
+            zIndex: 1,
+          }}
+        >
+          <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0, flex: 1, fontFamily: 'var(--font-sans)' }}>
+            {t('library.reader.cardsTitle')}
+          </h3>
+          <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.reader.tocClose')} onClick={onClose} />
+        </div>
+        <div style={{ padding: '8px 8px 16px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {rows === null ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 6 }}>
+              <NNSkeleton style={{ height: 44 }} />
+              <NNSkeleton style={{ height: 44 }} />
+              <NNSkeleton style={{ height: 44 }} />
+            </div>
+          ) : rows.length === 0 ? (
+            <p style={{ fontSize: 12.5, color: 'var(--text-dim)', margin: 0, padding: '8px 10px' }}>
+              {t('library.reader.cardsEmpty')}
+            </p>
+          ) : (
+            rows.map((c) => (
+              <button
+                key={c.cardId}
+                type="button"
+                onClick={() => onOpenCard(c.cardId)}
+                className="nn-lib-nb-link"
+                style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 3, padding: '8px 10px' }}
+              >
+                <span style={{ fontSize: 12.5, color: 'var(--text)', textAlign: 'left', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: 1.4 }}>
+                  {c.front}
+                </span>
+                {c.deckName && (
+                  <span style={{ fontSize: 10.5, color: 'var(--text-dim)', fontFamily: 'var(--font-sans)' }}>
+                    {c.deckName}
+                  </span>
+                )}
+              </button>
+            ))
           )}
         </div>
       </div>

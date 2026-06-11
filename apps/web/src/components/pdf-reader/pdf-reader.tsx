@@ -109,6 +109,13 @@ interface PdfReaderProps {
     author?: string;
     renderCover: () => Promise<Blob | null>;
   }) => void;
+  /** L4 §8.4 — «Экспорт в Markdown» from the «Разметка» panel. The reader hands
+   *  the parent the already-loaded marks + ink markedText (the parent owns the
+   *  title/author/cardCount + i18n + download). */
+  onExportMarkup?: (data: {
+    marks: SourceMark[];
+    ink: { page: number; markedText: string | null }[];
+  }) => void;
 }
 
 interface PageState {
@@ -123,7 +130,7 @@ const SAVE_DEBOUNCE_MS = 800;
 const POS_KEY = (id: string) => `nn:pdf:pos:${id}`;
 
 export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
-  ({ sourceId, sourceName, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false, onPageChange, tocOpen, tocAvailable, onToggleToc, onDocInfo }, ref) => {
+  ({ sourceId, sourceName, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false, onPageChange, tocOpen, tocAvailable, onToggleToc, onDocInfo, onExportMarkup }, ref) => {
     const router = useRouter();
     const { locale } = useLocale();
     const containerRef = useRef<HTMLDivElement>(null);
@@ -270,6 +277,21 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     const handleMarkToCard = useCallback((mark: SourceMark) => {
       setQuickCardState({ page: mark.page, quote: mark.quote, prefillBack: mark.quote });
     }, []);
+
+    // L4 §8.4 — gather marks + ink markedText (re-read the persisted annotations
+    // so we get the geometric markedText, not just the stroke page numbers) and
+    // hand them to the parent, which adds title/author/cardCount + downloads.
+    const handleExportMarkup = useCallback(async () => {
+      if (!onExportMarkup) return;
+      let ink: { page: number; markedText: string | null }[] = [];
+      try {
+        const rows = await fetchAnnotations(sourceId);
+        ink = rows.map((r) => ({ page: r.page, markedText: r.markedText }));
+      } catch {
+        /* best-effort — export marks even if annotations fail to load */
+      }
+      onExportMarkup({ marks, ink });
+    }, [onExportMarkup, sourceId, marks]);
 
     // W3 — smart-card marquee: on release, extract text under the rect, AI-suggest
     // a card, and open QuickCardDialog with both fields pre-filled.
@@ -1326,6 +1348,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
               onMarkNoteChange={(id, note) => void handleMarkNoteChange(id, note)}
               onMarkToCard={handleMarkToCard}
               onOpenCard={handleOpenCard}
+              onExport={onExportMarkup ? () => void handleExportMarkup() : undefined}
               t={t}
             />
 

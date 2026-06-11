@@ -307,6 +307,9 @@ interface State {
   patchLibraryItem: (id: string, patch: LibraryPatch) => Promise<LibraryItem>;
   /** Full source delete (DELETE /library/items/:id) — edges cascade, card tombstones. */
   deleteLibraryItem: (id: string) => Promise<void>;
+  /** Re-run ingest (POST /library/items/:id/reingest). Throws on 409 not_terminal
+   *  / 400 not_reingestable (text) — the caller maps to a toast. */
+  reingestLibraryItem: (id: string) => Promise<void>;
   /** Upsert reading position/percent (PUT /library/items/:id/reading-state). Best-
    *  effort; unread→reading flips server-side. */
   putReadingState: (id: string, state: ReadingStatePatch) => Promise<void>;
@@ -1059,6 +1062,10 @@ export const useNN = create<State>()((set, get) => ({
 
   async deleteLibraryItem(id) {
     await ok(await (api as any).library.items({ id }).delete());
+  },
+
+  async reingestLibraryItem(id) {
+    await ok(await (api as any).library.items({ id }).reingest.post());
   },
 
   async putReadingState(id, state) {

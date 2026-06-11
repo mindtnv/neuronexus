@@ -60,6 +60,7 @@ import { env, embeddingEnabled, chatEnabled, notebooksEnabled } from '../env.ts'
 import { descendantIds } from './cards.ts';
 import { authPlugin } from '../auth-plugin.ts';
 import { embeddingDegraded, reindexUser } from '../ai/index-queue.ts';
+import { reconcileDocumentsOnStartup } from '../ai/source-ingest.ts';
 import {
   chatStreamAgentic,
   isChatEnabled,
@@ -1481,6 +1482,11 @@ export const aiModule = new Elysia({ prefix: '/ai' })
     '/reindex',
     async ({ user }) => {
       const queued = await reindexUser(user.id);
+      // Also re-embed any stale library document vectors (L4 §5 — a model swap
+      // leaves document chunks stale; the card queue above only walks cards).
+      // Fire-and-forget: documents read their SoT text, never re-parse; parks
+      // when embeddings are off/degraded.
+      void reconcileDocumentsOnStartup({ userId: user.id });
       return { queued };
     },
     { auth: true },

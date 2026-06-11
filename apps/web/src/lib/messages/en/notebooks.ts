@@ -154,6 +154,7 @@ const notebooks = {
     askAction: 'Ask',
     cardAction: 'Card',
     openCard: 'Open card',
+    export: 'Export to Markdown',
     color_lime: 'Lime',
     color_amber: 'Amber',
     color_rose: 'Rose',

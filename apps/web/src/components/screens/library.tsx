@@ -17,7 +17,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import type { IngestErrorCode, SourceKind, SourceMime } from '@neuronexus/shared';
+import type { IngestErrorCode, SourceKind, SourceMime, SourceStatus } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton, type IconName } from '@/components/ui';
 import {
   DuplicateSourceError,
@@ -38,7 +38,7 @@ import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
-import { useSourceStatus } from '@/lib/use-source-status';
+import { isNonTerminal, useSourceStatus } from '@/lib/use-source-status';
 
 type Tr = (key: string, params?: Record<string, string | number>) => string;
 type ViewMode = 'grid' | 'list';
@@ -1289,6 +1289,7 @@ const DetailsPanel = ({
 }) => {
   const patchLibraryItem = useNN((s) => s.patchLibraryItem);
   const deleteLibraryItem = useNN((s) => s.deleteLibraryItem);
+  const reingestLibraryItem = useNN((s) => s.reingestLibraryItem);
   const listNotebooks = useNN((s) => s.listNotebooks);
   const attachSources = useNN((s) => s.attachSources);
 
@@ -1311,6 +1312,15 @@ const DetailsPanel = ({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Poll the detail while the source is mid-ingest (e.g. after a reingest) so
+  // the status badge + progress in this open sheet stay live (the list-level
+  // useSourceStatus updates the grid, not this sheet's own `detail`).
+  useEffect(() => {
+    if (!detail || !isNonTerminal(detail.status as SourceStatus)) return;
+    const id = window.setInterval(() => void reload(), 2000);
+    return () => window.clearInterval(id);
+  }, [detail, reload]);
 
   const applyPatch = useCallback(
     async (patch: Parameters<typeof patchLibraryItem>[1]) => {
@@ -1390,6 +1400,28 @@ const DetailsPanel = ({
       raiseToast({ kind: 'info', title: t('library.details.saveFailed') });
     }
   }, [detail, confirm, t, deleteLibraryItem, itemId, onDeleted]);
+
+  const onReingest = useCallback(async () => {
+    if (!detail) return;
+    const yes = await confirm({
+      title: t('library.reingest.title'),
+      message:
+        detail.kind === 'url'
+          ? t('library.reingest.messageUrl')
+          : t('library.reingest.message'),
+      confirmLabel: t('library.reingest.confirm'),
+    });
+    if (!yes) return;
+    try {
+      await reingestLibraryItem(itemId);
+      raiseToast({ kind: 'info', title: t('library.reingest.started') });
+      // Reflect the pending status immediately; the poll effect tracks it to ready.
+      setDetail((prev) => (prev ? { ...prev, status: 'pending', errorCode: null } : prev));
+      void reload();
+    } catch {
+      raiseToast({ kind: 'info', title: t('library.reingest.failed') });
+    }
+  }, [detail, confirm, t, reingestLibraryItem, itemId, reload]);
 
   const onAttached = useCallback(() => {
     setPickerOpen(false);
@@ -1558,8 +1590,13 @@ const DetailsPanel = ({
               </div>
             )}
 
-            {/* Delete */}
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+            {/* Reingest (non-text, terminal status) + Delete */}
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {detail.kind !== 'text' && (detail.status === 'ready' || detail.status === 'error') && (
+                <NNBtn variant="soft" size="sm" icon="sync" onClick={() => void onReingest()}>
+                  {t('library.reingest.action')}
+                </NNBtn>
+              )}
               <NNBtn variant="danger" size="sm" icon="x" onClick={onDelete}>{t('library.details.delete')}</NNBtn>
             </div>
           </div>
