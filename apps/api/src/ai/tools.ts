@@ -11,11 +11,22 @@
 // (the `text` field, capped) + a streamed `tool_result` event.
 
 import type { Logger } from 'pino';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
-import { cards, db, decks, notes, noteTypes, type Citation, type Db } from '@neuronexus/db';
-import { type ConfirmImpact, type FieldValues } from '@neuronexus/shared';
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import {
+  cards,
+  db,
+  decks,
+  notes,
+  noteTypes,
+  sourceChunks,
+  sources,
+  type Citation,
+  type Db,
+} from '@neuronexus/db';
+import { type ConfirmImpact, type FieldValues, type SourceCitation } from '@neuronexus/shared';
 import { embed } from './openai-client.ts';
 import { retrieve } from './retrieve.ts';
+import { retrieveDocuments } from './retrieve-documents.ts';
 import { resolveCitations } from './citations.ts';
 import { getWebSearchProvider, isWebSearchEnabled } from './web-search.ts';
 import { isFetchPageEnabled, readPageCached } from './page-reader.ts';
@@ -42,6 +53,11 @@ import { env } from '../env.ts';
 const RETRIEVE_K = env.ai.RETRIEVE_K;
 const RETRIEVE_MIN_SCORE = env.ai.RETRIEVE_MIN_SCORE;
 const TOOL_RESULT_MAX_CHARS = env.ai.TOOL_RESULT_MAX_CHARS;
+const READ_SOURCE_CHUNKS = env.ai.READ_SOURCE_CHUNKS;
+/** Max distinct source_chunk ids the per-turn grounding accumulator retains.
+ *  Exported — ai.ts caps the persisted grounding snapshot with the SAME bound
+ *  (one source of truth, no silent drift). */
+export const GROUNDING_CAP = 24;
 
 /** A Drizzle transaction handle (the arg passed to `db.transaction`). */
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -68,6 +84,34 @@ export interface ToolContext {
    * to undefined ⇒ global retrieval (byte-identical to pre-S7 behavior).
    */
   deckIds?: string[];
+  /**
+   * NotebookLM workspace (M2): the turn's source scope — the notebook id + the
+   * ids of its ready sources checked into this chat. Present ONLY in notebook
+   * mode (set by `runAgentTurn`); `search_source`/`read_source` scope their
+   * queries to `sourceIds`. An empty `sourceIds` ⇒ the notebook has no ready
+   * sources checked in (the source tools return "no sources" gracefully).
+   */
+  notebook?: { notebookId: string; sourceIds: string[] };
+  /**
+   * NotebookLM workspace (M2/M3): a MUTABLE per-turn accumulator owned by the
+   * loop. The source-reading tools push the DISTINCT `source_chunk` ids they
+   * surfaced (capped at GROUNDING_CAP, accumulation order preserved) so the
+   * server can auto-link a created card to the passages it was grounded on
+   * (M3 provenance). Present only in notebook mode.
+   */
+  grounding?: { chunkIds: string[] };
+}
+
+/** Push DISTINCT source-chunk ids into the turn's grounding accumulator (M3),
+ *  preserving accumulation order and capping at GROUNDING_CAP. No-op when the
+ *  accumulator is absent (non-notebook turn). */
+function pushGrounding(ctx: ToolContext, ids: string[]): void {
+  const acc = ctx.grounding;
+  if (!acc) return;
+  for (const id of ids) {
+    if (acc.chunkIds.length >= GROUNDING_CAP) break;
+    if (!acc.chunkIds.includes(id)) acc.chunkIds.push(id);
+  }
 }
 
 /**
@@ -924,6 +968,300 @@ function excerptField(text: string): string {
   return flat.length > 400 ? `${flat.slice(0, 400)}…` : flat;
 }
 
+// ── search_source (read, NOTEBOOK mode) ──────────────────────────────────────
+//
+// Semantic search over the DOCUMENT chunks of the notebook's checked-in sources
+// (the per-turn `ctx.notebook.sourceIds`). The document analog of `search_cards`:
+// embed the query → `retrieveDocuments` (user-scoped, source_type='document',
+// source scope) → render `[src:<sourceChunkId>]`-tagged passages the model MUST
+// cite + a `SourceCitation[]` for the client. Each surfaced chunk id is pushed
+// into `ctx.grounding` so a card created this turn can be auto-linked to the
+// passages it was grounded on (M3). Registered ONLY in notebook mode.
+
+/** Snippet length stored on each SourceCitation (mirrors citations.SNIPPET_LEN). */
+const SRC_SNIPPET_LEN = 240;
+
+/** Render one document chunk's model-facing header + body. */
+function renderSourceChunk(c: {
+  sourceChunkId: string;
+  sourceTitle: string;
+  page?: number;
+  heading?: string;
+  text: string;
+}): string {
+  const loc = [
+    c.page !== undefined ? `p.${c.page}` : '',
+    c.heading ? c.heading : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
+  const suffix = loc ? `, ${loc}` : '';
+  return `[src:${c.sourceChunkId}] («${c.sourceTitle}»${suffix})\n${c.text}`;
+}
+
+/** Build a SourceCitation for the client (kind:'source', snippet capped). */
+function toSourceCitation(
+  notebookId: string,
+  c: {
+    sourceChunkId: string;
+    sourceId: string;
+    position: number;
+    page?: number;
+    sourceTitle: string;
+    text: string;
+  },
+): SourceCitation {
+  return {
+    kind: 'source',
+    sourceId: c.sourceId,
+    sourceChunkId: c.sourceChunkId,
+    notebookId,
+    position: c.position,
+    page: c.page,
+    sourceTitle: c.sourceTitle,
+    snippet: c.text.slice(0, SRC_SNIPPET_LEN),
+  };
+}
+
+interface SearchSourceArgs {
+  query?: unknown;
+  k?: unknown;
+}
+
+const searchSource: Tool = {
+  name: 'search_source',
+  kind: 'read',
+  description:
+    "Semantic search over the passages of the notebook's sources (the documents " +
+    'the user loaded). Use this whenever the user asks about the MEANING or ' +
+    'content of the sources. Returns matching passages, each tagged with a ' +
+    '[src:<id>] token you MUST cite inline next to claims drawn from it. If it ' +
+    'returns nothing, tell the user honestly that the sources do not cover it — ' +
+    'do not invent content.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'The search query — a natural-language phrasing of what to find in the sources.',
+      },
+      k: {
+        type: 'integer',
+        description: `Max passages to return (1..${RETRIEVE_K}).`,
+        minimum: 1,
+        maximum: RETRIEVE_K,
+      },
+    },
+    required: ['query'],
+  },
+  async execute(ctx, rawArgs): Promise<ToolResult> {
+    const nb = ctx.notebook;
+    if (!nb) return { ok: false, error: 'search_source: not in a notebook' };
+    const args = (rawArgs ?? {}) as SearchSourceArgs;
+    const query = typeof args.query === 'string' ? args.query.trim() : '';
+    if (!query) return { ok: false, error: 'search_source: missing "query" argument' };
+    const k =
+      typeof args.k === 'number' && Number.isFinite(args.k)
+        ? Math.max(1, Math.min(Math.floor(args.k), RETRIEVE_K))
+        : RETRIEVE_K;
+
+    if (nb.sourceIds.length === 0) {
+      return {
+        ok: true,
+        text: 'This notebook has no ready sources checked into the chat yet.',
+        citations: [],
+      };
+    }
+
+    try {
+      const [queryEmbedding] = await embed([query]);
+      const hits =
+        queryEmbedding && queryEmbedding.length > 0
+          ? await retrieveDocuments({
+              userId: ctx.userId,
+              queryEmbedding,
+              k,
+              minScore: RETRIEVE_MIN_SCORE,
+              sourceIds: nb.sourceIds,
+            })
+          : [];
+
+      if (hits.length === 0) {
+        return {
+          ok: true,
+          text: 'No matching passages were found in the notebook sources for this query.',
+          citations: [],
+        };
+      }
+
+      pushGrounding(ctx, hits.map((h) => h.sourceChunkId));
+      const body = hits.map((h) => renderSourceChunk(h)).join('\n\n');
+      const citations = hits.map((h) => toSourceCitation(nb.notebookId, h));
+      return { ok: true, text: capText(body), citations };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.search_source.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'search_source_failed' };
+    }
+  },
+};
+
+// ── read_source (read, NOTEBOOK mode) ────────────────────────────────────────
+//
+// SEQUENTIAL reading of one source: read `READ_SOURCE_CHUNKS` consecutive
+// source_chunks rows from `position` (default 0), user-scoped. The header tells
+// the model how to continue (`position=Y+1`) so it can walk a whole document.
+// Each chunk is prefixed `[src:<id>]` (+ page) for citation; ids push into
+// `ctx.grounding`. A `sourceId` outside the notebook scope is a self-correcting
+// error listing the valid ids + titles. Registered ONLY in notebook mode.
+
+interface ReadSourceArgs {
+  sourceId?: unknown;
+  position?: unknown;
+}
+
+const readSource: Tool = {
+  name: 'read_source',
+  kind: 'read',
+  description:
+    'Read one of the notebook sources SEQUENTIALLY, a few passages at a time. ' +
+    'Pass `sourceId` (one of the notebook\'s sources) and an optional `position` ' +
+    '(0-based, default 0). The result header reports the range and how to ' +
+    'continue (call again with the next `position`). Each passage is tagged with ' +
+    'a [src:<id>] token to cite. Use this to read a document in order; use ' +
+    'search_source to jump to passages by meaning.',
+  parameters: {
+    type: 'object',
+    properties: {
+      sourceId: { type: 'string', description: 'UUID of the source to read (from this notebook).' },
+      position: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Chunk position to start from (0-based; taken from a previous read_source header).',
+      },
+    },
+    required: ['sourceId'],
+  },
+  async execute(ctx, rawArgs): Promise<ToolResult> {
+    const nb = ctx.notebook;
+    if (!nb) return { ok: false, error: 'read_source: not in a notebook' };
+    const args = (rawArgs ?? {}) as ReadSourceArgs;
+    const sourceId = typeof args.sourceId === 'string' ? args.sourceId.trim() : '';
+    if (!sourceId) return { ok: false, error: 'read_source: missing "sourceId" argument' };
+
+    // The sourceId must be one of the notebook's checked-in sources — else a
+    // self-correcting error that lists the valid ids + titles (mirrors the
+    // create_card deck/note-type error style).
+    if (!nb.sourceIds.includes(sourceId)) {
+      const valid = await listValidSources(ctx.userId, nb.sourceIds);
+      return {
+        ok: false,
+        error: `read_source: "${sourceId}" is not a source in this notebook. Available sources: ${valid}`,
+      };
+    }
+
+    const position =
+      typeof args.position === 'number' && Number.isFinite(args.position) && args.position > 0
+        ? Math.floor(args.position)
+        : 0;
+
+    try {
+      const [src] = await db
+        .select({ title: sources.title })
+        .from(sources)
+        .where(and(eq(sources.id, sourceId), eq(sources.userId, ctx.userId)))
+        .limit(1);
+      const title = src?.title ?? 'source';
+
+      const total = await sourceChunkCount(ctx.userId, sourceId);
+      if (total === 0) {
+        return { ok: true, text: `«${title}» — this source has no readable passages.`, citations: [] };
+      }
+      if (position >= total) {
+        return {
+          ok: true,
+          text: `«${title}» — position ${position} is past the end (the source has ${total} passages).`,
+          citations: [],
+        };
+      }
+
+      // Read by POSITION VALUE (not row offset): `position >= N` then ordered +
+      // limited, so the "continue with position=N+1" contract is robust to any
+      // gaps in the position sequence.
+      const rows = await db
+        .select({
+          id: sourceChunks.id,
+          position: sourceChunks.position,
+          text: sourceChunks.text,
+          page: sourceChunks.page,
+          heading: sourceChunks.heading,
+        })
+        .from(sourceChunks)
+        .where(
+          and(
+            eq(sourceChunks.sourceId, sourceId),
+            eq(sourceChunks.userId, ctx.userId),
+            sql`${sourceChunks.position} >= ${position}`,
+          ),
+        )
+        .orderBy(asc(sourceChunks.position))
+        .limit(READ_SOURCE_CHUNKS);
+
+      if (rows.length === 0) {
+        return { ok: true, text: `«${title}» — no passages at position ${position}.`, citations: [] };
+      }
+
+      const lastPos = rows[rows.length - 1]!.position;
+      const next = lastPos + 1;
+      const header =
+        next < total
+          ? `«${title}» — passages ${position}–${lastPos} of ${total}; continue with position=${next}`
+          : `«${title}» — passages ${position}–${lastPos} of ${total}; end of source`;
+
+      pushGrounding(ctx, rows.map((r) => r.id));
+      const body = rows
+        .map((r) => {
+          const page = r.page != null ? ` (p.${r.page})` : '';
+          return `[src:${r.id}]${page}\n${r.text}`;
+        })
+        .join('\n\n');
+      const citations = rows.map((r) =>
+        toSourceCitation(nb.notebookId, {
+          sourceChunkId: r.id,
+          sourceId,
+          position: r.position,
+          page: r.page == null ? undefined : r.page,
+          sourceTitle: title,
+          text: r.text,
+        }),
+      );
+      return { ok: true, text: capText(`${header}\n\n${body}`), citations };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.read_source.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'read_source_failed' };
+    }
+  },
+};
+
+/** `Title (id)` listing of the notebook's checked-in sources for an error hint. */
+async function listValidSources(userId: string, sourceIds: string[]): Promise<string> {
+  if (sourceIds.length === 0) return '(none checked in)';
+  const rows = await db
+    .select({ id: sources.id, title: sources.title })
+    .from(sources)
+    .where(and(eq(sources.userId, userId), inArray(sources.id, sourceIds)));
+  if (rows.length === 0) return '(none checked in)';
+  return rows.map((r) => `«${r.title}» (${r.id})`).join('; ');
+}
+
+/** Count of a source's chunks, user-scoped. */
+async function sourceChunkCount(userId: string, sourceId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(sourceChunks)
+    .where(and(eq(sourceChunks.sourceId, sourceId), eq(sourceChunks.userId, userId)));
+  return row ? Number(row.n) : 0;
+}
+
 // ── create_card (write) ──────────────────────────────────────────────────────
 //
 // Wraps the POST /notes create path (grounding correction #3 — cards are
@@ -1647,10 +1985,24 @@ const forget: Tool = {
  *    chatEnabled — the loop pauses each for confirmation before any mutation).
  */
 export function buildToolRegistry(
-  opts: { webSearchEnabled?: boolean; fetchPageEnabled?: boolean } = {},
+  opts: { webSearchEnabled?: boolean; fetchPageEnabled?: boolean; notebook?: boolean } = {},
 ): Tool[] {
   const webOn = opts.webSearchEnabled ?? isWebSearchEnabled();
   const fetchOn = opts.fetchPageEnabled ?? isFetchPageEnabled();
+
+  // NOTEBOOK mode (M2): a DELIBERATELY narrow registry — grounded reading over
+  // the notebook's sources (`search_source` by meaning, `read_source`
+  // sequentially) + the create-card workflow (`list_decks` then `create_card`).
+  // `web_search` is offered only when enabled (and the prompt gates it to
+  // explicit user requests). No card-search/browse/progress/fetch_page/edit/SRS
+  // here in V1 — notebook chat is about the sources, not the user's whole
+  // collection.
+  if (opts.notebook) {
+    const registry: Tool[] = [searchSource, readSource, listDecks, createCard];
+    if (webOn) registry.push(webSearch);
+    return registry;
+  }
+
   // Read tools always present: semantic card search + the two progress read-tools
   // + the deterministic browse tools (list_decks / browse_cards / get_card). They
   // only need a DB + ctx.userId, so they work whenever chat works (Principle 2).

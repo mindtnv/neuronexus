@@ -70,6 +70,12 @@ export async function retrieve(args: RetrieveArgs): Promise<RankedChunk[]> {
     sql`kc.user_id = ${userId}`,
     // Only embedded chunks are candidates.
     sql`kc.embedding IS NOT NULL`,
+    // CARD-graph guard (mixed-corpus): kb_chunk now also holds 'document' chunks
+    // (NotebookLM sources). This is a kc-only predicate applied BEFORE the LIMIT
+    // so document vectors never consume the card top-k window (the INNER JOIN to
+    // cards already drops them, but as a planner pre-filter this prevents
+    // under-selection of < k card chunks on a mixed corpus). NOT a JS post-filter.
+    sql`kc.source_type = 'card'`,
     // Exclude suspended cards from retrieval (out of study scope).
     sql`c.suspended = false`,
   ];

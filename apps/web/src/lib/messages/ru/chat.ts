@@ -206,6 +206,17 @@ const m = {
     acceptedBadge: 'Принята',
     excludedBadge: 'Убрана',
     reviewJump: 'Открыть карточку ещё раз',
+    // Превью провенанса источников (NotebookLM M3) — пассажи, к которым
+    // привяжутся новые карточки.
+    provenanceTitle: 'Связанные источники',
+    provenanceRow: 'Источник: {title}',
+    provenanceRowPage: 'Источник: {title}, стр. {n}',
+  },
+  // Цитаты пассажей источников (NotebookLM M2) — чипы под заземлённым ответом.
+  source: {
+    open: 'Открыть в читалке',
+    untitled: 'Источник',
+    page: 'стр. {n}',
   },
   // Errors surfaced in the stream
   errors: {

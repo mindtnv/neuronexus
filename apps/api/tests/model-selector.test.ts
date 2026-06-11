@@ -130,6 +130,7 @@ describe('model selector — /ai/status', () => {
         'embeddingModel',
         'fetchPageEnabled',
         'models',
+        'notebooksEnabled',
         'visionEnabled',
         'webSearchEnabled',
       ].sort(),

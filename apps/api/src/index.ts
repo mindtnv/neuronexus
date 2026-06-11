@@ -3,6 +3,7 @@ import { buildApp, type App } from './app.ts';
 import { env } from './env.ts';
 import { rootLogger } from './logger.ts';
 import { drainIndexQueue, reconcileOnStartup } from './ai/index-queue.ts';
+import { drainSourceIngest, resumeSourceIngestOnStartup } from './ai/source-ingest.ts';
 
 const app = buildApp().listen(env.PORT, () => {
   rootLogger.info(
@@ -12,6 +13,10 @@ const app = buildApp().listen(env.PORT, () => {
   // RAG index reconciliation (Slice 3): index any card with no chunk or a stale
   // sourceHash. Guarded by the embedding switch + never throws into here.
   void reconcileOnStartup();
+  // NotebookLM M1: reclaim any source left mid-ingest by a previous run
+  // (status pending/parsing/indexing → re-parse/re-embed idempotently). Never
+  // throws into here (mirrors reconcileOnStartup).
+  void resumeSourceIngestOnStartup();
 });
 
 let shuttingDown = false;
@@ -26,6 +31,13 @@ async function shutdown(signal: string) {
     await drainIndexQueue({ timeoutMs: 4000 });
   } catch (err) {
     rootLogger.error({ err }, 'api.shutdown.drain_error');
+  }
+  // Drain in-flight source ingest too — a timeout is logged, not fatal (the next
+  // startup resume reclaims the remainder).
+  try {
+    await drainSourceIngest({ timeoutMs: 4000 });
+  } catch (err) {
+    rootLogger.error({ err }, 'api.shutdown.source_ingest_drain_error');
   }
   try {
     await app.stop();

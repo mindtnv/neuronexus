@@ -1,14 +1,18 @@
 import { Elysia, t } from 'elysia';
 import { and, asc, desc, eq, gt, inArray, lt, lte, ne, or, sql } from 'drizzle-orm';
 import {
+  cardSources,
   cards,
   db,
   deckOptionsPreset,
   decks,
   filteredDeck,
+  notebooks,
   noteTypes,
   notes,
   profile,
+  sourceChunks,
+  sources,
 } from '@neuronexus/db';
 import {
   parseCardQuery,
@@ -970,6 +974,63 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         }),
       ),
     },
+  )
+  // Source backlinks (NotebookLM M3 / AC3.5): the source passages this card was
+  // generated from. Ownership 404 first. LEFT JOINs to source_chunks/sources/
+  // notebooks so a card_sources row whose source was deleted (refs SET NULL —
+  // a tombstone) is STILL returned with null source fields (the web renders
+  // «source deleted»). Snippet = first 240 chars of the chunk text. `{ items }`.
+  .get(
+    '/:id/sources',
+    async ({ user, params, status }) => {
+      const [card] = await db
+        .select({ id: cards.id })
+        .from(cards)
+        .where(and(eq(cards.id, params.id), eq(cards.userId, user.id)))
+        .limit(1);
+      if (!card) return status(404, { error: 'not_found' });
+
+      const rows = await db
+        .select({
+          id: cardSources.id,
+          sourceChunkId: cardSources.sourceChunkId,
+          sourceId: cardSources.sourceId,
+          notebookId: cardSources.notebookId,
+          conversationId: cardSources.conversationId,
+          messageId: cardSources.messageId,
+          sourceTitle: sources.title,
+          notebookTitle: notebooks.title,
+          position: sourceChunks.position,
+          page: sourceChunks.page,
+          heading: sourceChunks.heading,
+          chunkText: sourceChunks.text,
+          createdAt: cardSources.createdAt,
+        })
+        .from(cardSources)
+        .leftJoin(sourceChunks, eq(sourceChunks.id, cardSources.sourceChunkId))
+        .leftJoin(sources, eq(sources.id, cardSources.sourceId))
+        .leftJoin(notebooks, eq(notebooks.id, cardSources.notebookId))
+        .where(and(eq(cardSources.userId, user.id), eq(cardSources.cardId, params.id)))
+        .orderBy(desc(cardSources.createdAt));
+
+      const items = rows.map((r) => ({
+        id: r.id,
+        sourceChunkId: r.sourceChunkId,
+        sourceId: r.sourceId,
+        notebookId: r.notebookId,
+        conversationId: r.conversationId,
+        messageId: r.messageId,
+        sourceTitle: r.sourceTitle ?? null,
+        notebookTitle: r.notebookTitle ?? null,
+        position: r.position ?? null,
+        page: r.page ?? null,
+        heading: r.heading ?? null,
+        snippet: r.chunkText ? r.chunkText.slice(0, 240) : null,
+        createdAt: r.createdAt,
+      }));
+      return { items };
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   )
   .delete(
     '/:id',

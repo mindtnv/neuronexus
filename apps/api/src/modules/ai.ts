@@ -27,7 +27,10 @@ import {
   db,
   decks,
   messages as messagesTable,
+  notebooks,
   profile as profileTable,
+  sourceChunks,
+  sources,
   type Citation,
   type Db,
 } from '@neuronexus/db';
@@ -35,10 +38,14 @@ import {
   buildAgentSystemPrompt,
   CARD_TOKEN_RE,
   isAllowedModel,
+  isSourceCitation,
   parseChatModels,
+  SRC_TOKEN_RE,
   type ChatResumeRequest,
   type ChatStreamEvent,
+  type ConfirmImpact,
   type MessageAttachment,
+  type MessageGrounding,
   type MessageMention,
   type MessageUsage,
 } from '@neuronexus/shared';
@@ -48,7 +55,7 @@ import {
   loadImagePartsMap,
   resolveAttachments,
 } from '../ai/attachments.ts';
-import { env, embeddingEnabled, chatEnabled } from '../env.ts';
+import { env, embeddingEnabled, chatEnabled, notebooksEnabled } from '../env.ts';
 import { descendantIds } from './cards.ts';
 import { authPlugin } from '../auth-plugin.ts';
 import { embeddingDegraded, reindexUser } from '../ai/index-queue.ts';
@@ -60,6 +67,7 @@ import {
 import {
   buildToolRegistry,
   enqueueToolCardsForIndex,
+  GROUNDING_CAP,
   toOpenAiTools,
   type Tool,
   type ToolContext,
@@ -69,6 +77,7 @@ import {
 import { isWebSearchEnabled } from '../ai/web-search.ts';
 import { isFetchPageEnabled } from '../ai/page-reader.ts';
 import { compressHistory } from '../ai/compress.ts';
+import { writeCardProvenance } from '../ai/provenance.ts';
 import { generateConversationTitle } from '../ai/title.ts';
 import { rootLogger } from '../logger.ts';
 import type { Logger } from 'pino';
@@ -86,6 +95,11 @@ const TOOL_RESULT_MAX_CHARS = env.ai.TOOL_RESULT_MAX_CHARS;
 // read several fetch_page slices before drafting cards; ordinary turns never
 // approach the ceiling.
 const TOOL_RESULT_BUDGET = TOOL_RESULT_MAX_CHARS * env.ai.TOOL_RESULT_BUDGET_FACTOR;
+// Max distinct source chunks previewed on a notebook create_card confirm card
+// (M3 / AC3.2) — the same cap as the provenance writer keeps per created card.
+const CARD_SOURCE_LINK_CAP = env.ai.CARD_SOURCE_LINK_CAP;
+// GROUNDING_CAP is imported from tools.ts (one source of truth) — it bounds the
+// grounding snapshot persisted on a suspended notebook create_card row.
 
 // Parsed model allow-list (AC2.1). Computed once at module load; `[]` when
 // CHAT_MODELS is unset ⇒ the picker is hidden and chat uses CHAT_MODEL as today.
@@ -141,6 +155,103 @@ async function resolveDeckScope(
   const owned = userDecks.find((d) => d.id === deckId);
   const deckIds = [deckId, ...descendantIds(deckId, userDecks)];
   return { deckIds, deckName: owned?.name };
+}
+
+/** Resolved notebook scope for a turn — threaded into the registry/prompt/ctx. */
+export interface NotebookScope {
+  notebookId: string;
+  /** Ready sources of the notebook intersected with the per-turn request scope. */
+  sourceIds: string[];
+  title: string;
+  /** Titles of the sources in `sourceIds` (for the prompt's sources section). */
+  sourceTitles: string[];
+}
+
+/**
+ * Resolve the notebook scope for a turn FROM THE CONVERSATION ROW (never from a
+ * request body): a conversation bound to a notebook chats grounded on THAT
+ * notebook's READY sources. The per-turn `requestedSourceIds` (the workspace
+ * checkbox state) is INTERSECTED with the notebook's own ready sources — foreign
+ * ids are silently dropped, an empty intersection ⇒ `sourceIds: []` (the source
+ * tools return nothing; the prompt notes there are no sources). A global
+ * conversation (notebookId null) ⇒ undefined (no notebook scope). The notebook
+ * ownership is implied by the conversation's own user scoping (the conversation
+ * was already user-scoped by the caller before this is called).
+ */
+async function resolveNotebookScope(
+  userId: string,
+  conv: { notebookId: string | null },
+  requestedSourceIds: string[] | undefined,
+): Promise<NotebookScope | undefined> {
+  if (!conv.notebookId) return undefined;
+  const notebookId = conv.notebookId;
+
+  const [nb] = await db
+    .select({ title: notebooks.title })
+    .from(notebooks)
+    .where(and(eq(notebooks.id, notebookId), eq(notebooks.userId, userId)))
+    .limit(1);
+  // A notebook deleted out from under the conversation (cascade should have
+  // removed the conversation, but be defensive) ⇒ an empty, titleless scope.
+  const title = nb?.title ?? '';
+
+  const readyRows = await db
+    .select({ id: sources.id, title: sources.title })
+    .from(sources)
+    .where(
+      and(
+        eq(sources.userId, userId),
+        eq(sources.notebookId, notebookId),
+        eq(sources.status, 'ready'),
+      ),
+    );
+
+  // Intersect with the requested per-turn scope when provided (foreign dropped).
+  let scoped = readyRows;
+  if (requestedSourceIds !== undefined) {
+    const requested = new Set(requestedSourceIds);
+    scoped = readyRows.filter((r) => requested.has(r.id));
+  }
+  return {
+    notebookId,
+    sourceIds: scoped.map((r) => r.id),
+    title,
+    sourceTitles: scoped.map((r) => r.title),
+  };
+}
+
+/**
+ * Resolve a (capped) list of grounding chunk ids into the confirm preview's
+ * provenance rows (AC3.2): `{ sourceTitle, page?, chunkId }`, user-scoped, in the
+ * given (accumulation) order. Foreign/missing chunk ids drop out silently. Used
+ * ONLY to enrich the `await_confirmation` impact for a notebook create_card.
+ */
+async function resolveProvenancePreview(
+  userId: string,
+  chunkIds: string[],
+): Promise<NonNullable<ConfirmImpact['provenance']>> {
+  if (chunkIds.length === 0) return [];
+  const rows = await db
+    .select({
+      id: sourceChunks.id,
+      page: sourceChunks.page,
+      sourceTitle: sources.title,
+    })
+    .from(sourceChunks)
+    .innerJoin(sources, eq(sources.id, sourceChunks.sourceId))
+    .where(and(eq(sourceChunks.userId, userId), inArray(sourceChunks.id, chunkIds)));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const out: NonNullable<ConfirmImpact['provenance']> = [];
+  for (const id of chunkIds) {
+    const row = byId.get(id);
+    if (!row) continue;
+    out.push({
+      sourceTitle: row.sourceTitle,
+      page: row.page == null ? undefined : row.page,
+      chunkId: id,
+    });
+  }
+  return out;
 }
 
 /** Serialize one SSE frame from a typed ChatStreamEvent. */
@@ -223,6 +334,8 @@ function appendMentionBlock(content: string, mentions: MessageMention[] | null):
 
 /** A persisted message row (the subset the history mapper reads). */
 interface HistoryRow {
+  /** Row id — the messageId stamped on provenance edges of a notebook turn (M3). */
+  id: string;
   role: string;
   content: string;
   toolCalls: { id: string; name: string; arguments: string }[] | null;
@@ -231,6 +344,9 @@ interface HistoryRow {
   mentions: MessageMention[] | null;
   /** Composer attachments on a user row — parts/blocks built at history time. */
   attachments: MessageAttachment[] | null;
+  /** Notebook-turn grounding snapshot (M3) on the pending assistant tool_calls
+   *  row of a suspended create_card; null everywhere else. */
+  grounding: MessageGrounding | null;
   /** Needed by compression (C6) for the summary-cache boundary. */
   createdAt: Date;
 }
@@ -245,7 +361,10 @@ interface AssembledToolCall {
 
 /** An in-memory transcript row, committed in ONE transaction at turn end. */
 type TranscriptRow =
-  | { role: 'assistant'; content: ''; toolCalls: AssembledToolCall[] }
+  // `grounding` is set ONLY on the pending assistant tool_calls row of a
+  // suspended notebook create_card (M3) — persisted so auto-provenance survives
+  // /resume + reload. Undefined on every other tool_calls row.
+  | { role: 'assistant'; content: ''; toolCalls: AssembledToolCall[]; grounding?: MessageGrounding }
   | { role: 'tool'; content: string; toolCallId: string }
   | { role: 'assistant'; content: string; citations: Citation[] };
 
@@ -373,6 +492,14 @@ interface RunAgentTurnArgs {
    * turn can read many fetch_page slices before the loop forces an answer.
    */
   research?: boolean;
+  /**
+   * NotebookLM workspace (M2): the resolved notebook scope for this turn. When
+   * set, the registry is the narrow notebook set (search_source/read_source/
+   * list_decks/create_card), the tool context carries the source scope + a fresh
+   * grounding accumulator, and a suspended create_card stamps its grounding +
+   * provenance preview. Undefined ⇒ ordinary global chat (byte-identical).
+   */
+  notebook?: NotebookScope;
 }
 
 /**
@@ -403,18 +530,31 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
     deckIds,
     signal,
     research,
+    notebook,
   } = args;
 
   // Per-turn loop limits: a deep-research turn gets more steps + budget.
+  // Notebook mode never carries `research` (the caller drops it), so this is the
+  // global default there.
   const maxSteps = research ? env.ai.RESEARCH_MAX_STEPS : AGENT_MAX_STEPS;
   const toolBudget = research
     ? TOOL_RESULT_MAX_CHARS * env.ai.RESEARCH_TOOL_RESULT_BUDGET_FACTOR
     : TOOL_RESULT_BUDGET;
 
-  const registry: Tool[] = buildToolRegistry({ webSearchEnabled });
+  // Notebook mode swaps the registry for the narrow source-grounded set and gives
+  // the tool context a source scope + a fresh, MUTABLE grounding accumulator that
+  // search_source/read_source push the surfaced source_chunk ids into (M3).
+  const registry: Tool[] = buildToolRegistry({ webSearchEnabled, notebook: !!notebook });
   const toolByName = new Map(registry.map((tl) => [tl.name, tl]));
   const openAiTools = toOpenAiTools(registry);
-  const toolCtx: ToolContext = { userId, log, deckIds };
+  const grounding = notebook ? { chunkIds: [] as string[] } : undefined;
+  const toolCtx: ToolContext = {
+    userId,
+    log,
+    deckIds,
+    notebook: notebook ? { notebookId: notebook.notebookId, sourceIds: notebook.sourceIds } : undefined,
+    grounding,
+  };
 
   const messages = [...startMessages];
 
@@ -589,7 +729,9 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
 
       for (const { call, result, resultCitations } of settled) {
         for (const c of resultCitations) {
-          const key = c.chunkId || c.cardId;
+          // Dedup key per variant: a source citation keys on its sourceChunkId,
+          // a card citation on its chunkId (fallback cardId).
+          const key = isSourceCitation(c) ? c.sourceChunkId : c.chunkId || c.cardId;
           if (!citationAcc.has(key)) citationAcc.set(key, c);
         }
         const toolContent = capToolResult(
@@ -659,6 +801,20 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
         log.warn({ err, tool: firstWrite.name }, 'ai.tool.dryRun_failed');
       }
 
+      // Notebook create_card (M3): snapshot the turn's grounding so auto-
+      // provenance survives /resume + reload, and enrich the confirm preview with
+      // the source passages the card(s) will be linked to (AC3.2). Only for
+      // create_card in notebook mode with a non-empty accumulator.
+      let groundingSnapshot: MessageGrounding | undefined;
+      if (notebook && firstWrite.name === 'create_card' && grounding && grounding.chunkIds.length > 0) {
+        groundingSnapshot = { chunkIds: grounding.chunkIds.slice(0, GROUNDING_CAP) };
+        const provenance = await resolveProvenancePreview(
+          userId,
+          grounding.chunkIds.slice(0, CARD_SOURCE_LINK_CAP),
+        );
+        if (provenance.length > 0) impact = { ...impact, provenance };
+      }
+
       // Persist (and replay) only the pending write call as the assistant row.
       messages.push({
         role: 'assistant',
@@ -671,7 +827,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
           },
         ],
       });
-      transcript.push({ role: 'assistant', content: '', toolCalls: [firstWrite] });
+      transcript.push({ role: 'assistant', content: '', toolCalls: [firstWrite], grounding: groundingSnapshot });
 
       emit({ type: 'tool_call', id: firstWrite.id, name: firstWrite.name, args: firstWrite.arguments, status: 'running' });
       emit({
@@ -699,16 +855,25 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
     }
   }
 
-  // Citations = union-dedup across ALL search_cards calls, intersected with the
-  // [card:<id>] tokens the model actually emitted (fallback to the capped union).
+  // Citations = union-dedup across ALL search_cards / search_source / read_source
+  // calls, intersected PER VARIANT with the tokens the model actually emitted:
+  // card citations against the [card:<id>] tokens, source citations against the
+  // [src:<sourceChunkId>] tokens. Fallback to the capped union when nothing was
+  // emitted (same as today).
   const emittedCardIds = new Set<string>();
-  for (const m of finalText.matchAll(CARD_TOKEN_RE)) {
+  for (const m of finalText.matchAll(new RegExp(CARD_TOKEN_RE))) {
     if (m[1]) emittedCardIds.add(m[1]);
+  }
+  const emittedSrcIds = new Set<string>();
+  for (const m of finalText.matchAll(new RegExp(SRC_TOKEN_RE))) {
+    if (m[1]) emittedSrcIds.add(m[1]);
   }
   const unionCitations = [...citationAcc.values()];
   let citations: Citation[];
-  if (emittedCardIds.size > 0) {
-    const intersected = unionCitations.filter((c) => emittedCardIds.has(c.cardId));
+  if (emittedCardIds.size > 0 || emittedSrcIds.size > 0) {
+    const intersected = unionCitations.filter((c) =>
+      isSourceCitation(c) ? emittedSrcIds.has(c.sourceChunkId) : emittedCardIds.has(c.cardId),
+    );
     citations = (intersected.length > 0 ? intersected : unionCitations).slice(0, RETRIEVE_K);
   } else {
     citations = unionCitations.slice(0, RETRIEVE_K);
@@ -809,6 +974,8 @@ async function persistTranscript(args: {
           })),
           model: model ?? null,
           usage: usageHere,
+          // M3 — grounding snapshot for the suspended notebook create_card row.
+          grounding: row.grounding ?? null,
           createdAt,
         });
       } else if (row.role === 'tool') {
@@ -949,12 +1116,14 @@ async function nextMessageStamp(ex: Tx | Db, conversationId: string): Promise<Da
 async function loadHistoryRows(conversationId: string): Promise<HistoryRow[]> {
   const rows = await db
     .select({
+      id: messagesTable.id,
       role: messagesTable.role,
       content: messagesTable.content,
       toolCalls: messagesTable.toolCalls,
       toolCallId: messagesTable.toolCallId,
       mentions: messagesTable.mentions,
       attachments: messagesTable.attachments,
+      grounding: messagesTable.grounding,
       createdAt: messagesTable.createdAt,
     })
     .from(messagesTable)
@@ -1035,20 +1204,38 @@ async function deleteTrailingAssistantTurn(
   });
 }
 
+/** The pending tool call + the persisted assistant row it lives on (M3 needs the
+ *  row id as the provenance messageId, and its grounding snapshot). */
+interface PendingToolCall extends AssembledToolCall {
+  /** The persisted assistant tool_calls row's id (provenance messageId). */
+  rowId: string;
+  /** The notebook-turn grounding snapshot on that row (M3); null otherwise. */
+  grounding: MessageGrounding | null;
+}
+
 /**
  * Find the pending tool call named by `resumeToolCallId` — it must be one of the
  * `tool_calls` on a persisted assistant row in THIS conversation (the ownership
  * chain: the rows were already user+conversation scoped by the caller). Returns
- * the matching call record or `null` (→ 404, never trust the client's id).
+ * the matching call record (+ its row id + grounding for M3 provenance) or
+ * `null` (→ 404, never trust the client's id).
  */
 function findPendingToolCall(
   rows: HistoryRow[],
   resumeToolCallId: string,
-): AssembledToolCall | null {
+): PendingToolCall | null {
   for (const r of rows) {
     if (r.role === 'assistant' && r.toolCalls) {
       const match = r.toolCalls.find((tc) => tc.id === resumeToolCallId);
-      if (match) return { id: match.id, name: match.name, arguments: match.arguments };
+      if (match) {
+        return {
+          id: match.id,
+          name: match.name,
+          arguments: match.arguments,
+          rowId: r.id,
+          grounding: r.grounding,
+        };
+      }
     }
   }
   return null;
@@ -1260,6 +1447,10 @@ export const aiModule = new Elysia({ prefix: '/ai' })
     () => ({
       embeddingEnabled: embeddingEnabled && !embeddingDegraded(),
       chatEnabled,
+      // NotebookLM sources (M1). For M1 this equals embeddingEnabled (a source
+      // must be embedded to be useful) minus the dim-degrade state. No keys ⇒
+      // the /notebooks screen shows a setup notice + ingest parse-and-parks.
+      notebooksEnabled: notebooksEnabled && !embeddingDegraded(),
       webSearchEnabled: isWebSearchEnabled(),
       // Gates the composer's deep-research toggle: the mode is meaningless
       // without the fetch_page tool (CHAT_FETCH_PAGE kill-switch).
@@ -1298,32 +1489,65 @@ export const aiModule = new Elysia({ prefix: '/ai' })
 export const chatModule = new Elysia({ prefix: '/chat' })
   .use(authPlugin)
   // List the caller's conversations — pinned first, then newest-first (C4).
+  // `?notebookId=<uuid>` scopes to ONE notebook's threads (ownership-checked —
+  // a foreign/missing notebook 404s). WITHOUT the param the GLOBAL rail is
+  // returned: `notebook_id IS NULL` only, so notebook threads never leak into it.
   .get(
     '/conversations',
-    async ({ user }) => {
+    async ({ user, query, status }) => {
+      const notebookId = query.notebookId;
+      if (notebookId) {
+        const [nb] = await db
+          .select({ id: notebooks.id })
+          .from(notebooks)
+          .where(and(eq(notebooks.id, notebookId), eq(notebooks.userId, user.id)))
+          .limit(1);
+        if (!nb) return status(404, { error: 'not_found' });
+        const rows = await db
+          .select()
+          .from(conversations)
+          .where(
+            and(eq(conversations.userId, user.id), eq(conversations.notebookId, notebookId)),
+          )
+          .orderBy(desc(conversations.pinned), desc(conversations.updatedAt));
+        return { items: rows };
+      }
       const rows = await db
         .select()
         .from(conversations)
-        .where(eq(conversations.userId, user.id))
+        .where(and(eq(conversations.userId, user.id), isNull(conversations.notebookId)))
         .orderBy(desc(conversations.pinned), desc(conversations.updatedAt));
       return { items: rows };
     },
-    { auth: true },
+    { auth: true, query: t.Object({ notebookId: t.Optional(t.String({ format: 'uuid' })) }) },
   )
   // Create a conversation. `title` is optional (the client may title it from the
-  // first message).
+  // first message). `notebookId` (optional) BINDS the thread to a notebook —
+  // ownership-checked (a foreign/missing notebook 404s); the notebook chat then
+  // grounds on that notebook's sources.
   .post(
     '/conversations',
-    async ({ user, body }) => {
+    async ({ user, body, status }) => {
+      if (body.notebookId) {
+        const [nb] = await db
+          .select({ id: notebooks.id })
+          .from(notebooks)
+          .where(and(eq(notebooks.id, body.notebookId), eq(notebooks.userId, user.id)))
+          .limit(1);
+        if (!nb) return status(404, { error: 'not_found' });
+      }
       const [row] = await db
         .insert(conversations)
-        .values({ userId: user.id, title: body.title ?? null })
+        .values({ userId: user.id, title: body.title ?? null, notebookId: body.notebookId ?? null })
         .returning();
       return row!;
     },
     {
       auth: true,
-      body: t.Object({ title: t.Optional(t.String({ maxLength: 200 })) }),
+      body: t.Object({
+        title: t.Optional(t.String({ maxLength: 200 })),
+        notebookId: t.Optional(t.String({ format: 'uuid' })),
+      }),
     },
   )
   // Fetch one conversation + its messages (oldest-first). 404 if foreign.
@@ -1449,12 +1673,14 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         // attachments and the user's standing instructions (C5) BEFORE
         // streaming. Foreign deck ⇒ empty scope (not global fallback); absent ⇒
         // undefined (global). Foreign/unverified attachment media is dropped.
-        const [{ deckIds, deckName }, mentions, attachments, userInstructions] = await Promise.all([
-          resolveDeckScope(user.id, body.deckId),
-          resolveMentions(user.id, body.mentionedCardIds),
-          resolveAttachments(user.id, body.attachments),
-          loadAgentInstructions(user.id),
-        ]);
+        const [{ deckIds, deckName }, mentions, attachments, userInstructions, notebook] =
+          await Promise.all([
+            resolveDeckScope(user.id, body.deckId),
+            resolveMentions(user.id, body.mentionedCardIds),
+            resolveAttachments(user.id, body.attachments),
+            loadAgentInstructions(user.id),
+            resolveNotebookScope(user.id, conv, body.sourceIds),
+          ]);
 
         // Persist the user's message BEFORE streaming (it always happened). The
         // stored content stays clean — mentions/attachments ride their columns.
@@ -1496,14 +1722,21 @@ export const chatModule = new Elysia({ prefix: '/chat' })
             ]);
             // Deep-research MODE (composer toggle): meaningless without the
             // fetch_page tool, so the flag is effective only when it's offered.
-            const researchOn = body.research === true && isFetchPageEnabled();
-            const system = buildAgentSystemPrompt({
-              webSearchEnabled: webOn,
-              fetchPageEnabled: isFetchPageEnabled(),
-              researchMode: researchOn,
-              deckScopeName: deckName,
-              userInstructions,
-            });
+            // Notebook mode has no research/deck scope — both are ignored there.
+            const researchOn = !notebook && body.research === true && isFetchPageEnabled();
+            const system = notebook
+              ? buildAgentSystemPrompt({
+                  webSearchEnabled: webOn,
+                  userInstructions,
+                  notebook: { title: notebook.title, sourceTitles: notebook.sourceTitles },
+                })
+              : buildAgentSystemPrompt({
+                  webSearchEnabled: webOn,
+                  fetchPageEnabled: isFetchPageEnabled(),
+                  researchMode: researchOn,
+                  deckScopeName: deckName,
+                  userInstructions,
+                });
             const startMessages: AgentChatMessage[] = [
               { role: 'system', content: system },
               ...(summaryNote ? [{ role: 'system' as const, content: summaryNote }] : []),
@@ -1526,9 +1759,10 @@ export const chatModule = new Elysia({ prefix: '/chat' })
               startMessages,
               webSearchEnabled: webOn,
               model,
-              deckIds,
+              deckIds: notebook ? undefined : deckIds,
               signal: lock.signal,
               research: researchOn,
+              notebook,
             });
             // Title frame (if any) lands before the caller's `done` — also on a
             // suspended outcome (the stream is still open until close).
@@ -1561,6 +1795,10 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         research: t.Optional(t.Boolean()),
         // Composer @-mentions (C7) — user-scoped, foreign ids silently dropped.
         mentionedCardIds: t.Optional(t.Array(t.String({ format: 'uuid' }), { maxItems: 8 })),
+        // Notebook workspace (M2): the per-turn SOURCE scope (workspace
+        // checkboxes). Intersected server-side with the notebook's own ready
+        // sources (foreign dropped); ignored for a global conversation.
+        sourceIds: t.Optional(t.Array(t.String({ format: 'uuid' }), { maxItems: 50 })),
         // Composer attachments: image media refs (resolved + ownership-checked
         // server-side) and inline text files (re-capped server-side).
         attachments: t.Optional(
@@ -1627,9 +1865,10 @@ export const chatModule = new Elysia({ prefix: '/chat' })
       // user's standing instructions (C5 — the continuation prompt must match).
       // NOTE: a throw between the lock acquire and sseResponse leaks the lock —
       // self-healed by the TTL takeover (5 min), acceptable for a DB-down edge.
-      const [{ deckIds, deckName }, userInstructions] = await Promise.all([
+      const [{ deckIds, deckName }, userInstructions, notebook] = await Promise.all([
         resolveDeckScope(user.id, body.deckId),
         loadAgentInstructions(user.id),
+        resolveNotebookScope(user.id, conv, body.sourceIds),
       ]);
 
       // Load the full transcript ONCE (history mapping + validation share it).
@@ -1688,7 +1927,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         let toolCardIds: string[] | undefined;
 
         if (effectiveDecision === 'apply') {
-          const registry = buildToolRegistry({ webSearchEnabled: webOn });
+          const registry = buildToolRegistry({ webSearchEnabled: webOn, notebook: !!notebook });
           const tool = registry.find((tl) => tl.name === pending.name);
 
           emit({ type: 'tool_call', id: pending.id, name: pending.name, args: pending.arguments, status: 'running' });
@@ -1731,6 +1970,28 @@ export const chatModule = new Elysia({ prefix: '/chat' })
                     // must never sort this row BEFORE its pending assistant row.
                     createdAt: await nextMessageStamp(tx, conv.id),
                   });
+                  // M3 auto-provenance: a notebook create_card links the created
+                  // cards to the passages the turn read (the grounding snapshot on
+                  // the pending assistant row). Same tx as execute + role:tool so
+                  // a double-apply rolls the edges back too. Reject/all-excluded
+                  // never reach this branch; no grounding ⇒ no-op.
+                  if (
+                    r.ok &&
+                    pending.name === 'create_card' &&
+                    conv.notebookId &&
+                    r.cardIds &&
+                    r.cardIds.length > 0 &&
+                    pending.grounding &&
+                    pending.grounding.chunkIds.length > 0
+                  ) {
+                    await writeCardProvenance(tx, {
+                      userId: user.id,
+                      cardIds: r.cardIds,
+                      chunkIds: pending.grounding.chunkIds,
+                      conversationId: conv.id,
+                      messageId: pending.rowId,
+                    });
+                  }
                   return r;
                 });
               } catch (txErr) {
@@ -1818,15 +2079,22 @@ export const chatModule = new Elysia({ prefix: '/chat' })
           recentRows.map((r) => (r.role === 'user' ? r.attachments : null)),
         );
         // The web sends the toggle state on resume too, so a research turn's
-        // post-confirmation continuation keeps the raised caps + prompt.
-        const researchOn = body.research === true && isFetchPageEnabled();
-        const system = buildAgentSystemPrompt({
-          webSearchEnabled: webOn,
-          fetchPageEnabled: isFetchPageEnabled(),
-          researchMode: researchOn,
-          deckScopeName: deckName,
-          userInstructions,
-        });
+        // post-confirmation continuation keeps the raised caps + prompt. Notebook
+        // mode has no research/deck scope — both ignored there.
+        const researchOn = !notebook && body.research === true && isFetchPageEnabled();
+        const system = notebook
+          ? buildAgentSystemPrompt({
+              webSearchEnabled: webOn,
+              userInstructions,
+              notebook: { title: notebook.title, sourceTitles: notebook.sourceTitles },
+            })
+          : buildAgentSystemPrompt({
+              webSearchEnabled: webOn,
+              fetchPageEnabled: isFetchPageEnabled(),
+              researchMode: researchOn,
+              deckScopeName: deckName,
+              userInstructions,
+            });
         const startMessages: AgentChatMessage[] = [
           { role: 'system', content: system },
           ...(summaryNote ? [{ role: 'system' as const, content: summaryNote }] : []),
@@ -1841,9 +2109,10 @@ export const chatModule = new Elysia({ prefix: '/chat' })
           startMessages,
           webSearchEnabled: webOn,
           model,
-          deckIds,
+          deckIds: notebook ? undefined : deckIds,
           signal: lock.signal,
           research: researchOn,
+          notebook,
         });
       }, {
         abort: lock,
@@ -1860,6 +2129,8 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         model: t.Optional(t.String({ maxLength: 200 })),
         deckId: t.Optional(t.String({ format: 'uuid' })),
         research: t.Optional(t.Boolean()),
+        // Notebook workspace (M2): per-turn source scope for the continuation.
+        sourceIds: t.Optional(t.Array(t.String({ format: 'uuid' }), { maxItems: 50 })),
         // Per-card decisions for a pending create_card (apply path): exclude /
         // inline-edit individual cards of the proposed batch.
         cardSelections: t.Optional(
@@ -1933,9 +2204,10 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         return status(400, { error: 'nothing_to_regenerate' });
       }
 
-      const [{ deckIds, deckName }, userInstructions] = await Promise.all([
+      const [{ deckIds, deckName }, userInstructions, notebook] = await Promise.all([
         resolveDeckScope(user.id, body.deckId),
         loadAgentInstructions(user.id),
+        resolveNotebookScope(user.id, conv, body.sourceIds),
       ]);
       const webOn = isWebSearchEnabled();
 
@@ -1954,14 +2226,20 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         const imageDataUrls = await loadImagePartsMap(
           recentRows.map((r) => (r.role === 'user' ? r.attachments : null)),
         );
-        const researchOn = body.research === true && isFetchPageEnabled();
-        const system = buildAgentSystemPrompt({
-          webSearchEnabled: webOn,
-          fetchPageEnabled: isFetchPageEnabled(),
-          researchMode: researchOn,
-          deckScopeName: deckName,
-          userInstructions,
-        });
+        const researchOn = !notebook && body.research === true && isFetchPageEnabled();
+        const system = notebook
+          ? buildAgentSystemPrompt({
+              webSearchEnabled: webOn,
+              userInstructions,
+              notebook: { title: notebook.title, sourceTitles: notebook.sourceTitles },
+            })
+          : buildAgentSystemPrompt({
+              webSearchEnabled: webOn,
+              fetchPageEnabled: isFetchPageEnabled(),
+              researchMode: researchOn,
+              deckScopeName: deckName,
+              userInstructions,
+            });
         const startMessages: AgentChatMessage[] = [
           { role: 'system', content: system },
           ...(summaryNote ? [{ role: 'system' as const, content: summaryNote }] : []),
@@ -1976,9 +2254,10 @@ export const chatModule = new Elysia({ prefix: '/chat' })
           startMessages,
           webSearchEnabled: webOn,
           model,
-          deckIds,
+          deckIds: notebook ? undefined : deckIds,
           signal: lock.signal,
           research: researchOn,
+          notebook,
         });
         await finishTitle(titlePromise, conv.id, user.id, emit);
         return outcome;
@@ -1995,6 +2274,8 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         model: t.Optional(t.String({ maxLength: 200 })),
         deckId: t.Optional(t.String({ format: 'uuid' })),
         research: t.Optional(t.Boolean()),
+        // Notebook workspace (M2): per-turn source scope for the replay.
+        sourceIds: t.Optional(t.Array(t.String({ format: 'uuid' }), { maxItems: 50 })),
         // Edit-and-rerun (B2 / AC4.2): the edited last-user text. Absent ⇒ today's
         // regenerate (strictly additive, backward-compatible).
         content: t.Optional(t.String({ maxLength: 8000 })),

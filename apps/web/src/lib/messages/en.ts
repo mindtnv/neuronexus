@@ -13,6 +13,7 @@ import graph from './en/graph';
 import empty from './en/empty';
 import sessionComplete from './en/session-complete';
 import noteTypes from './en/note-types';
+import notebooks from './en/notebooks';
 
 const messages = {
   ...common,
@@ -30,6 +31,7 @@ const messages = {
   empty,
   session: sessionComplete,
   noteTypes,
+  notebooks,
 };
 
 export default messages;

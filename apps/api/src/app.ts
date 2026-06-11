@@ -16,6 +16,7 @@ import { profileModule } from './modules/profile.ts';
 import { mediaModule } from './modules/media.ts';
 import { aiModule, chatModule } from './modules/ai.ts';
 import { cardsSimilarModule, graphModule } from './modules/semantic.ts';
+import { notebooksModule, sourcesModule } from './modules/notebooks.ts';
 import { AUTH_RATE_RULES, clientIpFromRequest, rateLimitCheck } from './rate-limit.ts';
 import { pickRequestId, requestLogger, rootLogger } from './logger.ts';
 
@@ -117,7 +118,9 @@ export function buildApp() {
     .use(statsModule)
     .use(mediaModule)
     .use(aiModule)
-    .use(chatModule);
+    .use(chatModule)
+    .use(notebooksModule)
+    .use(sourcesModule);
 }
 
 export type App = ReturnType<typeof buildApp>;

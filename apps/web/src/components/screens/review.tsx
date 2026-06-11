@@ -10,6 +10,7 @@ import { api, ok } from '@/lib/api';
 import { cardFromApi } from '@/lib/mappers';
 import { RichCard } from '@/components/rich-card';
 import { SimilarCardsPanel } from '@/components/similar-cards';
+import { SourceLinksPanel } from '@/components/source-links';
 import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
 import { useUI } from '@/lib/ui-store';
@@ -723,6 +724,10 @@ export const NNReviewClassic = () => {
             cardId={current.id}
             onOpen={(id) => router.push(`/cards?focus=${id}`)}
           />
+          {/* Source backlinks (NotebookLM M3) — renders nothing without provenance. */}
+          <div style={{ marginTop: 12 }}>
+            <SourceLinksPanel cardId={current.id} />
+          </div>
         </aside>
       )}
 

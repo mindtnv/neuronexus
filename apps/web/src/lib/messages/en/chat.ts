@@ -207,6 +207,17 @@ const m = {
     acceptedBadge: 'Accepted',
     excludedBadge: 'Excluded',
     reviewJump: 'Open this card again',
+    // Source provenance preview (NotebookLM M3) — the passages the new card(s)
+    // will be linked to.
+    provenanceTitle: 'Linked sources',
+    provenanceRow: 'Source: {title}',
+    provenanceRowPage: 'Source: {title}, p. {n}',
+  },
+  // Source-passage citations (NotebookLM M2) — chips under a grounded answer.
+  source: {
+    open: 'Open in the reader',
+    untitled: 'Source',
+    page: 'p. {n}',
   },
   // Errors surfaced in the stream
   errors: {

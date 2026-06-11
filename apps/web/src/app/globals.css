@@ -149,6 +149,22 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-spin { animation: none; }
 }
 
+/* Reader jump-to-chunk highlight (NotebookLM workspace) — a brief lime outline +
+   tint that fades when a citation/backlink scrolls the reader to a passage. */
+@keyframes nn-chunk-flash {
+  0% { outline-color: var(--lime-500); background: color-mix(in srgb, var(--lime-500) 14%, transparent); }
+  100% { outline-color: transparent; background: transparent; }
+}
+.nn-chunk-flash {
+  outline: 2px solid var(--lime-500);
+  outline-offset: 2px;
+  border-radius: var(--r-md);
+  animation: nn-chunk-flash 2200ms ease forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-chunk-flash { animation: none; outline-color: transparent; }
+}
+
 /* Shared rendered-card display CSS — applied via `nn-rendered` on every SafeHtml
    sink (editor preview, review, note-type preview, browser). Image sizing rides
    the `width` attribute (the only size carrier that survives BOTH sanitizer

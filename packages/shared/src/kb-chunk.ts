@@ -6,16 +6,41 @@
 // `sourceType` widens as new source types are added (AC7 seam).
 
 export interface SourceInput {
-  /** Source category. Currently only 'card'; 'document' | 'note' to be added later. */
-  sourceType: 'card';
-  /** Primary key of the source entity (cards.id for 'card'). */
+  /** Source category. 'card' (single-chunk) or 'document' (multi-chunk window). */
+  sourceType: 'card' | 'document';
+  /** Primary key of the source entity (cards.id for 'card', sources.id for 'document'). */
   sourceId: string;
-  /** Navigable parent id — for cards: same as sourceId; for docs: the document id. */
+  /** Navigable parent id — for cards: same as sourceId; for documents: the notebook id. */
   parentId: string;
-  /** Raw text to chunk (cards.render_text — plaintext, tags/cloze already stripped). */
+  /** Raw text to chunk (card path: cards.render_text). Ignored on the document path (use `units`). */
   text: string;
+  /**
+   * Document path only: parsed units (text + page/heading) produced by a parser.
+   * The chunker token-windows ACROSS units, preserving the leading unit's
+   * page/heading on each emitted chunk.
+   */
+  units?: SourceUnit[];
+  /** Document path only: chunking config (token target + overlap). */
+  chunkOptions?: DocumentChunkOptions;
   /** Arbitrary metadata for filter + citation display (deckId, noteId, tags, …). */
   meta?: Record<string, string>;
+}
+
+/** One parsed unit of a document (a PDF page, an EPUB chapter, a text blob). */
+export interface SourceUnit {
+  text: string;
+  /** 1-based PDF page (when known). */
+  page?: number;
+  /** EPUB chapter / section heading (when known). */
+  heading?: string;
+}
+
+/** Document chunking configuration. */
+export interface DocumentChunkOptions {
+  /** Target tokens per chunk (~chars/4 heuristic). Default 800. */
+  tokensPerChunk?: number;
+  /** Fractional overlap between adjacent chunks, clamped to [0, 0.5]. Default 0.12. */
+  overlap?: number;
 }
 
 // ── Chunk output ────────────────────────────────────────────────────────────
@@ -29,12 +54,26 @@ export interface KbChunkInput {
   /** 0-based position within the source. Always 0 for single-chunk cards. */
   position: number;
   text: string;
+  /** Document path: 1-based source page (when known). */
+  page?: number;
+  /** Document path: source heading (when known). */
+  heading?: string;
+  /** Estimated token count for the chunk (chars/4 heuristic). */
+  tokenCount?: number;
   meta?: Record<string, string>;
 }
 
 // ── Chunker ────────────────────────────────────────────────────────────────
-// v1: card → exactly 1 chunk at position 0 (text = full render_text, no split).
-// document branch is the AC7 seam: the interface exists, the impl is deferred.
+// card → exactly 1 chunk at position 0 (text = full render_text, no split).
+// document → token-windowed multi-chunk over the parsed `units`, with overlap,
+// preserving each window's leading page/heading. Pure TS (no tokenizer dep) —
+// token estimate is a cheap chars/4 heuristic (deterministic, tested).
+
+/** Cheap token estimate — chars/4, min 1 for non-empty text. */
+export function estimateTokens(text: string): number {
+  const n = text.trim().length;
+  return n === 0 ? 0 : Math.max(1, Math.ceil(n / 4));
+}
 
 export function chunkSource(input: SourceInput): KbChunkInput[] {
   if (input.sourceType === 'card') {
@@ -49,20 +88,164 @@ export function chunkSource(input: SourceInput): KbChunkInput[] {
       },
     ];
   }
-  // Future branch (AC7): 'document' | 'note' — multi-chunk sliding window.
+  if (input.sourceType === 'document') {
+    return chunkDocument(input);
+  }
   throw new Error('not_implemented');
 }
 
-// ── Citation ────────────────────────────────────────────────────────────────
-// Resolved source reference attached to an assistant message. Identical to the
-// local placeholder in packages/db/src/schema/app.ts (that one will import this
-// once the schema is updated in Slice 2).
+const DEFAULT_TOKENS_PER_CHUNK = 800;
+const DEFAULT_OVERLAP = 0.12;
 
-export interface Citation {
+/**
+ * Token-window the document's units into chunks. Units are concatenated in order;
+ * a chunk closes once it reaches `tokensPerChunk` (estimated), then the next chunk
+ * re-includes a trailing `overlap` fraction of the previous chunk's text for
+ * context continuity. Each chunk carries the page/heading of its FIRST contributing
+ * unit. Empty units are skipped; a single oversized unit becomes its own chunk
+ * (and is split on whitespace if it alone exceeds the target).
+ */
+function chunkDocument(input: SourceInput): KbChunkInput[] {
+  const units = (input.units ?? []).filter((u) => u.text.trim().length > 0);
+  const target = Math.max(1, input.chunkOptions?.tokensPerChunk ?? DEFAULT_TOKENS_PER_CHUNK);
+  const overlap = Math.min(0.5, Math.max(0, input.chunkOptions?.overlap ?? DEFAULT_OVERLAP));
+  const out: KbChunkInput[] = [];
+
+  // Flatten units into segments, splitting any single oversized unit on paragraph
+  // / whitespace boundaries so one giant unit can't produce a multi-target chunk.
+  type Seg = { text: string; page?: number; heading?: string };
+  const segs: Seg[] = [];
+  for (const u of units) {
+    if (estimateTokens(u.text) <= target) {
+      segs.push({ text: u.text.trim(), page: u.page, heading: u.heading });
+      continue;
+    }
+    for (const piece of splitToTarget(u.text, target)) {
+      segs.push({ text: piece, page: u.page, heading: u.heading });
+    }
+  }
+
+  let buf: string[] = [];
+  let bufTokens = 0;
+  let page: number | undefined;
+  let heading: string | undefined;
+  let position = 0;
+
+  const flush = () => {
+    if (buf.length === 0) return;
+    const text = buf.join('\n\n').trim();
+    if (text.length === 0) {
+      buf = [];
+      bufTokens = 0;
+      return;
+    }
+    out.push({
+      sourceType: 'document',
+      sourceId: input.sourceId,
+      parentId: input.parentId,
+      position,
+      text,
+      page,
+      heading,
+      tokenCount: estimateTokens(text),
+      meta: input.meta,
+    });
+    position += 1;
+    // Seed the next buffer with a trailing overlap slice of this chunk's text.
+    if (overlap > 0) {
+      const keepChars = Math.floor(text.length * overlap);
+      const tail = keepChars > 0 ? text.slice(text.length - keepChars) : '';
+      buf = tail ? [tail] : [];
+      bufTokens = tail ? estimateTokens(tail) : 0;
+    } else {
+      buf = [];
+      bufTokens = 0;
+    }
+    // page/heading reset to the next contributing seg.
+    page = undefined;
+    heading = undefined;
+  };
+
+  for (const seg of segs) {
+    if (buf.length === 0 || (page === undefined && heading === undefined)) {
+      if (page === undefined) page = seg.page;
+      if (heading === undefined) heading = seg.heading;
+    }
+    buf.push(seg.text);
+    bufTokens += estimateTokens(seg.text);
+    if (bufTokens >= target) flush();
+  }
+  flush();
+  return out;
+}
+
+/** Split an oversized unit into ~target-token pieces on whitespace boundaries. */
+function splitToTarget(text: string, target: number): string[] {
+  const words = text.trim().split(/\s+/);
+  const pieces: string[] = [];
+  let cur: string[] = [];
+  let curTokens = 0;
+  for (const w of words) {
+    const t = estimateTokens(w) + 1; // +1 for the join space
+    if (curTokens + t > target && cur.length > 0) {
+      pieces.push(cur.join(' '));
+      cur = [];
+      curTokens = 0;
+    }
+    cur.push(w);
+    curTokens += t;
+  }
+  if (cur.length > 0) pieces.push(cur.join(' '));
+  return pieces;
+}
+
+// ── Citation ────────────────────────────────────────────────────────────────
+// Resolved source reference attached to an assistant message. A discriminated
+// union: card citations (the original RAG shape — persisted rows predate `kind`,
+// so its ABSENCE means 'card') and document-source citations (NotebookLM M2 —
+// a passage of an ingested source, addressable down to the source_chunk).
+
+export interface CardCitation {
+  /** Discriminant. Optional for backward compat: persisted legacy rows have no
+   *  `kind` — absence means 'card'. Use `isSourceCitation()` to narrow. */
+  kind?: 'card';
   cardId: string;
   chunkId: string;
   deckId?: string;
   snippet?: string;
+}
+
+/** A grounded-chat citation of a notebook source passage (M2). The web chip
+ *  opens the workspace reader scrolled to `position`; provenance (M3) links
+ *  created cards to the same `sourceChunkId`. */
+export interface SourceCitation {
+  kind: 'source';
+  sourceId: string;
+  sourceChunkId: string;
+  notebookId?: string;
+  /** 0-based chunk position within the source — the reader's scroll anchor. */
+  position?: number;
+  /** 1-based source page (PDF), when known. */
+  page?: number;
+  sourceTitle?: string;
+  snippet?: string;
+}
+
+export type Citation = CardCitation | SourceCitation;
+
+/** Narrow a Citation to the source variant (legacy rows lack `kind` = card). */
+export function isSourceCitation(c: Citation): c is SourceCitation {
+  return c.kind === 'source';
+}
+
+/**
+ * Grounding snapshot persisted on the pending assistant tool_calls row of a
+ * SUSPENDED notebook create_card turn (messages.grounding jsonb): the distinct
+ * source_chunk ids the turn read via search_source/read_source, in accumulation
+ * order. Server-side auto-provenance (M3) links created cards to these chunks.
+ */
+export interface MessageGrounding {
+  chunkIds: string[];
 }
 
 // ── SSE event types (Slice 4 server ↔ Slice 5 client) ──────────────────────
@@ -96,6 +279,14 @@ export interface ChatStreamRequest {
    * `<attached_file>` block — the STORED content stays clean.
    */
   attachments?: MessageAttachmentInput[];
+  /**
+   * Notebook workspace only (M2): the per-turn SOURCE scope — which of the
+   * notebook's sources are checked into the chat. The NOTEBOOK itself is
+   * derived from the conversation row server-side (never from the body); these
+   * ids are INTERSECTED with the notebook's own ready sources (foreign ids
+   * silently dropped). Absent ⇒ all ready sources of the notebook.
+   */
+  sourceIds?: string[];
 }
 
 /** Wire shape of one composer attachment (client → server). */
@@ -158,6 +349,13 @@ export interface ConfirmImpact {
    * per card in batch order. Single-card calls keep using `proposedFields`.
    */
   proposedCards?: { fields: { field: string; value: string }[] }[];
+  /**
+   * Notebook create_card (M3 / AC3.2): the source passages the new card(s) will
+   * be LINKED to (server-side auto-provenance) — previewed on the confirm card
+   * («Источник: <title>, p.N»). Resolved by the loop from the turn's grounding
+   * accumulator (capped CARD_SOURCE_LINK_CAP), NOT by the tool's dryRun.
+   */
+  provenance?: { sourceTitle: string; page?: number; chunkId: string }[];
 }
 
 /**
@@ -188,6 +386,9 @@ export interface ChatResumeRequest {
    * apply and reject) — "propose edits" without applying anything.
    */
   feedback?: string;
+  /** Notebook workspace only (M2): per-turn source scope for the CONTINUATION
+   *  (same semantics as ChatStreamRequest.sourceIds). */
+  sourceIds?: string[];
 }
 
 /**
@@ -242,3 +443,11 @@ export type ChatStreamEvent =
 // prose). Capture group 1 = the cardId. `g` flag — reset `lastIndex` or use a
 // fresh literal when matching repeatedly.
 export const CARD_TOKEN_RE = /\[card:([0-9a-fA-F-]+)\]/g;
+
+// ── Model-emitted source-citation token (NotebookLM M2) ──────────────────────
+// The source-grounded chat model marks the passages it cites inline as
+// `[src:<sourceChunkId>]` — the document analog of `[card:<id>]`. Shared
+// between the server (citation intersect/dedup) and the web client (token
+// stripping + chip rendering). Capture group 1 = the sourceChunkId. `g` flag —
+// reset `lastIndex` or use a fresh literal when matching repeatedly.
+export const SRC_TOKEN_RE = /\[src:([0-9a-fA-F-]+)\]/g;

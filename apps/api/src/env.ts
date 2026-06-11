@@ -121,6 +121,34 @@ export const env = {
     // multimodal `image_url` content parts). Text-file attachments are
     // unaffected — they never need vision.
     CHAT_VISION: process.env.CHAT_VISION ?? 'true',
+    // ── NotebookLM sources (M1) — all OPTIONAL ───────────────────────────────
+    // Per-file caps. A book PDF/EPUB is ~5–50 MB; default 25 MB. The chunk cap
+    // bounds the paid-embedding cost of one source (worker → status='error',
+    // error_code='too_many_chunks' when exceeded — degrade, never crash).
+    MAX_SOURCE_BYTES: Number(process.env.MAX_SOURCE_BYTES ?? 25 * 1024 * 1024),
+    MAX_SOURCE_CHUNKS: Number(process.env.MAX_SOURCE_CHUNKS ?? 1500),
+    // Aggregate caps — bound the paid-embedding DoS surface (one user uploading
+    // dozens of books). Enforced at the create/finalize routes (clean error).
+    MAX_SOURCES_PER_NOTEBOOK: Number(process.env.MAX_SOURCES_PER_NOTEBOOK ?? 50),
+    MAX_NOTEBOOKS_PER_USER: Number(process.env.MAX_NOTEBOOKS_PER_USER ?? 25),
+    // Ingest worker tuning. Serial by default so a 1500-chunk book doesn't fan
+    // out hundreds of concurrent embed calls (mirrors index-queue DRAIN cap).
+    SOURCE_INGEST_CONCURRENCY: Number(process.env.SOURCE_INGEST_CONCURRENCY ?? 1),
+    // Document chunker window (token target + fractional overlap). chars/4 token
+    // heuristic; overlap clamped to [0, 0.5] in the chunker.
+    SOURCE_CHUNK_TOKENS: Number(process.env.SOURCE_CHUNK_TOKENS ?? 800),
+    SOURCE_CHUNK_OVERLAP: Number(process.env.SOURCE_CHUNK_OVERLAP ?? 0.12),
+    // Max total decompressed bytes for an EPUB archive (zip-bomb guard). Default 200 MB.
+    MAX_SOURCE_DECOMPRESSED_BYTES: Number(process.env.MAX_SOURCE_DECOMPRESSED_BYTES ?? 200 * 1024 * 1024),
+    // ── NotebookLM workspace (M2/M3) — all OPTIONAL ──────────────────────────
+    // Max DISTINCT source chunks a created card is provenance-linked to
+    // (card_sources rows per card). The turn may ground on more; the link
+    // writer keeps the first K in accumulation order (AC3.1).
+    CARD_SOURCE_LINK_CAP: Number(process.env.CARD_SOURCE_LINK_CAP ?? 5),
+    // Reader pagination: chunks per GET /sources/:id/chunks page (max 200).
+    SOURCE_CHUNKS_PAGE: Number(process.env.SOURCE_CHUNKS_PAGE ?? 50),
+    // Sequential-reading tool: source chunks per read_source slice.
+    READ_SOURCE_CHUNKS: Number(process.env.READ_SOURCE_CHUNKS ?? 3),
   },
 };
 
@@ -151,3 +179,9 @@ export const webSearchEnabled =
 // Forced off under test; a fake reader flips it on via
 // `__setPageReaderForTests` (page-reader.ts).
 export const fetchPageEnabled = !aiEnvDisabled && env.ai.CHAT_FETCH_PAGE !== 'false';
+// Gates the NotebookLM sources feature (ingest/index side). For M1 this EQUALS
+// `embeddingEnabled` (sources must be embedded to be useful); the M2 chat-
+// grounding side will additionally require `chatEnabled`. No keys ⇒ the
+// /notebooks screen shows a setup-notice and ingest parse-and-parks (no crash).
+// Forced off under test like the others (embeddingEnabled already is).
+export const notebooksEnabled = embeddingEnabled;

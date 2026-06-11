@@ -176,7 +176,7 @@ function decodeEntities(s: string): string {
     .replace(/&([a-z]+);/gi, (m, name: string) => NAMED_ENTITIES[name.toLowerCase()] ?? m);
 }
 
-function collapseText(s: string): string {
+export function collapseText(s: string): string {
   return s
     .replace(/[ \t ]+/g, ' ')
     .replace(/ ?\n ?/g, '\n')

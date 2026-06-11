@@ -10,8 +10,11 @@ import enSettings from './messages/en/settings';
 import ruSettings from './messages/ru/settings';
 import enChat from './messages/en/chat';
 import ruChat from './messages/ru/chat';
+import enNotebooks from './messages/en/notebooks';
+import ruNotebooks from './messages/ru/notebooks';
 import enCommon from './messages/en/common';
 import ruCommon from './messages/ru/common';
+import { INGEST_ERROR_CODES } from '@neuronexus/shared';
 
 // ── Recursive key extractor ──────────────────────────────────────────────────
 
@@ -294,6 +297,53 @@ describe('i18n parity — en/chat.ts vs ru/chat.ts (Slice 5)', () => {
     });
 
     test(`agentic-chat key "${key}" exists in ru/chat`, () => {
+      expect(ruKeys.has(key)).toBe(true);
+    });
+  }
+});
+
+describe('i18n parity — en/notebooks.ts vs ru/notebooks.ts (NotebookLM M1, T8)', () => {
+  const enKeys = new Set(flattenKeys(enNotebooks as unknown as NestedDict));
+  const ruKeys = new Set(flattenKeys(ruNotebooks as unknown as NestedDict));
+
+  test('en and ru notebooks dicts have the same set of dot-path keys', () => {
+    const missingInRu = [...enKeys].filter((k) => !ruKeys.has(k));
+    const missingInEn = [...ruKeys].filter((k) => !enKeys.has(k));
+
+    if (missingInRu.length > 0 || missingInEn.length > 0) {
+      const lines: string[] = [];
+      if (missingInRu.length > 0) {
+        lines.push(`Keys in en but missing in ru:\n  ${missingInRu.join('\n  ')}`);
+      }
+      if (missingInEn.length > 0) {
+        lines.push(`Keys in ru but missing in en:\n  ${missingInEn.join('\n  ')}`);
+      }
+      throw new Error(`i18n notebooks parity failure:\n${lines.join('\n')}`);
+    }
+
+    expect(missingInRu).toHaveLength(0);
+    expect(missingInEn).toHaveLength(0);
+  });
+
+  // The nav entry for the /notebooks screen must exist in both locales' common dicts.
+  test('nav.notebooks exists in en/common', () => {
+    expect(flattenKeys(enCommon as unknown as NestedDict)).toContain('nav.notebooks');
+  });
+  test('nav.notebooks exists in ru/common', () => {
+    expect(flattenKeys(ruCommon as unknown as NestedDict)).toContain('nav.notebooks');
+  });
+
+  // Explicit guard: every ingest error code (the machine `errorCode` on a source
+  // row) must map to a `status.<code>` i18n key in BOTH locales — a code absent
+  // from both would slip the symmetric diff (mirrors REQUIRED_NOTIFICATION_KEYS).
+  // Sourced directly from the shared INGEST_ERROR_CODES so adding a code there
+  // forces a matching i18n entry here.
+  for (const code of INGEST_ERROR_CODES) {
+    const key = `status.${code}`;
+    test(`ingest error-code key "${key}" exists in en/notebooks`, () => {
+      expect(enKeys.has(key)).toBe(true);
+    });
+    test(`ingest error-code key "${key}" exists in ru/notebooks`, () => {
       expect(ruKeys.has(key)).toBe(true);
     });
   }

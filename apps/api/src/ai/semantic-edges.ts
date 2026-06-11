@@ -83,6 +83,7 @@ export async function semanticEdges(args: {
     JOIN cards c ON c.id = kc.card_id
     WHERE kc.user_id = ${userId}
       AND kc.embedding IS NOT NULL
+      AND kc.source_type = 'card'
       AND c.suspended = false
   `)) as unknown as Array<{ cnt: number | string }>;
   const nodes = Math.min(Number(countRows[0]?.cnt ?? 0), maxNodes);
@@ -97,6 +98,7 @@ export async function semanticEdges(args: {
       JOIN cards c ON c.id = kc.card_id
       WHERE kc.user_id = ${userId}
         AND kc.embedding IS NOT NULL
+        AND kc.source_type = 'card'
         AND c.suspended = false
       ORDER BY c.created_at DESC
       LIMIT ${maxNodes}
@@ -109,6 +111,11 @@ export async function semanticEdges(args: {
         FROM kb_chunk kc2
         WHERE kc2.user_id = ${userId}
           AND kc2.embedding IS NOT NULL
+          -- CARD-graph guard: this probe does NOT join cards, so a document
+          -- chunk (card_id NULL, NotebookLM source) would otherwise consume a
+          -- slot in the LIMIT k*2 ANN window, yielding fewer than k card
+          -- neighbours after the outer card join. Exclude document vectors here.
+          AND kc2.source_type = 'card'
           AND kc2.card_id <> src.card_id
         ORDER BY kc2.embedding <=> src.embedding
         LIMIT ${k * 2}

@@ -11,6 +11,7 @@ const common = {
     decks: 'Decks',
     cards: 'Cards',
     chat: 'Chat',
+    notebooks: 'Notebooks',
     garden: 'Garden',
     editor: 'Editor',
     stats: 'Stats',

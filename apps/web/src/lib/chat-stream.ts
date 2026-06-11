@@ -230,6 +230,13 @@ export interface ChatTurnOpts {
   mentionedCardIds?: string[];
   /** Composer attachments (image media refs + inline text files, max 4). */
   attachments?: MessageAttachmentInput[];
+  /**
+   * Notebook workspace only (M2): per-turn SOURCE scope (which of the notebook's
+   * sources are checked into the chat). The notebook itself is derived from the
+   * conversation row server-side; these ids are intersected with the notebook's
+   * ready sources. Absent ⇒ all ready sources of the notebook.
+   */
+  sourceIds?: string[];
   signal?: AbortSignal;
 }
 
@@ -251,6 +258,7 @@ export async function streamChat(
     research: opts?.research,
     mentionedCardIds: opts?.mentionedCardIds,
     attachments: opts?.attachments,
+    sourceIds: opts?.sourceIds,
   };
   let res: Response;
   try {
@@ -323,7 +331,7 @@ export async function resumeChat(
  */
 export async function regenerateChat(
   conversationId: string,
-  opts: { model?: string; deckId?: string; research?: boolean; content?: string },
+  opts: { model?: string; deckId?: string; research?: boolean; content?: string; sourceIds?: string[] },
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -335,11 +343,13 @@ export async function regenerateChat(
       headers: { 'Content-Type': 'application/json' },
       // `content` (edit-and-rerun, B2): when present the server UPDATES the last
       // user row in place before replaying; absent ⇒ today's regenerate exactly.
+      // `sourceIds` (notebook mode M2): keeps the replay on the same source scope.
       body: JSON.stringify({
         model: opts.model,
         deckId: opts.deckId,
         research: opts.research,
         content: opts.content,
+        sourceIds: opts.sourceIds,
       }),
       signal,
     });

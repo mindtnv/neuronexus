@@ -19,6 +19,7 @@ import type {
   Citation,
   FieldValues,
   MessageAttachment,
+  MessageGrounding,
   MessageMention,
   MessageUsage,
   NoteField,
@@ -483,6 +484,15 @@ export const kbChunk = pgTable(
     index('kb_chunk_source_idx').on(t.sourceType, t.sourceId),
     // Idempotent upsert key for card re-index (one chunk per (card, position)).
     uniqueIndex('kb_chunk_card_pos_uq').on(t.cardId, t.position),
+    // Idempotent upsert key for DOCUMENT re-index (one chunk per (source, pos)).
+    // Partial WHERE so it coexists with the card key: document chunks carry a
+    // NULL card_id (the card key's (NULL, position) rows are distinct in PG), so
+    // a dedicated (source_id, position) unique is needed for the document upsert
+    // conflict target. Precedent: note_types_builtin_uq / messages_tool_result_uq
+    // prove db:generate round-trips a partial WHERE.
+    uniqueIndex('kb_chunk_source_pos_uq')
+      .on(t.sourceId, t.position)
+      .where(sql`source_type = 'document'`),
     // HNSW cosine index for ANN search via the `<=>` operator.
     index('kb_chunk_embedding_hnsw').using('hnsw', t.embedding.op('vector_cosine_ops')),
     // Card-source invariant: a 'card' chunk MUST carry its typed cardId (so the
@@ -503,6 +513,13 @@ export const conversations = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     title: text('title'),
+    // NotebookLM workspace binding (M2): a notebook-bound thread chats grounded
+    // on THAT notebook's sources. NULL = ordinary global chat thread. CASCADE:
+    // deleting a notebook removes its threads (messages cascade via the
+    // conversation FK; card_sources.conversation_id/message_id go SET NULL via
+    // their own FKs — created cards always SURVIVE). The scope is derived from
+    // THIS column server-side, never from a request body.
+    notebookId: uuid('notebook_id').references(() => notebooks.id, { onDelete: 'cascade' }),
     // Pinned threads sort above the date groups. Pin toggles do NOT bump
     // `updatedAt` (recency must reflect actual conversation activity).
     pinned: boolean('pinned').notNull().default(false),
@@ -515,7 +532,11 @@ export const conversations = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('conversations_user_updated_idx').on(t.userId, t.updatedAt.desc())],
+  (t) => [
+    index('conversations_user_updated_idx').on(t.userId, t.updatedAt.desc()),
+    // Notebook thread listing: GET /chat/conversations?notebookId=… (M2).
+    index('conversations_user_notebook_idx').on(t.userId, t.notebookId),
+  ],
 );
 
 // ── messages ────────────────────────────────────────────────────────────────────
@@ -567,6 +588,11 @@ export const messages = pgTable(
     // server-resolved from the user-scoped media row) and inline text files.
     // Model-facing parts/blocks are built at history time; content stays clean.
     attachments: jsonb('attachments').$type<MessageAttachment[]>(),
+    // Notebook-turn grounding snapshot (M3): the distinct source_chunk ids the
+    // turn read via search_source/read_source, stamped ONLY on the pending
+    // assistant tool_calls row of a SUSPENDED create_card — so server-side
+    // auto-provenance survives /resume and reload. Null everywhere else.
+    grounding: jsonb('grounding').$type<MessageGrounding>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -578,6 +604,151 @@ export const messages = pgTable(
     uniqueIndex('messages_tool_result_uq')
       .on(t.conversationId, t.toolCallId)
       .where(sql`role = 'tool'`),
+  ],
+);
+
+// ── notebooks ───────────────────────────────────────────────────────────────
+// NotebookLM-style collection of sources (book/PDF/article/URL/text) the user
+// reads + chats over (grounded) + generates flashcards from. User-scoped.
+// (Feature: NotebookLM-sourced cards, M1.)
+
+export const notebooks = pgTable(
+  'notebooks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('notebooks_user_idx').on(t.userId)],
+);
+
+// ── sources ─────────────────────────────────────────────────────────────────
+// One ingested source inside a notebook. The ROW IS THE INGEST JOB: `status`
+// drives the async worker (pending→parsing→indexing→ready|error|deleting), and
+// the worker pulls `userId` from this row (it runs with NO auth session). Uploaded
+// bytes (pdf/epub) live in S3 under `storageKey` (`source/{id}`); url/text carry
+// no bytes. `byteHash` (sha256 at finalize) powers per-(user,notebook) dedup.
+// `errorCode` is a MACHINE code (not prose) mapped to i18n on the client.
+// `verified` mirrors media's claim-on-presign ownership pattern. The progress
+// numerator is COMPUTED (COUNT source_chunks.embedded), NOT a stored counter.
+
+export const sources = pgTable(
+  'sources',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    notebookId: uuid('notebook_id')
+      .notNull()
+      .references(() => notebooks.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(), // 'pdf' | 'epub' | 'url' | 'text'
+    title: text('title').notNull(),
+    url: text('url'),
+    storageKey: text('storage_key'),
+    mime: text('mime'),
+    byteSize: integer('byte_size'),
+    byteHash: text('byte_hash'),
+    status: text('status').notNull().default('pending'),
+    // 'pending' | 'parsing' | 'indexing' | 'ready' | 'error' | 'deleting'
+    errorCode: text('error_code'),
+    charCount: integer('char_count'),
+    chunkCount: integer('chunk_count'),
+    verified: boolean('verified').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('sources_user_idx').on(t.userId),
+    index('sources_notebook_idx').on(t.notebookId),
+    // Powers the worker claim (`WHERE status = 'pending' … FOR UPDATE SKIP LOCKED`).
+    index('sources_status_idx').on(t.status),
+  ],
+);
+
+// ── source_chunks ──────────────────────────────────────────────────────────────
+// SoT for parsed document text. Unlike card chunks (rebuildable from
+// cards.render_text), a document's text is NOT cheaply re-derivable (it needs
+// re-download + re-parse), so it lives here and SURVIVES a kb_chunk rebuild
+// (re-embed-on-model-change reads from here). `embedded` flips true in the SAME
+// transaction as its kb_chunk embedding write — so the ingest progress numerator
+// is COUNT(embedded = true): crash-safe, never a desynced counter.
+
+export const sourceChunks = pgTable(
+  'source_chunks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    sourceId: uuid('source_id')
+      .notNull()
+      .references(() => sources.id, { onDelete: 'cascade' }),
+    notebookId: uuid('notebook_id')
+      .notNull()
+      .references(() => notebooks.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    text: text('text').notNull(),
+    page: integer('page'),
+    heading: text('heading'),
+    tokenCount: integer('token_count'),
+    embedded: boolean('embedded').notNull().default(false),
+    sourceHash: text('source_hash'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('source_chunks_source_pos_uq').on(t.sourceId, t.position),
+    index('source_chunks_user_idx').on(t.userId),
+    index('source_chunks_source_idx').on(t.sourceId),
+  ],
+);
+
+// ── card_sources ───────────────────────────────────────────────────────────────
+// Provenance edge (M1 lays the schema; M3 populates it): a card remembers which
+// source chunk(s) + chat turn it was generated from. CASCADE ASYMMETRY (the only
+// place in the schema a referencing row survives its referent): the CARD side
+// cascades (delete card → drop the edge), but every SOURCE/CHAT side is SET NULL —
+// deleting a source/notebook/conversation must NOT delete the card the user
+// authored ("nothing is lost"). A row left with all-NULL refs but `cardId` is a
+// tombstone; M3 backlink reads LEFT JOIN and render "source deleted". Live-dedup
+// via the PARTIAL unique (NULLs are distinct in PG, so tombstones are
+// intentionally NOT deduped) — precedent note_types_builtin_uq.
+
+export const cardSources = pgTable(
+  'card_sources',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    cardId: uuid('card_id')
+      .notNull()
+      .references(() => cards.id, { onDelete: 'cascade' }),
+    sourceChunkId: uuid('source_chunk_id').references(() => sourceChunks.id, {
+      onDelete: 'set null',
+    }),
+    sourceId: uuid('source_id').references(() => sources.id, { onDelete: 'set null' }),
+    notebookId: uuid('notebook_id').references(() => notebooks.id, { onDelete: 'set null' }),
+    conversationId: uuid('conversation_id').references(() => conversations.id, {
+      onDelete: 'set null',
+    }),
+    messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('card_sources_card_idx').on(t.cardId),
+    index('card_sources_source_idx').on(t.sourceId),
+    index('card_sources_chunk_idx').on(t.sourceChunkId),
+    // Live-dedup only on real chunk links. PG unique indexes are NULLS DISTINCT by
+    // default, so tombstone rows (source_chunk_id NULL after a source delete)
+    // accumulate freely; the partial WHERE keeps the unique meaningful for live edges.
+    uniqueIndex('card_sources_card_chunk_uq')
+      .on(t.cardId, t.sourceChunkId)
+      .where(sql`source_chunk_id IS NOT NULL`),
   ],
 );
 
@@ -643,6 +814,10 @@ export const kbChunkRelations = relations(kbChunk, ({ one }) => ({
 
 export const conversationsRelations = relations(conversations, ({ one, many }) => ({
   user: one(user, { fields: [conversations.userId], references: [user.id] }),
+  notebook: one(notebooks, {
+    fields: [conversations.notebookId],
+    references: [notebooks.id],
+  }),
   messages: many(messages),
 }));
 
@@ -652,6 +827,40 @@ export const messagesRelations = relations(messages, ({ one }) => ({
     fields: [messages.conversationId],
     references: [conversations.id],
   }),
+}));
+
+export const notebooksRelations = relations(notebooks, ({ one, many }) => ({
+  user: one(user, { fields: [notebooks.userId], references: [user.id] }),
+  sources: many(sources),
+  conversations: many(conversations),
+}));
+
+export const sourcesRelations = relations(sources, ({ one, many }) => ({
+  user: one(user, { fields: [sources.userId], references: [user.id] }),
+  notebook: one(notebooks, { fields: [sources.notebookId], references: [notebooks.id] }),
+  chunks: many(sourceChunks),
+}));
+
+export const sourceChunksRelations = relations(sourceChunks, ({ one }) => ({
+  user: one(user, { fields: [sourceChunks.userId], references: [user.id] }),
+  source: one(sources, { fields: [sourceChunks.sourceId], references: [sources.id] }),
+  notebook: one(notebooks, { fields: [sourceChunks.notebookId], references: [notebooks.id] }),
+}));
+
+export const cardSourcesRelations = relations(cardSources, ({ one }) => ({
+  user: one(user, { fields: [cardSources.userId], references: [user.id] }),
+  card: one(cards, { fields: [cardSources.cardId], references: [cards.id] }),
+  sourceChunk: one(sourceChunks, {
+    fields: [cardSources.sourceChunkId],
+    references: [sourceChunks.id],
+  }),
+  source: one(sources, { fields: [cardSources.sourceId], references: [sources.id] }),
+  notebook: one(notebooks, { fields: [cardSources.notebookId], references: [notebooks.id] }),
+  conversation: one(conversations, {
+    fields: [cardSources.conversationId],
+    references: [conversations.id],
+  }),
+  message: one(messages, { fields: [cardSources.messageId], references: [messages.id] }),
 }));
 
 // ── inferred types ─────────────────────────────────────────────────────────
@@ -680,3 +889,11 @@ export type Conversation = typeof conversations.$inferSelect;
 export type NewConversation = typeof conversations.$inferInsert;
 export type Message = typeof messages.$inferSelect;
 export type NewMessage = typeof messages.$inferInsert;
+export type Notebook = typeof notebooks.$inferSelect;
+export type NewNotebook = typeof notebooks.$inferInsert;
+export type Source = typeof sources.$inferSelect;
+export type NewSource = typeof sources.$inferInsert;
+export type SourceChunk = typeof sourceChunks.$inferSelect;
+export type NewSourceChunk = typeof sourceChunks.$inferInsert;
+export type CardSource = typeof cardSources.$inferSelect;
+export type NewCardSource = typeof cardSources.$inferInsert;

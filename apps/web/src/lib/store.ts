@@ -13,7 +13,8 @@ import {
   reviewFromApi,
 } from './mappers';
 import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, NoteType, Profile, Rating, Review } from './types';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Notebook, NoteType, Profile, Rating, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
+import type { SourceMime } from '@neuronexus/shared';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
 // and profile — fetched at bootstrap, mutated optimistically-ish on each API
@@ -237,6 +238,48 @@ interface State {
    * shape the dual-edge sanitizer keeps) plus the media id.
    */
   uploadMedia: (file: File) => Promise<{ token: string; mediaId: string }>;
+
+  // ── NotebookLM sources (M1) ──────────────────────────────────────────────────
+  // Lazy, screen-local data (like chat conversations — NOT part of the bootstrap
+  // mirror), so these are thin Eden pass-throughs that return server rows; the
+  // /notebooks screen owns the list state + polling.
+
+  /** List the user's notebooks (GET /notebooks), newest-first. */
+  listNotebooks: () => Promise<Notebook[]>;
+  /** Create a notebook (POST /notebooks). */
+  createNotebook: (title: string) => Promise<Notebook>;
+  /** Rename a notebook (PATCH /notebooks/:id). */
+  renameNotebook: (id: string, title: string) => Promise<Notebook>;
+  /** Delete a notebook + its sources (DELETE /notebooks/:id). */
+  deleteNotebook: (id: string) => Promise<void>;
+
+  /** List a notebook's sources with computed indexing progress (GET /notebooks/:id/sources). */
+  listSources: (notebookId: string) => Promise<Source[]>;
+  /** Add a url source (POST /notebooks/:id/sources, kind:'url') + enqueue. */
+  addUrlSource: (notebookId: string, title: string, url: string) => Promise<Source>;
+  /** Add an inline text source (POST /notebooks/:id/sources, kind:'text') + enqueue. */
+  addTextSource: (notebookId: string, title: string, text: string) => Promise<Source>;
+  /**
+   * Upload a pdf/epub source file: claim+presign → direct POST to S3 → finalize
+   * (MIRRORS uploadMedia, but on the source claim-presign endpoint). The server
+   * enqueues ingest on finalize. Returns the finalized source row.
+   */
+  uploadSource: (
+    notebookId: string,
+    file: File,
+    title: string,
+    mime: SourceMime,
+  ) => Promise<Source>;
+  /** Poll one source's status + computed progress (GET /sources/:id). */
+  getSource: (id: string) => Promise<Source>;
+  /** Rename a source (PATCH /sources/:id). */
+  renameSource: (id: string, title: string) => Promise<Source>;
+  /** Soft-delete a source + clean its index (DELETE /sources/:id). */
+  deleteSource: (id: string) => Promise<void>;
+  /** Read a page of a source's parsed chunks for the reader (GET /sources/:id/chunks). */
+  getSourceChunks: (id: string, from?: number, limit?: number) => Promise<SourceChunkPage>;
+  /** List the cards generated from a source (GET /sources/:id/cards). */
+  listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
 }
 
 export const useNN = create<State>()((set, get) => ({
@@ -750,6 +793,101 @@ export const useNN = create<State>()((set, get) => ({
     await ok(await (api as any).media({ id: presign.mediaId }).finalize.post());
 
     return { token: presign.token as string, mediaId: presign.mediaId as string };
+  },
+
+  // ── NotebookLM sources (M1) ──────────────────────────────────────────────────
+
+  async listNotebooks() {
+    const res = (await ok(await (api as any).notebooks.get())) as { items: Notebook[] };
+    return res.items;
+  },
+
+  async createNotebook(title) {
+    return (await ok(await (api as any).notebooks.post({ title }))) as Notebook;
+  },
+
+  async renameNotebook(id, title) {
+    return (await ok(await (api as any).notebooks({ id }).patch({ title }))) as Notebook;
+  },
+
+  async deleteNotebook(id) {
+    await ok(await (api as any).notebooks({ id }).delete());
+  },
+
+  async listSources(notebookId) {
+    const res = (await ok(
+      await (api as any).notebooks({ id: notebookId }).sources.get(),
+    )) as { items: Source[] };
+    return res.items;
+  },
+
+  async addUrlSource(notebookId, title, url) {
+    return (await ok(
+      await (api as any).notebooks({ id: notebookId }).sources.post({ kind: 'url', title, url }),
+    )) as Source;
+  },
+
+  async addTextSource(notebookId, title, text) {
+    return (await ok(
+      await (api as any).notebooks({ id: notebookId }).sources.post({ kind: 'text', title, text }),
+    )) as Source;
+  },
+
+  async uploadSource(notebookId, file, title, mime) {
+    // 1. Claim + presign: the server inserts a pending (verified=false) source
+    //    row under the caller and returns the source id + the S3 POST policy.
+    const claim: any = await ok(
+      await (api as any)
+        .notebooks({ id: notebookId })
+        .sources.post({ kind: 'upload', title, mime, size: file.size }),
+    );
+
+    // 2. Direct multipart POST to S3/MinIO — RAW cross-origin fetch (bytes bypass
+    //    Bun, same as uploadMedia). Policy fields first, Content-Type, file LAST.
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(claim.upload.fields as Record<string, string>)) {
+      fd.append(k, v);
+    }
+    fd.set('Content-Type', mime);
+    fd.append('file', file);
+    const res = await fetch(claim.upload.url, { method: 'POST', body: fd });
+    if (!res.ok) {
+      throw new Error(`upload failed (${res.status})`);
+    }
+
+    // 3. Finalize: server HEADs for real size, dedups by byte hash, enqueues the
+    //    ingest worker, and returns the verified source row.
+    return (await ok(
+      await (api as any).sources({ id: claim.sourceId }).finalize.post(),
+    )) as Source;
+  },
+
+  async getSource(id) {
+    return (await ok(await (api as any).sources({ id }).get())) as Source;
+  },
+
+  async renameSource(id, title) {
+    return (await ok(await (api as any).sources({ id }).patch({ title }))) as Source;
+  },
+
+  async deleteSource(id) {
+    await ok(await (api as any).sources({ id }).delete());
+  },
+
+  async getSourceChunks(id, from, limit) {
+    const query: Record<string, number> = {};
+    if (from != null) query.from = from;
+    if (limit != null) query.limit = limit;
+    return (await ok(
+      await (api as any).sources({ id }).chunks.get({ query }),
+    )) as SourceChunkPage;
+  },
+
+  async listSourceCards(id) {
+    const res = (await ok(await (api as any).sources({ id }).cards.get())) as {
+      items: SourceLinkedCard[];
+    };
+    return res.items ?? [];
   },
 }));
 

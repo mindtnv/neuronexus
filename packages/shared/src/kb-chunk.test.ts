@@ -45,12 +45,12 @@ describe('chunkSource — card branch', () => {
   });
 });
 
-describe('chunkSource — document branch (AC7 seam)', () => {
-  test('throws not_implemented for unsupported sourceType', () => {
-    // Cast to any to simulate calling with a future 'document' sourceType
-    // before that branch is implemented.
+describe('chunkSource — unsupported sourceType (AC7 seam)', () => {
+  test('throws not_implemented for an unknown sourceType', () => {
+    // The 'document' branch is now implemented (see kb-chunk-document.test.ts);
+    // only a future/unknown sourceType hits the not_implemented guard.
     expect(() =>
-      chunkSource({ sourceType: 'document' as any, sourceId: 'x', parentId: 'x', text: 'hi' }),
+      chunkSource({ sourceType: 'note' as any, sourceId: 'x', parentId: 'x', text: 'hi' }),
     ).toThrow('not_implemented');
   });
 });

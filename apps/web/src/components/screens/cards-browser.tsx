@@ -16,6 +16,7 @@ import type { BadgeTone } from '@/components/ui';
 import { CardsViewSwitcher } from '@/components/cards-view-switcher';
 import { NNCardForm } from '@/components/card-form';
 import { SimilarCardsPanel } from '@/components/similar-cards';
+import { SourceLinksPanel } from '@/components/source-links';
 import { useNN } from '@/lib/store';
 import type { Card } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -1036,6 +1037,11 @@ export const NNCardsBrowser = () => {
                     void refetchCard(id).then(() => setFocusedId(id));
                   }}
                 />
+                {/* Source backlinks (NotebookLM M3) — renders nothing for cards
+                    without provenance. */}
+                <div style={{ marginTop: 12 }}>
+                  <SourceLinksPanel cardId={focusedCard.id} />
+                </div>
               </aside>
             </div>
           </div>

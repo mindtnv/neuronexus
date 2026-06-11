@@ -2,8 +2,11 @@ import type { Card as FsrsCard } from 'ts-fsrs';
 import type {
   CardTemplate,
   FieldValues,
+  IngestErrorCode,
   NoteField,
   RenderKind,
+  SourceKind,
+  SourceStatus,
 } from '@neuronexus/shared';
 
 export type DeckColor = 'lime' | 'amber' | 'violet' | 'sky' | 'rose' | 'neutral';
@@ -138,6 +141,80 @@ export interface Card {
     templates: CardTemplate[];
     styling: string;
   } | null;
+}
+
+// ── NotebookLM sources (M1) ───────────────────────────────────────────────────
+// Thin view types over the server rows (GET /notebooks, GET /sources/:id). Dates
+// stay as ISO strings — the library screen renders relative/badge UI, not the
+// epoch-number FSRS math the mappers do for cards.
+
+export interface Notebook {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Source {
+  id: string;
+  notebookId: string;
+  kind: SourceKind;
+  title: string;
+  url: string | null;
+  status: SourceStatus;
+  errorCode: IngestErrorCode | null;
+  /** Computed progress: COUNT(embedded chunks). */
+  indexed: number;
+  /** Computed progress denominator: total chunk count (0 until parsed). */
+  total: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ── NotebookLM reader + provenance (M2/M3) ────────────────────────────────────
+
+/** One parsed source chunk page for the reader (GET /sources/:id/chunks). */
+export interface SourceChunkRow {
+  id: string;
+  position: number;
+  text: string;
+  page: number | null;
+  heading: string | null;
+}
+
+/** Reader pagination page (GET /sources/:id/chunks → items + cursor). */
+export interface SourceChunkPage {
+  items: SourceChunkRow[];
+  total: number;
+  nextFrom: number | null;
+}
+
+/** One provenance backlink on a card (GET /cards/:id/sources). All ref fields go
+ *  NULL after the source/notebook is deleted — a tombstone row («источник удалён»). */
+export interface CardSourceLink {
+  id: string;
+  sourceChunkId: string | null;
+  sourceId: string | null;
+  notebookId: string | null;
+  conversationId: string | null;
+  messageId: string | null;
+  sourceTitle: string | null;
+  notebookTitle: string | null;
+  position: number | null;
+  page: number | null;
+  heading: string | null;
+  snippet: string | null;
+  createdAt: string;
+}
+
+/** One card linked to a source (GET /sources/:id/cards). */
+export interface SourceLinkedCard {
+  cardId: string;
+  front: string;
+  deckId: string;
+  deckName: string;
+  count: number;
+  createdAt: string;
 }
 
 export type Rating = 1 | 2 | 3 | 4;
