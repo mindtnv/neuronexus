@@ -25,8 +25,10 @@ const stroke = {
   strokeLinecap: 'round' as const,
   strokeLinejoin: 'round' as const,
 };
-const ToolIcon = ({ name, size = 16 }: { name: InkTool | 'undo' | 'redo' | 'zin' | 'zout' | 'mode' | 'markup'; size?: number }) => {
+const ToolIcon = ({ name, size = 16 }: { name: InkTool | 'undo' | 'redo' | 'zin' | 'zout' | 'mode' | 'markup' | 'toc'; size?: number }) => {
   const paths: Record<string, React.ReactNode> = {
+    // L2 — table of contents (list-with-bullets).
+    toc: <><path d="M8 6h13M8 12h13M8 18h13" {...stroke} /><circle cx="3.5" cy="6" r="1" {...stroke} /><circle cx="3.5" cy="12" r="1" {...stroke} /><circle cx="3.5" cy="18" r="1" {...stroke} /></>,
     hand: <path d="M8 13V5.5a1.5 1.5 0 013 0V11m0-1.5a1.5 1.5 0 013 0V12m0-1a1.5 1.5 0 013 0v4a5 5 0 01-5 5h-1.5a4 4 0 01-3-1.4L7 16c-1-1.2-2-2-2-3.2 0-1.2 1.4-1.6 2.4-.6L8 13" {...stroke} />,
     pen: <path d="M4 20h4L19 9a2 2 0 00-3-3L5 17l-1 3zM14 7l3 3" {...stroke} />,
     highlighter: <><path d="M9 14l-3 3 .5 2.5L9 20l9-9-3-3-6 6z" {...stroke} /><path d="M14 6l4 4 2-2a2 2 0 00-3-3l-3 1z" {...stroke} /><path d="M5 21h6" {...stroke} /></>,
@@ -92,6 +94,11 @@ export interface ReaderToolbarProps {
   marksCount?: number;
   marksPanelOpen?: boolean;
   onToggleMarksPanel?: () => void;
+  /** L2 — table-of-contents toggle (library reader). Hidden when undefined or
+   *  the document has no outline/headings (`tocAvailable === false`). */
+  tocOpen?: boolean;
+  tocAvailable?: boolean;
+  onToggleToc?: () => void;
   onTool: (t: InkTool) => void;
   onColor: (hex: string) => void;
   onWidth: (idx: number) => void;
@@ -121,6 +128,9 @@ export const ReaderToolbar = ({
   marksCount = 0,
   marksPanelOpen = false,
   onToggleMarksPanel,
+  tocOpen = false,
+  tocAvailable = false,
+  onToggleToc,
   onTool,
   onColor,
   onWidth,
@@ -155,6 +165,16 @@ export const ReaderToolbar = ({
         overflowY: 'hidden',
       }}
     >
+      {/* ── Group 0: table of contents (library reader; hidden when no outline) ── */}
+      {onToggleToc && tocAvailable && (
+        <>
+          <TBtn active={tocOpen} onClick={onToggleToc} title={t('library.reader.toc')}>
+            <ToolIcon name="toc" />
+          </TBtn>
+          <Sep />
+        </>
+      )}
+
       {/* ── Group 1: mode toggle PDF | Текст ── */}
       <div
         style={{

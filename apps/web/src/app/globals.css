@@ -871,6 +871,9 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 .nn-lib-menu-item:hover { background: var(--surface-2); }
 
+/* L2 — library reader table-of-contents row hover. */
+.nn-toc-row:hover { background: var(--surface-2); }
+
 /* Continue-reading shelf card. */
 .nn-lib-shelf-card {
   display: flex;

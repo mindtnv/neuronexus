@@ -208,9 +208,23 @@ export interface LibraryItem {
   updatedAt: string;
 }
 
+/** Persisted reading position (server-of-truth, GET /library/items/:id). null
+ *  when the item was never opened. */
+export interface ReadingState {
+  status: ReadingStatus;
+  /** PDF page (1-based) or null. */
+  page: number | null;
+  /** Text-mode chunk position (0-based) or null. */
+  chunkPos: number | null;
+  /** Progress 0..1 or null. */
+  percent: number | null;
+}
+
 /** GET /library/items/:id — a library item + the notebooks it's attached to. */
 export interface LibraryItemDetail extends LibraryItem {
   notebooks: { id: string; title: string }[];
+  /** L2 — exact reading position for restore (null when never opened). */
+  readingState: ReadingState | null;
 }
 
 // ── NotebookLM reader + provenance (M2/M3) ────────────────────────────────────

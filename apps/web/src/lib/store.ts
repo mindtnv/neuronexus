@@ -305,6 +305,9 @@ interface State {
   patchLibraryItem: (id: string, patch: LibraryPatch) => Promise<LibraryItem>;
   /** Full source delete (DELETE /library/items/:id) — edges cascade, card tombstones. */
   deleteLibraryItem: (id: string) => Promise<void>;
+  /** Upsert reading position/percent (PUT /library/items/:id/reading-state). Best-
+   *  effort; unread→reading flips server-side. */
+  putReadingState: (id: string, state: ReadingStatePatch) => Promise<void>;
 
   // ── Notebook ↔ source attach/detach (L1 §4.2) ─────────────────────────────────
   /** Attach existing library sources to a notebook (POST /notebooks/:id/sources/attach). */
@@ -323,6 +326,13 @@ export interface LibraryQuery {
   sort?: 'added' | 'title' | 'lastRead';
   limit?: number;
   cursor?: string;
+}
+
+/** Reading-position upsert body (PUT /library/items/:id/reading-state). */
+export interface ReadingStatePatch {
+  page?: number;
+  chunkPos?: number;
+  percent?: number;
 }
 
 /** Editable library metadata (explicit-field PATCH). */
@@ -1039,6 +1049,14 @@ export const useNN = create<State>()((set, get) => ({
 
   async deleteLibraryItem(id) {
     await ok(await (api as any).library.items({ id }).delete());
+  },
+
+  async putReadingState(id, state) {
+    const body: Record<string, number> = {};
+    if (state.page != null) body.page = state.page;
+    if (state.chunkPos != null) body.chunkPos = state.chunkPos;
+    if (state.percent != null) body.percent = state.percent;
+    await ok(await (api as any).library.items({ id })['reading-state'].put(body));
   },
 
   // ── Notebook ↔ source attach/detach ───────────────────────────────────────────

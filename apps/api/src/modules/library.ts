@@ -353,7 +353,12 @@ export const libraryModule = new Elysia({ prefix: '/library' })
           .from(cardSources)
           .where(and(eq(cardSources.userId, user.id), eq(cardSources.sourceId, params.id))),
         db
-          .select({ status: sourceReadingState.status, percent: sourceReadingState.percent })
+          .select({
+            status: sourceReadingState.status,
+            percent: sourceReadingState.percent,
+            page: sourceReadingState.page,
+            chunkPos: sourceReadingState.chunkPos,
+          })
           .from(sourceReadingState)
           .where(
             and(
@@ -382,7 +387,18 @@ export const libraryModule = new Elysia({ prefix: '/library' })
         readingStatus: (readingRow?.status as ReadingStatus) ?? 'unread',
         percent: readingRow?.percent ?? null,
       });
-      return { ...shaped, notebooks: notebookRows };
+      // L2 — the reader restores its exact position from the persisted page
+      // (PDF) / chunkPos (text); null when never opened (falls back to the
+      // localStorage nn:pdf:pos cache + one-time migration PUT).
+      const readingState = readingRow
+        ? {
+            status: (readingRow.status as ReadingStatus) ?? 'unread',
+            page: readingRow.page ?? null,
+            chunkPos: readingRow.chunkPos ?? null,
+            percent: readingRow.percent ?? null,
+          }
+        : null;
+      return { ...shaped, notebooks: notebookRows, readingState };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   )

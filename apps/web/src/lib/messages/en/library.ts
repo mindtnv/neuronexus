@@ -101,6 +101,7 @@ const library = {
     noCards: 'No cards from this material yet.',
     cardsCount: '{count} cards',
     // Actions.
+    read: 'Read',
     rename: 'Rename',
     editAuthor: 'Edit author',
     addToNotebook: 'Add to notebook…',
@@ -185,6 +186,29 @@ const library = {
     detach: 'Remove from notebook',
     detachFailed: 'Could not remove the material.',
     openInLibrary: 'Read in library',
+  },
+
+  // ── Full-screen reader (/library/[id]) ────────────────────────────────────────
+  reader: {
+    back: 'Library',
+    loading: 'Loading…',
+    notFound: 'This material is no longer in your library.',
+    details: 'Details',
+    // Table of contents.
+    toc: 'Contents',
+    tocClose: 'Close',
+    tocEmpty: 'No table of contents.',
+    // «Спросить» handoff into a notebook.
+    handoffPick: 'Ask in a notebook',
+    handoffEmpty: 'Create a notebook first.',
+    handoffNewNotebook: 'New notebook',
+    handoffFailed: 'Could not open a notebook chat. Try again.',
+  },
+
+  // ── Citation viewer (notebook chat [src:] click) ──────────────────────────────
+  viewer: {
+    openInLibrary: 'Open in library',
+    close: 'Close',
   },
 };
 

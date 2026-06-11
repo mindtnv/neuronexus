@@ -1,27 +1,28 @@
 'use client';
 
-// NotebookWorkspace — the NotebookLM M2 three-panel workspace (T4).
+// NotebookWorkspace (L2 — clean NotebookLM, Р6). The notebook is now pure
+// research/chat: the FULL reader (PDF + ink + marks + quick-card) lives at
+// `/library/[id]`; reading no longer requires a notebook.
 //
-//   ┌── sources ──┬──────── reader ────────┬──── chat ────┐
-//   │ status      │ active source's parsed │ ChatPanel    │
-//   │ ☑ in chat   │ chunks, lazy-paged,    │ (notebook)   │
-//   │ N cards     │ scroll-to-chunk + lime │ + thread     │
-//   │ + add       │ highlight fade         │ switcher     │
-//   └─────────────┴────────────────────────┴──────────────┘
+//   ┌── sources ──┬──────── chat ────────┐
+//   │ status      │ ChatPanel (notebook) │
+//   │ ☑ in chat   │ + thread switcher    │
+//   │ N cards     │                      │
+//   │ + add       │  ┌─ citation viewer ─┤  ← right drawer on a [src:] click
+//   │ + attach    │  │ text chunk reader │
+//   └─────────────┴──┴───────────────────┘
 //
-//  • Desktop (≥1100): three columns. Tablet/mobile: a tab switcher
-//    (Источники | Чтение | Чат) per the project responsive shell.
-//  • Left source list reuses the M1 SourceRow/AddSourceForm/status-poll logic.
-//    A per-source checkbox toggles its inclusion in the chat scope (default all
-//    ready sources; persisted per-notebook in localStorage nn:nb:scope:<id>).
-//    «N карточек» fetches the source's generated cards lazily → jump to /cards.
-//  • Center reader renders each chunk through the SAME markdown pipeline chat
-//    answers use (renderCardHtml → SafeHtml — the sanitizer is untouched).
-//  • Right panel is ChatPanel in 'notebook' mode (sourceIds = the checked set).
+//  • Desktop (≥1100): two columns (sources │ chat). Tablet/mobile: a 2-tab
+//    switcher (Источники │ Чат) with the citation viewer as a fullscreen sheet.
+//  • Clicking a chat citation [src:] opens a TEXT-mode chunk viewer (no PDF load)
+//    keyed ALWAYS on sourceChunkId/position, with a «Открыть в библиотеке» link
+//    into the full reader. Cited passages of a detached source still open (the
+//    viewer is source-scoped); a deleted source → tombstone.
+//  • On mount the workspace consumes sessionStorage['nn:nb:prefill:<id>'] (the
+//    library reader's «Спросить» handoff) into the chat composer.
 //
-//  URL: `?source=<id>&chunk=<chunkId>&pos=<n>` opens the reader at that chunk;
-//  `?thread=<convId>` selects a chat thread. useSearchParams is read under the
-//  page-level <Suspense> (the route wraps this screen).
+//  URL: `?source=<id>&chunk=<chunkId>&pos=<n>` opens the citation viewer;
+//  `?thread=<convId>` selects a chat thread.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -32,12 +33,10 @@ import {
   type SourceMime,
 } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
-import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { useNN } from '@/lib/store';
 import type {
   Notebook,
   Source,
-  SourceChunkRow,
   SourceLinkedCard,
 } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -51,101 +50,12 @@ import {
   type AddKind,
 } from '@/components/screens/notebooks';
 import { ChatPanel, type ComposerPrefillHandle } from '@/components/chat/chat-panel';
-import { PdfReader, type PdfReaderHandle } from '@/components/pdf-reader/pdf-reader';
-import { api, ok } from '@/lib/api';
+import { TextChunkReader, type TextChunkReaderHandle } from '@/components/screens/text-reader';
 import { useSourceStatus } from '@/lib/use-source-status';
+import { prefillKey } from '@/lib/library-handoff';
 import type { LibraryItem } from '@/lib/types';
 
-type WorkspaceTab = 'sources' | 'reader' | 'chat';
-
-// One synthetic single-field "basic" note-type feeds chunk text through the same
-// Markdown render pipeline chat answers use (renderCardHtml → DOMPurify via
-// SafeHtml). The sanitizer stays the single security boundary — never edited.
-const CHUNK_MD_NOTE_TYPE = {
-  kind: 'basic' as const,
-  templates: [{ name: 'chunk', ord: 0, frontTemplate: '{{Body}}', backTemplate: '{{Body}}' }],
-};
-
-const ReaderChunk = ({
-  chunk,
-  t,
-}: {
-  chunk: SourceChunkRow;
-  t: (key: string, params?: Record<string, string | number>) => string;
-}) => {
-  const html = useMemo(
-    () => renderCardHtml(CHUNK_MD_NOTE_TYPE, { Body: chunk.text }, 'front'),
-    [chunk.text],
-  );
-  return (
-    <div
-      data-chunk-id={chunk.id}
-      data-chunk-pos={chunk.position}
-      className="nn-reader-chunk"
-      style={{
-        padding: '10px 12px',
-        borderRadius: 'var(--r-md)',
-        border: '1px solid transparent',
-        transition: 'outline-color 600ms ease, background 600ms ease',
-      }}
-    >
-      {(chunk.page != null || chunk.heading) && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            marginBottom: 5,
-            fontFamily: 'var(--font-sans)',
-          }}
-        >
-          {chunk.page != null && (
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 600,
-                letterSpacing: '0.04em',
-                color: 'var(--text-dim)',
-                background: 'var(--surface-3)',
-                padding: '1px 5px',
-                borderRadius: 'var(--r-xs)',
-                flexShrink: 0,
-              }}
-            >
-              {t('notebooks.reader.page', { n: chunk.page })}
-            </span>
-          )}
-          {chunk.heading && (
-            <span
-              style={{
-                fontSize: 11,
-                color: 'var(--text-dim)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                minWidth: 0,
-              }}
-            >
-              {chunk.heading}
-            </span>
-          )}
-        </div>
-      )}
-      <SafeHtml
-        html={html}
-        style={{
-          fontFamily: 'var(--font-sans)',
-          fontSize: 14,
-          lineHeight: 1.7,
-          color: 'var(--text)',
-          wordBreak: 'break-word',
-        }}
-      />
-    </div>
-  );
-};
-
-const READER_PAGE = 50;
+type WorkspaceTab = 'sources' | 'chat';
 
 export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const t = useT();
@@ -178,74 +88,23 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const [scope, setScope] = useState<Set<string>>(new Set());
   const scopeHydratedRef = useRef(false);
 
-  // Active reader source + its loaded chunk pages.
-  const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
-  // PDF|Text reader mode for the active source (M4). PDF sources default to 'pdf'
-  // (persisted per source in localStorage); non-PDF sources are always 'text'.
-  const [readerMode, setReaderMode] = useState<'pdf' | 'text'>('text');
-  const pdfReaderRef = useRef<PdfReaderHandle>(null);
-  // A pending page jump (from a citation / ?page=) fulfilled once the PDF mounts.
-  const pendingPageRef = useRef<number | undefined>(undefined);
-  // A pending mark to scroll+flash (from ?mark=), fulfilled once the PDF mounts
-  // (PdfReader consumes initialMarkId after the marks load).
-  const pendingMarkRef = useRef<string | undefined>(undefined);
-  const [chunks, setChunks] = useState<SourceChunkRow[]>([]);
-  const [chunkTotal, setChunkTotal] = useState(0);
-  const [nextFrom, setNextFrom] = useState<number | null>(0);
-  const [chunksLoading, setChunksLoading] = useState(false);
-  const readerRef = useRef<HTMLDivElement>(null);
-
   // Chat thread selection (notebook mode — the workspace owns the switcher).
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
 
-  // M5 — composer prefill ref (chat ← reader «Спросить» action).
+  // M5 — composer prefill ref (chat ← library «Спросить» handoff + viewer).
   const composerPrefillRef = useRef<ComposerPrefillHandle | null>(null);
 
-  // M5 — chatEnabled for the quick-card AI formulate button.
-  const [chatEnabled, setChatEnabled] = useState(false);
-  useEffect(() => {
-    void (async () => {
-      try {
-        const s = (await ok(await (api as any).ai.status.get())) as { chatEnabled: boolean };
-        setChatEnabled(Boolean(s.chatEnabled));
-      } catch {
-        /* degrade — hide AI formulate */
-      }
-    })();
-  }, []);
+  // ── Citation viewer (text-mode chunk reader over a cited source) ───────────────
+  const [viewer, setViewer] = useState<{
+    sourceId: string;
+    chunkId?: string;
+    pos?: number;
+    page?: number;
+  } | null>(null);
+  const viewerReaderRef = useRef<TextChunkReaderHandle | null>(null);
 
-  // W5(a) — collapsible chat column (desktop only). Default: open on desktop, collapsed on tablet.
-  const chatCollapseKey = `nn:nb:chat:${notebookId}`;
-  const [chatCollapsed, setChatCollapsed] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      const stored = localStorage.getItem(chatCollapseKey);
-      if (stored !== null) return stored === 'true';
-    } catch { /* ignore */ }
-    // Default: collapsed on tablet, open on desktop (resolved at runtime).
-    return false;
-  });
-  const toggleChatCollapsed = useCallback(() => {
-    setChatCollapsed((prev) => {
-      const next = !prev;
-      try { localStorage.setItem(chatCollapseKey, String(next)); } catch { /* ignore */ }
-      return next;
-    });
-  }, [chatCollapseKey]);
-  // On first mount (client), set default by breakpoint if no stored value.
-  useEffect(() => {
-    try {
-      if (localStorage.getItem(chatCollapseKey) === null) {
-        const defaultCollapsed = window.innerWidth < 1100;
-        setChatCollapsed(defaultCollapsed);
-      }
-    } catch { /* ignore */ }
-  // Run once on mount.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Mobile/tablet tab.
-  const [tab, setTab] = useState<WorkspaceTab>('reader');
+  // Mobile tab.
+  const [tab, setTab] = useState<WorkspaceTab>('chat');
 
   // Add-source form state (M1 flow).
   const [addOpen, setAddOpen] = useState(false);
@@ -266,10 +125,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const chunkParam = searchParams.get('chunk');
   const posParam = searchParams.get('pos');
   const pageParam = searchParams.get('page');
-  const markParam = searchParams.get('mark');
   const threadParam = searchParams.get('thread');
-  // Pending scroll-to target, set from the URL or a citation; cleared once done.
-  const pendingScrollRef = useRef<{ chunkId?: string; pos?: number } | null>(null);
 
   // ── Load notebook + sources ───────────────────────────────────────────────────
   useEffect(() => {
@@ -285,7 +141,6 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         const rows = await listSources(notebookId);
         if (cancelled) return;
         setSources(rows);
-        // Hydrate the chat scope: stored set ∩ ready sources, else all ready.
         if (!scopeHydratedRef.current) {
           scopeHydratedRef.current = true;
           const readyIds = rows.filter((s) => s.status === 'ready').map((s) => s.id);
@@ -301,8 +156,6 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
             : new Set(readyIds);
           setScope(next);
         }
-        // Default-open the first ready source in the reader.
-        setActiveSourceId((prev) => prev ?? rows.find((s) => s.status === 'ready')?.id ?? null);
       } catch {
         /* keep empty */
       } finally {
@@ -312,6 +165,29 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notebookId]);
+
+  // ── Consume the library handoff prefill on mount ───────────────────────────────
+  const consumedPrefillRef = useRef(false);
+  useEffect(() => {
+    if (consumedPrefillRef.current) return;
+    consumedPrefillRef.current = true;
+    // Defer so the ChatPanel has populated composerPrefillRef.
+    const id = window.setTimeout(() => {
+      try {
+        const key = prefillKey(notebookId);
+        const text = sessionStorage.getItem(key);
+        if (text) {
+          sessionStorage.removeItem(key);
+          composerPrefillRef.current?.prefill(text);
+          if (!isDesktop) setTab('chat');
+        }
+      } catch {
+        /* best-effort */
+      }
+    }, 50);
+    return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notebookId]);
 
@@ -355,7 +231,6 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         prev.map((s) => {
           const updated = byId.get(s.id);
           if (!updated) return s;
-          // A source that JUST became ready joins the chat scope by default.
           if (s.status !== 'ready' && updated.status === 'ready') {
             setScopePersisted(new Set([...scope, updated.id]));
           }
@@ -365,125 +240,32 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     },
   });
 
-  // ── Reader: load chunk pages for the active source ────────────────────────────
-  const loadChunks = useCallback(
-    async (sourceId: string, from: number, append: boolean) => {
-      setChunksLoading(true);
-      try {
-        const page = await getSourceChunks(sourceId, from, READER_PAGE);
-        setChunkTotal(page.total);
-        setNextFrom(page.nextFrom);
-        setChunks((prev) => (append ? [...prev, ...page.items] : page.items));
-      } catch {
-        if (!append) {
-          setChunks([]);
-          setChunkTotal(0);
-          setNextFrom(null);
-        }
-      } finally {
-        setChunksLoading(false);
-      }
+  // ── Open the citation viewer (keyed on sourceChunkId/position, NOT page) ───────
+  const openViewer = useCallback(
+    (v: { sourceId: string; chunkId?: string; pos?: number; page?: number }) => {
+      setViewer(v);
+      if (!isDesktop) setTab('chat');
+      // The TextChunkReader mounts fresh per sourceId (key) and scrolls once it has
+      // chunks; if it's already mounted for this source, scroll imperatively.
+      requestAnimationFrame(() => viewerReaderRef.current?.scrollToChunk(v.chunkId, v.pos));
     },
-    [getSourceChunks],
+    [isDesktop],
   );
 
-  // Reset + load when the active source changes.
-  useEffect(() => {
-    if (!activeSourceId) {
-      setChunks([]);
-      setChunkTotal(0);
-      setNextFrom(0);
-      return;
-    }
-    setChunks([]);
-    setNextFrom(0);
-    void loadChunks(activeSourceId, 0, false);
-  }, [activeSourceId, loadChunks]);
-
-  // ── Deep link → open reader at a chunk ────────────────────────────────────────
-  const openChunk = useCallback((chunkId?: string, pos?: number) => {
-    pendingScrollRef.current = { chunkId, pos };
-  }, []);
-
-  // Jump the PDF reader to a page (citation in PDF mode / ?page=). If the reader
-  // is already mounted, scroll now; else stash for the PdfReader's initialPage.
-  const jumpToPage = useCallback((page?: number) => {
-    if (page == null || !Number.isFinite(page) || page < 1) return;
-    pendingPageRef.current = page;
-    pdfReaderRef.current?.scrollToPage(page, true);
-  }, []);
-
-  // Reader-mode hydrate when the active source changes: PDF sources read the
-  // per-source preference (default 'pdf'); everything else is text-only.
-  useEffect(() => {
-    const src = sources.find((s) => s.id === activeSourceId) ?? null;
-    if (src?.kind === 'pdf') {
-      let stored: string | null = null;
-      try {
-        stored = localStorage.getItem(`nn:nb:readermode:${src.id}`);
-      } catch {
-        stored = null;
-      }
-      setReaderMode(stored === 'text' ? 'text' : 'pdf');
-    } else {
-      setReaderMode('text');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSourceId, sources]);
-
-  const setReaderModePersisted = useCallback(
-    (m: 'pdf' | 'text') => {
-      setReaderMode(m);
-      if (activeSourceId) {
-        try {
-          localStorage.setItem(`nn:nb:readermode:${activeSourceId}`, m);
-        } catch {
-          /* best-effort */
-        }
-      }
-    },
-    [activeSourceId],
-  );
-
-  // Consume ?source=&chunk=&pos=&page=&mark= once sources have loaded.
+  // Consume ?source=&chunk=&pos=&page= once sources have loaded → citation viewer.
   const consumedSourceParamRef = useRef<string | null>(null);
   useEffect(() => {
     if (!sourcesLoaded || !sourceParam) return;
-    const token = `${sourceParam}:${chunkParam ?? ''}:${posParam ?? ''}:${pageParam ?? ''}:${markParam ?? ''}`;
+    const token = `${sourceParam}:${chunkParam ?? ''}:${posParam ?? ''}:${pageParam ?? ''}`;
     if (consumedSourceParamRef.current === token) return;
     consumedSourceParamRef.current = token;
-    const src = sources.find((s) => s.id === sourceParam);
-    if (!src) return;
-    setActiveSourceId(sourceParam);
-    if (!isDesktop) setTab('reader');
-    // A ?mark= deep link opens a PDF source in PDF mode and stashes the mark id
-    // for PdfReader to scroll+flash once its marks load. A ?page= deep link
-    // opens a PDF source in PDF mode at that page; otherwise fall back to the
-    // text-chunk jump (chunk id / position).
-    const pageNum = pageParam != null ? Number(pageParam) : undefined;
-    if (src.kind === 'pdf' && markParam) {
-      setReaderModePersisted('pdf');
-      pendingMarkRef.current = markParam;
-    } else if (src.kind === 'pdf' && pageNum != null && Number.isFinite(pageNum) && pageNum >= 1) {
-      setReaderModePersisted('pdf');
-      pendingPageRef.current = pageNum;
-      jumpToPage(pageNum);
-    } else {
-      openChunk(chunkParam ?? undefined, posParam != null ? Number(posParam) : undefined);
-    }
-  }, [
-    sourcesLoaded,
-    sourceParam,
-    chunkParam,
-    posParam,
-    pageParam,
-    markParam,
-    sources,
-    isDesktop,
-    openChunk,
-    jumpToPage,
-    setReaderModePersisted,
-  ]);
+    openViewer({
+      sourceId: sourceParam,
+      chunkId: chunkParam ?? undefined,
+      pos: posParam != null ? Number(posParam) : undefined,
+      page: pageParam != null ? Number(pageParam) : undefined,
+    });
+  }, [sourcesLoaded, sourceParam, chunkParam, posParam, pageParam, openViewer]);
 
   // Consume ?thread= once (notebook chat thread selection).
   const consumedThreadParamRef = useRef<string | null>(null);
@@ -494,41 +276,6 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     setActiveThreadId(threadParam);
     if (!isDesktop) setTab('chat');
   }, [threadParam, isDesktop]);
-
-  // After chunks load, fulfil a pending scroll-to-chunk (load more pages until
-  // the target position is in range), then scrollIntoView + lime highlight fade.
-  useEffect(() => {
-    const target = pendingScrollRef.current;
-    if (!target || !activeSourceId) return;
-    // If the target is identified by position and not yet loaded, page forward.
-    if (
-      target.pos != null &&
-      nextFrom != null &&
-      !chunksLoading &&
-      !chunks.some((c) => c.position === target.pos)
-    ) {
-      void loadChunks(activeSourceId, nextFrom, true);
-      return;
-    }
-    // Resolve the DOM node by chunk id (preferred) or position.
-    const host = readerRef.current;
-    if (!host) return;
-    let node: HTMLElement | null = null;
-    if (target.chunkId) node = host.querySelector(`[data-chunk-id="${CSS.escape(target.chunkId)}"]`);
-    if (!node && target.pos != null) {
-      node = host.querySelector(`[data-chunk-pos="${target.pos}"]`);
-    }
-    if (!node) {
-      // Not found yet — if more pages remain, keep paging; else give up.
-      if (nextFrom != null && !chunksLoading) void loadChunks(activeSourceId, nextFrom, true);
-      else pendingScrollRef.current = null;
-      return;
-    }
-    pendingScrollRef.current = null;
-    node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    node.classList.add('nn-chunk-flash');
-    window.setTimeout(() => node?.classList.remove('nn-chunk-flash'), 2200);
-  }, [chunks, chunksLoading, nextFrom, activeSourceId, loadChunks]);
 
   // ── Add-source (M1 flow) ──────────────────────────────────────────────────────
   const resetAddForm = useCallback(() => {
@@ -614,8 +361,8 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   );
 
   // L1 — detach (NOT delete): the material stays in the library; only its link to
-  // this notebook is removed. MUST prune the source id from the chat scope (same
-  // as delete:635) — else a detach→re-attach silently restores a stale checkbox.
+  // this notebook is removed. MUST prune the source id from the chat scope —
+  // else a detach→re-attach silently restores a stale checkbox.
   const onDetachSource = useCallback(
     async (src: Source) => {
       const yes = await confirm({
@@ -632,10 +379,10 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       }
       setSources((prev) => prev.filter((s) => s.id !== src.id));
       setScopePersisted(new Set([...scope].filter((id) => id !== src.id)));
-      if (activeSourceId === src.id) setActiveSourceId(null);
+      if (viewer?.sourceId === src.id) setViewer(null);
       raiseToast({ kind: 'info', title: t('library.toast.detached') });
     },
-    [confirm, t, detachSource, notebookId, scope, setScopePersisted, activeSourceId],
+    [confirm, t, detachSource, notebookId, scope, setScopePersisted, viewer],
   );
 
   // L1 — attach existing library sources to this notebook, then refetch the list.
@@ -659,15 +406,15 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     [attachSources, notebookId, listSources, t],
   );
 
-  const onOpenInLibrary = useCallback(
+  // «Читать в библиотеке» → the full-screen library reader (NOT ?focus=).
+  const onReadInLibrary = useCallback(
     (src: Source) => {
-      router.push(`/library?focus=${src.id}`);
+      router.push(`/library/${src.id}`);
     },
     [router],
   );
 
-  // Notebook-mode chat thread change (the ChatPanel notifies; keep ?thread= in
-  // the URL for shareable deep links).
+  // Notebook-mode chat thread change.
   const onThreadChange = useCallback(
     (id: string | null) => {
       setActiveThreadId(id);
@@ -679,9 +426,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   // The checked source ids (stable array) passed to the chat panel.
   const scopeIds = useMemo(() => [...scope], [scope]);
-  const activeSource = useMemo(
-    () => sources.find((s) => s.id === activeSourceId) ?? null,
-    [sources, activeSourceId],
+  const viewerSource = useMemo(
+    () => (viewer ? sources.find((s) => s.id === viewer.sourceId) ?? null : null),
+    [sources, viewer],
   );
 
   // ── Panels ─────────────────────────────────────────────────────────────────────
@@ -690,7 +437,6 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       sources={sources}
       loaded={sourcesLoaded}
       scope={scope}
-      activeSourceId={activeSourceId}
       addOpen={addOpen}
       addProps={{
         kind: addKind,
@@ -712,38 +458,11 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       onOpenAdd={() => setAddOpen(true)}
       onAttachFromLibrary={() => setAttachOpen(true)}
       onToggleScope={toggleScope}
-      onSelectSource={(id) => {
-        setActiveSourceId(id);
-        if (!isDesktop) setTab('reader');
-      }}
       onRename={onRenameSource}
       onDetach={onDetachSource}
-      onOpenInLibrary={onOpenInLibrary}
+      onReadInLibrary={onReadInLibrary}
       listSourceCards={listSourceCards}
       onOpenCard={(cardId) => router.push(`/cards?focus=${cardId}`)}
-      t={t}
-    />
-  );
-
-  const readerPanel = (
-    <ReaderPanel
-      ref={readerRef}
-      source={activeSource}
-      chunks={chunks}
-      total={chunkTotal}
-      loading={chunksLoading}
-      hasMore={nextFrom != null}
-      onLoadMore={() => activeSourceId && nextFrom != null && void loadChunks(activeSourceId, nextFrom, true)}
-      readerMode={readerMode}
-      onReaderMode={setReaderModePersisted}
-      pdfReaderRef={pdfReaderRef}
-      pendingPage={pendingPageRef.current}
-      pendingMark={pendingMarkRef.current}
-      onAskChat={(quote) => {
-        composerPrefillRef.current?.prefill(`> ${quote}`);
-        if (!isDesktop) setTab('chat');
-      }}
-      chatEnabled={chatEnabled}
       t={t}
     />
   );
@@ -758,24 +477,46 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       onThreadChange={onThreadChange}
       onSourceCitation={(c) => {
         if (!c.sourceId) return;
-        const src = sources.find((s) => s.id === c.sourceId);
-        setActiveSourceId(c.sourceId);
-        if (!isDesktop) setTab('reader');
-        // PDF source + a known page → jump the PDF reader to that page; else
-        // (no page, or non-PDF) fall back to the text-chunk jump.
-        if (src?.kind === 'pdf' && c.page != null) {
-          setReaderModePersisted('pdf');
-          pendingPageRef.current = c.page;
-          jumpToPage(c.page);
-        } else {
-          if (src?.kind === 'pdf') setReaderModePersisted('text');
-          openChunk(c.sourceChunkId, c.position);
-        }
+        openViewer({
+          sourceId: c.sourceId,
+          chunkId: c.sourceChunkId,
+          pos: c.position,
+          page: c.page,
+        });
       }}
     />
   );
 
-  // L1 — "Add from library" picker (rendered above whichever layout is active).
+  // Citation viewer — right drawer (desktop) / fullscreen sheet (mobile).
+  const citationViewer = viewer ? (
+    <CitationViewer
+      key={viewer.sourceId}
+      source={viewerSource}
+      sourceId={viewer.sourceId}
+      chunkId={viewer.chunkId}
+      pos={viewer.pos}
+      page={viewer.page}
+      isDesktop={isDesktop}
+      getSourceChunks={getSourceChunks}
+      readerRef={viewerReaderRef}
+      onOpenInLibrary={() => {
+        const params = new URLSearchParams();
+        // PDF source + a known page → ?page=; otherwise ?chunk=/?pos=.
+        if (viewerSource?.kind === 'pdf' && viewer.page != null) {
+          params.set('page', String(viewer.page));
+        } else {
+          if (viewer.chunkId) params.set('chunk', viewer.chunkId);
+          if (viewer.pos != null) params.set('pos', String(viewer.pos));
+        }
+        const qs = params.toString();
+        router.push(`/library/${viewer.sourceId}${qs ? `?${qs}` : ''}`);
+      }}
+      onClose={() => setViewer(null)}
+      t={t}
+    />
+  ) : null;
+
+  // L1 — "Add from library" picker.
   const attachPicker = attachOpen ? (
     <LibraryAttachPicker
       attachedIds={new Set(sources.map((s) => s.id))}
@@ -831,7 +572,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <div
             style={{
-              width: 260,
+              width: 280,
               flexShrink: 0,
               borderRight: '1px solid var(--border)',
               overflowY: 'auto',
@@ -840,107 +581,17 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           >
             {sourcesPanel}
           </div>
-          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-            {readerPanel}
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            {chatPanel}
           </div>
-          {/* W5(a) — collapsible chat column. Collapsed = 44px vertical rail. */}
-          <div
-            style={{
-              width: chatCollapsed ? 44 : 420,
-              flexShrink: 0,
-              borderLeft: '1px solid var(--border)',
-              display: 'flex',
-              flexDirection: 'column',
-              minHeight: 0,
-              transition: 'width 200ms ease',
-              overflow: 'hidden',
-              position: 'relative',
-            }}
-          >
-            {chatCollapsed ? (
-              /* Slim 44px rail: only the toggle button visible. */
-              <button
-                type="button"
-                onClick={toggleChatCollapsed}
-                title={t('notebooks.workspace.chatExpand')}
-                aria-label={t('notebooks.workspace.chatExpand')}
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  width: '100%',
-                  height: '100%',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 8,
-                  border: 'none',
-                  background: 'transparent',
-                  color: 'var(--text-muted)',
-                  cursor: 'pointer',
-                  padding: 0,
-                }}
-              >
-                {/* Chat icon */}
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
-                </svg>
-                {/* Expand chevron */}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="15 18 9 12 15 6" />
-                </svg>
-              </button>
-            ) : (
-              /* Full chat panel with collapse toggle in header. */
-              <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-                {/* Chat panel header with collapse toggle */}
-                <div
-                  className="nn-chrome"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'flex-end',
-                    padding: '0 8px',
-                    borderBottom: '1px solid var(--border)',
-                    height: 36,
-                    flexShrink: 0,
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={toggleChatCollapsed}
-                    title={t('notebooks.workspace.chatCollapse')}
-                    aria-label={t('notebooks.workspace.chatCollapse')}
-                    style={{
-                      width: 28,
-                      height: 28,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: 'var(--r-sm)',
-                      border: 'none',
-                      background: 'transparent',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="9 18 15 12 9 6" />
-                    </svg>
-                  </button>
-                </div>
-                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                  {chatPanel}
-                </div>
-              </div>
-            )}
-          </div>
+          {/* Citation viewer — right drawer (desktop). */}
+          {citationViewer}
         </div>
       </div>
     );
   }
 
-  // Tablet / mobile — a tab switcher between the three panels.
+  // Tablet / mobile — a 2-tab switcher (sources │ chat); viewer is a fullscreen sheet.
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       {attachPicker}
@@ -957,10 +608,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         }}
       >
         {([
-          { key: 'sources', icon: '📚', labelKey: 'notebooks.workspace.tabSources' },
-          { key: 'reader', icon: '📄', labelKey: 'notebooks.workspace.tabReader' },
-          { key: 'chat', icon: '💬', labelKey: 'notebooks.workspace.tabChat' },
-        ] as { key: WorkspaceTab; icon: string; labelKey: string }[]).map(({ key: tk, labelKey }) => (
+          { key: 'sources', labelKey: 'notebooks.workspace.tabSources' },
+          { key: 'chat', labelKey: 'notebooks.workspace.tabChat' },
+        ] as { key: WorkspaceTab; labelKey: string }[]).map(({ key: tk, labelKey }) => (
           <button
             key={tk}
             type="button"
@@ -977,10 +627,118 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
             {sourcesPanel}
           </div>
         )}
-        {tab === 'reader' && readerPanel}
         {tab === 'chat' && chatPanel}
       </div>
+      {/* Citation viewer — fullscreen sheet (mobile). */}
+      {citationViewer}
     </div>
+  );
+};
+
+// ── Citation viewer ───────────────────────────────────────────────────────────
+
+const CitationViewer = ({
+  source,
+  sourceId,
+  isDesktop,
+  getSourceChunks,
+  readerRef,
+  onOpenInLibrary,
+  onClose,
+  t,
+}: {
+  source: Source | null;
+  sourceId: string;
+  chunkId?: string;
+  pos?: number;
+  page?: number;
+  isDesktop: boolean;
+  getSourceChunks: React.ComponentProps<typeof TextChunkReader>['getSourceChunks'];
+  readerRef: React.RefObject<TextChunkReaderHandle | null>;
+  onOpenInLibrary: () => void;
+  onClose: () => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) => {
+  const panel = (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        height: '100%',
+        background: 'var(--surface)',
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '8px 12px',
+          borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
+        }}
+      >
+        <NNIcon name="doc" size={14} color="var(--sky-400)" />
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 13,
+            fontWeight: 600,
+            color: 'var(--text)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontFamily: 'var(--font-sans)',
+          }}
+          title={source?.title}
+        >
+          {source?.title ?? t('notebooks.backlinks.untitled')}
+        </span>
+        <NNBtn variant="soft" size="sm" icon="book" onClick={onOpenInLibrary}>
+          {t('library.viewer.openInLibrary')}
+        </NNBtn>
+        <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.viewer.close')} title={t('library.viewer.close')} onClick={onClose} />
+      </div>
+      {/* Text chunk reader */}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <TextChunkReader
+          ref={readerRef}
+          sourceId={sourceId}
+          getSourceChunks={getSourceChunks}
+          t={t}
+        />
+      </div>
+    </div>
+  );
+
+  if (isDesktop) {
+    return (
+      <div
+        style={{
+          width: 440,
+          flexShrink: 0,
+          borderLeft: '1px solid var(--border)',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+        }}
+      >
+        {panel}
+      </div>
+    );
+  }
+
+  // Mobile — fullscreen sheet.
+  return (
+    <>
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.5)' }} />
+      <div style={{ position: 'fixed', inset: 0, zIndex: 81, display: 'flex', flexDirection: 'column' }}>
+        {panel}
+      </div>
+    </>
   );
 };
 
@@ -990,16 +748,14 @@ interface SourcesPanelProps {
   sources: Source[];
   loaded: boolean;
   scope: Set<string>;
-  activeSourceId: string | null;
   addOpen: boolean;
   addProps: React.ComponentProps<typeof AddSourceForm>;
   onOpenAdd: () => void;
   onAttachFromLibrary: () => void;
   onToggleScope: (id: string) => void;
-  onSelectSource: (id: string) => void;
   onRename: (src: Source) => void;
   onDetach: (src: Source) => void;
-  onOpenInLibrary: (src: Source) => void;
+  onReadInLibrary: (src: Source) => void;
   listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
   onOpenCard: (cardId: string) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -1009,22 +765,19 @@ const SourcesPanel = ({
   sources,
   loaded,
   scope,
-  activeSourceId,
   addOpen,
   addProps,
   onOpenAdd,
   onAttachFromLibrary,
   onToggleScope,
-  onSelectSource,
   onRename,
   onDetach,
-  onOpenInLibrary,
+  onReadInLibrary,
   listSourceCards,
   onOpenCard,
   t,
 }: SourcesPanelProps) => (
   <div style={{ padding: '10px 8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-    {/* Panel header — matches sidebar section style */}
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 4px', marginBottom: 2 }}>
       <span
         className="nn-chrome"
@@ -1071,13 +824,11 @@ const SourcesPanel = ({
           <WorkspaceSourceRow
             key={src.id}
             source={src}
-            active={src.id === activeSourceId}
             inScope={scope.has(src.id)}
             onToggleScope={() => onToggleScope(src.id)}
-            onSelect={() => onSelectSource(src.id)}
             onRename={() => onRename(src)}
             onDetach={() => onDetach(src)}
-            onOpenInLibrary={() => onOpenInLibrary(src)}
+            onReadInLibrary={() => onReadInLibrary(src)}
             listSourceCards={listSourceCards}
             onOpenCard={onOpenCard}
             t={t}
@@ -1090,25 +841,21 @@ const SourcesPanel = ({
 
 const WorkspaceSourceRow = ({
   source,
-  active,
   inScope,
   onToggleScope,
-  onSelect,
   onRename,
   onDetach,
-  onOpenInLibrary,
+  onReadInLibrary,
   listSourceCards,
   onOpenCard,
   t,
 }: {
   source: Source;
-  active: boolean;
   inScope: boolean;
   onToggleScope: () => void;
-  onSelect: () => void;
   onRename: () => void;
   onDetach: () => void;
-  onOpenInLibrary: () => void;
+  onReadInLibrary: () => void;
   listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
   onOpenCard: (cardId: string) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -1141,10 +888,9 @@ const WorkspaceSourceRow = ({
   }, [cardsOpen, cards, cardsLoading, listSourceCards, source.id]);
 
   return (
-    <div className={`nn-source-row${active ? ' active' : ''}`}>
-      {/* Main row: checkbox + icon + title + status badge */}
+    <div className="nn-source-row">
+      {/* Main row: checkbox + icon + title (→ read in library) + status badge */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        {/* In-chat scope checkbox (ready sources only). */}
         <input
           type="checkbox"
           checked={inScope}
@@ -1156,7 +902,8 @@ const WorkspaceSourceRow = ({
         />
         <button
           type="button"
-          onClick={onSelect}
+          onClick={onReadInLibrary}
+          title={t('library.workspace.openInLibrary')}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -1174,8 +921,8 @@ const WorkspaceSourceRow = ({
           <span
             style={{
               fontSize: 13,
-              fontWeight: active ? 600 : 500,
-              color: active ? 'var(--text)' : 'var(--text-muted)',
+              fontWeight: 500,
+              color: 'var(--text-muted)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -1187,13 +934,11 @@ const WorkspaceSourceRow = ({
             {source.title}
           </span>
         </button>
-        {/* Status badge — only for non-ready */}
         {source.status !== 'ready' && (
           <NNBadge tone={statusTone(source.status)} size="xs">
             {statusLabel}
           </NNBadge>
         )}
-        {/* Hover-revealed actions: rename + overflow menu (read in library / detach). */}
         <div className="nn-source-row-actions" style={{ display: 'flex', gap: 0, flexShrink: 0, position: 'relative' }}>
           <NNBtn
             variant="ghost"
@@ -1220,7 +965,7 @@ const WorkspaceSourceRow = ({
                   className="nn-lib-menu-item"
                   onClick={() => {
                     setMenuOpen(false);
-                    onOpenInLibrary();
+                    onReadInLibrary();
                   }}
                 >
                   <NNIcon name="book" size={14} color="var(--text-muted)" />
@@ -1321,186 +1066,6 @@ const WorkspaceSourceRow = ({
     </div>
   );
 };
-
-// ── Center: reader panel ─────────────────────────────────────────────────────
-
-interface ReaderPanelProps {
-  source: Source | null;
-  chunks: SourceChunkRow[];
-  total: number;
-  loading: boolean;
-  hasMore: boolean;
-  onLoadMore: () => void;
-  // M4 PDF mode.
-  readerMode: 'pdf' | 'text';
-  onReaderMode: (m: 'pdf' | 'text') => void;
-  pdfReaderRef: React.RefObject<PdfReaderHandle | null>;
-  pendingPage?: number;
-  pendingMark?: string;
-  // M5 marks / quick-card.
-  onAskChat?: (quote: string) => void;
-  chatEnabled?: boolean;
-  t: (key: string, params?: Record<string, string | number>) => string;
-}
-
-const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
-  (
-    {
-      source,
-      chunks,
-      total,
-      loading,
-      hasMore,
-      onLoadMore,
-      readerMode,
-      onReaderMode,
-      pdfReaderRef,
-      pendingPage,
-      pendingMark,
-      onAskChat,
-      chatEnabled = false,
-      t,
-    },
-    ref,
-  ) => {
-    // Auto-load the next page when the sentinel scrolls into view.
-    const sentinelRef = useRef<HTMLDivElement>(null);
-    useEffect(() => {
-      const el = sentinelRef.current;
-      if (!el || !hasMore || loading) return;
-      const io = new IntersectionObserver(
-        (entries) => {
-          if (entries[0]?.isIntersecting) onLoadMore();
-        },
-        { rootMargin: '300px' },
-      );
-      io.observe(el);
-      return () => io.disconnect();
-    }, [hasMore, loading, onLoadMore]);
-
-    if (!source) {
-      return (
-        <div className="nn-empty-state" style={{ flex: 1 }}>
-          <span className="nn-empty-state-icon"><NNIcon name="doc" size={32} color="var(--text-dim)" /></span>
-          <p className="nn-empty-state-hint">{t('notebooks.reader.empty')}</p>
-        </div>
-      );
-    }
-
-    // M4+M5 — native PDF reader (pdf.js + ink + marks). Mounts only for a ready
-    // PDF source in PDF mode; pdf.js is dynamically imported INSIDE PdfReader.
-    if (source.kind === 'pdf' && readerMode === 'pdf' && source.status === 'ready') {
-      return (
-        <PdfReader
-          key={source.id}
-          ref={pdfReaderRef}
-          sourceId={source.id}
-          sourceName={source.title}
-          initialPage={pendingPage}
-          initialMarkId={pendingMark}
-          onMode={onReaderMode}
-          onAskChat={onAskChat}
-          chatEnabled={chatEnabled}
-          t={t}
-        />
-      );
-    }
-
-    return (
-      <div
-        ref={ref}
-        className="nn-scroll"
-        style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 40px' }}
-      >
-        <div style={{ maxWidth: 680, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
-            <h3
-              style={{
-                fontSize: 15,
-                fontWeight: 700,
-                fontFamily: 'var(--font-sans)',
-                color: 'var(--text)',
-                margin: 0,
-                flex: 1,
-                minWidth: 0,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                letterSpacing: '-0.01em',
-              }}
-            >
-              {source.title}
-            </h3>
-            {/* PDF sources can switch back to the native PDF reader. */}
-            {source.kind === 'pdf' && (
-              <button
-                type="button"
-                onClick={() => onReaderMode('pdf')}
-                style={{
-                  flexShrink: 0,
-                  height: 26,
-                  padding: '0 9px',
-                  borderRadius: 'var(--r-sm)',
-                  border: '1px solid var(--border)',
-                  background: 'var(--surface-2)',
-                  color: 'var(--text-muted)',
-                  cursor: 'pointer',
-                  fontSize: 11.5,
-                  fontWeight: 600,
-                  fontFamily: 'var(--font-sans)',
-                }}
-              >
-                {t('notebooks.reader.modePdf')}
-              </button>
-            )}
-            {total > 0 && (
-              <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>
-                {t('notebooks.reader.chunkCount', { count: total })}
-              </span>
-            )}
-          </div>
-
-          {source.status !== 'ready' ? (
-            <p style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>
-              {t('notebooks.reader.notReady')}
-            </p>
-          ) : chunks.length === 0 && loading ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <NNSkeleton style={{ height: 72 }} />
-              <NNSkeleton style={{ height: 72 }} />
-              <NNSkeleton style={{ height: 72 }} />
-            </div>
-          ) : chunks.length === 0 ? (
-            <p style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>
-              {t('notebooks.reader.noText')}
-            </p>
-          ) : (
-            <>
-              {chunks.map((chunk) => (
-                <ReaderChunk key={chunk.id} chunk={chunk} t={t} />
-              ))}
-              {hasMore && (
-                <>
-                  <div ref={sentinelRef} style={{ height: 1 }} />
-                  <NNBtn
-                    variant="ghost"
-                    size="sm"
-                    onClick={onLoadMore}
-                    disabled={loading}
-                    style={{ alignSelf: 'center' }}
-                  >
-                    {loading ? t('notebooks.reader.loading') : t('notebooks.reader.loadMore')}
-                  </NNBtn>
-                </>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    );
-  },
-);
-ReaderPanel.displayName = 'ReaderPanel';
 
 // ── L1 — "Add from library" attach picker (modal) ──────────────────────────────
 

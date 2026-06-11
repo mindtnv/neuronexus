@@ -59,9 +59,10 @@ export function useCardSources(cardId: string | null): SourceLinksState {
 
 /**
  * Provenance list for a card: each row is a cited source passage (title + page +
- * 2-line snippet). Clicking a non-tombstone row jumps to the notebook workspace
- * reader scrolled to that chunk. Tombstone rows (source deleted ⇒ NULL refs)
- * render muted + inert. Renders null when the card has no provenance.
+ * 2-line snippet). Clicking a non-tombstone row jumps to the full library reader
+ * (`/library/<sourceId>`) scrolled to that chunk/page (L2 — no notebook needed).
+ * Tombstone rows (source deleted ⇒ NULL refs) render muted + inert. Renders null
+ * when the card has no provenance.
  */
 export const SourceLinksPanel = ({ cardId }: { cardId: string }) => {
   const t = useT();
@@ -84,15 +85,22 @@ export const SourceLinksPanel = ({ cardId }: { cardId: string }) => {
         {t('notebooks.backlinks.title')}
       </div>
       {items.map((item) => {
-        const tombstone = !item.notebookId || !item.sourceId;
+        // L2 — a row is a tombstone ONLY when the SOURCE itself is gone (NULL
+        // sourceId). A NULL notebookId no longer implies deletion (the notebook a
+        // card was born in can be deleted while the source lives on in the library).
+        const tombstone = !item.sourceId;
         const open = () => {
-          if (tombstone || !item.notebookId || !item.sourceId) return;
-          const params = new URLSearchParams({ source: item.sourceId });
+          // L2 — the backlink target is the source itself in the library reader; a
+          // notebook is no longer required (the tombstone test is `sourceId`, not
+          // `notebookId`). A NULL sourceId means the source was deleted.
+          if (tombstone || !item.sourceId) return;
+          const params = new URLSearchParams();
           if (item.sourceChunkId) params.set('chunk', item.sourceChunkId);
           if (item.position != null) params.set('pos', String(item.position));
-          // M4 — a known page opens a PDF source in the native reader at that page.
+          // A known page opens a PDF source in the native reader at that page.
           if (item.page != null) params.set('page', String(item.page));
-          router.push(`/notebooks/${item.notebookId}?${params.toString()}`);
+          const qs = params.toString();
+          router.push(`/library/${item.sourceId}${qs ? `?${qs}` : ''}`);
         };
         return (
           <button

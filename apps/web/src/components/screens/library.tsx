@@ -152,6 +152,10 @@ export const LibraryScreen = () => {
   // ── Details panel ────────────────────────────────────────────────────────────
   const [detailId, setDetailId] = useState<string | null>(null);
 
+  // L2 — clicking a material opens the full-screen reader; details moved to a
+  // ⋯ button on each card/row.
+  const openReader = useCallback((id: string) => router.push(`/library/${id}`), [router]);
+
   // ── Fetch list when filters change ──────────────────────────────────────────────
   const refresh = useCallback(async () => {
     try {
@@ -415,7 +419,7 @@ export const LibraryScreen = () => {
 
       {/* Continue reading shelf */}
       {shelf.length > 0 && (
-        <ContinueShelf items={shelf} onOpen={(id) => setDetailId(id)} t={t} />
+        <ContinueShelf items={shelf} onOpen={openReader} t={t} />
       )}
 
       {/* Body */}
@@ -441,13 +445,13 @@ export const LibraryScreen = () => {
       ) : view === 'grid' ? (
         <div className="nn-lib-grid">
           {items.map((it) => (
-            <LibraryCard key={it.id} item={it} onOpen={() => setDetailId(it.id)} t={t} />
+            <LibraryCard key={it.id} item={it} onOpen={() => openReader(it.id)} onDetails={() => setDetailId(it.id)} t={t} />
           ))}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 12 }}>
           {items.map((it) => (
-            <LibraryListRow key={it.id} item={it} onOpen={() => setDetailId(it.id)} t={t} />
+            <LibraryListRow key={it.id} item={it} onOpen={() => openReader(it.id)} onDetails={() => setDetailId(it.id)} t={t} />
           ))}
         </div>
       )}
@@ -495,6 +499,7 @@ export const LibraryScreen = () => {
           confirm={confirm}
           prompt={prompt}
           onOpenNotebook={(id) => router.push(`/notebooks/${id}`)}
+          onOpenReader={() => openReader(detailId)}
           isMobile={isMobile}
           t={t}
         />
@@ -745,7 +750,7 @@ const CoverPlaceholder = ({ item, size, aspect }: { item: LibraryItem; size?: nu
 
 // ── Grid card ─────────────────────────────────────────────────────────────────
 
-const LibraryCard = ({ item, onOpen, t }: { item: LibraryItem; onOpen: () => void; t: Tr }) => {
+const LibraryCard = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onOpen: () => void; onDetails: () => void; t: Tr }) => {
   const notReady = item.status !== 'ready';
   const statusLabel = labelForStatus(item, t);
   return (
@@ -757,6 +762,41 @@ const LibraryCard = ({ item, onOpen, t }: { item: LibraryItem; onOpen: () => voi
             <NNBadge tone={statusTone(item.status)} size="xs">{statusLabel}</NNBadge>
           </span>
         )}
+        {/* Details (⋯) — stops propagation so the card click still opens the reader. */}
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label={t('library.item.menu')}
+          title={t('library.item.menu')}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDetails();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              e.stopPropagation();
+              onDetails();
+            }
+          }}
+          className="nn-lib-card-menu"
+          style={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            width: 26,
+            height: 26,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 'var(--r-sm)',
+            background: 'color-mix(in srgb, var(--surface) 80%, transparent)',
+            border: '1px solid var(--border)',
+            cursor: 'pointer',
+          }}
+        >
+          <NNIcon name="dots" size={14} color="var(--text-muted)" />
+        </span>
         {item.percent != null && item.percent > 0 && item.status === 'ready' && (
           <div className="nn-lib-progress" style={{ position: 'absolute', left: 6, right: 6, bottom: 6 }}>
             <div className="nn-lib-progress-fill" style={{ width: `${Math.round(item.percent * 100)}%` }} />
@@ -791,7 +831,7 @@ const LibraryCard = ({ item, onOpen, t }: { item: LibraryItem; onOpen: () => voi
 
 // ── List row ──────────────────────────────────────────────────────────────────
 
-const LibraryListRow = ({ item, onOpen, t }: { item: LibraryItem; onOpen: () => void; t: Tr }) => {
+const LibraryListRow = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onOpen: () => void; onDetails: () => void; t: Tr }) => {
   const notReady = item.status !== 'ready';
   return (
     <button type="button" onClick={onOpen} className="nn-lib-row">
@@ -817,7 +857,27 @@ const LibraryListRow = ({ item, onOpen, t }: { item: LibraryItem; onOpen: () => 
         </NNBadge>
       )}
       {notReady && <NNBadge tone={statusTone(item.status)} size="xs">{labelForStatus(item, t)}</NNBadge>}
-      <NNIcon name="chevr" size={14} color="var(--text-dim)" />
+      {/* Details (⋯) — stops propagation so the row click still opens the reader. */}
+      <span
+        role="button"
+        tabIndex={0}
+        aria-label={t('library.item.menu')}
+        title={t('library.item.menu')}
+        onClick={(e) => {
+          e.stopPropagation();
+          onDetails();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            onDetails();
+          }
+        }}
+        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: 'var(--r-sm)', cursor: 'pointer' }}
+      >
+        <NNIcon name="dots" size={14} color="var(--text-dim)" />
+      </span>
     </button>
   );
 };
@@ -934,6 +994,7 @@ const DetailsPanel = ({
   confirm,
   prompt,
   onOpenNotebook,
+  onOpenReader,
   isMobile,
   t,
 }: {
@@ -945,6 +1006,7 @@ const DetailsPanel = ({
   confirm: ReturnType<typeof useDialog>['confirm'];
   prompt: ReturnType<typeof useDialog>['prompt'];
   onOpenNotebook: (id: string) => void;
+  onOpenReader: () => void;
   isMobile: boolean;
   t: Tr;
 }) => {
@@ -1117,6 +1179,7 @@ const DetailsPanel = ({
 
             {/* Quick actions */}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <NNBtn variant="primary" size="sm" icon="book" onClick={onOpenReader}>{t('library.details.read')}</NNBtn>
               <NNBtn variant="soft" size="sm" icon="edit" onClick={onRename}>{t('library.details.rename')}</NNBtn>
               <NNBtn variant="soft" size="sm" onClick={onEditAuthor}>{t('library.details.editAuthor')}</NNBtn>
               <NNBtn variant="soft" size="sm" icon="plus" onClick={() => setPickerOpen(true)}>{t('library.details.addToNotebook')}</NNBtn>

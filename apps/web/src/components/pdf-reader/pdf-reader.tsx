@@ -66,8 +66,19 @@ type PdfPage = any;
 type PdfDocument = any;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+/** One PDF outline entry (L2 — table of contents), flattened with depth. */
+export interface PdfOutlineEntry {
+  title: string;
+  /** 1-based page the entry points to, or null if it could not be resolved. */
+  page: number | null;
+  depth: number;
+}
+
 export interface PdfReaderHandle {
   scrollToPage: (page: number, flash?: boolean) => void;
+  /** Resolve the document outline (table of contents) into flat entries with a
+   *  1-based page each. Empty array when the PDF has no outline. (L2) */
+  getOutline: () => Promise<PdfOutlineEntry[]>;
 }
 
 interface PdfReaderProps {
@@ -83,6 +94,13 @@ interface PdfReaderProps {
   /** Called by «Спросить» to prefill the chat composer with a quote block. */
   onAskChat?: (quote: string) => void;
   chatEnabled?: boolean;
+  /** L2 — fires on page change (current page + total) so the library reader can
+   *  persist server-side reading progress (debounced by the parent). */
+  onPageChange?: (page: number, numPages: number) => void;
+  /** L2 — table-of-contents toolbar toggle (library reader owns the TOC panel). */
+  tocOpen?: boolean;
+  tocAvailable?: boolean;
+  onToggleToc?: () => void;
 }
 
 interface PageState {
@@ -97,7 +115,7 @@ const SAVE_DEBOUNCE_MS = 800;
 const POS_KEY = (id: string) => `nn:pdf:pos:${id}`;
 
 export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
-  ({ sourceId, sourceName, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false }, ref) => {
+  ({ sourceId, sourceName, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false, onPageChange, tocOpen, tocAvailable, onToggleToc }, ref) => {
     const router = useRouter();
     const { locale } = useLocale();
     const containerRef = useRef<HTMLDivElement>(null);
@@ -682,7 +700,53 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
       }
     }, []);
 
-    useImperativeHandle(ref, () => ({ scrollToPage }), [scrollToPage]);
+    // L2 — resolve the PDF outline (table of contents) into flat entries. Each
+    // entry's `dest` is resolved through getDestination/getPageIndex to a 1-based
+    // page. Returns [] when the document has no outline.
+    const getOutline = useCallback(async (): Promise<PdfOutlineEntry[]> => {
+      const doc = docRef.current;
+      if (!doc) return [];
+      let raw: any[] | null = null;
+      try {
+        raw = await doc.getOutline();
+      } catch {
+        return [];
+      }
+      if (!raw || raw.length === 0) return [];
+      const out: PdfOutlineEntry[] = [];
+      const resolvePage = async (dest: any): Promise<number | null> => {
+        try {
+          let explicit = dest;
+          if (typeof dest === 'string') explicit = await doc.getDestination(dest);
+          if (!Array.isArray(explicit) || explicit.length === 0) return null;
+          const ref = explicit[0];
+          const idx = await doc.getPageIndex(ref);
+          return typeof idx === 'number' ? idx + 1 : null;
+        } catch {
+          return null;
+        }
+      };
+      const walk = async (items: any[], depth: number): Promise<void> => {
+        for (const it of items) {
+          const title = typeof it?.title === 'string' ? it.title : '';
+          const page = it?.dest != null ? await resolvePage(it.dest) : null;
+          if (title) out.push({ title, page, depth });
+          if (Array.isArray(it?.items) && it.items.length > 0) {
+            await walk(it.items, depth + 1);
+          }
+        }
+      };
+      await walk(raw, 0);
+      return out;
+    }, []);
+
+    useImperativeHandle(ref, () => ({ scrollToPage, getOutline }), [scrollToPage, getOutline]);
+
+    // L2 — notify the parent of page changes (library reader → server progress).
+    useEffect(() => {
+      if (loadState !== 'ready' || numPages === 0) return;
+      onPageChange?.(currentPage, numPages);
+    }, [currentPage, numPages, loadState, onPageChange]);
 
     // M5 — jump to initial mark after marks are loaded.
     useEffect(() => {
@@ -922,6 +986,9 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             marksCount={marks.length + inkPages.length}
             marksPanelOpen={marksPanelOpen}
             onToggleMarksPanel={() => setMarksPanelOpen((v) => !v)}
+            tocOpen={tocOpen}
+            tocAvailable={tocAvailable}
+            onToggleToc={onToggleToc}
             onTool={(tool) => updateTools({ tool })}
             onColor={(color) => updateTools({ color })}
             onWidth={(widthIdx) => updateTools({ widthIdx })}
