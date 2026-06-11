@@ -11,7 +11,7 @@ export type IconName =
   | 'chevd' | 'tag' | 'clock' | 'sparkle' | 'play' | 'pause' | 'eye'
   | 'edit' | 'link' | 'sync' | 'arrow' | 'trophy' | 'target' | 'mic'
   | 'image' | 'dots' | 'filter' | 'grid' | 'stars' | 'bulb' | 'pin'
-  | 'clip' | 'doc';
+  | 'clip' | 'doc' | 'book';
 
 export const NNIcon = ({
   name,
@@ -145,6 +145,7 @@ export const NNIcon = ({
     pin: <path d="M12 21v-6M8 4h8l-1 6 2.5 3h-11L9 10 8 4z" {...p} />,
     clip: <path d="M20 11.5l-7.8 7.8a5 5 0 01-7-7l8.5-8.5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.4-2.4l7.8-7.8" {...p} />,
     doc: <path d="M14 3H7a1.5 1.5 0 00-1.5 1.5v15A1.5 1.5 0 007 21h10a1.5 1.5 0 001.5-1.5V7.5L14 3zM14 3v4.5h4.5M9.5 12.5h5M9.5 16h5" {...p} />,
+    book: <path d="M4 5a2 2 0 012-2h13v16H6a2 2 0 00-2 2V5zM19 17H6a2 2 0 00-2 2M9 3v14" {...p} />,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: 'block', flexShrink: 0 }}>

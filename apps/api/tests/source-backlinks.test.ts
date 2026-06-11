@@ -9,9 +9,11 @@
 //   * Cascade asymmetry (AC3.3 — the only place a referencing row survives its
 //     referent): delete SOURCE → the card_sources edge SURVIVES as a tombstone
 //     (sourceChunkId/sourceId SET NULL) and the CARD is intact; the backlink
-//     route renders the tombstone. Delete NOTEBOOK → its conversations cascade
-//     away and card_sources.notebookId/conversationId go NULL, card intact.
-//     Delete CARD → its edges are gone (the card side cascades).
+//     route renders the tombstone. Delete NOTEBOOK (library refactor Р3) → its
+//     conversations cascade away and card_sources.notebookId/conversationId go
+//     NULL, but the SOURCE + its chunk are PRESERVED (library-owned) so the edge's
+//     sourceId/sourceChunkId stay live; the card is intact. Delete CARD → its
+//     edges are gone (the card side cascades).
 //
 // Edges are inserted DIRECTLY via db (full control over the provenance chain +
 // the cascade scenarios) over API-seeded cards. The card_provenance.test.ts suite
@@ -25,6 +27,7 @@ import {
   conversations as conversationsTable,
   db,
   notebooks as notebooksTable,
+  notebookSources as notebookSourcesTable,
   sourceChunks as sourceChunksTable,
   sources as sourcesTable,
 } from '@neuronexus/db';
@@ -54,7 +57,6 @@ async function seedSource(
     .insert(sourcesTable)
     .values({
       userId,
-      notebookId,
       kind: 'text',
       title,
       status: 'ready',
@@ -63,6 +65,8 @@ async function seedSource(
     })
     .returning({ id: sourcesTable.id });
   const sourceId = src!.id;
+  // Library refactor: a source is user-level; the notebook binding is an edge.
+  await db.insert(notebookSourcesTable).values({ userId, notebookId, sourceId });
   const chunkIds: string[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i]!;
@@ -71,7 +75,6 @@ async function seedSource(
       .values({
         userId,
         sourceId,
-        notebookId,
         position: i,
         text: c.text,
         page: c.page,
@@ -324,7 +327,7 @@ describe('backlinks — cascade asymmetry (AC3.3)', () => {
     expect(body.items[0]!.snippet).toBeNull();
   });
 
-  test('delete NOTEBOOK → conversations cascade away; card_sources.notebookId/conversationId NULL; card intact', async () => {
+  test('delete NOTEBOOK → conversation cascades away + notebookId/conversationId NULL; source/chunk PRESERVED (library Р3)', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const notebookId = await freshNotebook(userId, 'Notebook');
     const deckId = await freshDeck(cookie);
@@ -340,8 +343,11 @@ describe('backlinks — cascade asymmetry (AC3.3)', () => {
       conversationId: convId,
     });
 
-    // Delete the notebook via the real route (its sources + chunks + the bound
-    // conversation cascade away; the card_sources edge survives via SET NULL refs).
+    // Delete the notebook via the real route. Library refactor (Р3): the source
+    // and its chunks live in the library and SURVIVE; only the bound conversation
+    // (FK cascade) + the notebook_sources edge die. The card_sources edge keeps
+    // its sourceId/sourceChunkId (the source is intact) but loses notebookId and
+    // conversationId (those referents are gone → SET NULL).
     const del = await callApp(app, 'DELETE', `/notebooks/${notebookId}`, { cookie });
     expect(del.status).toBe(200);
 
@@ -352,14 +358,22 @@ describe('backlinks — cascade asymmetry (AC3.3)', () => {
       .where(eq(conversationsTable.id, convId));
     expect(conv.length).toBe(0);
 
-    // The edge survives — every source/chat side NULL, the card side intact.
+    // The SOURCE + its CHUNK survive (they're library-owned now).
+    expect(
+      (await db.select().from(sourcesTable).where(eq(sourcesTable.id, sourceId))).length,
+    ).toBe(1);
+    expect(
+      (await db.select().from(sourceChunksTable).where(eq(sourceChunksTable.id, chunkIds[0]!))).length,
+    ).toBe(1);
+
+    // The edge survives — the notebook/conversation refs NULL, but the source side
+    // is INTACT (sourceId/sourceChunkId still point at the live source).
     const [edge] = await db.select().from(cardSourcesTable).where(eq(cardSourcesTable.id, edgeId));
     expect(edge).toBeTruthy();
     expect(edge!.notebookId).toBeNull();
     expect(edge!.conversationId).toBeNull();
-    // The source row + its chunk cascaded with the notebook, so those refs are NULL too.
-    expect(edge!.sourceId).toBeNull();
-    expect(edge!.sourceChunkId).toBeNull();
+    expect(edge!.sourceId).toBe(sourceId);
+    expect(edge!.sourceChunkId).toBe(chunkIds[0]!);
     expect(edge!.cardId).toBe(card.id);
 
     // The CARD survives (nothing is lost).

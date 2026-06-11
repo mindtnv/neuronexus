@@ -1,0 +1,1333 @@
+'use client';
+
+// LibraryScreen (L1) — the user's personal material store (`/library`). A
+// "library item" IS a sources row; this screen lists them with a cover grid /
+// list toggle, search + kind/reading filters + sort, a "Continue reading" shelf,
+// a multi-file upload queue (drag-drop + picker), inline url/text add dialogs,
+// and a details panel (metadata edit + attach-to-notebook + delete).
+//
+//  • Data is screen-local (like /notebooks) — thin store pass-throughs, no
+//    bootstrap mirror. Non-terminal ingest statuses poll via useSourceStatus.
+//  • No covers yet (L1) — a deterministic kind-placeholder (initials + colour +
+//    kind icon) stands in (plan §6.2 / task).
+//  • A 409 duplicate_source on upload opens "Already in your library: open?";
+//    409 library_full raises a toast.
+//
+// Inline styles + CSS vars + ui.tsx primitives only (no Tailwind).
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import type { IngestErrorCode, SourceKind, SourceMime } from '@neuronexus/shared';
+import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton, type IconName } from '@/components/ui';
+import {
+  DuplicateSourceError,
+  LibraryFullError,
+  useNN,
+  type LibraryQuery,
+} from '@/lib/store';
+import type { LibraryItem, LibraryItemDetail, Notebook, ReadingStatus } from '@/lib/types';
+import { useBreakpoint } from '@/lib/use-breakpoint';
+import { useT } from '@/lib/i18n';
+import { useDialog } from '@/components/dialog';
+import { raiseToast } from '@/components/toasts';
+import { useSourceStatus } from '@/lib/use-source-status';
+
+type Tr = (key: string, params?: Record<string, string | number>) => string;
+type ViewMode = 'grid' | 'list';
+type SortMode = 'added' | 'title' | 'lastRead';
+type KindFilter = 'all' | SourceKind;
+type ReadingFilter = 'all' | ReadingStatus;
+
+const VIEW_KEY = 'nn:lib:view';
+const KIND_FILTERS: KindFilter[] = ['all', 'pdf', 'epub', 'url', 'text'];
+const READING_FILTERS: ReadingFilter[] = ['all', 'unread', 'reading', 'finished'];
+const SORTS: SortMode[] = ['added', 'title', 'lastRead'];
+
+/** A deterministic placeholder accent colour from an id (no covers in L1). */
+const COVER_COLORS = [
+  'var(--lime-500)',
+  'var(--violet-500)',
+  'var(--sky-400)',
+  'var(--amber-500)',
+  'var(--rose-500)',
+];
+function coverColor(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return COVER_COLORS[h % COVER_COLORS.length]!;
+}
+function initials(title: string): string {
+  const words = title.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '?';
+  if (words.length === 1) return words[0]!.slice(0, 2).toUpperCase();
+  return (words[0]![0]! + words[1]![0]!).toUpperCase();
+}
+function kindIcon(kind: SourceKind): IconName {
+  if (kind === 'url') return 'link';
+  if (kind === 'text') return 'edit';
+  return 'book';
+}
+
+function statusTone(status: LibraryItem['status']): string {
+  if (status === 'ready') return 'lime';
+  if (status === 'error') return 'rose';
+  if (status === 'deleting') return 'neutral';
+  return 'sky';
+}
+
+function mimeForFile(file: File): SourceMime | null {
+  const lower = file.name.toLowerCase();
+  if (file.type === 'application/pdf' || lower.endsWith('.pdf')) return 'application/pdf';
+  if (file.type === 'application/epub+zip' || lower.endsWith('.epub')) return 'application/epub+zip';
+  return null;
+}
+
+export const LibraryScreen = () => {
+  const t = useT();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const bp = useBreakpoint();
+  const isMobile = bp === 'mobile';
+  const { confirm, prompt } = useDialog();
+
+  const listLibrary = useNN((s) => s.listLibrary);
+  const getLibraryItem = useNN((s) => s.getLibraryItem);
+  const addLibraryUrl = useNN((s) => s.addLibraryUrl);
+  const addLibraryText = useNN((s) => s.addLibraryText);
+  const uploadLibraryItem = useNN((s) => s.uploadLibraryItem);
+  const getSource = useNN((s) => s.getSource);
+
+  // ── List state + filters ──────────────────────────────────────────────────────
+  const [items, setItems] = useState<LibraryItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [shelf, setShelf] = useState<LibraryItem[]>([]);
+
+  const [search, setSearch] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
+  const [kind, setKind] = useState<KindFilter>('all');
+  const [reading, setReading] = useState<ReadingFilter>('all');
+  const [sort, setSort] = useState<SortMode>('added');
+  const [view, setView] = useState<ViewMode>('grid');
+
+  // Hydrate the persisted view mode.
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(VIEW_KEY);
+      if (v === 'grid' || v === 'list') setView(v);
+    } catch {
+      /* default grid */
+    }
+  }, []);
+  const setViewPersisted = useCallback((v: ViewMode) => {
+    setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      /* best-effort */
+    }
+  }, []);
+
+  // Debounce the search box (300ms).
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedQ(search.trim()), 300);
+    return () => window.clearTimeout(id);
+  }, [search]);
+
+  const query = useMemo<LibraryQuery>(() => {
+    const q: LibraryQuery = { sort };
+    if (debouncedQ) q.q = debouncedQ;
+    if (kind !== 'all') q.kind = kind;
+    if (reading !== 'all') q.reading = reading;
+    return q;
+  }, [sort, debouncedQ, kind, reading]);
+
+  // ── Add-source UI ──────────────────────────────────────────────────────────────
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [addDialog, setAddDialog] = useState<'url' | 'text' | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadQueue, setUploadQueue] = useState<{ total: number; done: number; name: string } | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+
+  // ── Details panel ────────────────────────────────────────────────────────────
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  // ── Fetch list when filters change ──────────────────────────────────────────────
+  const refresh = useCallback(async () => {
+    try {
+      const res = await listLibrary(query);
+      setItems(res.items);
+      setNextCursor(res.nextCursor);
+    } catch {
+      /* keep current list on a transient error */
+    } finally {
+      setLoaded(true);
+    }
+  }, [listLibrary, query]);
+
+  useEffect(() => {
+    setLoaded(false);
+    void refresh();
+  }, [refresh]);
+
+  // ── "Continue reading" shelf (separate fetch — reading=reading, lastRead) ──────
+  const refreshShelf = useCallback(async () => {
+    try {
+      const res = await listLibrary({ reading: 'reading', sort: 'lastRead', limit: 6 });
+      setShelf(res.items);
+    } catch {
+      setShelf([]);
+    }
+  }, [listLibrary]);
+  useEffect(() => {
+    void refreshShelf();
+  }, [refreshShelf]);
+
+  // ── Poll non-terminal ingests (shared hook) ────────────────────────────────────
+  const applyFresh = useCallback((fresh: { id: string; status: LibraryItem['status'] }[]) => {
+    // The poll uses GET /sources/:id which returns the M1 source shape; merge only
+    // the volatile ingest fields back into the richer library row.
+    const byId = new Map(fresh.map((s) => [s.id, s]));
+    setItems((prev) =>
+      prev.map((it) => {
+        const f = byId.get(it.id);
+        return f ? { ...it, status: f.status } : it;
+      }),
+    );
+    setShelf((prev) =>
+      prev.map((it) => {
+        const f = byId.get(it.id);
+        return f ? { ...it, status: f.status } : it;
+      }),
+    );
+  }, []);
+  useSourceStatus({
+    items,
+    fetchOne: async (id) => {
+      try {
+        const src = await getSource(id);
+        return { id: src.id, status: src.status };
+      } catch {
+        return null;
+      }
+    },
+    onUpdate: applyFresh,
+  });
+
+  // ── Deep link ?focus=<id> opens the details panel (chat citation / backlink) ──
+  const focusParam = searchParams.get('focus');
+  const consumedFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusParam || consumedFocusRef.current === focusParam) return;
+    consumedFocusRef.current = focusParam;
+    setDetailId(focusParam);
+    router.replace('/library', { scroll: false });
+  }, [focusParam, router]);
+
+  // ── Upload queue (sequential presign → POST → finalize) ────────────────────────
+  const runUploads = useCallback(
+    async (files: File[]) => {
+      const accepted: { file: File; mime: SourceMime }[] = [];
+      for (const file of files) {
+        const mime = mimeForFile(file);
+        if (!mime) {
+          raiseToast({ kind: 'info', title: t('library.toast.unsupported') });
+          continue;
+        }
+        accepted.push({ file, mime });
+      }
+      if (accepted.length === 0) return;
+      for (let i = 0; i < accepted.length; i++) {
+        const { file, mime } = accepted[i]!;
+        setUploadQueue({ total: accepted.length, done: i, name: file.name });
+        try {
+          const created = await uploadLibraryItem(file, file.name, mime);
+          setItems((prev) => [created, ...prev.filter((p) => p.id !== created.id)]);
+        } catch (err) {
+          if (err instanceof DuplicateSourceError) {
+            // Offer to open the existing item rather than silently skipping.
+            await confirmDuplicate(file.name, err.existingSourceId);
+          } else if (err instanceof LibraryFullError) {
+            raiseToast({ kind: 'info', title: t('library.toast.libraryFull') });
+            break;
+          } else {
+            raiseToast({ kind: 'info', title: t('library.toast.uploadFailed') });
+          }
+        }
+      }
+      setUploadQueue(null);
+      void refresh();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [uploadLibraryItem, t, refresh],
+  );
+
+  const confirmDuplicate = useCallback(
+    async (title: string, existingId: string) => {
+      const yes = await confirm({
+        title: t('library.duplicate.title'),
+        message: t('library.duplicate.message', { title }),
+        confirmLabel: t('library.duplicate.open'),
+        cancelLabel: t('library.duplicate.cancel'),
+      });
+      if (yes) setDetailId(existingId);
+    },
+    [confirm, t],
+  );
+
+  const onPickFiles = useCallback(() => {
+    setAddMenuOpen(false);
+    fileInputRef.current?.click();
+  }, []);
+  const onFilesChosen = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files ? Array.from(e.target.files) : [];
+      if (e.target) e.target.value = '';
+      if (files.length > 0) void runUploads(files);
+    },
+    [runUploads],
+  );
+
+  // Full-screen drag-and-drop.
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragActive(false);
+      const files = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
+      if (files.length > 0) void runUploads(files);
+    },
+    [runUploads],
+  );
+
+  // ── Inline url/text add ─────────────────────────────────────────────────────────
+  const onAddInline = useCallback(
+    async (dialogKind: 'url' | 'text', title: string, value: string) => {
+      try {
+        const created =
+          dialogKind === 'url'
+            ? await addLibraryUrl(title, value)
+            : await addLibraryText(title, value);
+        setItems((prev) => [created, ...prev]);
+        setAddDialog(null);
+      } catch (err) {
+        if (err instanceof LibraryFullError) {
+          raiseToast({ kind: 'info', title: t('library.toast.libraryFull') });
+        } else {
+          raiseToast({ kind: 'info', title: t('library.add.failed') });
+        }
+      }
+    },
+    [addLibraryUrl, addLibraryText, t],
+  );
+
+  // ── Details panel data ──────────────────────────────────────────────────────────
+  const onItemPatched = useCallback((updated: LibraryItem) => {
+    setItems((prev) => prev.map((it) => (it.id === updated.id ? { ...it, ...updated } : it)));
+    setShelf((prev) => prev.map((it) => (it.id === updated.id ? { ...it, ...updated } : it)));
+  }, []);
+  const onItemDeleted = useCallback((id: string) => {
+    setItems((prev) => prev.filter((it) => it.id !== id));
+    setShelf((prev) => prev.filter((it) => it.id !== id));
+    setDetailId(null);
+    raiseToast({ kind: 'info', title: t('library.toast.deleted') });
+  }, [t]);
+
+  const hasFilters = debouncedQ !== '' || kind !== 'all' || reading !== 'all';
+  const clearFilters = useCallback(() => {
+    setSearch('');
+    setDebouncedQ('');
+    setKind('all');
+    setReading('all');
+  }, []);
+
+  // ── Render ────────────────────────────────────────────────────────────────────
+  return (
+    <div
+      onDragOver={(e) => {
+        if (e.dataTransfer?.types?.includes('Files')) {
+          e.preventDefault();
+          setDragActive(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        // Only clear when leaving the screen, not on child transitions.
+        if (e.currentTarget === e.target) setDragActive(false);
+      }}
+      onDrop={onDrop}
+      style={{ padding: isMobile ? '12px 14px 40px' : '16px 24px 48px', maxWidth: 1180, margin: '0 auto', width: '100%', position: 'relative' }}
+    >
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.epub,application/pdf,application/epub+zip"
+        multiple
+        onChange={onFilesChosen}
+        style={{ display: 'none' }}
+      />
+
+      {/* Drag overlay */}
+      {dragActive && (
+        <div className="nn-lib-drop-overlay">
+          <div className="nn-lib-drop-inner">
+            <NNIcon name="book" size={34} color="var(--lime-400)" />
+            <span>{t('library.add.dropHint')}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <LibraryHeader
+        search={search}
+        setSearch={setSearch}
+        kind={kind}
+        setKind={setKind}
+        reading={reading}
+        setReading={setReading}
+        sort={sort}
+        setSort={setSort}
+        view={view}
+        setView={setViewPersisted}
+        addMenuOpen={addMenuOpen}
+        setAddMenuOpen={setAddMenuOpen}
+        onPickFiles={onPickFiles}
+        onAddUrl={() => {
+          setAddMenuOpen(false);
+          setAddDialog('url');
+        }}
+        onAddText={() => {
+          setAddMenuOpen(false);
+          setAddDialog('text');
+        }}
+        isMobile={isMobile}
+        t={t}
+      />
+
+      {/* Upload progress strip */}
+      {uploadQueue && (
+        <div className="nn-lib-upload-strip">
+          <NNIcon name="sync" size={14} color="var(--lime-400)" />
+          <span>{t('library.add.uploadingFile', { name: uploadQueue.name })}</span>
+          <span style={{ color: 'var(--text-dim)' }}>
+            {t('library.add.uploadProgress', { done: uploadQueue.done + 1, total: uploadQueue.total })}
+          </span>
+        </div>
+      )}
+
+      {/* Continue reading shelf */}
+      {shelf.length > 0 && (
+        <ContinueShelf items={shelf} onOpen={(id) => setDetailId(id)} t={t} />
+      )}
+
+      {/* Body */}
+      {!loaded ? (
+        <LibrarySkeleton view={view} />
+      ) : items.length === 0 ? (
+        hasFilters ? (
+          <div className="nn-empty-state" style={{ paddingTop: 48 }}>
+            <span className="nn-empty-state-icon"><NNIcon name="search" size={30} color="var(--text-dim)" /></span>
+            <p className="nn-empty-state-hint">{t('library.empty.noResults')}</p>
+            <NNBtn variant="soft" size="sm" onClick={clearFilters}>{t('library.empty.clearFilters')}</NNBtn>
+          </div>
+        ) : (
+          <div className="nn-empty-state" style={{ paddingTop: 56 }}>
+            <span className="nn-empty-state-icon"><NNIcon name="book" size={36} color="var(--text-dim)" /></span>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', margin: 0, fontFamily: 'var(--font-sans)' }}>
+              {t('library.empty.title')}
+            </h3>
+            <p className="nn-empty-state-hint" style={{ maxWidth: 320 }}>{t('library.empty.hint')}</p>
+            <NNBtn variant="primary" size="sm" icon="plus" onClick={onPickFiles}>{t('library.empty.cta')}</NNBtn>
+          </div>
+        )
+      ) : view === 'grid' ? (
+        <div className="nn-lib-grid">
+          {items.map((it) => (
+            <LibraryCard key={it.id} item={it} onOpen={() => setDetailId(it.id)} t={t} />
+          ))}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 12 }}>
+          {items.map((it) => (
+            <LibraryListRow key={it.id} item={it} onOpen={() => setDetailId(it.id)} t={t} />
+          ))}
+        </div>
+      )}
+
+      {/* Load more (added-sort keyset only) */}
+      {loaded && nextCursor && (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 20 }}>
+          <NNBtn
+            variant="soft"
+            size="sm"
+            onClick={async () => {
+              try {
+                const res = await listLibrary({ ...query, cursor: nextCursor });
+                setItems((prev) => [...prev, ...res.items]);
+                setNextCursor(res.nextCursor);
+              } catch {
+                /* ignore */
+              }
+            }}
+          >
+            {t('notebooks.reader.loadMore')}
+          </NNBtn>
+        </div>
+      )}
+
+      {/* Inline add dialog */}
+      {addDialog && (
+        <AddInlineDialog
+          kind={addDialog}
+          onSubmit={onAddInline}
+          onClose={() => setAddDialog(null)}
+          t={t}
+        />
+      )}
+
+      {/* Details panel */}
+      {detailId && (
+        <DetailsPanel
+          key={detailId}
+          itemId={detailId}
+          getLibraryItem={getLibraryItem}
+          onClose={() => setDetailId(null)}
+          onPatched={onItemPatched}
+          onDeleted={onItemDeleted}
+          confirm={confirm}
+          prompt={prompt}
+          onOpenNotebook={(id) => router.push(`/notebooks/${id}`)}
+          isMobile={isMobile}
+          t={t}
+        />
+      )}
+    </div>
+  );
+};
+
+// ── Header ──────────────────────────────────────────────────────────────────────
+
+const LibraryHeader = ({
+  search,
+  setSearch,
+  kind,
+  setKind,
+  reading,
+  setReading,
+  sort,
+  setSort,
+  view,
+  setView,
+  addMenuOpen,
+  setAddMenuOpen,
+  onPickFiles,
+  onAddUrl,
+  onAddText,
+  isMobile,
+  t,
+}: {
+  search: string;
+  setSearch: (v: string) => void;
+  kind: KindFilter;
+  setKind: (k: KindFilter) => void;
+  reading: ReadingFilter;
+  setReading: (r: ReadingFilter) => void;
+  sort: SortMode;
+  setSort: (s: SortMode) => void;
+  view: ViewMode;
+  setView: (v: ViewMode) => void;
+  addMenuOpen: boolean;
+  setAddMenuOpen: (v: boolean) => void;
+  onPickFiles: () => void;
+  onAddUrl: () => void;
+  onAddText: () => void;
+  isMobile: boolean;
+  t: Tr;
+}) => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
+    {/* Search + add */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+        <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+          <NNIcon name="search" size={15} color="var(--text-dim)" />
+        </span>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={t('library.header.searchPlaceholder')}
+          style={{
+            width: '100%',
+            height: 36,
+            padding: '0 12px 0 32px',
+            fontSize: 13.5,
+            fontFamily: 'var(--font-sans)',
+            color: 'var(--text)',
+            background: 'var(--surface-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--r-md)',
+            outline: 'none',
+            boxSizing: 'border-box',
+          }}
+        />
+      </div>
+      <div style={{ position: 'relative' }}>
+        <NNBtn variant="primary" size="sm" icon="plus" onClick={() => setAddMenuOpen(!addMenuOpen)}>
+          {!isMobile && t('library.header.add')}
+        </NNBtn>
+        {addMenuOpen && (
+          <>
+            <div onClick={() => setAddMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+            <div className="nn-lib-menu" style={{ right: 0 }}>
+              <button type="button" className="nn-lib-menu-item" onClick={onPickFiles}>
+                <NNIcon name="book" size={14} color="var(--text-muted)" />{t('library.header.addFiles')}
+              </button>
+              <button type="button" className="nn-lib-menu-item" onClick={onAddUrl}>
+                <NNIcon name="link" size={14} color="var(--text-muted)" />{t('library.header.addUrl')}
+              </button>
+              <button type="button" className="nn-lib-menu-item" onClick={onAddText}>
+                <NNIcon name="edit" size={14} color="var(--text-muted)" />{t('library.header.addText')}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+
+    {/* Filters row */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      {/* Kind chips */}
+      <div style={{ display: 'flex', gap: 4 }}>
+        {KIND_FILTERS.map((k) => (
+          <FilterChip key={k} active={kind === k} onClick={() => setKind(k)}>
+            {t(`library.header.kind${k === 'all' ? 'All' : k === 'pdf' ? 'Pdf' : k === 'epub' ? 'Epub' : k === 'url' ? 'Url' : 'Text'}`)}
+          </FilterChip>
+        ))}
+      </div>
+      <span style={{ width: 1, height: 18, background: 'var(--border)' }} />
+      {/* Reading chips */}
+      <div style={{ display: 'flex', gap: 4 }}>
+        {READING_FILTERS.map((r) => (
+          <FilterChip key={r} active={reading === r} onClick={() => setReading(r)}>
+            {t(`library.header.reading${r === 'all' ? 'All' : r === 'unread' ? 'Unread' : r === 'reading' ? 'Reading' : 'Finished'}`)}
+          </FilterChip>
+        ))}
+      </div>
+      <div style={{ flex: 1 }} />
+      {/* Sort */}
+      <select
+        value={sort}
+        onChange={(e) => setSort(e.target.value as SortMode)}
+        aria-label={t('library.header.sortLabel')}
+        style={{
+          height: 28,
+          padding: '0 8px',
+          fontSize: 12,
+          fontFamily: 'var(--font-sans)',
+          color: 'var(--text-muted)',
+          background: 'var(--surface-2)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-sm)',
+          cursor: 'pointer',
+          outline: 'none',
+        }}
+      >
+        {SORTS.map((s) => (
+          <option key={s} value={s}>
+            {t(`library.header.sort${s === 'added' ? 'Added' : s === 'title' ? 'Title' : 'LastRead'}`)}
+          </option>
+        ))}
+      </select>
+      {/* View toggle */}
+      <div style={{ display: 'flex', gap: 2 }}>
+        <NNBtn
+          variant={view === 'grid' ? 'soft' : 'ghost'}
+          size="sm"
+          icon="grid"
+          active={view === 'grid'}
+          ariaLabel={t('library.header.viewGrid')}
+          title={t('library.header.viewGrid')}
+          onClick={() => setView('grid')}
+        />
+        <NNBtn
+          variant={view === 'list' ? 'soft' : 'ghost'}
+          size="sm"
+          icon="stack"
+          active={view === 'list'}
+          ariaLabel={t('library.header.viewList')}
+          title={t('library.header.viewList')}
+          onClick={() => setView('list')}
+        />
+      </div>
+    </div>
+  </div>
+);
+
+const FilterChip = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`nn-lib-chip${active ? ' active' : ''}`}
+  >
+    {children}
+  </button>
+);
+
+// ── Continue reading shelf ────────────────────────────────────────────────────
+
+const ContinueShelf = ({ items, onOpen, t }: { items: LibraryItem[]; onOpen: (id: string) => void; t: Tr }) => (
+  <div style={{ marginBottom: 18 }}>
+    <h3 style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', margin: '0 0 8px', fontFamily: 'var(--font-sans)' }}>
+      {t('library.shelf.continueReading')}
+    </h3>
+    <div className="nn-scroll" style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
+      {items.map((it) => (
+        <button
+          key={it.id}
+          type="button"
+          onClick={() => onOpen(it.id)}
+          className="nn-lib-shelf-card"
+        >
+          <CoverPlaceholder item={it} size={56} />
+          <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {it.title}
+            </div>
+            {it.author && (
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {it.author}
+              </div>
+            )}
+            <div className="nn-lib-progress" style={{ marginTop: 6 }}>
+              <div className="nn-lib-progress-fill" style={{ width: `${Math.round((it.percent ?? 0) * 100)}%` }} />
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 3 }}>
+              {it.pageCount && it.percent != null
+                ? t('library.shelf.page', { page: Math.max(1, Math.round(it.percent * it.pageCount)), total: it.pageCount })
+                : t('library.shelf.percent', { percent: Math.round((it.percent ?? 0) * 100) })}
+            </div>
+          </div>
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
+// ── Cover placeholder ─────────────────────────────────────────────────────────
+
+const CoverPlaceholder = ({ item, size, aspect }: { item: LibraryItem; size?: number; aspect?: boolean }) => {
+  const color = coverColor(item.id);
+  return (
+    <div
+      style={{
+        width: size ?? '100%',
+        aspectRatio: aspect ? '3 / 4' : undefined,
+        height: aspect ? undefined : size,
+        borderRadius: 'var(--r-md)',
+        background: `linear-gradient(135deg, color-mix(in srgb, ${color} 22%, var(--surface-3)), var(--surface-3))`,
+        border: '1px solid var(--border)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        flexShrink: 0,
+        position: 'relative',
+        overflow: 'hidden',
+      }}
+    >
+      <span style={{ fontSize: size && size <= 60 ? 16 : 26, fontWeight: 800, color, fontFamily: 'var(--font-sans)', letterSpacing: '0.02em' }}>
+        {initials(item.title)}
+      </span>
+      <span style={{ position: 'absolute', bottom: 6, right: 6, opacity: 0.8 }}>
+        <NNIcon name={kindIcon(item.kind)} size={size && size <= 60 ? 12 : 16} color={color} />
+      </span>
+    </div>
+  );
+};
+
+// ── Grid card ─────────────────────────────────────────────────────────────────
+
+const LibraryCard = ({ item, onOpen, t }: { item: LibraryItem; onOpen: () => void; t: Tr }) => {
+  const notReady = item.status !== 'ready';
+  const statusLabel = labelForStatus(item, t);
+  return (
+    <button type="button" onClick={onOpen} className="nn-lib-card">
+      <div style={{ position: 'relative' }}>
+        <CoverPlaceholder item={item} aspect />
+        {notReady && (
+          <span style={{ position: 'absolute', top: 6, left: 6 }}>
+            <NNBadge tone={statusTone(item.status)} size="xs">{statusLabel}</NNBadge>
+          </span>
+        )}
+        {item.percent != null && item.percent > 0 && item.status === 'ready' && (
+          <div className="nn-lib-progress" style={{ position: 'absolute', left: 6, right: 6, bottom: 6 }}>
+            <div className="nn-lib-progress-fill" style={{ width: `${Math.round(item.percent * 100)}%` }} />
+          </div>
+        )}
+      </div>
+      <div style={{ padding: '8px 2px 2px', textAlign: 'left' }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          {item.title}
+        </div>
+        {item.author && (
+          <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {item.author}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 5, marginTop: 6, flexWrap: 'wrap' }}>
+          {item.notebookCount > 0 && (
+            <NNBadge tone="neutral" size="xs">
+              {item.notebookCount === 1 ? t('library.item.notebooksOne') : t('library.item.notebooks', { count: item.notebookCount })}
+            </NNBadge>
+          )}
+          {item.cardCount > 0 && (
+            <NNBadge tone="lime" size="xs">
+              {item.cardCount === 1 ? t('library.item.cardsOne') : t('library.item.cards', { count: item.cardCount })}
+            </NNBadge>
+          )}
+        </div>
+      </div>
+    </button>
+  );
+};
+
+// ── List row ──────────────────────────────────────────────────────────────────
+
+const LibraryListRow = ({ item, onOpen, t }: { item: LibraryItem; onOpen: () => void; t: Tr }) => {
+  const notReady = item.status !== 'ready';
+  return (
+    <button type="button" onClick={onOpen} className="nn-lib-row">
+      <CoverPlaceholder item={item} size={40} />
+      <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+        <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {item.title}
+        </div>
+        {item.author && (
+          <div style={{ fontSize: 11.5, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {item.author}
+          </div>
+        )}
+      </div>
+      {item.notebookCount > 0 && (
+        <NNBadge tone="neutral" size="xs">
+          {item.notebookCount === 1 ? t('library.item.notebooksOne') : t('library.item.notebooks', { count: item.notebookCount })}
+        </NNBadge>
+      )}
+      {item.cardCount > 0 && (
+        <NNBadge tone="lime" size="xs">
+          {item.cardCount === 1 ? t('library.item.cardsOne') : t('library.item.cards', { count: item.cardCount })}
+        </NNBadge>
+      )}
+      {notReady && <NNBadge tone={statusTone(item.status)} size="xs">{labelForStatus(item, t)}</NNBadge>}
+      <NNIcon name="chevr" size={14} color="var(--text-dim)" />
+    </button>
+  );
+};
+
+function labelForStatus(item: LibraryItem, t: Tr): string {
+  if (item.status === 'error' && item.errorCode) {
+    return t(`library.status.${item.errorCode as IngestErrorCode}`);
+  }
+  return t(`library.status.${item.status}`);
+}
+
+// ── Skeleton ──────────────────────────────────────────────────────────────────
+
+const LibrarySkeleton = ({ view }: { view: ViewMode }) =>
+  view === 'grid' ? (
+    <div className="nn-lib-grid">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i}>
+          <NNSkeleton style={{ aspectRatio: '3 / 4', borderRadius: 'var(--r-md)' }} />
+          <NNSkeleton style={{ height: 12, marginTop: 8, width: '80%' }} />
+        </div>
+      ))}
+    </div>
+  ) : (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <NNSkeleton key={i} style={{ height: 52 }} />
+      ))}
+    </div>
+  );
+
+// ── Inline add dialog (url / text) ────────────────────────────────────────────
+
+const AddInlineDialog = ({
+  kind,
+  onSubmit,
+  onClose,
+  t,
+}: {
+  kind: 'url' | 'text';
+  onSubmit: (kind: 'url' | 'text', title: string, value: string) => Promise<void>;
+  onClose: () => void;
+  t: Tr;
+}) => {
+  const [title, setTitle] = useState('');
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    padding: '8px 10px',
+    fontSize: 13.5,
+    fontFamily: 'var(--font-sans)',
+    color: 'var(--text)',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--r-md)',
+    outline: 'none',
+    boxSizing: 'border-box',
+  };
+  const labelStyle: React.CSSProperties = { fontSize: 11.5, fontWeight: 600, color: 'var(--text-dim)', marginBottom: 4, display: 'block' };
+  const canSubmit = !busy && value.trim().length > 0;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    const fallback = title.trim() || (kind === 'url' ? value.trim() : t('library.add.textLabel'));
+    await onSubmit(kind, fallback, kind === 'url' ? value.trim() : value);
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.5)' }} />
+      <div style={{ position: 'fixed', inset: 0, zIndex: 81, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, pointerEvents: 'none' }}>
+        <NNCard padding={18} style={{ width: 420, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 12, pointerEvents: 'auto', boxShadow: 'var(--shadow-lg)' }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', margin: 0, fontFamily: 'var(--font-sans)' }}>
+            {t(kind === 'url' ? 'library.add.urlTitle' : 'library.add.textTitle')}
+          </h3>
+          <div>
+            <label style={labelStyle}>{t('library.add.titleLabel')}</label>
+            <input style={inputStyle} value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('library.add.titlePlaceholder')} maxLength={300} />
+          </div>
+          {kind === 'url' ? (
+            <div>
+              <label style={labelStyle}>{t('library.add.urlLabel')}</label>
+              <input style={inputStyle} value={value} onChange={(e) => setValue(e.target.value)} placeholder={t('library.add.urlPlaceholder')} maxLength={2000} />
+            </div>
+          ) : (
+            <div>
+              <label style={labelStyle}>{t('library.add.textLabel')}</label>
+              <textarea style={{ ...inputStyle, minHeight: 140, resize: 'vertical' }} value={value} onChange={(e) => setValue(e.target.value)} placeholder={t('library.add.textPlaceholder')} />
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <NNBtn variant="ghost" size="sm" onClick={onClose} disabled={busy}>{t('actions.cancel')}</NNBtn>
+            <NNBtn variant="primary" size="sm" onClick={submit} disabled={!canSubmit}>
+              {busy ? t('library.add.adding') : t('library.add.submit')}
+            </NNBtn>
+          </div>
+        </NNCard>
+      </div>
+    </>
+  );
+};
+
+// ── Details panel (slide-over) ────────────────────────────────────────────────
+
+const DetailsPanel = ({
+  itemId,
+  getLibraryItem,
+  onClose,
+  onPatched,
+  onDeleted,
+  confirm,
+  prompt,
+  onOpenNotebook,
+  isMobile,
+  t,
+}: {
+  itemId: string;
+  getLibraryItem: (id: string) => Promise<LibraryItemDetail>;
+  onClose: () => void;
+  onPatched: (item: LibraryItem) => void;
+  onDeleted: (id: string) => void;
+  confirm: ReturnType<typeof useDialog>['confirm'];
+  prompt: ReturnType<typeof useDialog>['prompt'];
+  onOpenNotebook: (id: string) => void;
+  isMobile: boolean;
+  t: Tr;
+}) => {
+  const patchLibraryItem = useNN((s) => s.patchLibraryItem);
+  const deleteLibraryItem = useNN((s) => s.deleteLibraryItem);
+  const listNotebooks = useNN((s) => s.listNotebooks);
+  const attachSources = useNN((s) => s.attachSources);
+
+  const [detail, setDetail] = useState<LibraryItemDetail | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [tagDraft, setTagDraft] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const reload = useCallback(async () => {
+    try {
+      const d = await getLibraryItem(itemId);
+      setDetail(d);
+    } catch {
+      onClose();
+    } finally {
+      setLoaded(true);
+    }
+  }, [getLibraryItem, itemId, onClose]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const applyPatch = useCallback(
+    async (patch: Parameters<typeof patchLibraryItem>[1]) => {
+      try {
+        const updated = await patchLibraryItem(itemId, patch);
+        setDetail((prev) => (prev ? { ...prev, ...updated } : prev));
+        onPatched(updated);
+      } catch {
+        raiseToast({ kind: 'info', title: t('library.details.saveFailed') });
+      }
+    },
+    [patchLibraryItem, itemId, onPatched, t],
+  );
+
+  const onRename = useCallback(async () => {
+    if (!detail) return;
+    const title = await prompt({
+      title: t('library.details.renameTitle'),
+      label: t('library.details.renameLabel'),
+      defaultValue: detail.title,
+      confirmLabel: t('actions.rename'),
+      validate: (v) => (v.trim().length === 0 ? ' ' : null),
+    });
+    if (title === null) return;
+    const trimmed = title.trim();
+    if (!trimmed || trimmed === detail.title) return;
+    await applyPatch({ title: trimmed });
+  }, [detail, prompt, t, applyPatch]);
+
+  const onEditAuthor = useCallback(async () => {
+    if (!detail) return;
+    const author = await prompt({
+      title: t('library.details.authorTitle'),
+      label: t('library.details.authorLabel'),
+      defaultValue: detail.author ?? '',
+      confirmLabel: t('actions.save'),
+    });
+    if (author === null) return;
+    await applyPatch({ author: author.trim() });
+  }, [detail, prompt, t, applyPatch]);
+
+  const onAddTag = useCallback(async () => {
+    if (!detail) return;
+    const tag = tagDraft.trim();
+    if (!tag || detail.tags.includes(tag)) {
+      setTagDraft('');
+      return;
+    }
+    setTagDraft('');
+    await applyPatch({ tags: [...detail.tags, tag] });
+  }, [detail, tagDraft, applyPatch]);
+
+  const onRemoveTag = useCallback(
+    async (tag: string) => {
+      if (!detail) return;
+      await applyPatch({ tags: detail.tags.filter((x) => x !== tag) });
+    },
+    [detail, applyPatch],
+  );
+
+  const onDelete = useCallback(async () => {
+    if (!detail) return;
+    const yes = await confirm({
+      title: t('library.delete.title'),
+      message:
+        detail.notebookCount > 0
+          ? t('library.delete.messageAttached', { count: detail.notebookCount })
+          : t('library.delete.message'),
+      danger: true,
+      confirmLabel: t('library.delete.confirm'),
+    });
+    if (!yes) return;
+    try {
+      await deleteLibraryItem(itemId);
+      onDeleted(itemId);
+    } catch {
+      raiseToast({ kind: 'info', title: t('library.details.saveFailed') });
+    }
+  }, [detail, confirm, t, deleteLibraryItem, itemId, onDeleted]);
+
+  const onAttached = useCallback(() => {
+    setPickerOpen(false);
+    void reload();
+    raiseToast({ kind: 'info', title: t('library.details.addedToNotebook') });
+  }, [reload, t]);
+
+  return (
+    <>
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'rgba(0,0,0,0.5)' }} />
+      <div
+        className="nn-scroll"
+        style={{
+          position: 'fixed',
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: isMobile ? '100%' : 420,
+          maxWidth: '100%',
+          zIndex: 71,
+          background: 'var(--surface)',
+          borderLeft: '1px solid var(--border)',
+          boxShadow: 'var(--shadow-lg)',
+          overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', flex: 1 }}>
+            {t('library.details.title')}
+          </span>
+          <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} title={t('library.details.close')} onClick={onClose} />
+        </div>
+
+        {!loaded || !detail ? (
+          <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <NNSkeleton style={{ height: 120 }} />
+            <NNSkeleton style={{ height: 16, width: '70%' }} />
+            <NNSkeleton style={{ height: 14, width: '50%' }} />
+          </div>
+        ) : (
+          <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Cover + title */}
+            <div style={{ display: 'flex', gap: 14 }}>
+              <div style={{ width: 96, flexShrink: 0 }}>
+                <CoverPlaceholder item={detail} aspect />
+              </div>
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', lineHeight: 1.3, fontFamily: 'var(--font-sans)' }}>
+                  {detail.title}
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-dim)' }}>
+                  {detail.author || t('library.details.authorPlaceholder')}
+                </div>
+                {detail.status !== 'ready' && (
+                  <span style={{ marginTop: 4 }}>
+                    <NNBadge tone={statusTone(detail.status)} size="xs">{labelForStatus(detail, t)}</NNBadge>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Quick actions */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <NNBtn variant="soft" size="sm" icon="edit" onClick={onRename}>{t('library.details.rename')}</NNBtn>
+              <NNBtn variant="soft" size="sm" onClick={onEditAuthor}>{t('library.details.editAuthor')}</NNBtn>
+              <NNBtn variant="soft" size="sm" icon="plus" onClick={() => setPickerOpen(true)}>{t('library.details.addToNotebook')}</NNBtn>
+            </div>
+
+            {/* Reading status */}
+            <div>
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-dim)', marginBottom: 6, display: 'block' }}>
+                {t('library.details.readingStatus')}
+              </label>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {(['unread', 'reading', 'finished'] as ReadingStatus[]).map((rs) => (
+                  <button
+                    key={rs}
+                    type="button"
+                    onClick={() => applyPatch({ readingStatus: rs })}
+                    className={`nn-lib-chip${detail.readingStatus === rs ? ' active' : ''}`}
+                  >
+                    {t(`library.header.reading${rs === 'unread' ? 'Unread' : rs === 'reading' ? 'Reading' : 'Finished'}`)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Tags */}
+            <div>
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-dim)', marginBottom: 6, display: 'block' }}>
+                {t('library.details.tags')}
+              </label>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 6 }}>
+                {detail.tags.map((tag) => (
+                  <span key={tag} className="nn-lib-tag">
+                    {tag}
+                    <button type="button" onClick={() => onRemoveTag(tag)} aria-label={t('actions.delete')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', display: 'inline-flex', padding: 0 }}>
+                      <NNIcon name="x" size={11} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  value={tagDraft}
+                  onChange={(e) => setTagDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void onAddTag();
+                    }
+                  }}
+                  placeholder={t('library.details.tagsPlaceholder')}
+                  maxLength={64}
+                  style={{
+                    flex: 1,
+                    height: 30,
+                    padding: '0 10px',
+                    fontSize: 12.5,
+                    fontFamily: 'var(--font-sans)',
+                    color: 'var(--text)',
+                    background: 'var(--surface-2)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--r-sm)',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <NNBtn variant="soft" size="sm" onClick={onAddTag} disabled={tagDraft.trim().length === 0}>{t('library.details.addTag')}</NNBtn>
+              </div>
+            </div>
+
+            {/* Notebooks */}
+            <div>
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-dim)', marginBottom: 6, display: 'block' }}>
+                {t('library.details.notebooks')}
+              </label>
+              {detail.notebooks.length === 0 ? (
+                <p style={{ fontSize: 12.5, color: 'var(--text-dim)', margin: 0 }}>{t('library.details.notebooksEmpty')}</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {detail.notebooks.map((nb) => (
+                    <button
+                      key={nb.id}
+                      type="button"
+                      onClick={() => onOpenNotebook(nb.id)}
+                      className="nn-lib-nb-link"
+                    >
+                      <NNIcon name="doc" size={13} color="var(--text-muted)" />
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>{nb.title}</span>
+                      <NNIcon name="chevr" size={11} color="var(--text-dim)" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Cards count */}
+            {detail.cardCount > 0 && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {t('library.details.cardsCount', { count: detail.cardCount })}
+              </div>
+            )}
+
+            {/* Delete */}
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+              <NNBtn variant="danger" size="sm" icon="x" onClick={onDelete}>{t('library.details.delete')}</NNBtn>
+            </div>
+          </div>
+        )}
+
+        {/* Notebook picker overlay */}
+        {pickerOpen && detail && (
+          <NotebookAttachPicker
+            sourceId={detail.id}
+            attachedIds={new Set(detail.notebooks.map((n) => n.id))}
+            listNotebooks={listNotebooks}
+            attachSources={attachSources}
+            onAttached={onAttached}
+            onClose={() => setPickerOpen(false)}
+            t={t}
+          />
+        )}
+      </div>
+    </>
+  );
+};
+
+// ── Notebook picker (attach one source from the details panel) ─────────────────
+
+const NotebookAttachPicker = ({
+  sourceId,
+  attachedIds,
+  listNotebooks,
+  attachSources,
+  onAttached,
+  onClose,
+  t,
+}: {
+  sourceId: string;
+  attachedIds: Set<string>;
+  listNotebooks: () => Promise<Notebook[]>;
+  attachSources: (notebookId: string, sourceIds: string[]) => Promise<void>;
+  onAttached: () => void;
+  onClose: () => void;
+  t: Tr;
+}) => {
+  const [notebooks, setNotebooks] = useState<Notebook[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setNotebooks(await listNotebooks());
+      } catch {
+        setNotebooks([]);
+      }
+    })();
+  }, [listNotebooks]);
+
+  const attach = useCallback(
+    async (nbId: string) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        await attachSources(nbId, [sourceId]);
+        onAttached();
+      } catch {
+        raiseToast({ kind: 'info', title: t('library.details.saveFailed') });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, attachSources, sourceId, onAttached, t],
+  );
+
+  return (
+    <>
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }} />
+      <div style={{ position: 'fixed', inset: 0, zIndex: 91, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, pointerEvents: 'none' }}>
+        <NNCard padding={16} style={{ width: 380, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'auto', maxHeight: '70vh', boxShadow: 'var(--shadow-lg)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0, flex: 1, fontFamily: 'var(--font-sans)' }}>{t('library.details.pickNotebook')}</h3>
+            <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} onClick={onClose} />
+          </div>
+          {notebooks === null ? (
+            <NNSkeleton style={{ height: 80 }} />
+          ) : notebooks.length === 0 ? (
+            <p style={{ fontSize: 12.5, color: 'var(--text-dim)', margin: 0 }}>{t('library.details.pickNotebookEmpty')}</p>
+          ) : (
+            <div className="nn-scroll" style={{ display: 'flex', flexDirection: 'column', gap: 3, overflowY: 'auto' }}>
+              {notebooks.map((nb) => {
+                const already = attachedIds.has(nb.id);
+                return (
+                  <button
+                    key={nb.id}
+                    type="button"
+                    disabled={already || busy}
+                    onClick={() => attach(nb.id)}
+                    className="nn-lib-nb-link"
+                    style={{ opacity: already ? 0.55 : 1, cursor: already ? 'default' : 'pointer' }}
+                  >
+                    <NNIcon name="doc" size={13} color="var(--text-muted)" />
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>{nb.title}</span>
+                    {already && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('library.details.alreadyIn')}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </NNCard>
+      </div>
+    </>
+  );
+};
+
+export { CoverPlaceholder };

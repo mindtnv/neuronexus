@@ -55,7 +55,6 @@ async function freshNotebookSource(
     .insert(sources)
     .values({
       userId,
-      notebookId: nb!.id,
       kind: 'text',
       title: 'Guard Source',
       status: 'ready',
@@ -67,8 +66,9 @@ async function freshNotebookSource(
 
 /**
  * Insert a DOCUMENT kb_chunk row directly (source_type='document', card_id=NULL,
- * parent_id=notebook, source_id=source). Mirrors the ingest worker's row tuple
- * and satisfies the kb_chunk_card_source_chk check (card_id null ⇔ non-card).
+ * parent_id=source_id, source_id=source). Mirrors the ingest worker's row tuple
+ * (library refactor: parent_id = source_id for documents) and satisfies the
+ * kb_chunk_card_source_chk check (card_id null ⇔ non-card).
  */
 async function insertDocChunk(opts: {
   userId: string;
@@ -82,7 +82,7 @@ async function insertDocChunk(opts: {
     userId: opts.userId,
     sourceType: 'document',
     sourceId: opts.sourceId,
-    parentId: opts.notebookId,
+    parentId: opts.sourceId,
     position: opts.position,
     text: opts.text,
     embedding: opts.embedding,

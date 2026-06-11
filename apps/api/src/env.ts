@@ -131,6 +131,15 @@ export const env = {
     // dozens of books). Enforced at the create/finalize routes (clean error).
     MAX_SOURCES_PER_NOTEBOOK: Number(process.env.MAX_SOURCES_PER_NOTEBOOK ?? 50),
     MAX_NOTEBOOKS_PER_USER: Number(process.env.MAX_NOTEBOOKS_PER_USER ?? 25),
+    // ── Library (L1) — all OPTIONAL ──────────────────────────────────────────
+    // Total library size per user (sources, excluding `deleting`) — the global
+    // upload DoS bound (per-notebook caps don't bound the whole library now that
+    // sources are user-level). Over it ⇒ 409 `library_full`.
+    MAX_LIBRARY_ITEMS_PER_USER: Number(process.env.MAX_LIBRARY_ITEMS_PER_USER ?? 300),
+    // Max source ids one attach call may add to a notebook (→ 400 too_many_sources).
+    MAX_ATTACH_BATCH: Number(process.env.MAX_ATTACH_BATCH ?? 20),
+    // GET /library cursor page size (max 200).
+    LIBRARY_PAGE: Number(process.env.LIBRARY_PAGE ?? 60),
     // Ingest worker tuning. Serial by default so a 1500-chunk book doesn't fan
     // out hundreds of concurrent embed calls (mirrors index-queue DRAIN cap).
     SOURCE_INGEST_CONCURRENCY: Number(process.env.SOURCE_INGEST_CONCURRENCY ?? 1),

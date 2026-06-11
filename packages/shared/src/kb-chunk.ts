@@ -10,7 +10,11 @@ export interface SourceInput {
   sourceType: 'card' | 'document';
   /** Primary key of the source entity (cards.id for 'card', sources.id for 'document'). */
   sourceId: string;
-  /** Navigable parent id — for cards: same as sourceId; for documents: the notebook id. */
+  /**
+   * Navigable parent id — same as sourceId for BOTH cards and documents.
+   * (Documents carried the notebook id before the library refactor; sources are
+   * user-level now, so the column keeps its NOT NULL with the card convention.)
+   */
   parentId: string;
   /** Raw text to chunk (card path: cards.render_text). Ignored on the document path (use `units`). */
   text: string;

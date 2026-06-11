@@ -64,7 +64,9 @@ async function freshNotebook(userId: string, title = 'NB'): Promise<string> {
  */
 async function seedSource(
   userId: string,
-  notebookId: string,
+  // Sources are user-level now (library refactor); annotations are source-scoped
+  // so the notebook arg is unused (kept for call-site compatibility).
+  _notebookId: string,
   opts: {
     title?: string;
     kind?: 'pdf' | 'epub' | 'url' | 'text';
@@ -78,7 +80,6 @@ async function seedSource(
     .insert(sourcesTable)
     .values({
       userId,
-      notebookId,
       kind,
       title: opts.title ?? 'Doc',
       status: 'ready',

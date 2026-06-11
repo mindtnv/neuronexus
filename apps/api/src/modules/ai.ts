@@ -28,6 +28,7 @@ import {
   decks,
   messages as messagesTable,
   notebooks,
+  notebookSources,
   profile as profileTable,
   sourceChunks,
   sources,
@@ -195,13 +196,16 @@ async function resolveNotebookScope(
   // removed the conversation, but be defensive) ⇒ an empty, titleless scope.
   const title = nb?.title ?? '';
 
+  // The notebook's READY sources, reached through the notebook_sources join
+  // (sources are user-level now — the notebook binding lives on the edge).
   const readyRows = await db
     .select({ id: sources.id, title: sources.title })
-    .from(sources)
+    .from(notebookSources)
+    .innerJoin(sources, eq(sources.id, notebookSources.sourceId))
     .where(
       and(
         eq(sources.userId, userId),
-        eq(sources.notebookId, notebookId),
+        eq(notebookSources.notebookId, notebookId),
         eq(sources.status, 'ready'),
       ),
     );
@@ -1988,6 +1992,9 @@ export const chatModule = new Elysia({ prefix: '/chat' })
                       userId: user.id,
                       cardIds: r.cardIds,
                       chunkIds: pending.grounding.chunkIds,
+                      // notebookId is the conversation's notebook (where the card
+                      // was born) — sources no longer carry a notebook.
+                      notebookId: conv.notebookId,
                       conversationId: conv.id,
                       messageId: pending.rowId,
                     });

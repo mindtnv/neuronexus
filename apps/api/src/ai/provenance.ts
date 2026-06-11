@@ -4,8 +4,10 @@
 //
 // The grounding chunk ids come from the turn's `messages.grounding` snapshot
 // (stamped on the pending assistant tool_calls row at suspend time — see ai.ts).
-// They are source_chunk ids; we resolve each (user-scoped) to its source +
-// notebook so the edge carries the full provenance chain, and we cap the
+// They are source_chunk ids; we resolve each (user-scoped) to its source so the
+// edge carries the full provenance chain. The `notebookId` is the CONVERSATION's
+// notebook (passed by the caller — sources are user-level now and no longer
+// carry a notebook), i.e. "the notebook in which the card was born". We cap the
 // DISTINCT chunks per card at `CARD_SOURCE_LINK_CAP` (preserving accumulation
 // order — the first-read passages are the most relevant). `onConflictDoNothing`
 // makes a double-apply idempotent (the partial unique `card_sources_card_chunk_uq`
@@ -35,11 +37,12 @@ export async function writeCardProvenance(
     userId: string;
     cardIds: string[];
     chunkIds: string[];
+    notebookId: string | null;
     conversationId: string;
     messageId: string | null;
   },
 ): Promise<number> {
-  const { userId, cardIds, chunkIds, conversationId, messageId } = args;
+  const { userId, cardIds, chunkIds, notebookId, conversationId, messageId } = args;
   if (cardIds.length === 0 || chunkIds.length === 0) return 0;
 
   // Distinct, accumulation-order-preserving, capped.
@@ -49,13 +52,13 @@ export async function writeCardProvenance(
     if (!distinct.includes(id)) distinct.push(id);
   }
 
-  // Resolve the chunks to their source + notebook (user-scoped — the sole
-  // cross-tenant boundary). Foreign/missing ids drop out of this select.
+  // Resolve the chunks to their source (user-scoped — the sole cross-tenant
+  // boundary). Foreign/missing ids drop out of this select. The notebook comes
+  // from the caller (the conversation's notebook), not the chunk.
   const rows = await tx
     .select({
       id: sourceChunks.id,
       sourceId: sourceChunks.sourceId,
-      notebookId: sourceChunks.notebookId,
     })
     .from(sourceChunks)
     .where(and(eq(sourceChunks.userId, userId), inArray(sourceChunks.id, distinct)));
@@ -74,7 +77,7 @@ export async function writeCardProvenance(
         cardId,
         sourceChunkId: chunk.id,
         sourceId: chunk.sourceId,
-        notebookId: chunk.notebookId,
+        notebookId,
         conversationId,
         messageId,
       });

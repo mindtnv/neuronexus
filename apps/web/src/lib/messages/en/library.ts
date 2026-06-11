@@ -1,0 +1,191 @@
+// Library (L1) — the /library material-store screen: header (search / filters /
+// sort / view toggle / add menu), the "Continue reading" shelf, the cover grid /
+// list rows (kind placeholders — no covers yet), the details panel (metadata edit
+// + attach-to-notebook + delete), and the upload / url / text dialogs + toasts.
+//
+// `status.*` (ingest lifecycle + machine error codes) is shared with the
+// notebooks dict — but each namespace owns its own copy so the i18n-parity test
+// can enforce both independently. Every key MUST exist in BOTH locales.
+
+const library = {
+  title: 'Library',
+  subtitle: 'Your books, articles, and notes.',
+
+  // ── Header ────────────────────────────────────────────────────────────────────
+  header: {
+    searchPlaceholder: 'Search by title or author…',
+    add: 'Add',
+    addFiles: 'Files (PDF / EPUB)',
+    addUrl: 'Web page',
+    addText: 'Paste text',
+    viewGrid: 'Grid view',
+    viewList: 'List view',
+    // Sort options.
+    sortLabel: 'Sort',
+    sortAdded: 'Recently added',
+    sortTitle: 'Title',
+    sortLastRead: 'Last read',
+    // Kind filter chips.
+    kindAll: 'All',
+    kindPdf: 'PDF',
+    kindEpub: 'EPUB',
+    kindUrl: 'URL',
+    kindText: 'Text',
+    // Reading-status filter chips.
+    readingAll: 'Any status',
+    readingUnread: 'Unread',
+    readingReading: 'Reading',
+    readingFinished: 'Finished',
+  },
+
+  // ── "Continue reading" shelf ──────────────────────────────────────────────────
+  shelf: {
+    continueReading: 'Continue reading',
+    page: 'p. {page} of {total}',
+    percent: '{percent}%',
+  },
+
+  // ── Item card / list row ──────────────────────────────────────────────────────
+  item: {
+    untitled: 'Untitled',
+    notebooks: '{count} notebooks',
+    notebooksOne: '1 notebook',
+    cards: '{count} cards',
+    cardsOne: '1 card',
+    indexingDisabled: 'Indexing off',
+    open: 'Open',
+    menu: 'More actions',
+  },
+
+  // ── Empty state ───────────────────────────────────────────────────────────────
+  empty: {
+    title: 'Your library is empty',
+    hint: 'Upload a book or article to read it, mark it up, turn it into cards, and ground notebook chats on it.',
+    cta: 'Add your first book',
+    // Shown when a filter/search yields nothing.
+    noResults: 'Nothing matches your filters.',
+    clearFilters: 'Clear filters',
+  },
+
+  // ── Add dialogs ───────────────────────────────────────────────────────────────
+  add: {
+    urlTitle: 'Add a web page',
+    textTitle: 'Add text',
+    titleLabel: 'Title',
+    titlePlaceholder: 'Material title',
+    urlLabel: 'URL',
+    urlPlaceholder: 'https://…',
+    textLabel: 'Text',
+    textPlaceholder: 'Paste the text to read and index…',
+    submit: 'Add',
+    adding: 'Adding…',
+    failed: 'Could not add the material. Please try again.',
+    // File upload queue.
+    uploadingFile: 'Uploading {name}…',
+    uploadProgress: '{done} of {total}',
+    dropHint: 'Drop PDF or EPUB files to add them',
+    fileHint: 'PDF or EPUB, up to {mb} MB.',
+  },
+
+  // ── Details panel (click an item) ─────────────────────────────────────────────
+  details: {
+    title: 'Details',
+    author: 'Author',
+    authorPlaceholder: 'Author or edition',
+    tags: 'Tags',
+    tagsPlaceholder: 'Add a tag…',
+    addTag: 'Add',
+    readingStatus: 'Reading status',
+    notebooks: 'In notebooks',
+    notebooksEmpty: 'Not in any notebook yet.',
+    noCards: 'No cards from this material yet.',
+    cardsCount: '{count} cards',
+    // Actions.
+    rename: 'Rename',
+    editAuthor: 'Edit author',
+    addToNotebook: 'Add to notebook…',
+    delete: 'Delete from library',
+    close: 'Close',
+    // Add-to-notebook picker.
+    pickNotebook: 'Add to a notebook',
+    pickNotebookEmpty: 'Create a notebook first.',
+    alreadyIn: 'Already added',
+    addToPicked: 'Add ({count})',
+    addedToNotebook: 'Added to the notebook.',
+    // Rename dialog.
+    renameTitle: 'Rename material',
+    renameLabel: 'Title',
+    authorTitle: 'Edit author',
+    authorLabel: 'Author',
+    // Save feedback.
+    saved: 'Saved',
+    saveFailed: 'Could not save. Try again.',
+  },
+
+  // ── Delete confirm — must name the consequences (detach + card tombstones) ────
+  delete: {
+    title: 'Delete from library?',
+    // Used when the material is attached to one or more notebooks.
+    messageAttached:
+      'This material will be detached from {count} notebooks. Cards made from it stay, but their link to the source becomes “source removed”. This cannot be undone.',
+    // Used when the material is in no notebook.
+    message:
+      'Cards made from this material stay, but their link to the source becomes “source removed”. This cannot be undone.',
+    confirm: 'Delete',
+  },
+
+  // ── Detach (from a notebook — used in the workspace) ──────────────────────────
+  detach: {
+    title: 'Remove from notebook?',
+    message: 'The material stays in your library — only its link to this notebook is removed.',
+    confirm: 'Remove',
+  },
+
+  // ── Duplicate-on-upload dialog ────────────────────────────────────────────────
+  duplicate: {
+    title: 'Already in your library',
+    message: '“{title}” is already in your library.',
+    open: 'Open it',
+    cancel: 'Cancel',
+  },
+
+  // ── Toasts ────────────────────────────────────────────────────────────────────
+  toast: {
+    libraryFull: 'You\'ve reached your library limit.',
+    uploadFailed: 'Upload failed. Please try again.',
+    unsupported: 'Unsupported file type. Use PDF or EPUB.',
+    deleted: 'Removed from your library.',
+    detached: 'Removed from the notebook.',
+  },
+
+  // ── Status badge + machine error codes (errorCode → status.<code>) ────────────
+  status: {
+    pending: 'Queued',
+    parsing: 'Parsing…',
+    indexing: 'Indexing…',
+    ready: 'Ready',
+    error: 'Failed',
+    deleting: 'Removing…',
+    too_large: 'File is too large.',
+    too_many_chunks: 'Material is too long to index.',
+    parse_failed: 'Could not read this material.',
+    fetch_failed: 'Could not fetch this URL.',
+    unsupported_mime: 'Unsupported file type.',
+    empty_source: 'No readable text found.',
+  },
+
+  // ── Workspace integration (attach picker + detach in the notebook) ────────────
+  workspace: {
+    attachFromLibrary: 'Add from library',
+    attachTitle: 'Add from your library',
+    attachSearch: 'Search your library…',
+    attachEmpty: 'Your library is empty.',
+    attachNoResults: 'Nothing matches.',
+    attachConfirm: 'Add ({count})',
+    detach: 'Remove from notebook',
+    detachFailed: 'Could not remove the material.',
+    openInLibrary: 'Read in library',
+  },
+};
+
+export default library;

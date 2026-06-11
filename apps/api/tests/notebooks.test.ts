@@ -5,7 +5,8 @@
 // under NODE_ENV=test there is no embedder so ingest parse-and-parks; we don't
 // await it. We assert: CRUD; user-scope 404 on foreign ids; the aggregate caps
 // (MAX_NOTEBOOKS_PER_USER / MAX_SOURCES_PER_NOTEBOOK → 409); notebook delete
-// cascades sources + source_chunks + document kb_chunk; and /ai/status carries
+// PRESERVES sources + source_chunks + document kb_chunk (library refactor Р3/Р4 —
+// only the notebook_sources edge cascades); and /ai/status carries
 // `notebooksEnabled`.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -14,6 +15,7 @@ import {
   db,
   kbChunk,
   notebooks,
+  notebookSources,
   sourceChunks,
   sources as sourcesTable,
 } from '@neuronexus/db';
@@ -231,15 +233,22 @@ describe('sources within a notebook', () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const nb = await createNotebook(cookie);
     const cap = env.ai.MAX_SOURCES_PER_NOTEBOOK;
-    await db.insert(sourcesTable).values(
-      Array.from({ length: cap }, (_, i) => ({
-        userId,
-        notebookId: nb.id,
-        kind: 'text' as const,
-        title: `seed-${i}`,
-        status: 'ready' as const,
-        verified: true,
-      })),
+    // Library refactor: the per-notebook cap counts notebook_sources EDGES.
+    // Seed `cap` user-level sources and attach each to the notebook.
+    const seeded = await db
+      .insert(sourcesTable)
+      .values(
+        Array.from({ length: cap }, (_, i) => ({
+          userId,
+          kind: 'text' as const,
+          title: `seed-${i}`,
+          status: 'ready' as const,
+          verified: true,
+        })),
+      )
+      .returning({ id: sourcesTable.id });
+    await db.insert(notebookSources).values(
+      seeded.map((s) => ({ userId, notebookId: nb.id, sourceId: s.id })),
     );
     const res = await callApp(app, 'POST', `/notebooks/${nb.id}/sources`, {
       cookie,
@@ -269,15 +278,15 @@ describe('sources within a notebook', () => {
     expect((await callApp(app, 'GET', `/sources/${srcB.id}`, { cookie: b.cookie })).status).toBe(200);
   });
 
-  test('notebook delete CASCADES sources + source_chunks + document kb_chunk', async () => {
+  test('notebook delete PRESERVES sources + source_chunks + document kb_chunk (Р3/Р4); only the edge dies', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const nb = await createNotebook(cookie);
-    // Seed a source + its source_chunks + a document kb_chunk directly.
+    // Seed a user-level source + its source_chunks + a document kb_chunk, attach
+    // it to the notebook via the join edge.
     const [src] = await db
       .insert(sourcesTable)
       .values({
         userId,
-        notebookId: nb.id,
         kind: 'text',
         title: 'doc',
         status: 'ready',
@@ -285,10 +294,10 @@ describe('sources within a notebook', () => {
         chunkCount: 1,
       })
       .returning({ id: sourcesTable.id });
+    await db.insert(notebookSources).values({ userId, notebookId: nb.id, sourceId: src!.id });
     await db.insert(sourceChunks).values({
       userId,
       sourceId: src!.id,
-      notebookId: nb.id,
       position: 0,
       text: 'chunk text',
       embedded: true,
@@ -297,7 +306,8 @@ describe('sources within a notebook', () => {
       userId,
       sourceType: 'document',
       sourceId: src!.id,
-      parentId: nb.id,
+      // parentId = sourceId for documents (library refactor — kb-chunk.ts:13).
+      parentId: src!.id,
       position: 0,
       text: 'chunk text',
       embeddingModel: 'test',
@@ -315,23 +325,30 @@ describe('sources within a notebook', () => {
     const del = await callApp(app, 'DELETE', `/notebooks/${nb.id}`, { cookie });
     expect(del.status).toBe(200);
 
-    // sources + source_chunks cascade via FK on notebook delete.
+    // Library refactor (Р3/Р4): deleting the notebook does NOT touch the source —
+    // it lives in the library and may be shared by other notebooks. The source,
+    // its chunks, and its document vectors all SURVIVE.
     expect(
       (await db.select({ n: count() }).from(sourcesTable).where(eq(sourcesTable.id, src!.id)))[0]!.n,
-    ).toBe(0);
+    ).toBe(1);
     expect(
       (await db.select({ n: count() }).from(sourceChunks).where(eq(sourceChunks.sourceId, src!.id)))[0]!.n,
-    ).toBe(0);
-    // The DOCUMENT kb_chunk has NO FK on source_id — the notebook DELETE handler
-    // explicitly cleans up document kb_chunk rows (by parent_id = notebookId)
-    // before cascading the notebook row. Assert that document chunks are removed.
+    ).toBe(1);
     const docChunks = (
       await db
         .select({ n: count() })
         .from(kbChunk)
         .where(and(eq(kbChunk.sourceId, src!.id), eq(kbChunk.sourceType, 'document')))
     )[0]!.n;
-    expect(docChunks).toBe(0);
+    expect(docChunks).toBe(1);
+    // Only the notebook_sources EDGE dies with the notebook (FK cascade).
+    const edges = (
+      await db
+        .select({ n: count() })
+        .from(notebookSources)
+        .where(eq(notebookSources.sourceId, src!.id))
+    )[0]!.n;
+    expect(edges).toBe(0);
   });
 });
 

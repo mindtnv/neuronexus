@@ -46,7 +46,6 @@ import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import {
   AddSourceForm,
-  NONTERMINAL,
   sourceIcon,
   statusTone,
   type AddKind,
@@ -54,6 +53,8 @@ import {
 import { ChatPanel, type ComposerPrefillHandle } from '@/components/chat/chat-panel';
 import { PdfReader, type PdfReaderHandle } from '@/components/pdf-reader/pdf-reader';
 import { api, ok } from '@/lib/api';
+import { useSourceStatus } from '@/lib/use-source-status';
+import type { LibraryItem } from '@/lib/types';
 
 type WorkspaceTab = 'sources' | 'reader' | 'chat';
 
@@ -161,9 +162,11 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const addTextSource = useNN((s) => s.addTextSource);
   const uploadSource = useNN((s) => s.uploadSource);
   const renameSource = useNN((s) => s.renameSource);
-  const deleteSource = useNN((s) => s.deleteSource);
   const getSourceChunks = useNN((s) => s.getSourceChunks);
   const listSourceCards = useNN((s) => s.listSourceCards);
+  const listLibrary = useNN((s) => s.listLibrary);
+  const attachSources = useNN((s) => s.attachSources);
+  const detachSource = useNN((s) => s.detachSource);
 
   const [notebook, setNotebook] = useState<Notebook | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
@@ -255,6 +258,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const maxMb = Math.floor(MAX_SOURCE_BYTES_DEFAULT / (1024 * 1024));
 
+  // L1 — "Add from library" attach picker.
+  const [attachOpen, setAttachOpen] = useState(false);
+
   // ── Deep-link params (?source=&chunk=&pos= / ?thread=) ───────────────────────
   const sourceParam = searchParams.get('source');
   const chunkParam = searchParams.get('chunk');
@@ -339,39 +345,25 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     [scopeKey],
   );
 
-  // ── Poll non-terminal sources (M1 logic) ──────────────────────────────────────
-  const hasPending = useMemo(() => sources.some((s) => NONTERMINAL.has(s.status)), [sources]);
-  useEffect(() => {
-    if (!hasPending) return;
-    let cancelled = false;
-    const interval = setInterval(async () => {
-      const pending = sources.filter((s) => NONTERMINAL.has(s.status));
-      if (pending.length === 0) return;
-      try {
-        const updated = await Promise.all(pending.map((s) => getSource(s.id).catch(() => null)));
-        if (cancelled) return;
-        const byId = new Map(updated.filter(Boolean).map((s) => [s!.id, s!]));
-        setSources((prev) =>
-          prev.map((s) => {
-            const fresh = byId.get(s.id);
-            if (!fresh) return s;
-            // A source that JUST became ready joins the chat scope by default.
-            if (s.status !== 'ready' && fresh.status === 'ready') {
-              setScopePersisted(new Set([...scope, fresh.id]));
-            }
-            return fresh;
-          }),
-        );
-      } catch {
-        /* transient; next tick retries */
-      }
-    }, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasPending, sources, getSource]);
+  // ── Poll non-terminal sources (shared useSourceStatus hook) ───────────────────
+  useSourceStatus({
+    items: sources,
+    fetchOne: (id) => getSource(id).catch(() => null),
+    onUpdate: (fresh) => {
+      const byId = new Map(fresh.map((s) => [s.id, s]));
+      setSources((prev) =>
+        prev.map((s) => {
+          const updated = byId.get(s.id);
+          if (!updated) return s;
+          // A source that JUST became ready joins the chat scope by default.
+          if (s.status !== 'ready' && updated.status === 'ready') {
+            setScopePersisted(new Set([...scope, updated.id]));
+          }
+          return updated;
+        }),
+      );
+    },
+  });
 
   // ── Reader: load chunk pages for the active source ────────────────────────────
   const loadChunks = useCallback(
@@ -621,21 +613,57 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     [prompt, t, renameSource],
   );
 
-  const onDeleteSource = useCallback(
+  // L1 — detach (NOT delete): the material stays in the library; only its link to
+  // this notebook is removed. MUST prune the source id from the chat scope (same
+  // as delete:635) — else a detach→re-attach silently restores a stale checkbox.
+  const onDetachSource = useCallback(
     async (src: Source) => {
       const yes = await confirm({
-        title: t('notebooks.sources.delete'),
-        message: t('notebooks.sources.deleteConfirm'),
-        danger: true,
-        confirmLabel: t('actions.delete'),
+        title: t('library.detach.title'),
+        message: t('library.detach.message'),
+        confirmLabel: t('library.detach.confirm'),
       });
       if (!yes) return;
-      await deleteSource(src.id);
+      try {
+        await detachSource(notebookId, src.id);
+      } catch {
+        raiseToast({ kind: 'info', title: t('library.workspace.detachFailed') });
+        return;
+      }
       setSources((prev) => prev.filter((s) => s.id !== src.id));
       setScopePersisted(new Set([...scope].filter((id) => id !== src.id)));
       if (activeSourceId === src.id) setActiveSourceId(null);
+      raiseToast({ kind: 'info', title: t('library.toast.detached') });
     },
-    [confirm, t, deleteSource, scope, setScopePersisted, activeSourceId],
+    [confirm, t, detachSource, notebookId, scope, setScopePersisted, activeSourceId],
+  );
+
+  // L1 — attach existing library sources to this notebook, then refetch the list.
+  const onAttachSources = useCallback(
+    async (sourceIds: string[]) => {
+      if (sourceIds.length === 0) return;
+      try {
+        await attachSources(notebookId, sourceIds);
+      } catch {
+        raiseToast({ kind: 'info', title: t('library.workspace.detachFailed') });
+        return;
+      }
+      setAttachOpen(false);
+      try {
+        const rows = await listSources(notebookId);
+        setSources(rows);
+      } catch {
+        /* keep current on transient error */
+      }
+    },
+    [attachSources, notebookId, listSources, t],
+  );
+
+  const onOpenInLibrary = useCallback(
+    (src: Source) => {
+      router.push(`/library?focus=${src.id}`);
+    },
+    [router],
   );
 
   // Notebook-mode chat thread change (the ChatPanel notifies; keep ?thread= in
@@ -682,13 +710,15 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         onCancel: resetAddForm,
       }}
       onOpenAdd={() => setAddOpen(true)}
+      onAttachFromLibrary={() => setAttachOpen(true)}
       onToggleScope={toggleScope}
       onSelectSource={(id) => {
         setActiveSourceId(id);
         if (!isDesktop) setTab('reader');
       }}
       onRename={onRenameSource}
-      onDelete={onDeleteSource}
+      onDetach={onDetachSource}
+      onOpenInLibrary={onOpenInLibrary}
       listSourceCards={listSourceCards}
       onOpenCard={(cardId) => router.push(`/cards?focus=${cardId}`)}
       t={t}
@@ -745,6 +775,17 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     />
   );
 
+  // L1 — "Add from library" picker (rendered above whichever layout is active).
+  const attachPicker = attachOpen ? (
+    <LibraryAttachPicker
+      attachedIds={new Set(sources.map((s) => s.id))}
+      listLibrary={listLibrary}
+      onConfirm={onAttachSources}
+      onClose={() => setAttachOpen(false)}
+      t={t}
+    />
+  ) : null;
+
   // ── Layout ─────────────────────────────────────────────────────────────────────
   const header = (
     <div
@@ -785,6 +826,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   if (isDesktop) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        {attachPicker}
         {header}
         <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <div
@@ -901,6 +943,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   // Tablet / mobile — a tab switcher between the three panels.
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      {attachPicker}
       {header}
       <div
         className="nn-chrome"
@@ -951,10 +994,12 @@ interface SourcesPanelProps {
   addOpen: boolean;
   addProps: React.ComponentProps<typeof AddSourceForm>;
   onOpenAdd: () => void;
+  onAttachFromLibrary: () => void;
   onToggleScope: (id: string) => void;
   onSelectSource: (id: string) => void;
   onRename: (src: Source) => void;
-  onDelete: (src: Source) => void;
+  onDetach: (src: Source) => void;
+  onOpenInLibrary: (src: Source) => void;
   listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
   onOpenCard: (cardId: string) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -968,10 +1013,12 @@ const SourcesPanel = ({
   addOpen,
   addProps,
   onOpenAdd,
+  onAttachFromLibrary,
   onToggleScope,
   onSelectSource,
   onRename,
-  onDelete,
+  onDetach,
+  onOpenInLibrary,
   listSourceCards,
   onOpenCard,
   t,
@@ -995,6 +1042,13 @@ const SourcesPanel = ({
       </span>
       <NNBtn variant="ghost" size="sm" icon="plus" onClick={onOpenAdd}>
         {t('notebooks.sources.add')}
+      </NNBtn>
+    </div>
+
+    {/* Add from the library (attach an existing material). */}
+    <div style={{ padding: '0 4px' }}>
+      <NNBtn variant="soft" size="sm" icon="book" block onClick={onAttachFromLibrary}>
+        {t('library.workspace.attachFromLibrary')}
       </NNBtn>
     </div>
 
@@ -1022,7 +1076,8 @@ const SourcesPanel = ({
             onToggleScope={() => onToggleScope(src.id)}
             onSelect={() => onSelectSource(src.id)}
             onRename={() => onRename(src)}
-            onDelete={() => onDelete(src)}
+            onDetach={() => onDetach(src)}
+            onOpenInLibrary={() => onOpenInLibrary(src)}
             listSourceCards={listSourceCards}
             onOpenCard={onOpenCard}
             t={t}
@@ -1040,7 +1095,8 @@ const WorkspaceSourceRow = ({
   onToggleScope,
   onSelect,
   onRename,
-  onDelete,
+  onDetach,
+  onOpenInLibrary,
   listSourceCards,
   onOpenCard,
   t,
@@ -1051,7 +1107,8 @@ const WorkspaceSourceRow = ({
   onToggleScope: () => void;
   onSelect: () => void;
   onRename: () => void;
-  onDelete: () => void;
+  onDetach: () => void;
+  onOpenInLibrary: () => void;
   listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
   onOpenCard: (cardId: string) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -1066,6 +1123,7 @@ const WorkspaceSourceRow = ({
   const [cardsOpen, setCardsOpen] = useState(false);
   const [cards, setCards] = useState<SourceLinkedCard[] | null>(null);
   const [cardsLoading, setCardsLoading] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const toggleCards = useCallback(async () => {
     const next = !cardsOpen;
@@ -1135,8 +1193,8 @@ const WorkspaceSourceRow = ({
             {statusLabel}
           </NNBadge>
         )}
-        {/* Hover-revealed actions */}
-        <div className="nn-source-row-actions" style={{ display: 'flex', gap: 0, flexShrink: 0 }}>
+        {/* Hover-revealed actions: rename + overflow menu (read in library / detach). */}
+        <div className="nn-source-row-actions" style={{ display: 'flex', gap: 0, flexShrink: 0, position: 'relative' }}>
           <NNBtn
             variant="ghost"
             size="sm"
@@ -1148,11 +1206,40 @@ const WorkspaceSourceRow = ({
           <NNBtn
             variant="ghost"
             size="sm"
-            icon="x"
-            ariaLabel={t('notebooks.sources.delete')}
-            title={t('notebooks.sources.delete')}
-            onClick={onDelete}
+            icon="dots"
+            ariaLabel={t('library.item.menu')}
+            title={t('library.item.menu')}
+            onClick={() => setMenuOpen((v) => !v)}
           />
+          {menuOpen && (
+            <>
+              <div onClick={() => setMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+              <div className="nn-lib-menu" style={{ right: 0, top: 'calc(100% + 4px)', minWidth: 180 }}>
+                <button
+                  type="button"
+                  className="nn-lib-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onOpenInLibrary();
+                  }}
+                >
+                  <NNIcon name="book" size={14} color="var(--text-muted)" />
+                  {t('library.workspace.openInLibrary')}
+                </button>
+                <button
+                  type="button"
+                  className="nn-lib-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onDetach();
+                  }}
+                >
+                  <NNIcon name="x" size={14} color="var(--text-muted)" />
+                  {t('library.workspace.detach')}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -1414,3 +1501,142 @@ const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
   },
 );
 ReaderPanel.displayName = 'ReaderPanel';
+
+// ── L1 — "Add from library" attach picker (modal) ──────────────────────────────
+
+const LibraryAttachPicker = ({
+  attachedIds,
+  listLibrary,
+  onConfirm,
+  onClose,
+  t,
+}: {
+  attachedIds: Set<string>;
+  listLibrary: (params?: { q?: string; limit?: number }) => Promise<{ items: LibraryItem[]; nextCursor: string | null }>;
+  onConfirm: (sourceIds: string[]) => Promise<void> | void;
+  onClose: () => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) => {
+  const [search, setSearch] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
+  const [items, setItems] = useState<LibraryItem[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedQ(search.trim()), 300);
+    return () => window.clearTimeout(id);
+  }, [search]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await listLibrary({ q: debouncedQ || undefined, limit: 60 });
+        if (!cancelled) setItems(res.items);
+      } catch {
+        if (!cancelled) setItems([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [listLibrary, debouncedQ]);
+
+  const toggle = useCallback((id: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const confirm = useCallback(async () => {
+    if (picked.size === 0 || busy) return;
+    setBusy(true);
+    await onConfirm([...picked]);
+    setBusy(false);
+  }, [picked, busy, onConfirm]);
+
+  return (
+    <>
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }} />
+      <div style={{ position: 'fixed', inset: 0, zIndex: 91, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, pointerEvents: 'none' }}>
+        <NNCard padding={16} style={{ width: 460, maxWidth: '100%', maxHeight: '76vh', display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'auto', boxShadow: 'var(--shadow-lg)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0, flex: 1, fontFamily: 'var(--font-sans)' }}>
+              {t('library.workspace.attachTitle')}
+            </h3>
+            <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} onClick={onClose} />
+          </div>
+
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t('library.workspace.attachSearch')}
+            style={{
+              width: '100%',
+              height: 32,
+              padding: '0 10px',
+              fontSize: 13,
+              fontFamily: 'var(--font-sans)',
+              color: 'var(--text)',
+              background: 'var(--surface-2)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--r-sm)',
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+
+          <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2, minHeight: 80 }}>
+            {items === null ? (
+              <NNSkeleton style={{ height: 100 }} />
+            ) : items.length === 0 ? (
+              <p style={{ fontSize: 12.5, color: 'var(--text-dim)', textAlign: 'center', padding: '24px 0', margin: 0 }}>
+                {debouncedQ ? t('library.workspace.attachNoResults') : t('library.workspace.attachEmpty')}
+              </p>
+            ) : (
+              items.map((it) => {
+                const already = attachedIds.has(it.id);
+                const checked = picked.has(it.id);
+                return (
+                  <label
+                    key={it.id}
+                    className="nn-lib-nb-link"
+                    style={{
+                      cursor: already ? 'default' : 'pointer',
+                      opacity: already ? 0.5 : 1,
+                      background: checked ? 'var(--surface-3)' : 'var(--surface-2)',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked || already}
+                      disabled={already}
+                      onChange={() => !already && toggle(it.id)}
+                      style={{ width: 14, height: 14, accentColor: 'var(--lime-500)', flexShrink: 0, cursor: already ? 'default' : 'pointer' }}
+                    />
+                    <NNIcon name={it.kind === 'url' ? 'link' : it.kind === 'text' ? 'edit' : 'book'} size={13} color="var(--text-muted)" />
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
+                      {it.title}
+                    </span>
+                    {already && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('library.details.alreadyIn')}</span>}
+                  </label>
+                );
+              })
+            )}
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <NNBtn variant="ghost" size="sm" onClick={onClose} disabled={busy}>{t('actions.cancel')}</NNBtn>
+            <NNBtn variant="primary" size="sm" onClick={confirm} disabled={picked.size === 0 || busy}>
+              {t('library.workspace.attachConfirm', { count: picked.size })}
+            </NNBtn>
+          </div>
+        </NNCard>
+      </div>
+    </>
+  );
+};

@@ -22,15 +22,14 @@
 // embedding; these routes only enqueue.
 
 import { Elysia, t } from 'elysia';
-import { and, asc, count, desc, eq, isNull, sql } from 'drizzle-orm';
-import { createHash } from 'node:crypto';
+import { and, asc, count, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   cardSources,
   cards,
   db,
   decks,
-  kbChunk,
   notebooks,
+  notebookSources,
   sourceAnnotations,
   sourceChunks,
   sourceMarks,
@@ -46,38 +45,27 @@ import {
   MARK_RECTS_MAX,
   MARKED_TEXT_MAX,
   SOURCE_MARK_COLORS,
-  SOURCE_MIME_ALLOWLIST,
-  SOURCE_MIME_TO_KIND,
   type InkStroke,
   type MarkRect,
   type PageAnnotations,
   type SourceMarkKind,
-  type SourceMime,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
 import { env } from '../env.ts';
 import { rootLogger } from '../logger.ts';
-import { deleteObject, getObjectBytes, headSize, presignUpload } from '../storage.ts';
-import { enqueueSource, stashInlineText } from '../ai/source-ingest.ts';
+import { getObjectBytes } from '../storage.ts';
 import { isChatEnabled } from '../ai/openai-client.ts';
 import { suggestCard } from '../ai/suggest-card.ts';
 import { resolveNoteTypeForCreate, enqueueToolCardsForIndex } from '../ai/tools.ts';
 import { resolveNoteCreate, insertNoteAndCards } from './notes.ts';
-
-/** S3 key for an uploaded source's bytes — `source/{uuid}` namespace (T3). */
-function sourceKeyFor(sourceId: string): string {
-  return `source/${sourceId}`;
-}
-
-const MAX_SOURCE_BYTES = env.ai.MAX_SOURCE_BYTES;
-/** Inline text/url sources cap their content (re-capped server-side). */
-const MAX_INLINE_TEXT = 200_000;
-const ALLOWED_UPLOAD_MIME = new Set<string>(SOURCE_MIME_ALLOWLIST);
-
-/** Map a Postgres unique-violation (23505) to a clean 409 (defense in depth). */
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
-}
+import {
+  countLibraryItems,
+  countNotebookSources,
+  createInlineSource,
+  deleteSourceCompletely,
+  finalizeUploadSource,
+  presignUploadSource,
+} from './sources-shared.ts';
 
 /** Computed ingest progress numerator: COUNT(source_chunks WHERE embedded=true). */
 async function indexedCountFor(sourceId: string): Promise<number> {
@@ -86,6 +74,21 @@ async function indexedCountFor(sourceId: string): Promise<number> {
     .from(sourceChunks)
     .where(and(eq(sourceChunks.sourceId, sourceId), eq(sourceChunks.embedded, true)));
   return row?.indexed ?? 0;
+}
+
+/**
+ * Batched progress numerators for a set of sources (one GROUP BY query, no
+ * N+1) — `Map<sourceId, COUNT(embedded=true)>`. Scoped by source_id (NOT
+ * notebook_id; document chunks are user-level now). Empty set ⇒ empty map.
+ */
+export async function indexedCountsFor(sourceIds: string[]): Promise<Map<string, number>> {
+  if (sourceIds.length === 0) return new Map();
+  const rows = await db
+    .select({ sourceId: sourceChunks.sourceId, indexed: count() })
+    .from(sourceChunks)
+    .where(and(inArray(sourceChunks.sourceId, sourceIds), eq(sourceChunks.embedded, true)))
+    .groupBy(sourceChunks.sourceId);
+  return new Map(rows.map((r) => [r.sourceId, r.indexed]));
 }
 
 /** Shape one source row for the client: row + computed progress. */
@@ -259,32 +262,14 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         .limit(1);
       if (!nb) return status(404, { error: 'not_found' });
 
-      // Collect S3 keys before the DB cascade so we can best-effort delete later.
-      const keys = await db
-        .select({ storageKey: sources.storageKey })
-        .from(sources)
-        .where(and(eq(sources.notebookId, params.id), eq(sources.userId, user.id)));
-
-      // kb_chunk has NO FK on parent_id or source_id — explicit cleanup required.
-      // Document chunks for this notebook use parent_id = notebookId (see source-ingest.ts).
-      await db
-        .delete(kbChunk)
-        .where(
-          and(
-            eq(kbChunk.userId, user.id),
-            eq(kbChunk.sourceType, 'document'),
-            eq(kbChunk.parentId, params.id),
-          ),
-        );
-
-      // Now delete the notebook — FK cascade removes sources + source_chunks.
+      // Library refactor (Р3/Р4): deleting a notebook does NOT touch sources or
+      // their vectors — they live in the library and may be shared by other
+      // notebooks. Only the join edges (notebook_sources) + conversations die,
+      // via FK cascade. No kb_chunk cleanup here (that's source-delete's job).
       await db
         .delete(notebooks)
         .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)));
 
-      for (const { storageKey } of keys) {
-        if (storageKey) await deleteObject(storageKey).catch(() => {});
-      }
       return { ok: true };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
@@ -299,25 +284,24 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
         .limit(1);
       if (!nb) return status(404, { error: 'not_found' });
+      // Attached sources via the join edge, newest-attach first.
       const rows = await db
-        .select()
-        .from(sources)
-        .where(and(eq(sources.notebookId, params.id), eq(sources.userId, user.id)))
-        .orderBy(desc(sources.createdAt));
-      // Computed progress per source: COUNT(embedded) over its chunks.
-      const counts = await db
-        .select({ sourceId: sourceChunks.sourceId, indexed: count() })
-        .from(sourceChunks)
-        .where(and(eq(sourceChunks.notebookId, params.id), eq(sourceChunks.embedded, true)))
-        .groupBy(sourceChunks.sourceId);
-      const indexedBySource = new Map(counts.map((c) => [c.sourceId, c.indexed]));
-      return { items: rows.map((s) => withProgress(s, indexedBySource.get(s.id) ?? 0)) };
+        .select({ source: sources })
+        .from(notebookSources)
+        .innerJoin(sources, eq(sources.id, notebookSources.sourceId))
+        .where(and(eq(notebookSources.notebookId, params.id), eq(sources.userId, user.id)))
+        .orderBy(desc(notebookSources.addedAt));
+      const items = rows.map((r) => r.source);
+      // Computed progress per source: COUNT(embedded) over its chunks (by source_id).
+      const indexedBySource = await indexedCountsFor(items.map((s) => s.id));
+      return { items: items.map((s) => withProgress(s, indexedBySource.get(s.id) ?? 0)) };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   )
-  // Add a source. pdf/epub → claim a uuid (pending, verified=false) + presign a
-  // POST policy; the client uploads then calls /sources/:id/finalize. url/text →
-  // inline create (no upload) + immediate enqueue.
+  // Add a source TO a notebook (UX shortcut, Р8: create a library item AND
+  // attach it in one call). pdf/epub → claim a uuid + presign (attach lands at
+  // finalize). url/text → inline create + attach + enqueue. Enforces BOTH the
+  // per-notebook cap (attach target) and the per-user library cap.
   .post(
     '/:id/sources',
     async ({ user, params, body, status }) => {
@@ -328,83 +312,32 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         .limit(1);
       if (!nb) return status(404, { error: 'not_found' });
 
-      const [{ n }] = await db
-        .select({ n: count() })
-        .from(sources)
-        .where(and(eq(sources.notebookId, params.id), eq(sources.userId, user.id)));
-      if (n >= env.ai.MAX_SOURCES_PER_NOTEBOOK) {
+      if ((await countNotebookSources(user.id, params.id)) >= env.ai.MAX_SOURCES_PER_NOTEBOOK) {
         return status(409, { error: 'too_many_sources' });
       }
+      if ((await countLibraryItems(user.id)) >= env.ai.MAX_LIBRARY_ITEMS_PER_USER) {
+        return status(409, { error: 'library_full' });
+      }
 
-      // ── upload kinds (pdf/epub): claim + presign ──────────────────────────────
+      // ── upload kinds (pdf/epub): claim + presign (attach at finalize) ──────────
       if (body.kind === 'upload') {
-        if (!ALLOWED_UPLOAD_MIME.has(body.mime)) return status(400, { error: 'unsupported_mime' });
-        if (body.size < 1 || body.size > MAX_SOURCE_BYTES) {
-          return status(400, { error: 'too_large' });
+        const res = await presignUploadSource(user.id, body);
+        if (!res.ok) {
+          const code = res.error === 'source_conflict' ? 409 : 400;
+          return status(code, { error: res.error });
         }
-        const sourceMime = body.mime as SourceMime;
-        const kind = SOURCE_MIME_TO_KIND[sourceMime];
-        const sourceId = crypto.randomUUID();
-        const key = sourceKeyFor(sourceId);
-        try {
-          await db.insert(sources).values({
-            id: sourceId,
-            userId: user.id,
-            notebookId: params.id,
-            kind,
-            title: body.title,
-            storageKey: key,
-            mime: sourceMime,
-            byteSize: body.size,
-            status: 'pending',
-            verified: false,
-          });
-        } catch (err) {
-          if (isUniqueViolation(err)) return status(409, { error: 'source_conflict' });
-          throw err;
-        }
-        const upload = await presignUpload(key, sourceMime, MAX_SOURCE_BYTES);
-        rootLogger.debug({ sourceId, userId: user.id, kind }, 'source.presign');
-        return { sourceId, upload };
+        return { sourceId: res.sourceId, upload: res.upload };
       }
 
-      // ── url ───────────────────────────────────────────────────────────────────
-      if (body.kind === 'url') {
-        const [row] = await db
-          .insert(sources)
-          .values({
-            userId: user.id,
-            notebookId: params.id,
-            kind: 'url',
-            title: body.title,
-            url: body.url,
-            status: 'pending',
-            verified: true,
-          })
-          .returning();
-        enqueueSource(row!.id);
-        return row!;
-      }
-
-      // ── text ────────────────────────────────────────────────────────────────────
-      const text = body.text.slice(0, MAX_INLINE_TEXT);
-      const [row] = await db
-        .insert(sources)
-        .values({
-          userId: user.id,
-          notebookId: params.id,
-          kind: 'text',
-          title: body.title,
-          byteSize: text.length,
-          status: 'pending',
-          verified: true,
-        })
-        .returning();
-      // Carry the inline text to the worker (no schema column; recoverable from
-      // SoT chunks on a later resume — see source-ingest.ts).
-      stashInlineText(row!.id, text);
-      enqueueSource(row!.id);
-      return row!;
+      // ── url / text: inline create + attach in one tx ──────────────────────────
+      const row = await createInlineSource(
+        user.id,
+        body.kind === 'url'
+          ? { kind: 'url', title: body.title, url: body.url }
+          : { kind: 'text', title: body.title, text: body.text },
+        params.id,
+      );
+      return row;
     },
     {
       auth: true,
@@ -428,6 +361,96 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         }),
       ]),
     },
+  )
+  // ── attach / detach (library refactor §4.2) ──────────────────────────────────
+  // Attach existing library sources to this notebook. Body `{ sourceIds }` (cap
+  // MAX_ATTACH_BATCH per call → 400). Foreign/missing source → 404 first. The
+  // resulting attached count must not exceed MAX_SOURCES_PER_NOTEBOOK → 409.
+  // Idempotent (onConflictDoNothing on the plain (notebook_id, source_id) unique).
+  .post(
+    '/:id/sources/attach',
+    async ({ user, params, body, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      const ids = Array.from(new Set(body.sourceIds));
+      if (ids.length === 0) return { ok: true, attached: 0 };
+      if (ids.length > env.ai.MAX_ATTACH_BATCH) {
+        return status(400, { error: 'too_many_sources' });
+      }
+
+      // Ownership: every id must be a live (non-deleting) source of the caller.
+      const owned = await db
+        .select({ id: sources.id })
+        .from(sources)
+        .where(
+          and(
+            eq(sources.userId, user.id),
+            inArray(sources.id, ids),
+            sql`${sources.status} <> 'deleting'`,
+          ),
+        );
+      if (owned.length !== ids.length) return status(404, { error: 'not_found' });
+
+      // Cap on the resulting attached set (current + new, dedup'd).
+      const current = await countNotebookSources(user.id, params.id);
+      if (current + ids.length > env.ai.MAX_SOURCES_PER_NOTEBOOK) {
+        return status(409, { error: 'notebook_full' });
+      }
+
+      await db
+        .insert(notebookSources)
+        .values(ids.map((sourceId) => ({ userId: user.id, notebookId: params.id, sourceId })))
+        .onConflictDoNothing({
+          target: [notebookSources.notebookId, notebookSources.sourceId],
+        });
+      return { ok: true, attached: ids.length };
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        sourceIds: t.Array(t.String({ format: 'uuid' }), { minItems: 1, maxItems: 100 }),
+      }),
+    },
+  )
+  // Detach one source from this notebook (NOT a delete — the source + its
+  // chunks/vectors/markup are untouched in the library). 404 if the edge or the
+  // notebook is foreign/missing.
+  .delete(
+    '/:id/sources/:sourceId',
+    async ({ user, params, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      const [row] = await db
+        .delete(notebookSources)
+        .where(
+          and(
+            eq(notebookSources.userId, user.id),
+            eq(notebookSources.notebookId, params.id),
+            eq(notebookSources.sourceId, params.sourceId),
+          ),
+        )
+        .returning({ id: notebookSources.id });
+      if (!row) return status(404, { error: 'not_found' });
+      return { ok: true };
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        sourceId: t.String({ format: 'uuid' }),
+      }),
+    },
   );
 
 // Source-level routes (finalize / get / rename / delete) live under their own
@@ -440,69 +463,14 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
   .post(
     '/:id/finalize',
     async ({ user, params, status }) => {
-      const [pending] = await db
-        .select()
-        .from(sources)
-        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
-        .limit(1);
-      if (!pending) return status(404, { error: 'not_found' });
-      if (pending.kind !== 'pdf' && pending.kind !== 'epub') {
-        return status(400, { error: 'not_an_upload' });
+      const res = await finalizeUploadSource(user.id, params.id);
+      if (!res.ok) {
+        return status(res.status, {
+          error: res.error,
+          ...(res.existingSourceId ? { existingSourceId: res.existingSourceId } : {}),
+        });
       }
-      const key = pending.storageKey;
-      if (!key) return status(400, { error: 'no_storage_key' });
-
-      // Idempotency: an already-verified row is returned as-is.
-      if (pending.verified) return pending;
-
-      // Real size via HEAD. No object at the key → keep the pending row so a
-      // retry after the real upload still works.
-      let size: number | undefined;
-      try {
-        size = await headSize(key);
-      } catch {
-        return status(400, { error: 'not_uploaded' });
-      }
-      if (size === undefined) return status(400, { error: 'head_failed' });
-      // > ceiling (or empty) → delete the object + the pending row + 400.
-      if (size < 1 || size > MAX_SOURCE_BYTES) {
-        await deleteObject(key);
-        await db.delete(sources).where(and(eq(sources.id, params.id), eq(sources.userId, user.id)));
-        return status(400, { error: 'too_large' });
-      }
-
-      // Read the bytes once to compute the dedup hash.
-      const bytes = await getObjectBytes(key);
-      const byteHash = createHash('sha256').update(bytes).digest('hex');
-
-      // DEDUP: a READY source in the SAME (user, notebook) with the same hash is
-      // a duplicate → delete the just-uploaded object + the pending row + 409.
-      const [dup] = await db
-        .select({ id: sources.id })
-        .from(sources)
-        .where(
-          and(
-            eq(sources.userId, user.id),
-            eq(sources.notebookId, pending.notebookId),
-            eq(sources.byteHash, byteHash),
-            eq(sources.status, 'ready'),
-          ),
-        )
-        .limit(1);
-      if (dup) {
-        await deleteObject(key).catch(() => {});
-        await db.delete(sources).where(and(eq(sources.id, params.id), eq(sources.userId, user.id)));
-        return status(409, { error: 'duplicate_source' });
-      }
-
-      const [row] = await db
-        .update(sources)
-        .set({ verified: true, byteSize: size, byteHash, updatedAt: new Date() })
-        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
-        .returning();
-      rootLogger.info({ sourceId: params.id, userId: user.id, size }, 'source.finalize');
-      enqueueSource(params.id);
-      return row!;
+      return res.source;
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   )
@@ -546,32 +514,8 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
   .delete(
     '/:id',
     async ({ user, params, status }) => {
-      const [source] = await db
-        .select({ id: sources.id, storageKey: sources.storageKey })
-        .from(sources)
-        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
-        .limit(1);
-      if (!source) return status(404, { error: 'not_found' });
-
-      await db
-        .update(sources)
-        .set({ status: 'deleting', updatedAt: new Date() })
-        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)));
-
-      // kb_chunk has NO FK on source_id (it's a plain uuid) → explicit cleanup,
-      // user-scoped + document-only so a card chunk is never touched.
-      await db
-        .delete(kbChunk)
-        .where(
-          and(
-            eq(kbChunk.userId, user.id),
-            eq(kbChunk.sourceType, 'document'),
-            eq(kbChunk.sourceId, params.id),
-          ),
-        );
-
-      await db.delete(sources).where(and(eq(sources.id, params.id), eq(sources.userId, user.id)));
-      if (source.storageKey) await deleteObject(source.storageKey).catch(() => {});
+      const ok = await deleteSourceCompletely(user.id, params.id);
+      if (!ok) return status(404, { error: 'not_found' });
       return { ok: true };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
@@ -1013,7 +957,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
     '/:id/quick-card',
     async ({ user, params, body, status }) => {
       const [source] = await db
-        .select({ id: sources.id, notebookId: sources.notebookId })
+        .select({ id: sources.id })
         .from(sources)
         .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
         .limit(1);
@@ -1086,7 +1030,10 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
           cardIds,
           chunkIds: chunkRows.map((c) => c.id),
           sourceId: params.id,
-          notebookId: source.notebookId,
+          // Quick-card provenance is born of READING, not of a notebook — a
+          // library source may belong to zero notebooks (the main L2 path), so
+          // the edge's notebookId is always NULL (card_sources permits it).
+          notebookId: null,
         });
         // Insert the card marker AFTER the note/cards + provenance, in the SAME
         // tx, anchored to the FIRST card. The quote is non-empty (front is a
@@ -1194,7 +1141,7 @@ async function writeQuickCardProvenance(
     cardIds: string[];
     chunkIds: string[];
     sourceId: string;
-    notebookId: string;
+    notebookId: string | null;
   },
 ): Promise<void> {
   const { userId, cardIds, chunkIds, sourceId, notebookId } = args;

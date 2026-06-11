@@ -33,6 +33,7 @@ import {
   kbChunk,
   messages as messagesTable,
   notebooks as notebooksTable,
+  notebookSources as notebookSourcesTable,
   sourceAnnotations as sourceAnnotationsTable,
   sourceChunks as sourceChunksTable,
   sourceMarks as sourceMarksTable,
@@ -203,7 +204,6 @@ async function seedReadySource(
     .insert(sourcesTable)
     .values({
       userId,
-      notebookId,
       kind: 'pdf',
       title,
       status: 'ready',
@@ -212,19 +212,22 @@ async function seedReadySource(
     })
     .returning({ id: sourcesTable.id });
   const sourceId = src!.id;
+  // Library refactor: a source is user-level; the notebook binding is an edge.
+  await db.insert(notebookSourcesTable).values({ userId, notebookId, sourceId });
   const chunkIds: string[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i]!;
     const [sc] = await db
       .insert(sourceChunksTable)
-      .values({ userId, sourceId, notebookId, position: i, text: c.text, page: c.page, embedded: true })
+      .values({ userId, sourceId, position: i, text: c.text, page: c.page, embedded: true })
       .returning({ id: sourceChunksTable.id });
     chunkIds.push(sc!.id);
     await db.insert(kbChunk).values({
       userId,
       sourceType: 'document',
       sourceId,
-      parentId: notebookId,
+      // parentId = sourceId for documents (library refactor — kb-chunk.ts:13).
+      parentId: sourceId,
       position: i,
       text: c.text,
       embedding: vectorFor(c.text),

@@ -22,6 +22,17 @@ const TABLES = [
   'messages',
   'conversations',
   'kb_chunk',
+  // Library / NotebookLM substrate (sources are user-level now; notebooks
+  // attach via notebook_sources). RESTART IDENTITY CASCADE handles the FK
+  // graph, but list them explicitly so a leaked row never survives a reset.
+  'card_sources',
+  'source_marks',
+  'source_annotations',
+  'source_reading_state',
+  'source_chunks',
+  'notebook_sources',
+  'sources',
+  'notebooks',
   'reviews',
   'cards',
   'notes',

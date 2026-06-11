@@ -37,6 +37,7 @@ import {
   db,
   kbChunk,
   notebooks as notebooksTable,
+  notebookSources as notebookSourcesTable,
   sourceChunks as sourceChunksTable,
   sources as sourcesTable,
 } from '@neuronexus/db';
@@ -171,12 +172,13 @@ async function freshNotebook(userId: string, title = 'My Notebook'): Promise<str
 }
 
 /**
- * Seed a READY source with `chunks` document chunks. Inserts the source row, the
- * source_chunks SoT rows, AND the denormalized kb_chunk document rows (the
+ * Seed a READY user-level source with `chunks` document chunks + attach it to the
+ * notebook via the join edge. Inserts the source row, the notebook_sources edge,
+ * the source_chunks SoT rows, AND the denormalized kb_chunk document rows (the
  * embedding = vectorFor(chunk.text), matching the AC7 seam tuple:
- * source_type='document', source_id=source.id, parent_id=notebook.id,
- * card_id=NULL, position aligned with source_chunks.position). Returns the source
- * id + the source_chunk ids (in position order).
+ * source_type='document', source_id=source.id, parent_id=source.id (library
+ * refactor), card_id=NULL, position aligned with source_chunks.position). Returns
+ * the source id + the source_chunk ids (in position order).
  */
 async function seedReadySource(
   userId: string,
@@ -189,7 +191,6 @@ async function seedReadySource(
     .insert(sourcesTable)
     .values({
       userId,
-      notebookId,
       kind: 'text',
       title,
       status,
@@ -198,6 +199,8 @@ async function seedReadySource(
     })
     .returning({ id: sourcesTable.id });
   const sourceId = src!.id;
+  // Library refactor: a source is user-level; the notebook binding is an edge.
+  await db.insert(notebookSourcesTable).values({ userId, notebookId, sourceId });
   const chunkIds: string[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i]!;
@@ -206,7 +209,6 @@ async function seedReadySource(
       .values({
         userId,
         sourceId,
-        notebookId,
         position: i,
         text: c.text,
         page: c.page,
@@ -219,7 +221,8 @@ async function seedReadySource(
       userId,
       sourceType: 'document',
       sourceId,
-      parentId: notebookId,
+      // parentId = sourceId for documents (library refactor — kb-chunk.ts:13).
+      parentId: sourceId,
       position: i,
       text: c.text,
       embedding: vectorFor(c.text),
@@ -382,6 +385,70 @@ describe('notebook chat — search_source grounding + citations', () => {
     expect(cited[0]!.sourceChunkId).toBe(chunkIds[0]);
     expect(cited[0]!.position).toBe(0);
     expect(frames.some((f) => f.event === 'done')).toBe(true);
+  });
+
+  test('a source attached via the ATTACH route (not upload) is visible in the grounding scope', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const notebookId = await freshNotebook(userId, 'Library Notebook');
+    // Seed a user-level source + its chunks but DO NOT attach it (no edge yet).
+    const [src] = await db
+      .insert(sourcesTable)
+      .values({
+        userId,
+        kind: 'text',
+        title: 'Library Book',
+        status: 'ready',
+        verified: true,
+        chunkCount: 1,
+      })
+      .returning({ id: sourcesTable.id });
+    const sourceId = src!.id;
+    const [sc] = await db
+      .insert(sourceChunksTable)
+      .values({ userId, sourceId, position: 0, text: 'photosynthesis converts light', page: 1, embedded: true })
+      .returning({ id: sourceChunksTable.id });
+    const chunkId = sc!.id;
+    await db.insert(kbChunk).values({
+      userId,
+      sourceType: 'document',
+      sourceId,
+      parentId: sourceId,
+      position: 0,
+      text: 'photosynthesis converts light',
+      embedding: vectorFor('photosynthesis converts light'),
+      embeddingModel: 'test-fixture',
+      sourceHash: `fixture-${sourceId}-0`,
+      cardId: null,
+    });
+
+    // Attach the EXISTING library source via the attach route (not an upload).
+    const attach = await callApp(app, 'POST', `/notebooks/${notebookId}/sources/attach`, {
+      cookie,
+      body: { sourceIds: [sourceId] },
+    });
+    expect(attach.status).toBe(200);
+    expect((await attach.json<{ attached: number }>()).attached).toBe(1);
+
+    __setAiClientForTests({
+      embed: fakeEmbed,
+      chatStreamAgentic: scriptedAgentStream([
+        searchTurn([{ id: 's1', name: 'search_source', args: { query: 'photosynthesis converts light' } }]),
+        answerTurn(`Photosynthesis converts light [src:${chunkId}].`),
+      ]),
+    });
+
+    const convId = (await (await createConversation(cookie, { notebookId })).json<{ id: string }>()).id;
+    const frames = await readSse(await streamReq(cookie, convId, 'how does it work?'));
+
+    // The attached source IS in scope: search_source surfaces + cites its chunk.
+    expect(executedTools(frames)).toContain('search_source');
+    const result = frames.find((f) => f.event === 'tool_result');
+    expect((result!.data as { ok: boolean }).ok).toBe(true);
+    expect((result!.data as { summary: string }).summary).toContain(`[src:${chunkId}]`);
+    const citationFrame = frames.find((f) => f.event === 'citation');
+    const cited = (citationFrame!.data as { citations: { sourceChunkId: string }[] }).citations;
+    expect(cited.length).toBe(1);
+    expect(cited[0]!.sourceChunkId).toBe(chunkId);
   });
 
   test('search_source over an empty-scope notebook returns a graceful "no sources" result', async () => {

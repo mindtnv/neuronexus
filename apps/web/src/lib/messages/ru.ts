@@ -14,6 +14,7 @@ import empty from './ru/empty';
 import sessionComplete from './ru/session-complete';
 import noteTypes from './ru/note-types';
 import notebooks from './ru/notebooks';
+import library from './ru/library';
 
 const messages = {
   ...common,
@@ -32,6 +33,7 @@ const messages = {
   session: sessionComplete,
   noteTypes,
   notebooks,
+  library,
 };
 
 export default messages;

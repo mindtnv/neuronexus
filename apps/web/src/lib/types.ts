@@ -174,6 +174,45 @@ export interface Source {
   updatedAt: string;
 }
 
+// ── Library (L1) — the user-level material store over `sources` ───────────────
+
+export type ReadingStatus = 'unread' | 'reading' | 'finished';
+
+/** One library item (GET /library list + GET /library/items/:id detail). A
+ *  library item IS a `sources` row; the list/detail responses fold in the
+ *  reading-state + aggregate counts (no N+1). */
+export interface LibraryItem {
+  id: string;
+  kind: SourceKind;
+  title: string;
+  author: string | null;
+  description: string | null;
+  language: string | null;
+  tags: string[];
+  /** Ingest lifecycle status (pending|parsing|indexing|ready|error|deleting). */
+  status: SourceStatus;
+  errorCode: IngestErrorCode | null;
+  /** Computed: COUNT(embedded chunks). */
+  indexed: number;
+  /** Computed denominator: total chunk count (0 until parsed). */
+  total: number;
+  readingStatus: ReadingStatus;
+  /** Reading progress 0..1, or null when never opened. */
+  percent: number | null;
+  pageCount: number | null;
+  byteSize: number | null;
+  coverMediaId: string | null;
+  notebookCount: number;
+  cardCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /library/items/:id — a library item + the notebooks it's attached to. */
+export interface LibraryItemDetail extends LibraryItem {
+  notebooks: { id: string; title: string }[];
+}
+
 // ── NotebookLM reader + provenance (M2/M3) ────────────────────────────────────
 
 /** One parsed source chunk page for the reader (GET /sources/:id/chunks). */

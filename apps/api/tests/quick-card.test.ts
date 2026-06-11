@@ -3,10 +3,11 @@
 //     resolves the builtin Basic note type LIVE, inserts the note + cards AND the
 //     card_sources provenance edges in ONE tx, returns { noteId, cardIds }:
 //       - page given + page-matched source_chunks → one edge per (card × chunk),
-//         capped CARD_SOURCE_LINK_CAP, each carrying sourceChunkId + sourceId +
-//         notebookId, conversationId/messageId NULL (manual reading provenance).
+//         capped CARD_SOURCE_LINK_CAP, each carrying sourceChunkId + sourceId,
+//         notebookId/conversationId/messageId NULL (reading-born provenance —
+//         library refactor: a source may belong to zero notebooks).
 //       - NO page / no page-matched chunk → exactly ONE fallback edge per card
-//         with sourceChunkId NULL (still sourceId + notebookId).
+//         with sourceChunkId NULL (still sourceId; notebookId NULL).
 //       - the created card appears in GET /cards/:id/sources.
 //       - foreign deckId → a clean 400 (resolveNoteCreate authorizes the deck),
 //         never a 500; foreign source → 404; missing front → 400 (route schema).
@@ -27,6 +28,7 @@ import {
   db,
   ensureBuiltins,
   notebooks as notebooksTable,
+  notebookSources as notebookSourcesTable,
   notes as notesTable,
   sourceChunks as sourceChunksTable,
   sourceMarks as sourceMarksTable,
@@ -77,7 +79,6 @@ async function seedSourceWithChunks(
     .insert(sourcesTable)
     .values({
       userId,
-      notebookId,
       kind: 'pdf',
       title,
       status: 'ready',
@@ -86,12 +87,14 @@ async function seedSourceWithChunks(
     })
     .returning({ id: sourcesTable.id });
   const sourceId = src!.id;
+  // Library refactor: a source is user-level; the notebook binding is an edge.
+  await db.insert(notebookSourcesTable).values({ userId, notebookId, sourceId });
   const chunkIds: string[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i]!;
     const [sc] = await db
       .insert(sourceChunksTable)
-      .values({ userId, sourceId, notebookId, position: i, text: c.text, page: c.page, embedded: true })
+      .values({ userId, sourceId, position: i, text: c.text, page: c.page, embedded: true })
       .returning({ id: sourceChunksTable.id });
     chunkIds.push(sc!.id);
   }
@@ -170,7 +173,10 @@ describe('POST /sources/:id/quick-card — provenance', () => {
     for (const e of edges) {
       expect(e.cardId).toBe(cardIds[0]);
       expect(e.sourceId).toBe(sourceId);
-      expect(e.notebookId).toBe(notebookId);
+      // Library refactor: quick-card provenance is born of READING, not a
+      // notebook — a library source may belong to zero notebooks, so the edge's
+      // notebookId is always NULL (card_sources permits it).
+      expect(e.notebookId).toBeNull();
       // Manual reading provenance — no chat conversation/message.
       expect(e.conversationId).toBeNull();
       expect(e.messageId).toBeNull();
@@ -212,7 +218,8 @@ describe('POST /sources/:id/quick-card — provenance', () => {
     expect(edges[0]!.sourceChunkId).toBeNull(); // fallback edge
     expect(edges[0]!.cardId).toBe(cardIds[0]);
     expect(edges[0]!.sourceId).toBe(sourceId);
-    expect(edges[0]!.notebookId).toBe(notebookId);
+    // Quick-card provenance is reading-born → notebookId is always NULL.
+    expect(edges[0]!.notebookId).toBeNull();
   });
 
   test('page given but no chunk on that page → ONE fallback edge (NULL chunk)', async () => {
@@ -273,7 +280,8 @@ describe('POST /sources/:id/quick-card — provenance', () => {
     expect(items.length).toBe(1);
     expect(items[0]!.sourceChunkId).toBe(chunkIds[0]);
     expect(items[0]!.sourceId).toBe(sourceId);
-    expect(items[0]!.notebookId).toBe(notebookId);
+    // Quick-card provenance is reading-born → notebookId is always NULL.
+    expect(items[0]!.notebookId).toBeNull();
     expect(items[0]!.sourceTitle).toBe('Cell Biology');
   });
 });

@@ -154,7 +154,10 @@ async function parsePhase(source: Source): Promise<void> {
     const chunks = chunkSource({
       sourceType: 'document',
       sourceId: source.id,
-      parentId: source.notebookId,
+      // parentId = sourceId for documents (library refactor): sources are
+      // user-level now, so the column keeps its NOT NULL with the card
+      // convention. See packages/shared/src/kb-chunk.ts:13.
+      parentId: source.id,
       text: '',
       units,
       chunkOptions: {
@@ -181,7 +184,6 @@ async function parsePhase(source: Source): Promise<void> {
           chunks.map((c) => ({
             userId: source.userId,
             sourceId: source.id,
-            notebookId: source.notebookId,
             position: c.position,
             text: c.text,
             page: c.page ?? null,
@@ -269,7 +271,7 @@ async function indexPhase(sourceId: string): Promise<void> {
     // Re-check the source still exists and is not `deleting` BEFORE each batch
     // (delete-race: a vanished/deleting source is a clean terminal, not a crash).
     const [source] = await db
-      .select({ id: sources.id, status: sources.status, userId: sources.userId, notebookId: sources.notebookId })
+      .select({ id: sources.id, status: sources.status, userId: sources.userId })
       .from(sources)
       .where(eq(sources.id, sourceId))
       .limit(1);
@@ -316,7 +318,8 @@ async function indexPhase(sourceId: string): Promise<void> {
             userId: source.userId,
             sourceType: 'document',
             sourceId: source.id,
-            parentId: source.notebookId,
+            // parentId = sourceId for documents (library refactor — kb-chunk.ts:13).
+            parentId: source.id,
             position: c.position,
             text: c.text,
             embedding: vector,
@@ -333,7 +336,7 @@ async function indexPhase(sourceId: string): Promise<void> {
               embeddingModel: model,
               sourceHash: c.sourceHash ?? computeSourceHash(c.text, model),
               userId: source.userId,
-              parentId: source.notebookId,
+              parentId: source.id,
               updatedAt: new Date(),
             },
           });

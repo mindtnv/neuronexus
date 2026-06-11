@@ -11,6 +11,7 @@ const common = {
     decks: 'Колоды',
     cards: 'Карточки',
     chat: 'Чат',
+    library: 'Библиотека',
     notebooks: 'Блокноты',
     garden: 'Сад',
     editor: 'Редактор',

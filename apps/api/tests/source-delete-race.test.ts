@@ -46,10 +46,11 @@ async function freshNotebook(userId: string): Promise<string> {
   return nb!.id;
 }
 
-async function seedTextSource(userId: string, notebookId: string, text: string): Promise<string> {
+async function seedTextSource(userId: string, _notebookId: string, text: string): Promise<string> {
+  // Sources are user-level now (library refactor) — no notebook_id on the row.
   const [src] = await db
     .insert(sourcesTable)
-    .values({ userId, notebookId, kind: 'text', title: 'Inline', status: 'pending', verified: true })
+    .values({ userId, kind: 'text', title: 'Inline', status: 'pending', verified: true })
     .returning({ id: sourcesTable.id });
   stashInlineText(src!.id, text);
   return src!.id;

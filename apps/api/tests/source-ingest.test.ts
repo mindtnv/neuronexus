@@ -73,12 +73,12 @@ async function freshNotebook(userId: string): Promise<string> {
 }
 
 /** Seed a pending `text` source + stash its inline text. Returns the source id. */
-async function seedTextSource(userId: string, notebookId: string, text: string): Promise<string> {
+async function seedTextSource(userId: string, _notebookId: string, text: string): Promise<string> {
+  // Sources are user-level now (library refactor) — no notebook_id on the row.
   const [src] = await db
     .insert(sourcesTable)
     .values({
       userId,
-      notebookId,
       kind: 'text',
       title: 'Inline',
       status: 'pending',
@@ -322,7 +322,7 @@ describe('source-ingest — error terminals', () => {
 
     const [src] = await db
       .insert(sourcesTable)
-      .values({ userId, notebookId: nbId, kind: 'text', title: 'Huge', status: 'pending', verified: true })
+      .values({ userId, kind: 'text', title: 'Huge', status: 'pending', verified: true })
       .returning({ id: sourcesTable.id });
     stashInlineText(src!.id, bigText);
 
@@ -345,7 +345,7 @@ describe('source-ingest — error terminals', () => {
     // text source whose stashed text is empty → parseText → empty_source.
     const [src] = await db
       .insert(sourcesTable)
-      .values({ userId, notebookId: nbId, kind: 'text', title: 'Empty', status: 'pending', verified: true })
+      .values({ userId, kind: 'text', title: 'Empty', status: 'pending', verified: true })
       .returning({ id: sourcesTable.id });
     stashInlineText(src!.id, '   '); // whitespace only → empty_source
 

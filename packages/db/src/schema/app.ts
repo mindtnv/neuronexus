@@ -8,6 +8,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -628,18 +629,15 @@ export const notebooks = pgTable(
   (t) => [index('notebooks_user_idx').on(t.userId)],
 );
 
-// ── sources ─────────────────────────────────────────────────────────────────
-// One ingested source inside a notebook. The ROW IS THE INGEST JOB: `status`
-// drives the async worker (pending→parsing→indexing→ready|error|deleting), and
-// the worker pulls `userId` from this row (it runs with NO auth session). Uploaded
-// bytes (pdf/epub) live in S3 under `storageKey` (`source/{id}`); url/text carry
-// no bytes. `byteHash` (sha256 at finalize) powers per-(user,notebook) dedup.
-// `errorCode` is a MACHINE code (not prose) mapped to i18n on the client.
-// `verified` mirrors media's claim-on-presign ownership pattern. The progress
-// numerator is COMPUTED (COUNT source_chunks.embedded), NOT a stored counter.
+// ── notebook_sources ───────────────────────────────────────────────────────────
+// Many-to-many attach edge: a LIBRARY source plugged into a notebook. Cascades
+// give the ownership model its shape: deleting a notebook kills only the edges
+// (the source + its chunks/vectors/markup survive in the library); deleting a
+// source detaches it from every notebook. `user_id` is the mandatory FIRST
+// conjunct on every query (repo invariant).
 
-export const sources = pgTable(
-  'sources',
+export const notebookSources = pgTable(
+  'notebook_sources',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     userId: text('user_id')
@@ -648,6 +646,40 @@ export const sources = pgTable(
     notebookId: uuid('notebook_id')
       .notNull()
       .references(() => notebooks.id, { onDelete: 'cascade' }),
+    sourceId: uuid('source_id')
+      .notNull()
+      .references(() => sources.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Plain (non-partial) unique — the idempotent attach upsert target
+    // (`onConflictDoNothing({ target })`, no `where` needed).
+    uniqueIndex('notebook_sources_nb_src_uq').on(t.notebookId, t.sourceId),
+    index('notebook_sources_source_idx').on(t.sourceId),
+    index('notebook_sources_user_idx').on(t.userId),
+  ],
+);
+
+// ── sources ─────────────────────────────────────────────────────────────────
+// One ingested LIBRARY material (user-level — notebooks attach it via
+// notebook_sources). The ROW IS THE INGEST JOB: `status` drives the async worker
+// (pending→parsing→indexing→ready|error|deleting), and the worker pulls `userId`
+// from this row (it runs with NO auth session). Uploaded bytes (pdf/epub) live in
+// S3 under `storageKey` (`source/{id}`); url/text carry no bytes. `byteHash`
+// (sha256 at finalize) powers per-USER dedup (app-level SELECT — historical dupes
+// are legal, no unique index). `errorCode` is a MACHINE code (not prose) mapped
+// to i18n on the client. `verified` mirrors media's claim-on-presign ownership
+// pattern. The progress numerator is COMPUTED (COUNT source_chunks.embedded),
+// NOT a stored counter. Metadata columns (author/description/language/pageCount/
+// coverMediaId/tags) are all optional library-card fields.
+
+export const sources = pgTable(
+  'sources',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     kind: text('kind').notNull(), // 'pdf' | 'epub' | 'url' | 'text'
     title: text('title').notNull(),
     url: text('url'),
@@ -661,14 +693,20 @@ export const sources = pgTable(
     charCount: integer('char_count'),
     chunkCount: integer('chunk_count'),
     verified: boolean('verified').notNull().default(false),
+    author: text('author'),
+    description: text('description'),
+    language: text('language'),
+    pageCount: integer('page_count'),
+    coverMediaId: uuid('cover_media_id').references(() => media.id, { onDelete: 'set null' }),
+    tags: text('tags').array().notNull().default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('sources_user_idx').on(t.userId),
-    index('sources_notebook_idx').on(t.notebookId),
     // Powers the worker claim (`WHERE status = 'pending' … FOR UPDATE SKIP LOCKED`).
     index('sources_status_idx').on(t.status),
+    index('sources_tags_gin_idx').using('gin', t.tags),
   ],
 );
 
@@ -690,9 +728,6 @@ export const sourceChunks = pgTable(
     sourceId: uuid('source_id')
       .notNull()
       .references(() => sources.id, { onDelete: 'cascade' }),
-    notebookId: uuid('notebook_id')
-      .notNull()
-      .references(() => notebooks.id, { onDelete: 'cascade' }),
     position: integer('position').notNull(),
     text: text('text').notNull(),
     page: integer('page'),
@@ -838,6 +873,40 @@ export const sourceMarks = pgTable(
   ],
 );
 
+// ── source_reading_state ───────────────────────────────────────────────────────
+// Per-(user, source) reading position + status, synced across devices (the old
+// `nn:pdf:pos:<id>` localStorage becomes a write-through cache migrated on first
+// open). `status` flips unread→reading automatically on the first progress PUT;
+// 'finished' is set ONLY manually (a percent-based auto-finish misfires on
+// reference books). The (user_id, updated_at) index powers the «Продолжить
+// чтение» shelf (top-N WHERE status='reading' ORDER BY updated_at DESC).
+
+export const sourceReadingState = pgTable(
+  'source_reading_state',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    sourceId: uuid('source_id')
+      .notNull()
+      .references(() => sources.id, { onDelete: 'cascade' }),
+    status: text('status').notNull().default('unread'), // 'unread' | 'reading' | 'finished'
+    // PDF-mode position (1-based page) — null when reading in text mode.
+    page: integer('page'),
+    // Text-mode position (source_chunks.position) — null when reading the PDF.
+    chunkPos: integer('chunk_pos'),
+    // 0..1 fraction for the library progress bar.
+    percent: real('percent'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Plain unique — the upsert target (onConflictDoUpdate, no `where`).
+    uniqueIndex('source_reading_state_src_user_uq').on(t.sourceId, t.userId),
+    index('source_reading_state_user_updated_idx').on(t.userId, t.updatedAt),
+  ],
+);
+
 // ── relations ──────────────────────────────────────────────────────────────
 
 export const profileRelations = relations(profile, ({ one }) => ({
@@ -917,15 +986,27 @@ export const messagesRelations = relations(messages, ({ one }) => ({
 
 export const notebooksRelations = relations(notebooks, ({ one, many }) => ({
   user: one(user, { fields: [notebooks.userId], references: [user.id] }),
-  sources: many(sources),
+  sourceLinks: many(notebookSources),
   conversations: many(conversations),
+}));
+
+export const notebookSourcesRelations = relations(notebookSources, ({ one }) => ({
+  user: one(user, { fields: [notebookSources.userId], references: [user.id] }),
+  notebook: one(notebooks, { fields: [notebookSources.notebookId], references: [notebooks.id] }),
+  source: one(sources, { fields: [notebookSources.sourceId], references: [sources.id] }),
 }));
 
 export const sourcesRelations = relations(sources, ({ one, many }) => ({
   user: one(user, { fields: [sources.userId], references: [user.id] }),
-  notebook: one(notebooks, { fields: [sources.notebookId], references: [notebooks.id] }),
+  notebookLinks: many(notebookSources),
   chunks: many(sourceChunks),
   annotations: many(sourceAnnotations),
+  cover: one(media, { fields: [sources.coverMediaId], references: [media.id] }),
+}));
+
+export const sourceReadingStateRelations = relations(sourceReadingState, ({ one }) => ({
+  user: one(user, { fields: [sourceReadingState.userId], references: [user.id] }),
+  source: one(sources, { fields: [sourceReadingState.sourceId], references: [sources.id] }),
 }));
 
 export const sourceAnnotationsRelations = relations(sourceAnnotations, ({ one }) => ({
@@ -942,7 +1023,6 @@ export const sourceMarksRelations = relations(sourceMarks, ({ one }) => ({
 export const sourceChunksRelations = relations(sourceChunks, ({ one }) => ({
   user: one(user, { fields: [sourceChunks.userId], references: [user.id] }),
   source: one(sources, { fields: [sourceChunks.sourceId], references: [sources.id] }),
-  notebook: one(notebooks, { fields: [sourceChunks.notebookId], references: [notebooks.id] }),
 }));
 
 export const cardSourcesRelations = relations(cardSources, ({ one }) => ({
@@ -999,3 +1079,7 @@ export type SourceAnnotation = typeof sourceAnnotations.$inferSelect;
 export type NewSourceAnnotation = typeof sourceAnnotations.$inferInsert;
 export type SourceMark = typeof sourceMarks.$inferSelect;
 export type NewSourceMark = typeof sourceMarks.$inferInsert;
+export type NotebookSource = typeof notebookSources.$inferSelect;
+export type NewNotebookSource = typeof notebookSources.$inferInsert;
+export type SourceReadingState = typeof sourceReadingState.$inferSelect;
+export type NewSourceReadingState = typeof sourceReadingState.$inferInsert;

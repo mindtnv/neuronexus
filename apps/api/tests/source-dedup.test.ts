@@ -1,9 +1,13 @@
-// Source byte-dedup at finalize (NotebookLM M1, T6 CRITIC-M3 / AC1.7).
+// Source byte-dedup at finalize (NotebookLM M1, T6 CRITIC-M3 / AC1.7 —
+// library refactor Р5: dedup is now per-USER, not per-notebook).
 //
-// A finalize computes `byteHash = sha256(bytes)`; a READY source in the SAME
-// (user, notebook) with the same hash short-circuits as 409 `duplicate_source`
-// (the just-uploaded object + pending row are cleaned up, no second embed run).
-// A different notebook OR different bytes embeds normally.
+// A finalize computes `byteHash = sha256(bytes)`; a non-terminal source of the
+// SAME USER (status NOT IN ('error','deleting') — so even a still-indexing dupe
+// is caught) with the same hash short-circuits as 409 `duplicate_source` carrying
+// `existingSourceId` (the just-uploaded object + pending row are cleaned up, no
+// second embed run). Different bytes embed normally. Sources are user-level now
+// (notebooks attach via the join edge), so the SAME book in a DIFFERENT notebook
+// is the SAME library item → also a duplicate (the "one ingest per material" win).
 //
 // The finalize path reads S3 (`headSize` + `getObjectBytes`) — there is NO
 // storage seam (see report), so the END-TO-END 409 is exercised against REAL
@@ -14,8 +18,8 @@
 // unconditionally as a backstop.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { and, count, eq } from 'drizzle-orm';
-import { db, notebooks, sources as sourcesTable } from '@neuronexus/db';
+import { and, count, eq, sql } from 'drizzle-orm';
+import { db, sources as sourcesTable } from '@neuronexus/db';
 import { buildApp } from '../src/app.ts';
 import { env } from '../src/env.ts';
 import {
@@ -124,10 +128,14 @@ describe('source dedup — finalize byte_hash (real MinIO round-trip)', () => {
     expect(firstRow!.status).toBe('ready');
     expect(firstRow!.byteHash).toBeTruthy();
 
-    // Second source: SAME bytes, SAME notebook → finalize detects the ready dup.
+    // Second source: SAME bytes, SAME notebook → finalize detects the ready dup,
+    // returning the existing source id (so the UI can offer "attach existing").
     const second = await uploadAndFinalize(cookie, nbId, PDF_BYTES_A);
     expect(second.status).toBe(409);
-    expect((second.body as { error: string }).error).toBe('duplicate_source');
+    expect((second.body as { error: string; existingSourceId?: string }).error).toBe(
+      'duplicate_source',
+    );
+    expect((second.body as { existingSourceId?: string }).existingSourceId).toBe(first.sourceId);
 
     // The duplicate's pending row was cleaned up (deleted by finalize).
     const [dupRow] = await db
@@ -135,11 +143,11 @@ describe('source dedup — finalize byte_hash (real MinIO round-trip)', () => {
       .from(sourcesTable)
       .where(eq(sourcesTable.id, second.sourceId));
     expect(dupRow!.n).toBe(0);
-    // Still exactly ONE ready source for this hash in the notebook.
+    // Still exactly ONE ready source for this hash (per-user dedup).
     const [ready] = await db
       .select({ n: count() })
       .from(sourcesTable)
-      .where(and(eq(sourcesTable.notebookId, nbId), eq(sourcesTable.status, 'ready')));
+      .where(and(eq(sourcesTable.byteHash, firstRow!.byteHash!), eq(sourcesTable.status, 'ready')));
     expect(ready!.n).toBe(1);
   });
 
@@ -155,14 +163,15 @@ describe('source dedup — finalize byte_hash (real MinIO round-trip)', () => {
     expect(second.status).toBe(200); // distinct hash → not a dup
     await drainSourceIngest({ timeoutMs: 5000 });
 
+    // Two distinct-hash ready sources for this user (per-user scope).
     const [readyN] = await db
       .select({ n: count() })
       .from(sourcesTable)
-      .where(and(eq(sourcesTable.notebookId, nbId), eq(sourcesTable.status, 'ready')));
+      .where(eq(sourcesTable.status, 'ready'));
     expect(readyN!.n).toBe(2);
   });
 
-  roundTrip('same bytes, DIFFERENT notebook → second finalize succeeds (dedup is per-notebook)', async () => {
+  roundTrip('same bytes, DIFFERENT notebook → second finalize 409 (dedup is per-USER now, Р5)', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const nb1 = await createNotebook(cookie, 'NB1');
     const nb2 = await createNotebook(cookie, 'NB2');
@@ -171,9 +180,15 @@ describe('source dedup — finalize byte_hash (real MinIO round-trip)', () => {
     expect(first.status).toBe(200);
     await drainSourceIngest({ timeoutMs: 5000 });
 
-    // SAME bytes in a DIFFERENT notebook → not a duplicate.
+    // SAME bytes in a DIFFERENT notebook → STILL a duplicate (sources are
+    // user-level; one ingest per material). The UI is expected to attach the
+    // existing source to nb2 via /notebooks/:id/sources/attach instead.
     const second = await uploadAndFinalize(cookie, nb2, PDF_BYTES_A);
-    expect(second.status).toBe(200);
+    expect(second.status).toBe(409);
+    expect((second.body as { error: string; existingSourceId?: string }).error).toBe(
+      'duplicate_source',
+    );
+    expect((second.body as { existingSourceId?: string }).existingSourceId).toBe(first.sourceId);
   });
 });
 
@@ -182,60 +197,96 @@ describe('source dedup — DB-layer query invariant (storage-independent backsto
     await resetTestDb();
   });
 
-  test('the dedup predicate matches only same (user, notebook, byteHash, status=ready)', async () => {
-    const { userId } = await signUpAndCookie(app, uniqueEmail());
-    const [nb1] = await db.insert(notebooks).values({ userId, title: 'NB1' }).returning({ id: notebooks.id });
-    const [nb2] = await db.insert(notebooks).values({ userId, title: 'NB2' }).returning({ id: notebooks.id });
+  test('the dedup predicate matches per-USER on byteHash, status NOT IN (error,deleting) — even indexing', async () => {
+    const a = await signUpAndCookie(app, uniqueEmail('a'));
+    const b = await signUpAndCookie(app, uniqueEmail('b'));
     const HASH = 'deadbeef'.repeat(8);
 
-    // A READY source in nb1 with HASH.
+    // A READY source of user A with HASH.
     await db.insert(sourcesTable).values({
-      userId,
-      notebookId: nb1!.id,
+      userId: a.userId,
       kind: 'pdf',
       title: 'ready dup',
       status: 'ready',
       verified: true,
       byteHash: HASH,
     });
-    // Same hash but NOT ready (still indexing) — must NOT count as a dup.
+    // Same hash, same user, but ERROR status → must NOT count (excluded).
     await db.insert(sourcesTable).values({
-      userId,
-      notebookId: nb1!.id,
+      userId: a.userId,
       kind: 'pdf',
-      title: 'indexing same hash',
-      status: 'indexing',
+      title: 'errored same hash',
+      status: 'error',
       verified: true,
       byteHash: HASH,
     });
-    // Same hash, ready, but DIFFERENT notebook — must NOT count for nb2.
-    // (Already covered by nb1's row being scoped to nb1.)
+    // Same hash, DIFFERENT user → must NOT count for user A's scope.
+    await db.insert(sourcesTable).values({
+      userId: b.userId,
+      kind: 'pdf',
+      title: 'other user same hash',
+      status: 'ready',
+      verified: true,
+      byteHash: HASH,
+    });
 
-    // The finalize dedup query: ready + same (user, notebook, hash).
-    const dupInNb1 = await db
+    // The finalize dedup query (Р5): per-user + byteHash + status NOT IN
+    // ('error','deleting') — NO notebook conjunct.
+    const dupForA = await db
+      .select({ id: sourcesTable.id })
+      .from(sourcesTable)
+      .where(
+        and(
+          eq(sourcesTable.userId, a.userId),
+          eq(sourcesTable.byteHash, HASH),
+          sql`${sourcesTable.status} NOT IN ('error', 'deleting')`,
+        ),
+      );
+    expect(dupForA.length).toBe(1); // exactly the ready row, not the errored one
+
+    // User B sees only their own ready row (user-scoping is the cross-tenant boundary).
+    const dupForB = await db
+      .select({ id: sourcesTable.id })
+      .from(sourcesTable)
+      .where(
+        and(
+          eq(sourcesTable.userId, b.userId),
+          eq(sourcesTable.byteHash, HASH),
+          sql`${sourcesTable.status} NOT IN ('error', 'deleting')`,
+        ),
+      );
+    expect(dupForB.length).toBe(1);
+  });
+
+  test('a still-INDEXING source with the same hash IS caught (dedup before ready, Р5)', async () => {
+    const { userId } = await signUpAndCookie(app, uniqueEmail());
+    const HASH = 'feedface'.repeat(8);
+    // The first source is STILL indexing (not yet ready) — a dupe uploaded now
+    // must still be caught so "one complete embedding per material" holds.
+    const [first] = await db
+      .insert(sourcesTable)
+      .values({
+        userId,
+        kind: 'pdf',
+        title: 'still indexing',
+        status: 'indexing',
+        verified: true,
+        byteHash: HASH,
+      })
+      .returning({ id: sourcesTable.id });
+
+    const dup = await db
       .select({ id: sourcesTable.id })
       .from(sourcesTable)
       .where(
         and(
           eq(sourcesTable.userId, userId),
-          eq(sourcesTable.notebookId, nb1!.id),
           eq(sourcesTable.byteHash, HASH),
-          eq(sourcesTable.status, 'ready'),
+          sql`${sourcesTable.status} NOT IN ('error', 'deleting')`,
         ),
-      );
-    expect(dupInNb1.length).toBe(1); // exactly the ready row, not the indexing one
-
-    const dupInNb2 = await db
-      .select({ id: sourcesTable.id })
-      .from(sourcesTable)
-      .where(
-        and(
-          eq(sourcesTable.userId, userId),
-          eq(sourcesTable.notebookId, nb2!.id),
-          eq(sourcesTable.byteHash, HASH),
-          eq(sourcesTable.status, 'ready'),
-        ),
-      );
-    expect(dupInNb2.length).toBe(0); // per-notebook scope → no dup in nb2
+      )
+      .limit(1);
+    expect(dup.length).toBe(1);
+    expect(dup[0]!.id).toBe(first!.id); // the existing (indexing) source is returned
   });
 });

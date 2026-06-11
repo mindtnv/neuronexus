@@ -13,8 +13,8 @@ import {
   reviewFromApi,
 } from './mappers';
 import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Notebook, NoteType, Profile, Rating, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
-import type { SourceMime } from '@neuronexus/shared';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, Notebook, NoteType, Profile, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
+import type { SourceKind, SourceMime } from '@neuronexus/shared';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
 // and profile — fetched at bootstrap, mutated optimistically-ish on each API
@@ -280,6 +280,76 @@ interface State {
   getSourceChunks: (id: string, from?: number, limit?: number) => Promise<SourceChunkPage>;
   /** List the cards generated from a source (GET /sources/:id/cards). */
   listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
+
+  // ── Library (L1) — the user-level material store (GET/POST/PATCH/DELETE /library) ──
+  /** Paginated material list + filters (GET /library). */
+  listLibrary: (params?: LibraryQuery) => Promise<{ items: LibraryItem[]; nextCursor: string | null }>;
+  /** One item: metadata + status + attached notebooks + cardCount (GET /library/items/:id). */
+  getLibraryItem: (id: string) => Promise<LibraryItemDetail>;
+  /** Inline url/text create (POST /library/items, + optional immediate attach). */
+  addLibraryUrl: (title: string, url: string, notebookId?: string) => Promise<LibraryItem>;
+  /** Inline text create (POST /library/items kind:'text', + optional attach). */
+  addLibraryText: (title: string, text: string, notebookId?: string) => Promise<LibraryItem>;
+  /**
+   * Upload a pdf/epub into the library: claim+presign → direct POST to S3 →
+   * finalize (MIRRORS uploadSource). 409 duplicate_source rejects with an
+   * `existingSourceId` field the screen can surface. Optional notebook attach.
+   */
+  uploadLibraryItem: (
+    file: File,
+    title: string,
+    mime: SourceMime,
+    notebookId?: string,
+  ) => Promise<LibraryItem>;
+  /** Edit item metadata (PATCH /library/items/:id) — title/author/tags/readingStatus. */
+  patchLibraryItem: (id: string, patch: LibraryPatch) => Promise<LibraryItem>;
+  /** Full source delete (DELETE /library/items/:id) — edges cascade, card tombstones. */
+  deleteLibraryItem: (id: string) => Promise<void>;
+
+  // ── Notebook ↔ source attach/detach (L1 §4.2) ─────────────────────────────────
+  /** Attach existing library sources to a notebook (POST /notebooks/:id/sources/attach). */
+  attachSources: (notebookId: string, sourceIds: string[]) => Promise<void>;
+  /** Detach a source from a notebook — NOT a delete (DELETE /notebooks/:id/sources/:sourceId). */
+  detachSource: (notebookId: string, sourceId: string) => Promise<void>;
+}
+
+/** Filters for the /library list. */
+export interface LibraryQuery {
+  q?: string;
+  kind?: SourceKind;
+  tag?: string;
+  reading?: ReadingStatus;
+  shelf?: 'reading' | 'unattached';
+  sort?: 'added' | 'title' | 'lastRead';
+  limit?: number;
+  cursor?: string;
+}
+
+/** Editable library metadata (explicit-field PATCH). */
+export interface LibraryPatch {
+  title?: string;
+  author?: string;
+  description?: string;
+  tags?: string[];
+  readingStatus?: ReadingStatus;
+}
+
+/** A 409 duplicate_source on library upload carries the existing source id. */
+export class DuplicateSourceError extends Error {
+  existingSourceId: string;
+  constructor(existingSourceId: string) {
+    super('duplicate_source');
+    this.name = 'DuplicateSourceError';
+    this.existingSourceId = existingSourceId;
+  }
+}
+
+/** A 409 library_full on library create/upload (per-user cap reached). */
+export class LibraryFullError extends Error {
+  constructor() {
+    super('library_full');
+    this.name = 'LibraryFullError';
+  }
 }
 
 export const useNN = create<State>()((set, get) => ({
@@ -888,6 +958,101 @@ export const useNN = create<State>()((set, get) => ({
       items: SourceLinkedCard[];
     };
     return res.items ?? [];
+  },
+
+  // ── Library (L1) ──────────────────────────────────────────────────────────────
+
+  async listLibrary(params) {
+    const query: Record<string, string | number> = {};
+    if (params) {
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') query[k] = v as string | number;
+      }
+    }
+    return (await ok(await (api as any).library.get({ query }))) as {
+      items: LibraryItem[];
+      nextCursor: string | null;
+    };
+  },
+
+  async getLibraryItem(id) {
+    return (await ok(
+      await (api as any).library.items({ id }).get(),
+    )) as LibraryItemDetail;
+  },
+
+  async addLibraryUrl(title, url, notebookId) {
+    return (await ok(
+      await (api as any).library.items.post({ kind: 'url', title, url, ...(notebookId ? { notebookId } : {}) }),
+    )) as LibraryItem;
+  },
+
+  async addLibraryText(title, text, notebookId) {
+    return (await ok(
+      await (api as any).library.items.post({ kind: 'text', title, text, ...(notebookId ? { notebookId } : {}) }),
+    )) as LibraryItem;
+  },
+
+  async uploadLibraryItem(file, title, mime, notebookId) {
+    // 1. Claim + presign (per-user cap enforced server-side → 409 library_full).
+    const presignRes = await (api as any).library.items.presign.post({
+      title,
+      mime,
+      size: file.size,
+    });
+    if (presignRes.error) {
+      if (presignRes.error.status === 409) throw new LibraryFullError();
+      throw new Error(JSON.stringify(presignRes.error.value ?? presignRes.error));
+    }
+    const claim = presignRes.data as { sourceId: string; upload: { url: string; fields: Record<string, string> } };
+
+    // 2. Direct multipart POST to S3/MinIO (bytes bypass Bun — same as uploadMedia).
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(claim.upload.fields)) fd.append(k, v);
+    fd.set('Content-Type', mime);
+    fd.append('file', file);
+    const s3 = await fetch(claim.upload.url, { method: 'POST', body: fd });
+    if (!s3.ok) throw new Error(`upload failed (${s3.status})`);
+
+    // 3. Finalize: byte-dedup (409 duplicate_source → existingSourceId) + enqueue.
+    const finalizeRes = await (api as any).library
+      .items({ id: claim.sourceId })
+      .finalize.post(notebookId ? { notebookId } : {});
+    if (finalizeRes.error) {
+      const value = finalizeRes.error.value as { error?: string; existingSourceId?: string } | undefined;
+      if (finalizeRes.error.status === 409 && value?.error === 'duplicate_source' && value.existingSourceId) {
+        throw new DuplicateSourceError(value.existingSourceId);
+      }
+      if (finalizeRes.error.status === 409 && value?.error === 'library_full') {
+        throw new LibraryFullError();
+      }
+      throw new Error(JSON.stringify(value ?? finalizeRes.error));
+    }
+    return finalizeRes.data as LibraryItem;
+  },
+
+  async patchLibraryItem(id, patch) {
+    return (await ok(
+      await (api as any).library.items({ id }).patch(patch),
+    )) as LibraryItem;
+  },
+
+  async deleteLibraryItem(id) {
+    await ok(await (api as any).library.items({ id }).delete());
+  },
+
+  // ── Notebook ↔ source attach/detach ───────────────────────────────────────────
+
+  async attachSources(notebookId, sourceIds) {
+    await ok(
+      await (api as any).notebooks({ id: notebookId }).sources.attach.post({ sourceIds }),
+    );
+  },
+
+  async detachSource(notebookId, sourceId) {
+    await ok(
+      await (api as any).notebooks({ id: notebookId }).sources({ sourceId }).delete(),
+    );
   },
 }));
 

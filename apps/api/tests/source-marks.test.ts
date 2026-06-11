@@ -58,13 +58,15 @@ async function freshNotebook(userId: string, title = 'NB'): Promise<string> {
   return nb!.id;
 }
 
-/** Seed a READY pdf source row directly. */
-async function seedSource(userId: string, notebookId: string, title = 'Doc'): Promise<string> {
+/**
+ * Seed a READY pdf source row directly. Sources are user-level now (library
+ * refactor) — marks are source-scoped, so the notebook arg is no longer needed.
+ */
+async function seedSource(userId: string, _notebookId: string, title = 'Doc'): Promise<string> {
   const [src] = await db
     .insert(sourcesTable)
     .values({
       userId,
-      notebookId,
       kind: 'pdf',
       title,
       status: 'ready',

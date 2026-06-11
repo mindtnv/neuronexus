@@ -16,6 +16,7 @@ export const APP_NAV: AppNavItem[] = [
   { id: 'decks', href: '/decks', icon: 'stack', labelKey: 'nav.decks', section: 'learning' },
   { id: 'cards', href: '/cards', icon: 'grid', labelKey: 'nav.cards', section: 'learning' },
   { id: 'chat', href: '/chat', icon: 'sparkle', labelKey: 'nav.chat', section: 'learning' },
+  { id: 'library', href: '/library', icon: 'book', labelKey: 'nav.library', section: 'learning' },
   { id: 'notebooks', href: '/notebooks', icon: 'doc', labelKey: 'nav.notebooks', section: 'learning' },
   { id: 'stats', href: '/stats', icon: 'graph', labelKey: 'nav.stats', section: 'progress' },
   { id: 'garden', href: '/garden', icon: 'garden', labelKey: 'nav.garden', section: 'progress' },

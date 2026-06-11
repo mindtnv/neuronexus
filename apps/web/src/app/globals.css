@@ -726,3 +726,212 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
     opacity: 0.7;
   }
 }
+
+/* ───────────────────────────── Library (L1) ──────────────────────────────── */
+
+/* Cover grid — the most "showcase" screen; tidy ~3:4 cover proportions. */
+.nn-lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 18px 16px;
+  margin-top: 12px;
+}
+@media (max-width: 720px) {
+  .nn-lib-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 14px 12px; }
+}
+
+/* Grid card — hover-lift like .nn-source-row. */
+.nn-lib-card {
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 140ms ease;
+  font-family: var(--font-sans);
+}
+.nn-lib-card:hover { transform: translateY(-3px); }
+.nn-lib-card:hover .nn-lib-progress { opacity: 1; }
+
+/* List row. */
+.nn-lib-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease;
+  font-family: var(--font-sans);
+  text-align: left;
+  width: 100%;
+}
+.nn-lib-row:hover { background: var(--surface-2); border-color: var(--border); }
+
+/* Reading progress bar (cover overlay + shelf + details). */
+.nn-lib-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink-700, #2c3038) 60%, transparent);
+  overflow: hidden;
+}
+.nn-lib-progress-fill {
+  height: 100%;
+  background: var(--lime-500);
+  border-radius: 2px;
+}
+
+/* Filter chip. */
+.nn-lib-chip {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 100ms ease;
+}
+.nn-lib-chip:hover { color: var(--text); border-color: var(--border-2); }
+.nn-lib-chip.active {
+  color: #0d1608;
+  background: var(--lime-500);
+  border-color: var(--lime-500);
+}
+[data-theme="light"] .nn-lib-chip.active { color: #0d1608; }
+
+/* Tag pill (details panel). */
+.nn-lib-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--sky-400);
+  background: rgba(85,196,214,0.10);
+  border: 1px solid rgba(85,196,214,0.22);
+  border-radius: var(--r-pill);
+}
+
+/* Notebook link row (details + picker). */
+.nn-lib-nb-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  transition: background 100ms ease;
+}
+.nn-lib-nb-link:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+
+/* Add menu (header dropdown). */
+.nn-lib-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  z-index: 41;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+}
+.nn-lib-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 9px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+}
+.nn-lib-menu-item:hover { background: var(--surface-2); }
+
+/* Continue-reading shelf card. */
+.nn-lib-shelf-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 260px;
+  flex-shrink: 0;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: transform 140ms ease, border-color 140ms ease;
+}
+.nn-lib-shelf-card:hover { transform: translateY(-2px); border-color: var(--border-2); }
+
+/* Upload progress strip. */
+.nn-lib-upload-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+/* Full-screen drag-drop overlay. */
+.nn-lib-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--lime-500) 8%, rgba(0,0,0,0.45));
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+.nn-lib-drop-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 28px 40px;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  color: var(--text);
+  background: var(--surface);
+  border: 2px dashed var(--lime-500);
+  border-radius: var(--r-lg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-lib-card:hover,
+  .nn-lib-shelf-card:hover { transform: none; }
+  .nn-lib-drop-overlay { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
