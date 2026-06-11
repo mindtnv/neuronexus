@@ -25,7 +25,15 @@ import {
   useNN,
   type LibraryQuery,
 } from '@/lib/store';
-import type { LibraryItem, LibraryItemDetail, Notebook, ReadingStatus } from '@/lib/types';
+import type {
+  LibraryItem,
+  LibraryItemDetail,
+  LibrarySearchGroup,
+  LibrarySearchHit,
+  LibrarySearchResult,
+  Notebook,
+  ReadingStatus,
+} from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
@@ -107,8 +115,12 @@ export const LibraryScreen = () => {
   const [debouncedQ, setDebouncedQ] = useState('');
   const [kind, setKind] = useState<KindFilter>('all');
   const [reading, setReading] = useState<ReadingFilter>('all');
+  const [tag, setTag] = useState<string | null>(null);
+  const [unattached, setUnattached] = useState(false);
   const [sort, setSort] = useState<SortMode>('added');
   const [view, setView] = useState<ViewMode>('grid');
+  // Search mode: by title/author (the list) vs by content (semantic search).
+  const [searchMode, setSearchMode] = useState<'title' | 'content'>('title');
 
   // Hydrate the persisted view mode.
   useEffect(() => {
@@ -139,8 +151,36 @@ export const LibraryScreen = () => {
     if (debouncedQ) q.q = debouncedQ;
     if (kind !== 'all') q.kind = kind;
     if (reading !== 'all') q.reading = reading;
+    if (tag) q.tag = tag;
+    if (unattached) q.shelf = 'unattached';
     return q;
-  }, [sort, debouncedQ, kind, reading]);
+  }, [sort, debouncedQ, kind, reading, tag, unattached]);
+
+  // Persist the search mode (nn:lib:searchmode).
+  const SEARCHMODE_KEY = 'nn:lib:searchmode';
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(SEARCHMODE_KEY);
+      if (v === 'content' || v === 'title') setSearchMode(v);
+    } catch {
+      /* default title */
+    }
+  }, []);
+  const setSearchModePersisted = useCallback((m: 'title' | 'content') => {
+    setSearchMode(m);
+    try {
+      localStorage.setItem(SEARCHMODE_KEY, m);
+    } catch {
+      /* best-effort */
+    }
+  }, []);
+
+  // Distinct tags from the loaded items (the simple client-side collection path).
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const it of items) for (const tg of it.tags) set.add(tg);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [items]);
 
   // ── Add-source UI ──────────────────────────────────────────────────────────────
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -173,6 +213,51 @@ export const LibraryScreen = () => {
     setLoaded(false);
     void refresh();
   }, [refresh]);
+
+  // ── Content (semantic) search ──────────────────────────────────────────────────
+  const searchLibrary = useNN((s) => s.searchLibrary);
+  const [contentResult, setContentResult] = useState<LibrarySearchResult | null>(null);
+  const [contentLoading, setContentLoading] = useState(false);
+  useEffect(() => {
+    if (searchMode !== 'content') {
+      setContentResult(null);
+      return;
+    }
+    const q = debouncedQ;
+    if (q.length < 3) {
+      setContentResult(null);
+      setContentLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setContentLoading(true);
+    const id = window.setTimeout(async () => {
+      try {
+        const res = await searchLibrary(q);
+        if (!cancelled) setContentResult(res);
+      } catch {
+        if (!cancelled) setContentResult({ groups: [] });
+      } finally {
+        if (!cancelled) setContentLoading(false);
+      }
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
+  }, [searchMode, debouncedQ, searchLibrary]);
+
+  const openHit = useCallback(
+    (group: LibrarySearchGroup, hit: LibrarySearchHit) => {
+      // PDF with a page → ?page=; else text-mode chunk position → ?chunk=.
+      const qs =
+        group.source.kind === 'pdf' && hit.page != null
+          ? `?page=${hit.page}`
+          : `?chunk=${hit.position}`;
+      router.push(`/library/${group.source.id}${qs}`);
+    },
+    [router],
+  );
 
   // ── "Continue reading" shelf (separate fetch — reading=reading, lastRead) ──────
   const refreshShelf = useCallback(async () => {
@@ -387,10 +472,17 @@ export const LibraryScreen = () => {
         setKind={setKind}
         reading={reading}
         setReading={setReading}
+        tag={tag}
+        setTag={setTag}
+        allTags={allTags}
+        unattached={unattached}
+        setUnattached={setUnattached}
         sort={sort}
         setSort={setSort}
         view={view}
         setView={setViewPersisted}
+        searchMode={searchMode}
+        setSearchMode={setSearchModePersisted}
         addMenuOpen={addMenuOpen}
         setAddMenuOpen={setAddMenuOpen}
         onPickFiles={onPickFiles}
@@ -417,13 +509,21 @@ export const LibraryScreen = () => {
         </div>
       )}
 
-      {/* Continue reading shelf */}
-      {shelf.length > 0 && (
+      {/* Continue reading shelf (hidden in content-search mode) */}
+      {searchMode === 'title' && shelf.length > 0 && (
         <ContinueShelf items={shelf} onOpen={openReader} t={t} />
       )}
 
-      {/* Body */}
-      {!loaded ? (
+      {/* Content-search results take over the body when in content mode */}
+      {searchMode === 'content' ? (
+        <ContentSearchResults
+          result={contentResult}
+          loading={contentLoading}
+          query={debouncedQ}
+          onOpenHit={openHit}
+          t={t}
+        />
+      ) : !loaded ? (
         <LibrarySkeleton view={view} />
       ) : items.length === 0 ? (
         hasFilters ? (
@@ -456,8 +556,8 @@ export const LibraryScreen = () => {
         </div>
       )}
 
-      {/* Load more (added-sort keyset only) */}
-      {loaded && nextCursor && (
+      {/* Load more (added-sort keyset only; hidden in content-search mode) */}
+      {searchMode === 'title' && loaded && nextCursor && (
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: 20 }}>
           <NNBtn
             variant="soft"
@@ -517,10 +617,17 @@ const LibraryHeader = ({
   setKind,
   reading,
   setReading,
+  tag,
+  setTag,
+  allTags,
+  unattached,
+  setUnattached,
   sort,
   setSort,
   view,
   setView,
+  searchMode,
+  setSearchMode,
   addMenuOpen,
   setAddMenuOpen,
   onPickFiles,
@@ -535,10 +642,17 @@ const LibraryHeader = ({
   setKind: (k: KindFilter) => void;
   reading: ReadingFilter;
   setReading: (r: ReadingFilter) => void;
+  tag: string | null;
+  setTag: (t: string | null) => void;
+  allTags: string[];
+  unattached: boolean;
+  setUnattached: (v: boolean) => void;
   sort: SortMode;
   setSort: (s: SortMode) => void;
   view: ViewMode;
   setView: (v: ViewMode) => void;
+  searchMode: 'title' | 'content';
+  setSearchMode: (m: 'title' | 'content') => void;
   addMenuOpen: boolean;
   setAddMenuOpen: (v: boolean) => void;
   onPickFiles: () => void;
@@ -548,8 +662,26 @@ const LibraryHeader = ({
   t: Tr;
 }) => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
-    {/* Search + add */}
+    {/* Search-mode toggle + search + add */}
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+        <button
+          type="button"
+          onClick={() => setSearchMode('title')}
+          className={`nn-lib-chip${searchMode === 'title' ? ' active' : ''}`}
+          title={t('library.search.byTitle')}
+        >
+          {t('library.search.byTitle')}
+        </button>
+        <button
+          type="button"
+          onClick={() => setSearchMode('content')}
+          className={`nn-lib-chip${searchMode === 'content' ? ' active' : ''}`}
+          title={t('library.search.byContent')}
+        >
+          {t('library.search.byContent')}
+        </button>
+      </div>
       <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
         <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
           <NNIcon name="search" size={15} color="var(--text-dim)" />
@@ -557,7 +689,7 @@ const LibraryHeader = ({
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={t('library.header.searchPlaceholder')}
+          placeholder={t(searchMode === 'content' ? 'library.search.contentPlaceholder' : 'library.header.searchPlaceholder')}
           style={{
             width: '100%',
             height: 36,
@@ -596,7 +728,8 @@ const LibraryHeader = ({
       </div>
     </div>
 
-    {/* Filters row */}
+    {/* Filters row — hidden in content-search mode (plan §8.3). */}
+    {searchMode === 'title' && (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       {/* Kind chips */}
       <div style={{ display: 'flex', gap: 4 }}>
@@ -615,6 +748,36 @@ const LibraryHeader = ({
           </FilterChip>
         ))}
       </div>
+      {/* "Not in any notebook" shelf chip */}
+      <FilterChip active={unattached} onClick={() => setUnattached(!unattached)}>
+        {t('library.header.shelfUnattached')}
+      </FilterChip>
+      {/* Tag filter dropdown (built from loaded items) */}
+      {allTags.length > 0 && (
+        <select
+          value={tag ?? ''}
+          onChange={(e) => setTag(e.target.value === '' ? null : e.target.value)}
+          aria-label={t('library.header.tagLabel')}
+          style={{
+            height: 28,
+            padding: '0 8px',
+            fontSize: 12,
+            fontFamily: 'var(--font-sans)',
+            color: tag ? 'var(--text)' : 'var(--text-muted)',
+            background: tag ? 'color-mix(in srgb, var(--lime-500) 16%, transparent)' : 'var(--surface-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--r-sm)',
+            cursor: 'pointer',
+            outline: 'none',
+            maxWidth: 160,
+          }}
+        >
+          <option value="">{t('library.header.tagAll')}</option>
+          {allTags.map((tg) => (
+            <option key={tg} value={tg}>{tg}</option>
+          ))}
+        </select>
+      )}
       <div style={{ flex: 1 }} />
       {/* Sort */}
       <select
@@ -662,6 +825,7 @@ const LibraryHeader = ({
         />
       </div>
     </div>
+    )}
   </div>
 );
 
@@ -715,10 +879,109 @@ const ContinueShelf = ({ items, onOpen, t }: { items: LibraryItem[]; onOpen: (id
   </div>
 );
 
+// ── Content (semantic) search results ─────────────────────────────────────────
+
+const ContentSearchResults = ({
+  result,
+  loading,
+  query,
+  onOpenHit,
+  t,
+}: {
+  result: LibrarySearchResult | null;
+  loading: boolean;
+  query: string;
+  onOpenHit: (group: LibrarySearchGroup, hit: LibrarySearchHit) => void;
+  t: Tr;
+}) => {
+  if (query.length < 3) {
+    return (
+      <div className="nn-empty-state" style={{ paddingTop: 48 }}>
+        <span className="nn-empty-state-icon"><NNIcon name="search" size={30} color="var(--text-dim)" /></span>
+        <p className="nn-empty-state-hint">{t('library.search.typeMore')}</p>
+      </div>
+    );
+  }
+  if (result?.reason === 'embedding_disabled') {
+    return (
+      <div className="nn-empty-state" style={{ paddingTop: 48 }}>
+        <span className="nn-empty-state-icon"><NNIcon name="brain" size={28} color="var(--text-dim)" /></span>
+        <p className="nn-empty-state-hint">{t('library.search.disabled')}</p>
+      </div>
+    );
+  }
+  if (loading && !result) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
+        {Array.from({ length: 3 }).map((_, i) => (
+          <NNSkeleton key={i} style={{ height: 80 }} />
+        ))}
+      </div>
+    );
+  }
+  if (!result || result.groups.length === 0) {
+    return (
+      <div className="nn-empty-state" style={{ paddingTop: 48 }}>
+        <span className="nn-empty-state-icon"><NNIcon name="search" size={30} color="var(--text-dim)" /></span>
+        <p className="nn-empty-state-hint">{t('library.search.noResults')}</p>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 8 }}>
+      {result.groups.map((g) => (
+        <div key={g.source.id} className="nn-lib-search-group">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <div style={{ width: 34, flexShrink: 0 }}>
+              <CoverPlaceholder item={{ id: g.source.id, title: g.source.title, kind: g.source.kind, coverUrl: g.source.coverUrl }} aspect />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {g.source.title}
+              </div>
+              {g.source.author && (
+                <div style={{ fontSize: 11.5, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {g.source.author}
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {g.hits.map((h) => (
+              <button
+                key={h.sourceChunkId}
+                type="button"
+                onClick={() => onOpenHit(g, h)}
+                className="nn-lib-search-hit"
+              >
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 2 }}>
+                  {h.heading
+                    ? h.heading
+                    : h.page != null
+                      ? t('library.search.hitPage', { page: h.page })
+                      : t('library.search.hitChunk', { pos: h.position + 1 })}
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                  {h.snippet}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 // ── Cover placeholder ─────────────────────────────────────────────────────────
 
-const CoverPlaceholder = ({ item, size, aspect }: { item: LibraryItem; size?: number; aspect?: boolean }) => {
+const CoverPlaceholder = ({ item, size, aspect }: { item: LibraryItem | { id: string; title: string; kind: SourceKind; coverUrl?: string | null }; size?: number; aspect?: boolean }) => {
   const color = coverColor(item.id);
+  // Render the real cover image when present; on a load error fall through to the
+  // generated placeholder (state flips `failed` so the img is replaced).
+  const [failed, setFailed] = useState(false);
+  const coverUrl = 'coverUrl' in item ? item.coverUrl : null;
+  const showImage = Boolean(coverUrl) && !failed;
   return (
     <div
       style={{
@@ -726,7 +989,9 @@ const CoverPlaceholder = ({ item, size, aspect }: { item: LibraryItem; size?: nu
         aspectRatio: aspect ? '3 / 4' : undefined,
         height: aspect ? undefined : size,
         borderRadius: 'var(--r-md)',
-        background: `linear-gradient(135deg, color-mix(in srgb, ${color} 22%, var(--surface-3)), var(--surface-3))`,
+        background: showImage
+          ? 'var(--surface-3)'
+          : `linear-gradient(135deg, color-mix(in srgb, ${color} 22%, var(--surface-3)), var(--surface-3))`,
         border: '1px solid var(--border)',
         display: 'flex',
         flexDirection: 'column',
@@ -738,12 +1003,24 @@ const CoverPlaceholder = ({ item, size, aspect }: { item: LibraryItem; size?: nu
         overflow: 'hidden',
       }}
     >
-      <span style={{ fontSize: size && size <= 60 ? 16 : 26, fontWeight: 800, color, fontFamily: 'var(--font-sans)', letterSpacing: '0.02em' }}>
-        {initials(item.title)}
-      </span>
-      <span style={{ position: 'absolute', bottom: 6, right: 6, opacity: 0.8 }}>
-        <NNIcon name={kindIcon(item.kind)} size={size && size <= 60 ? 12 : 16} color={color} />
-      </span>
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={coverUrl!}
+          alt=""
+          onError={() => setFailed(true)}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      ) : (
+        <>
+          <span style={{ fontSize: size && size <= 60 ? 16 : 26, fontWeight: 800, color, fontFamily: 'var(--font-sans)', letterSpacing: '0.02em' }}>
+            {initials(item.title)}
+          </span>
+          <span style={{ position: 'absolute', bottom: 6, right: 6, opacity: 0.8 }}>
+            <NNIcon name={kindIcon(item.kind)} size={size && size <= 60 ? 12 : 16} color={color} />
+          </span>
+        </>
+      )}
     </div>
   );
 };

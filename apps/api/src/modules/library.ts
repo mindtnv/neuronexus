@@ -17,10 +17,11 @@
 // Every query is `user.id`-FIRST-conjunct scoped; a foreign/missing id is 404.
 
 import { Elysia, t } from 'elysia';
-import { and, asc, count, countDistinct, desc, eq, ilike, lt, or, sql } from 'drizzle-orm';
+import { and, asc, count, countDistinct, desc, eq, ilike, inArray, lt, or, sql } from 'drizzle-orm';
 import {
   cardSources,
   db,
+  media,
   notebooks,
   notebookSources,
   sourceChunks,
@@ -29,7 +30,9 @@ import {
   type Source,
 } from '@neuronexus/db';
 import { authPlugin } from '../auth-plugin.ts';
-import { env } from '../env.ts';
+import { embeddingEnabled, env } from '../env.ts';
+import { embed, isEmbeddingEnabled } from '../ai/openai-client.ts';
+import { retrieveDocuments } from '../ai/retrieve-documents.ts';
 import {
   countLibraryItems,
   createInlineSource,
@@ -47,6 +50,13 @@ const AUTHOR_MAX = 500;
 const DESCRIPTION_MAX = 2000;
 const TAGS_MAX = 32;
 const TAG_LEN_MAX = 64;
+const LANGUAGE_MAX = 16;
+
+// Semantic search over the library (§8.3).
+const LIBRARY_SEARCH_DEFAULT = 20;
+const LIBRARY_SEARCH_MAX = 50;
+const SEARCH_HITS_PER_SOURCE = 5;
+const SEARCH_SNIPPET_LEN = 300;
 
 type ReadingStatus = 'unread' | 'reading' | 'finished';
 const READING_STATUSES = new Set<ReadingStatus>(['unread', 'reading', 'finished']);
@@ -82,6 +92,9 @@ function shapeLibraryItem(s: Source, agg: LibraryItemAggregates): Record<string,
     pageCount: s.pageCount,
     byteSize: s.byteSize,
     coverMediaId: s.coverMediaId,
+    // `/m/<uuid>` resolves to the cover image via the Next reverse-proxy rewrite;
+    // null when the item has no cover (a kind-placeholder stands in client-side).
+    coverUrl: s.coverMediaId ? `/m/${s.coverMediaId}` : null,
     notebookCount: agg.notebookCount,
     cardCount: agg.cardCount,
     createdAt: s.createdAt,
@@ -229,6 +242,130 @@ export const libraryModule = new Elysia({ prefix: '/library' })
         ),
         limit: t.Optional(t.String()),
         cursor: t.Optional(t.String()),
+      }),
+    },
+  )
+  // ── semantic search across the whole library (§8.3) ───────────────────────────
+  // embed(q) → retrieveDocuments over ALL of the user's ready sources → group by
+  // source (groups sorted by max score, ≤SEARCH_HITS_PER_SOURCE hits each, hits
+  // by score). Degrades to `{ groups: [], reason }` (200, never 5xx) when
+  // embeddings are off or the corpus is empty. Empty q → 400.
+  .get(
+    '/search',
+    async ({ user, query, status }) => {
+      const q = (query.q ?? '').trim();
+      if (!q) return status(400, { error: 'empty_query' });
+      const rawLimit = Number(query.limit ?? LIBRARY_SEARCH_DEFAULT);
+      const limit = Math.max(
+        1,
+        Math.min(
+          LIBRARY_SEARCH_MAX,
+          Number.isFinite(rawLimit) ? rawLimit : LIBRARY_SEARCH_DEFAULT,
+        ),
+      );
+
+      // Embeddings off (env flag AND no injected fake) ⇒ degrade with a reason.
+      if (!embeddingEnabled && !isEmbeddingEnabled()) {
+        return { groups: [], reason: 'embedding_disabled' as const };
+      }
+
+      // Scope = ALL of the caller's ready sources (the whole library).
+      const readyRows = await db
+        .select({ id: sources.id })
+        .from(sources)
+        .where(and(eq(sources.userId, user.id), eq(sources.status, 'ready')));
+      const sourceIds = readyRows.map((r) => r.id);
+      if (sourceIds.length === 0) {
+        return { groups: [], reason: 'no_sources' as const };
+      }
+
+      const [queryEmbedding] = await embed([q]);
+      if (!queryEmbedding || queryEmbedding.length === 0) {
+        return { groups: [], reason: 'embedding_disabled' as const };
+      }
+
+      // Pull more than `limit` raw hits so grouping + per-source cap still yields
+      // up to `limit` groups (a single source could otherwise eat the budget).
+      const hits = await retrieveDocuments({
+        userId: user.id,
+        queryEmbedding,
+        k: Math.min(limit * SEARCH_HITS_PER_SOURCE, LIBRARY_SEARCH_MAX * SEARCH_HITS_PER_SOURCE),
+        sourceIds,
+      });
+      if (hits.length === 0) return { groups: [] };
+
+      // Source metadata (kind/title/author/cover) for the group headers.
+      const hitSourceIds = [...new Set(hits.map((h) => h.sourceId))];
+      const metaRows = await db
+        .select({
+          id: sources.id,
+          kind: sources.kind,
+          title: sources.title,
+          author: sources.author,
+          coverMediaId: sources.coverMediaId,
+        })
+        .from(sources)
+        .where(and(eq(sources.userId, user.id), inArray(sources.id, hitSourceIds)));
+      const metaById = new Map(metaRows.map((m) => [m.id, m]));
+
+      // Group hits by source, keep best SEARCH_HITS_PER_SOURCE per source.
+      interface GroupAcc {
+        maxScore: number;
+        hits: {
+          sourceChunkId: string;
+          position: number;
+          page: number | null;
+          heading: string | null;
+          snippet: string;
+          score: number;
+        }[];
+      }
+      const groups = new Map<string, GroupAcc>();
+      for (const h of hits) {
+        let g = groups.get(h.sourceId);
+        if (!g) {
+          g = { maxScore: h.score, hits: [] };
+          groups.set(h.sourceId, g);
+        }
+        g.maxScore = Math.max(g.maxScore, h.score);
+        if (g.hits.length < SEARCH_HITS_PER_SOURCE) {
+          g.hits.push({
+            sourceChunkId: h.sourceChunkId,
+            position: h.position,
+            page: h.page ?? null,
+            heading: h.heading ?? null,
+            snippet: h.text.slice(0, SEARCH_SNIPPET_LEN),
+            score: h.score,
+          });
+        }
+      }
+
+      const out = [...groups.entries()]
+        .map(([sourceId, g]) => {
+          const m = metaById.get(sourceId);
+          return {
+            source: {
+              id: sourceId,
+              kind: m?.kind ?? 'pdf',
+              title: m?.title ?? '',
+              author: m?.author ?? null,
+              coverUrl: m?.coverMediaId ? `/m/${m.coverMediaId}` : null,
+            },
+            hits: g.hits.slice().sort((a, b) => b.score - a.score),
+            maxScore: g.maxScore,
+          };
+        })
+        .sort((a, b) => b.maxScore - a.maxScore)
+        .slice(0, limit)
+        .map(({ maxScore: _omit, ...rest }) => rest);
+
+      return { groups: out };
+    },
+    {
+      auth: true,
+      query: t.Object({
+        q: t.Optional(t.String({ maxLength: 500 })),
+        limit: t.Optional(t.String()),
       }),
     },
   )
@@ -441,6 +578,40 @@ export const libraryModule = new Elysia({ prefix: '/library' })
         }
         patch.tags = tags;
       }
+      // language — BCP-47-ish short string; empty ⇒ NULL.
+      if (body.language !== undefined) {
+        const lang = body.language.trim();
+        if (lang.length > LANGUAGE_MAX) return status(400, { error: 'invalid_metadata' });
+        patch.language = lang.length === 0 ? null : lang;
+      }
+      // pageCount — positive int (PDF: client-set on first open alongside cover).
+      if (body.pageCount !== undefined) {
+        if (!Number.isInteger(body.pageCount) || body.pageCount < 1) {
+          return status(400, { error: 'invalid_metadata' });
+        }
+        patch.pageCount = body.pageCount;
+      }
+      // coverMediaId — must reference the CALLER'S OWN VERIFIED media row, else
+      // 400 invalid_media (never recorded). Empty string clears the cover.
+      if (body.coverMediaId !== undefined) {
+        if (body.coverMediaId.length === 0) {
+          patch.coverMediaId = null;
+        } else {
+          const [m] = await db
+            .select({ id: media.id })
+            .from(media)
+            .where(
+              and(
+                eq(media.id, body.coverMediaId),
+                eq(media.userId, user.id),
+                eq(media.verified, true),
+              ),
+            )
+            .limit(1);
+          if (!m) return status(400, { error: 'invalid_media' });
+          patch.coverMediaId = body.coverMediaId;
+        }
+      }
 
       const hasMetaPatch = Object.keys(patch).length > 0;
       const hasReading = body.readingStatus !== undefined;
@@ -488,6 +659,9 @@ export const libraryModule = new Elysia({ prefix: '/library' })
         description: t.Optional(t.String({ maxLength: DESCRIPTION_MAX + 1 })),
         tags: t.Optional(t.Array(t.String({ maxLength: TAG_LEN_MAX + 1 }), { maxItems: TAGS_MAX + 1 })),
         readingStatus: t.Optional(t.String({ maxLength: 16 })),
+        language: t.Optional(t.String({ maxLength: LANGUAGE_MAX + 8 })),
+        pageCount: t.Optional(t.Integer()),
+        coverMediaId: t.Optional(t.String({ maxLength: 64 })),
       }),
     },
   )

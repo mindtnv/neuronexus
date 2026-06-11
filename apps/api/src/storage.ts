@@ -19,6 +19,7 @@ import {
   HeadObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  PutObjectCommand,
 } from '@aws-sdk/client-s3';
 import { createPresignedPost, type PresignedPost } from '@aws-sdk/s3-presigned-post';
 import { env } from './env.ts';
@@ -95,6 +96,18 @@ export async function sniffMagic(key: string): Promise<Uint8Array> {
     offset += c.length;
   }
   return out;
+}
+
+/**
+ * Server-side PUT of bytes to a key the server itself derived (L3 covers: the
+ * ingest worker extracts an EPUB/URL cover image and stores it as a media
+ * object). NOT a client-upload path — the bytes are already in hand on the
+ * server, size-capped by the caller, so no presign policy is involved.
+ */
+export async function putObject(key: string, bytes: Uint8Array, mime: string): Promise<void> {
+  await s3.send(
+    new PutObjectCommand({ Bucket: env.S3_BUCKET, Key: key, Body: bytes, ContentType: mime }),
+  );
 }
 
 /** Delete an object (used on finalize size/MIME mismatch — plan A5). */

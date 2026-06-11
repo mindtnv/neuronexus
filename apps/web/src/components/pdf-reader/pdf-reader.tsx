@@ -101,6 +101,14 @@ interface PdfReaderProps {
   tocOpen?: boolean;
   tocAvailable?: boolean;
   onToggleToc?: () => void;
+  /** L3 — fires ONCE after the doc loads with metadata + a lazy page-1 cover
+   *  renderer (the library reader uses it to backfill pageCount/author/cover —
+   *  ONLY for DB fields that are still NULL). */
+  onDocInfo?: (info: {
+    numPages: number;
+    author?: string;
+    renderCover: () => Promise<Blob | null>;
+  }) => void;
 }
 
 interface PageState {
@@ -115,7 +123,7 @@ const SAVE_DEBOUNCE_MS = 800;
 const POS_KEY = (id: string) => `nn:pdf:pos:${id}`;
 
 export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
-  ({ sourceId, sourceName, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false, onPageChange, tocOpen, tocAvailable, onToggleToc }, ref) => {
+  ({ sourceId, sourceName, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false, onPageChange, tocOpen, tocAvailable, onToggleToc, onDocInfo }, ref) => {
     const router = useRouter();
     const { locale } = useLocale();
     const containerRef = useRef<HTMLDivElement>(null);
@@ -389,6 +397,42 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
           const fit = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (containerW - 48) / vp1.width));
           setFitScale(fit);
           setScale(fit);
+
+          // L3 — surface doc metadata + a lazy page-1 cover renderer ONCE so the
+          // library reader can backfill pageCount/author/cover (NULL fields only).
+          if (onDocInfo) {
+            void (async () => {
+              let author: string | undefined;
+              try {
+                const meta = await doc.getMetadata();
+                const info = (meta?.info ?? {}) as { Author?: unknown };
+                if (typeof info.Author === 'string' && info.Author.trim()) {
+                  author = info.Author.trim().slice(0, 300);
+                }
+              } catch {
+                /* no metadata */
+              }
+              const renderCover = async (): Promise<Blob | null> => {
+                try {
+                  const targetW = 480;
+                  const scaleForCover = targetW / vp1.width;
+                  const cvp = first.getViewport({ scale: scaleForCover });
+                  const canvas = document.createElement('canvas');
+                  canvas.width = Math.round(cvp.width);
+                  canvas.height = Math.round(cvp.height);
+                  const ctx = canvas.getContext('2d');
+                  if (!ctx) return null;
+                  await first.render({ canvas, canvasContext: ctx, viewport: cvp }).promise;
+                  return await new Promise<Blob | null>((resolve) =>
+                    canvas.toBlob((b) => resolve(b), 'image/webp', 0.8),
+                  );
+                } catch {
+                  return null;
+                }
+              };
+              if (!cancelled) onDocInfo({ numPages: doc.numPages, author, renderCover });
+            })();
+          }
 
           // Lazily measure remaining page dims (some PDFs vary) without blocking.
           void (async () => {

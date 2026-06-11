@@ -36,6 +36,7 @@ import { computeSourceHash, EMBED_BATCH, embeddingDegraded } from './index-queue
 import { embed, isEmbeddingEnabled } from './openai-client.ts';
 import { getObjectBytes } from '../storage.ts';
 import { parseSource, SourceParseError } from './source-parsers.ts';
+import { downloadUrlCover, storeCoverMedia, type CoverImage } from './source-cover.ts';
 
 // ── In-process claim loop (concurrency-capped) ────────────────────────────────
 
@@ -144,7 +145,7 @@ async function claimForParse(sourceId: string): Promise<Source | null> {
 async function parsePhase(source: Source): Promise<void> {
   try {
     const bytes = await loadBytes(source);
-    const { units } = await parseSource({
+    const { units, cover, imageUrl } = await parseSource({
       kind: source.kind as 'pdf' | 'epub' | 'url' | 'text',
       bytes,
       url: source.url ?? undefined,
@@ -200,6 +201,11 @@ async function parsePhase(source: Source): Promise<void> {
         .where(eq(sources.id, source.id));
     });
 
+    // Best-effort cover (L3 §8.2): EPUB ships its cover in the archive; a URL's
+    // og:image is downloaded SSRF-guarded. NEVER fails ingest (try/catch + log),
+    // and only fills `cover_media_id` when it's still NULL (a client PATCH wins).
+    await maybeStoreCover(source, cover, imageUrl);
+
     // CAS parsing → indexing (a concurrent delete loses this race → 0 rows → skip).
     const moved = await casStatus(source.id, ['parsing'], 'indexing');
     if (!moved) throw new TerminalSkip();
@@ -207,6 +213,36 @@ async function parsePhase(source: Source): Promise<void> {
     // Always evict — SoT recovery from source_chunks makes correctness
     // independent of the stash (stash is only a fast-path for same-process runs).
     inlineTextStore.delete(source.id);
+  }
+}
+
+/**
+ * Best-effort cover storage for a freshly-parsed source (L3 §8.2). EPUB ships a
+ * `cover` (bytes already in hand); a URL ships an `imageUrl` (og:image) which we
+ * download SSRF-guarded. The cover becomes a verified user `media` object and
+ * `sources.cover_media_id` points at it — but ONLY when it's still NULL (a
+ * client PATCH, e.g. PDF page-1 render, always wins). ANY failure is swallowed
+ * (logged) so a cover never breaks ingest.
+ */
+async function maybeStoreCover(
+  source: Source,
+  cover: CoverImage | undefined,
+  imageUrl: string | undefined,
+): Promise<void> {
+  try {
+    let image: CoverImage | null = cover ?? null;
+    if (!image && imageUrl) image = await downloadUrlCover(imageUrl);
+    if (!image) return;
+    const mediaId = await storeCoverMedia(source.userId, image);
+    if (!mediaId) return;
+    // Only set when still NULL — never clobber a client-set cover. Re-read the
+    // live row (parse may have raced a PATCH).
+    await db
+      .update(sources)
+      .set({ coverMediaId: mediaId })
+      .where(and(eq(sources.id, source.id), sql`cover_media_id IS NULL`));
+  } catch (err) {
+    rootLogger.warn({ err, sourceId: source.id }, 'ai.source_ingest.cover_failed');
   }
 }
 

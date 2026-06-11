@@ -22,6 +22,7 @@
 import type { IngestErrorCode, SourceKind, SourceUnit } from '@neuronexus/shared';
 import { env } from '../env.ts';
 import { collapseText, htmlToPage, readPageCached } from './page-reader.ts';
+import { extractEpubCover, type CoverImage } from './source-cover.ts';
 
 /** A parse failure carrying the machine error code the worker stamps on the row. */
 export class SourceParseError extends Error {
@@ -46,6 +47,10 @@ export interface ParseSourceInput {
 
 export interface ParseSourceResult {
   units: SourceUnit[];
+  /** EPUB: the cover image bytes extracted from the archive (L3, §8.2). */
+  cover?: CoverImage;
+  /** URL: an og:image candidate URL the worker downloads as a cover (L3). */
+  imageUrl?: string;
 }
 
 // ── Test seams ────────────────────────────────────────────────────────────────
@@ -71,16 +76,24 @@ export function __setEpubReaderForTests(fn: EpubReader | null): void {
 
 export async function parseSource(input: ParseSourceInput): Promise<ParseSourceResult> {
   let units: SourceUnit[];
+  let cover: CoverImage | undefined;
+  let imageUrl: string | undefined;
   switch (input.kind) {
     case 'pdf':
       units = await parsePdf(requireBytes(input.bytes));
       break;
-    case 'epub':
-      units = await parseEpub(requireBytes(input.bytes));
+    case 'epub': {
+      const res = await parseEpub(requireBytes(input.bytes));
+      units = res.units;
+      cover = res.cover;
       break;
-    case 'url':
-      units = await parseUrl(input.url ?? '');
+    }
+    case 'url': {
+      const res = await parseUrl(input.url ?? '');
+      units = res.units;
+      imageUrl = res.imageUrl;
       break;
+    }
     case 'text':
       units = parseText(input.text ?? '');
       break;
@@ -91,7 +104,7 @@ export async function parseSource(input: ParseSourceInput): Promise<ParseSourceR
   // Drop empty units; an all-empty parse is `empty_source` (not a crash).
   units = units.filter((u) => u.text.trim().length > 0);
   if (units.length === 0) throw new SourceParseError('empty_source');
-  return { units };
+  return { units, cover, imageUrl };
 }
 
 function requireBytes(bytes: Uint8Array | undefined): Uint8Array {
@@ -123,15 +136,23 @@ async function parsePdf(bytes: Uint8Array): Promise<SourceUnit[]> {
 
 // ── EPUB (fflate, lazy) — one SourceUnit per chapter, with heading ────────────
 
-async function parseEpub(bytes: Uint8Array): Promise<SourceUnit[]> {
+async function parseEpub(bytes: Uint8Array): Promise<{ units: SourceUnit[]; cover?: CoverImage }> {
   let chapters: { text: string; heading?: string }[];
+  let cover: CoverImage | undefined;
   try {
-    chapters = epubReader ? await epubReader(bytes) : await readEpub(bytes);
+    if (epubReader) {
+      // Test seam: no real zip, so no cover extraction.
+      chapters = await epubReader(bytes);
+    } else {
+      const res = await readEpub(bytes);
+      chapters = res.chapters;
+      cover = res.cover;
+    }
   } catch (err) {
     if (err instanceof SourceParseError) throw err;
     throw new SourceParseError('parse_failed', `epub parse failed: ${String(err)}`);
   }
-  return chapters.map((c) => ({ text: collapseText(c.text), heading: c.heading }));
+  return { units: chapters.map((c) => ({ text: collapseText(c.text), heading: c.heading })), cover };
 }
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -143,7 +164,9 @@ const textDecoder = new TextDecoder('utf-8', { fatal: false });
  * heading). Pure unzip + regex (no XML-parser dep) — good enough for the EPUB
  * package format, which is well-structured.
  */
-async function readEpub(bytes: Uint8Array): Promise<{ text: string; heading?: string }[]> {
+async function readEpub(
+  bytes: Uint8Array,
+): Promise<{ chapters: { text: string; heading?: string }[]; cover?: CoverImage }> {
   const { unzipSync } = await import('fflate');
   const zip = unzipSync(new Uint8Array(bytes));
 
@@ -201,7 +224,15 @@ async function readEpub(bytes: Uint8Array): Promise<{ text: string; heading?: st
     if (page.text.trim().length === 0) continue;
     chapters.push({ text: page.text, heading: page.title });
   }
-  return chapters;
+
+  // Best-effort cover extraction from the SAME unzipped archive (L3 §8.2).
+  let cover: CoverImage | undefined;
+  try {
+    cover = extractEpubCover(zip) ?? undefined;
+  } catch {
+    cover = undefined;
+  }
+  return { chapters, cover };
 }
 
 /** Collapse `a/b/../c` and leading `./` in an EPUB-relative zip path. */
@@ -217,11 +248,11 @@ function normalizeZipPath(path: string): string {
 
 // ── URL (reuse page-reader) + text — single SourceUnit ────────────────────────
 
-async function parseUrl(url: string): Promise<SourceUnit[]> {
+async function parseUrl(url: string): Promise<{ units: SourceUnit[]; imageUrl?: string }> {
   if (!url) throw new SourceParseError('fetch_failed', 'no url');
   try {
     const page = await readPageCached(url);
-    return [{ text: page.text, heading: page.title }];
+    return { units: [{ text: page.text, heading: page.title }], imageUrl: page.imageUrl };
   } catch (err) {
     throw new SourceParseError('fetch_failed', `url fetch failed: ${String(err)}`);
   }

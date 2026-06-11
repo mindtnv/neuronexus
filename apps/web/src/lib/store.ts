@@ -13,7 +13,7 @@ import {
   reviewFromApi,
 } from './mappers';
 import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, Notebook, NoteType, Profile, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NoteType, Profile, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
 import type { SourceKind, SourceMime } from '@neuronexus/shared';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
@@ -284,6 +284,8 @@ interface State {
   // ── Library (L1) — the user-level material store (GET/POST/PATCH/DELETE /library) ──
   /** Paginated material list + filters (GET /library). */
   listLibrary: (params?: LibraryQuery) => Promise<{ items: LibraryItem[]; nextCursor: string | null }>;
+  /** Semantic search across the library (GET /library/search). */
+  searchLibrary: (q: string, limit?: number) => Promise<LibrarySearchResult>;
   /** One item: metadata + status + attached notebooks + cardCount (GET /library/items/:id). */
   getLibraryItem: (id: string) => Promise<LibraryItemDetail>;
   /** Inline url/text create (POST /library/items, + optional immediate attach). */
@@ -983,6 +985,14 @@ export const useNN = create<State>()((set, get) => ({
       items: LibraryItem[];
       nextCursor: string | null;
     };
+  },
+
+  async searchLibrary(q, limit) {
+    const query: Record<string, string | number> = { q };
+    if (limit != null) query.limit = limit;
+    return (await ok(
+      await (api as any).library.search.get({ query }),
+    )) as LibrarySearchResult;
   },
 
   async getLibraryItem(id) {

@@ -202,6 +202,8 @@ export interface LibraryItem {
   pageCount: number | null;
   byteSize: number | null;
   coverMediaId: string | null;
+  /** `/m/<uuid>` cover image URL (Next rewrite), or null for a placeholder. */
+  coverUrl: string | null;
   notebookCount: number;
   cardCount: number;
   createdAt: string;
@@ -218,6 +220,34 @@ export interface ReadingState {
   chunkPos: number | null;
   /** Progress 0..1 or null. */
   percent: number | null;
+}
+
+/** One semantic-search hit within a source (GET /library/search). */
+export interface LibrarySearchHit {
+  sourceChunkId: string;
+  position: number;
+  page: number | null;
+  heading: string | null;
+  snippet: string;
+  score: number;
+}
+
+/** A source's grouped search hits (GET /library/search). */
+export interface LibrarySearchGroup {
+  source: {
+    id: string;
+    kind: SourceKind;
+    title: string;
+    author: string | null;
+    coverUrl: string | null;
+  };
+  hits: LibrarySearchHit[];
+}
+
+/** GET /library/search response. `reason` set when degraded (no results). */
+export interface LibrarySearchResult {
+  groups: LibrarySearchGroup[];
+  reason?: 'embedding_disabled' | 'no_sources';
 }
 
 /** GET /library/items/:id — a library item + the notebooks it's attached to. */

@@ -36,6 +36,22 @@ const library = {
     readingUnread: 'Unread',
     readingReading: 'Reading',
     readingFinished: 'Finished',
+    // Shelf + tag filters.
+    shelfUnattached: 'Not in notebooks',
+    tagLabel: 'Tag',
+    tagAll: 'All tags',
+  },
+
+  // ── Search mode (title vs content) ────────────────────────────────────────────
+  search: {
+    byTitle: 'By title',
+    byContent: 'By content',
+    contentPlaceholder: 'Search inside your library…',
+    typeMore: 'Type at least 3 characters to search inside your books.',
+    disabled: 'Content search is unavailable without indexing.',
+    noResults: 'Nothing found in your library for this query.',
+    hitPage: 'p. {page}',
+    hitChunk: 'fragment {pos}',
   },
 
   // ── "Continue reading" shelf ──────────────────────────────────────────────────

@@ -771,6 +771,29 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 .nn-lib-row:hover { background: var(--surface-2); border-color: var(--border); }
 
+/* Content-search result group (source header + its hits). */
+.nn-lib-search-group {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 12px 14px;
+}
+.nn-lib-search-hit {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.nn-lib-search-hit:hover {
+  border-color: var(--lime-500);
+  background: color-mix(in srgb, var(--lime-500) 8%, var(--surface-2));
+}
+
 /* Reading progress bar (cover overlay + shelf + details). */
 .nn-lib-progress {
   height: 4px;

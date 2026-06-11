@@ -33,6 +33,12 @@ export interface PageContent {
   text: string;
   /** Absolute http(s) links found on the page (deduped, capped). */
   links: string[];
+  /**
+   * Cover image candidate (og:image) — absolute http(s) URL, when the page
+   * declares one (L3 covers, §8.2 URL path). The ingest worker downloads it
+   * (SSRF-guarded, ≤2 MB) into a media object. Optional; absent ⇒ no cover.
+   */
+  imageUrl?: string;
 }
 
 export interface PageReadOpts {
@@ -93,8 +99,9 @@ function isPrivateIp(address: string, family: number): boolean {
     : isPrivateIpV4(address);
 }
 
-/** Parse + statically validate a URL: http(s) only, no userinfo, sane host. */
-function validatePageUrl(raw: string): URL {
+/** Parse + statically validate a URL: http(s) only, no userinfo, sane host.
+ *  Exported so the cover-image downloader (L3) reuses the SAME static guard. */
+export function validatePageUrl(raw: string): URL {
   let u: URL;
   try {
     u = new URL(raw);
@@ -122,8 +129,9 @@ type LookupFn = (
 
 let lookupImpl: LookupFn = (hostname, opts) => dnsLookup(hostname, opts);
 
-/** Reject hosts that ARE private-IP literals or RESOLVE to private addresses. */
-async function assertPublicHost(u: URL): Promise<void> {
+/** Reject hosts that ARE private-IP literals or RESOLVE to private addresses.
+ *  Exported so the cover-image downloader (L3) reuses the SAME DNS/IP guard. */
+export async function assertPublicHost(u: URL): Promise<void> {
   const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
   const isV4Literal = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
   const isV6Literal = host.includes(':');
@@ -193,6 +201,12 @@ export function htmlToPage(html: string, baseUrl: string): PageContent {
     ? collapseText(decodeEntities(titleMatch[1]!)).replace(/\n+/g, ' ').slice(0, 200) || undefined
     : undefined;
 
+  // Open-Graph cover candidate: <meta property="og:image" content="…"> (also
+  // accept name="og:image" and twitter:image). Resolve relative → absolute and
+  // keep only http(s). The order of `property`/`content` attrs varies, so match
+  // a <meta …> tag carrying BOTH (either ordering).
+  const imageUrl = extractOgImage(html, baseUrl);
+
   // Collect absolute http(s) links BEFORE stripping tags.
   const links: string[] = [];
   const seen = new Set<string>();
@@ -229,7 +243,31 @@ export function htmlToPage(html: string, baseUrl: string): PageContent {
     .replace(/<[^>]+>/g, ' ');
   s = collapseText(decodeEntities(s));
 
-  return { url: baseUrl, title, text: s, links };
+  return { url: baseUrl, title, text: s, links, imageUrl };
+}
+
+/**
+ * Pull the og:image (or twitter:image) URL from raw HTML and resolve it against
+ * `baseUrl`. Returns an absolute http(s) URL or `undefined`. Tolerates either
+ * attribute ordering (`property` before/after `content`) and single/double
+ * quotes. Pure + exported for unit testing. */
+export function extractOgImage(html: string, baseUrl: string): string | undefined {
+  for (const m of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const tag = m[0];
+    const propMatch = /\b(?:property|name)\s*=\s*["']([^"']+)["']/i.exec(tag);
+    const prop = propMatch?.[1]?.toLowerCase();
+    if (prop !== 'og:image' && prop !== 'og:image:url' && prop !== 'twitter:image') continue;
+    const contentMatch = /\bcontent\s*=\s*["']([^"']*)["']/i.exec(tag);
+    const raw = contentMatch?.[1]?.trim();
+    if (!raw) continue;
+    try {
+      const abs = new URL(decodeEntities(raw), baseUrl);
+      if (abs.protocol === 'http:' || abs.protocol === 'https:') return abs.href;
+    } catch {
+      /* unresolvable — try the next meta */
+    }
+  }
+  return undefined;
 }
 
 // ── DirectPageReader ──────────────────────────────────────────────────────────
@@ -334,6 +372,7 @@ interface ExaContentsResponse {
     url?: string;
     title?: string | null;
     text?: string;
+    image?: string | null;
     extras?: { links?: unknown[] };
   }[];
   statuses?: { status?: string; error?: { tag?: string; httpStatusCode?: number | null } }[];
@@ -390,11 +429,14 @@ export class ExaPageReader implements PageReader {
         )
         .filter((l) => /^https?:\/\//i.test(l))
         .slice(0, PAGE_LINKS_MAX);
+      const imageUrl =
+        typeof r.image === 'string' && /^https?:\/\//i.test(r.image) ? r.image : undefined;
       return {
         url: r.url ?? u.href,
         title: r.title ?? undefined,
         text: collapseText(r.text),
         links,
+        imageUrl,
       };
     } finally {
       clearTimeout(timer);

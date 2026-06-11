@@ -10,6 +10,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import {
   DirectPageReader,
   ExaPageReader,
+  extractOgImage,
   htmlToPage,
   readPageCached,
   __resetPageReaderForTests,
@@ -84,6 +85,42 @@ describe('htmlToPage', () => {
   test('decodes numeric + named entities', () => {
     const page = htmlToPage('<p>a &#60; b &#x3E; c &laquo;q&raquo;</p>', 'https://e.com/');
     expect(page.text).toBe('a < b > c «q»');
+  });
+
+  test('surfaces og:image as imageUrl (absolute), resolving a relative content URL', () => {
+    const page = htmlToPage(
+      `<head><meta property="og:image" content="/img/cover.jpg"><title>T</title></head><body>x</body>`,
+      'https://docs.example.com/guide/intro',
+    );
+    expect(page.imageUrl).toBe('https://docs.example.com/img/cover.jpg');
+  });
+
+  test('no og:image ⇒ imageUrl undefined', () => {
+    const page = htmlToPage('<head><title>T</title></head><body>x</body>', 'https://e.com/');
+    expect(page.imageUrl).toBeUndefined();
+  });
+});
+
+// ── extractOgImage (pure, attribute-ordering tolerant) ────────────────────────
+
+describe('extractOgImage', () => {
+  test('content-before-property ordering + absolute URL', () => {
+    expect(
+      extractOgImage('<meta content="https://cdn.x/c.png" property="og:image">', 'https://e.com/'),
+    ).toBe('https://cdn.x/c.png');
+  });
+  test('twitter:image fallback', () => {
+    expect(
+      extractOgImage('<meta name="twitter:image" content="https://cdn.x/t.png">', 'https://e.com/'),
+    ).toBe('https://cdn.x/t.png');
+  });
+  test('non-http(s) scheme is rejected', () => {
+    expect(
+      extractOgImage('<meta property="og:image" content="data:image/png;base64,AAAA">', 'https://e.com/'),
+    ).toBeUndefined();
+  });
+  test('no matching meta ⇒ undefined', () => {
+    expect(extractOgImage('<meta name="description" content="x">', 'https://e.com/')).toBeUndefined();
   });
 });
 

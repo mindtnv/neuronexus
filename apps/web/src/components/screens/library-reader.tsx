@@ -59,6 +59,8 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
   const listNotebooks = useNN((s) => s.listNotebooks);
   const createNotebook = useNN((s) => s.createNotebook);
   const attachSources = useNN((s) => s.attachSources);
+  const patchLibraryItem = useNN((s) => s.patchLibraryItem);
+  const uploadMedia = useNN((s) => s.uploadMedia);
 
   const [source, setSource] = useState<Source | null>(null);
   const [detail, setDetail] = useState<LibraryItemDetail | null>(null);
@@ -239,6 +241,46 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
       writeProgress({ chunkPos: pos, percent });
     },
     [writeProgress],
+  );
+
+  // ── L3 — lazy PDF cover + pageCount/author backfill (NULL DB fields only) ──────
+  // Fires once per open from PdfReader after the doc loads. We render page 1 to a
+  // ~480px webp, upload it as a media object, and PATCH coverMediaId — plus
+  // pageCount/author — but ONLY for fields the server still has as NULL (never
+  // clobber a manual edit). One attempt, no retries.
+  const docInfoDoneRef = useRef(false);
+  const onDocInfo = useCallback(
+    async (info: { numPages: number; author?: string; renderCover: () => Promise<Blob | null> }) => {
+      if (docInfoDoneRef.current) return;
+      docInfoDoneRef.current = true;
+      const cur = detail ?? null;
+      const patch: { pageCount?: number; author?: string; coverMediaId?: string } = {};
+      if ((cur?.pageCount ?? null) == null && info.numPages > 0) {
+        patch.pageCount = info.numPages;
+      }
+      if ((cur?.author ?? null) == null && info.author) {
+        patch.author = info.author;
+      }
+      // Cover only when none is set yet.
+      const hasCover = cur?.coverMediaId != null;
+      try {
+        if (!hasCover) {
+          const blob = await info.renderCover();
+          if (blob) {
+            const file = new File([blob], 'cover.webp', { type: 'image/webp' });
+            const { mediaId } = await uploadMedia(file);
+            patch.coverMediaId = mediaId;
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          const updated = await patchLibraryItem(sourceId, patch);
+          setDetail((prev) => (prev ? { ...prev, ...updated } : prev));
+        }
+      } catch {
+        /* best-effort — a cover failure never affects reading */
+      }
+    },
+    [detail, sourceId, uploadMedia, patchLibraryItem],
   );
 
   // ── TOC building (PDF outline via the reader handle / text headings) ──────────────
@@ -444,6 +486,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
       <ReaderHeader
         source={source}
         author={detail?.author ?? null}
+        coverUrl={detail?.coverUrl ?? null}
         onBack={() => router.push('/library')}
         onDetails={() => router.push(`/library?focus=${sourceId}`)}
         t={t}
@@ -477,6 +520,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
               onAskChat={onAskChat}
               chatEnabled={chatEnabled}
               onPageChange={onPdfPageChange}
+              onDocInfo={onDocInfo}
               tocOpen={tocOpen}
               tocAvailable={tocAvailable}
               onToggleToc={onToggleToc}
@@ -525,12 +569,14 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
 const ReaderHeader = ({
   source,
   author,
+  coverUrl,
   onBack,
   onDetails,
   t,
 }: {
   source: Source | null;
   author: string | null;
+  coverUrl: string | null;
   onBack: () => void;
   onDetails: () => void;
   t: Tr;
@@ -550,6 +596,14 @@ const ReaderHeader = ({
     <NNBtn variant="ghost" size="sm" icon="chevl" onClick={onBack}>
       {t('library.reader.back')}
     </NNBtn>
+    {coverUrl && (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={coverUrl}
+        alt=""
+        style={{ width: 22, height: 30, objectFit: 'cover', borderRadius: 3, flexShrink: 0, border: '1px solid var(--border)' }}
+      />
+    )}
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
       <h2
         style={{
