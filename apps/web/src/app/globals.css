@@ -165,6 +165,18 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-chunk-flash { animation: none; outline-color: transparent; }
 }
 
+/* M4 PDF reader — page outline flash when a citation/deep-link jumps to a page. */
+@keyframes nn-pdf-page-flash {
+  0% { box-shadow: 0 0 0 3px var(--lime-500), var(--shadow-md); }
+  100% { box-shadow: 0 0 0 0 transparent, var(--shadow-md); }
+}
+.nn-pdf-page-flash {
+  animation: nn-pdf-page-flash 1600ms ease forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-pdf-page-flash { animation: none; }
+}
+
 /* Shared rendered-card display CSS — applied via `nn-rendered` on every SafeHtml
    sink (editor preview, review, note-type preview, browser). Image sizing rides
    the `width` attribute (the only size carrier that survives BOTH sanitizer

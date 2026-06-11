@@ -31,13 +31,19 @@ import {
   decks,
   kbChunk,
   notebooks,
+  sourceAnnotations,
   sourceChunks,
   sources,
   type Source,
 } from '@neuronexus/db';
 import {
+  ANNOTATION_MAX_POINTS,
+  ANNOTATION_MAX_STROKES,
+  MARKED_TEXT_MAX,
   SOURCE_MIME_ALLOWLIST,
   SOURCE_MIME_TO_KIND,
+  type InkStroke,
+  type PageAnnotations,
   type SourceMime,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
@@ -77,6 +83,48 @@ function withProgress(source: Source, indexed: number): Record<string, unknown> 
     indexed,
     total: source.chunkCount ?? 0,
   };
+}
+
+/** `#rrggbb` hex literal (case-insensitive) — the only color shape persisted. */
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+
+/**
+ * Structural validation of a PUT annotations body's strokes (M4). Rejects
+ * malformed ink before it reaches the DB: each stroke must declare a known tool,
+ * a `#rrggbb` color, a finite positive width, and a flat `points` list of finite
+ * numbers whose length is a multiple of 3 (x/y/p triples) with x/y in [0,1]. The
+ * per-page stroke/point caps bound the row size (the byte cap is checked at the
+ * route). Returns `true` for a well-formed PageAnnotations (v===1).
+ */
+function validateStrokes(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const ann = body as { v?: unknown; strokes?: unknown };
+  if (ann.v !== 1) return false;
+  if (!Array.isArray(ann.strokes)) return false;
+  if (ann.strokes.length > ANNOTATION_MAX_STROKES) return false;
+
+  let totalPoints = 0;
+  for (const raw of ann.strokes) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const s = raw as Partial<InkStroke>;
+    if (s.tool !== 'pen' && s.tool !== 'highlighter') return false;
+    if (typeof s.color !== 'string' || !HEX_COLOR_RE.test(s.color)) return false;
+    if (typeof s.width !== 'number' || !Number.isFinite(s.width) || s.width <= 0) {
+      return false;
+    }
+    if (!Array.isArray(s.points) || s.points.length === 0 || s.points.length % 3 !== 0) {
+      return false;
+    }
+    for (let i = 0; i < s.points.length; i++) {
+      const n = s.points[i];
+      if (typeof n !== 'number' || !Number.isFinite(n)) return false;
+      // x/y (i % 3 === 0 or 1) are normalized page coordinates clamped to [0,1].
+      if (i % 3 !== 2 && (n < 0 || n > 1)) return false;
+    }
+    totalPoints += s.points.length / 3;
+    if (totalPoints > ANNOTATION_MAX_POINTS) return false;
+  }
+  return true;
 }
 
 export const notebooksModule = new Elysia({ prefix: '/notebooks' })
@@ -562,6 +610,156 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
       return { items };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+  // ── PDF reader: original bytes + ink annotations (M4) ────────────────────────
+  // Stream the ORIGINAL uploaded bytes (the pdf.js viewer fetches this). Only for
+  // sources that carry a `storageKey` (pdf/epub) — url/text kinds have no bytes →
+  // 404. A getObjectBytes failure (missing object / S3 hiccup) degrades to 404, not
+  // a 500. Returns a raw `Response` (Elysia supports it) with content-type from the
+  // row's mime, a content-length, and a private cache header.
+  .get(
+    '/:id/file',
+    async ({ user, params, status }) => {
+      const [source] = await db
+        .select({ storageKey: sources.storageKey, mime: sources.mime })
+        .from(sources)
+        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
+        .limit(1);
+      if (!source) return status(404, { error: 'not_found' });
+      if (!source.storageKey) return status(404, { error: 'not_found' });
+
+      let bytes: Uint8Array;
+      try {
+        bytes = await getObjectBytes(source.storageKey);
+      } catch {
+        // Object missing / storage error — degrade to 404, never a 500.
+        return status(404, { error: 'not_found' });
+      }
+      // Hand the raw bytes back as a plain ArrayBuffer (a valid BodyInit — a
+      // Uint8Array's `ArrayBufferLike` generic doesn't satisfy the lib's typing).
+      const buffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer;
+      return new Response(buffer, {
+        headers: {
+          'content-type': source.mime ?? 'application/octet-stream',
+          'content-length': String(bytes.byteLength),
+          'cache-control': 'private, max-age=3600',
+        },
+      });
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+  // List a source's per-page ink annotations, ordered by page (1-based). The
+  // client replays the strokes onto the matching pdf.js pages. user-scoped 404.
+  .get(
+    '/:id/annotations',
+    async ({ user, params, status }) => {
+      const [source] = await db
+        .select({ id: sources.id })
+        .from(sources)
+        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
+        .limit(1);
+      if (!source) return status(404, { error: 'not_found' });
+
+      const rows = await db
+        .select({
+          page: sourceAnnotations.page,
+          strokes: sourceAnnotations.strokes,
+          markedText: sourceAnnotations.markedText,
+          updatedAt: sourceAnnotations.updatedAt,
+        })
+        .from(sourceAnnotations)
+        .where(and(eq(sourceAnnotations.sourceId, params.id), eq(sourceAnnotations.userId, user.id)))
+        .orderBy(asc(sourceAnnotations.page));
+      return { items: rows };
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+  // Upsert (or clear) one page's ink annotations. The debounced client PUTs the
+  // page's full stroke set + the `marked_text` extracted from under the strokes
+  // (the AI-visible markup). Validation: structurally-bad strokes → 400
+  // `invalid_annotation`; oversize JSON → 400 `annotation_too_large`. An EMPTY
+  // strokes array DELETES the row (a cleared page) → `{ ok, cleared:true }`. Else
+  // UPSERT via the plain (source_id,page) unique. `markedText` is re-capped
+  // server-side to MARKED_TEXT_MAX. user-scoped 404. `page` is 1-based.
+  .put(
+    '/:id/annotations/:page',
+    async ({ user, params, body, status }) => {
+      const [source] = await db
+        .select({ id: sources.id })
+        .from(sources)
+        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
+        .limit(1);
+      if (!source) return status(404, { error: 'not_found' });
+
+      if (!validateStrokes(body.strokes)) {
+        return status(400, { error: 'invalid_annotation' });
+      }
+      // Byte cap on the stroke payload (JSON.stringify length).
+      if (JSON.stringify(body.strokes).length > env.ai.SOURCE_ANNOTATION_MAX_BYTES) {
+        return status(400, { error: 'annotation_too_large' });
+      }
+      const strokes = body.strokes as PageAnnotations;
+
+      // An empty stroke set ⇒ the page was cleared: drop the row entirely.
+      if (strokes.strokes.length === 0) {
+        await db
+          .delete(sourceAnnotations)
+          .where(
+            and(
+              eq(sourceAnnotations.sourceId, params.id),
+              eq(sourceAnnotations.userId, user.id),
+              eq(sourceAnnotations.page, params.page),
+            ),
+          );
+        return { ok: true, cleared: true };
+      }
+
+      const markedText =
+        typeof body.markedText === 'string'
+          ? body.markedText.slice(0, MARKED_TEXT_MAX)
+          : null;
+
+      // UPSERT on the PLAIN (source_id, page) unique — no `where` needed (unlike a
+      // partial index). `updatedAt` bumps on every save.
+      const [row] = await db
+        .insert(sourceAnnotations)
+        .values({
+          userId: user.id,
+          sourceId: params.id,
+          page: params.page,
+          strokes,
+          markedText,
+        })
+        .onConflictDoUpdate({
+          target: [sourceAnnotations.sourceId, sourceAnnotations.page],
+          set: { strokes, markedText, updatedAt: new Date() },
+        })
+        .returning({
+          page: sourceAnnotations.page,
+          strokes: sourceAnnotations.strokes,
+          markedText: sourceAnnotations.markedText,
+          updatedAt: sourceAnnotations.updatedAt,
+        });
+      return { ok: true, cleared: false, item: row! };
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        // 1-based page (pdf.js convention); bounded to a sane ceiling.
+        page: t.Integer({ minimum: 1, maximum: 10000 }),
+      }),
+      body: t.Object({
+        // Structural validation runs in the handler (validateStrokes) — keep the
+        // wire schema permissive so a bad shape returns our `invalid_annotation`
+        // 400, not Elysia's generic validation error.
+        strokes: t.Unknown(),
+        markedText: t.Optional(t.String()),
+      }),
+    },
   );
 
 /** One-line front excerpt: collapse whitespace, cap to `max` chars. */

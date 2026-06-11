@@ -50,3 +50,4 @@ packages/db/src/migrations/meta/_journal.json.local
 
 # oh-my-claudecode orchestration state (plans, specs, notepads, sessions)
 .omc/
+apps/web/public/vendor/

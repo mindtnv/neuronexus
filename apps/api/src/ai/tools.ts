@@ -18,6 +18,7 @@ import {
   decks,
   notes,
   noteTypes,
+  sourceAnnotations,
   sourceChunks,
   sources,
   type Citation,
@@ -1262,6 +1263,148 @@ async function sourceChunkCount(userId: string, sourceId: string): Promise<numbe
   return row ? Number(row.n) : 0;
 }
 
+// ── list_marked_passages (read, NOTEBOOK mode) ───────────────────────────────
+//
+// Read the user's PDF-reader INK markup: the text they highlighted/underlined in
+// the reader, per source/page (`source_annotations.marked_text`, extracted on the
+// client from under the strokes). Use this when the user refers to what THEY
+// marked ("что я выделил", "по моей разметке", "make cards from what I
+// highlighted"). Grounding: each annotated page's `marked_text` is matched to the
+// page's `source_chunks` (exact page match, user-scoped) so [src:] citations +
+// card provenance work just like search_source/read_source. Registered ONLY in
+// notebook mode (after read_source).
+
+/** Per-row cap on the rendered marked text (the whole result is capText'd too). */
+const MARKED_PASSAGE_ROW_CHARS = 400;
+
+interface ListMarkedPassagesArgs {
+  sourceId?: unknown;
+}
+
+const listMarkedPassages: Tool = {
+  name: 'list_marked_passages',
+  kind: 'read',
+  description:
+    'List the passages the user MARKED (highlighted/underlined/drew over) in the ' +
+    'PDF reader. Use this whenever the user refers to their own markup — «что я ' +
+    'выделил», «по моей разметке», "make cards from what I highlighted". With no ' +
+    'argument it returns the marked text across ALL the notebook\'s sources; pass ' +
+    '`sourceId` to limit to one source. Each passage is tagged with a [src:<id>] ' +
+    'token you cite, and the cards you create from them are auto-linked to those ' +
+    'passages. If nothing is marked, say so honestly.',
+  parameters: {
+    type: 'object',
+    properties: {
+      sourceId: {
+        type: 'string',
+        description: 'Optional UUID of one of the notebook sources — limit to its markup.',
+      },
+    },
+  },
+  async execute(ctx, rawArgs): Promise<ToolResult> {
+    const nb = ctx.notebook;
+    if (!nb) return { ok: false, error: 'list_marked_passages: not in a notebook' };
+    const args = (rawArgs ?? {}) as ListMarkedPassagesArgs;
+    const sourceIdArg = typeof args.sourceId === 'string' ? args.sourceId.trim() : '';
+
+    // Resolve the scope: a given sourceId MUST be one of the notebook's checked-in
+    // sources (else a self-correcting error listing the valid ids); absent ⇒ all.
+    let scope: string[];
+    if (sourceIdArg) {
+      if (!nb.sourceIds.includes(sourceIdArg)) {
+        const valid = await listValidSources(ctx.userId, nb.sourceIds);
+        return {
+          ok: false,
+          error: `list_marked_passages: "${sourceIdArg}" is not a source in this notebook. Available sources: ${valid}`,
+        };
+      }
+      scope = [sourceIdArg];
+    } else {
+      scope = nb.sourceIds;
+    }
+
+    if (scope.length === 0) {
+      return { ok: true, text: 'This notebook has no ready sources checked into the chat yet.', citations: [] };
+    }
+
+    try {
+      // Annotated pages with non-empty marked text, JOINed to the source title.
+      // user-scoped + source_id IN scope; ordered by source then page.
+      const rows = await db
+        .select({
+          sourceId: sourceAnnotations.sourceId,
+          page: sourceAnnotations.page,
+          markedText: sourceAnnotations.markedText,
+          sourceTitle: sources.title,
+        })
+        .from(sourceAnnotations)
+        .innerJoin(sources, eq(sources.id, sourceAnnotations.sourceId))
+        .where(
+          and(
+            eq(sourceAnnotations.userId, ctx.userId),
+            inArray(sourceAnnotations.sourceId, scope),
+            sql`${sourceAnnotations.markedText} is not null and length(trim(${sourceAnnotations.markedText})) > 0`,
+          ),
+        )
+        .orderBy(asc(sourceAnnotations.sourceId), asc(sourceAnnotations.page));
+
+      if (rows.length === 0) {
+        return { ok: true, text: 'No marked passages yet — the user has not highlighted anything in the reader.', citations: [] };
+      }
+
+      // For each annotated page, resolve the page's source_chunks (exact page
+      // match, user-scoped) for grounding/citations. A page with no matching chunk
+      // is still rendered (the marked text is shown) but contributes no citation.
+      const lines: string[] = [];
+      const citations: SourceCitation[] = [];
+      const groundChunkIds: string[] = [];
+      for (const row of rows) {
+        const marked = (row.markedText ?? '').trim();
+        const capped =
+          marked.length > MARKED_PASSAGE_ROW_CHARS
+            ? `${marked.slice(0, MARKED_PASSAGE_ROW_CHARS)}…`
+            : marked;
+        lines.push(`«${row.sourceTitle}» — p.${row.page}: "${capped}"`);
+
+        const chunks = await db
+          .select({
+            id: sourceChunks.id,
+            position: sourceChunks.position,
+            text: sourceChunks.text,
+          })
+          .from(sourceChunks)
+          .where(
+            and(
+              eq(sourceChunks.userId, ctx.userId),
+              eq(sourceChunks.sourceId, row.sourceId),
+              eq(sourceChunks.page, row.page),
+            ),
+          )
+          .orderBy(asc(sourceChunks.position));
+        for (const c of chunks) {
+          groundChunkIds.push(c.id);
+          citations.push(
+            toSourceCitation(nb.notebookId, {
+              sourceChunkId: c.id,
+              sourceId: row.sourceId,
+              position: c.position,
+              page: row.page,
+              sourceTitle: row.sourceTitle,
+              text: c.text,
+            }),
+          );
+        }
+      }
+
+      pushGrounding(ctx, groundChunkIds);
+      return { ok: true, text: capText(lines.join('\n')), citations };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.list_marked_passages.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'list_marked_passages_failed' };
+    }
+  },
+};
+
 // ── create_card (write) ──────────────────────────────────────────────────────
 //
 // Wraps the POST /notes create path (grounding correction #3 — cards are
@@ -1990,15 +2133,15 @@ export function buildToolRegistry(
   const webOn = opts.webSearchEnabled ?? isWebSearchEnabled();
   const fetchOn = opts.fetchPageEnabled ?? isFetchPageEnabled();
 
-  // NOTEBOOK mode (M2): a DELIBERATELY narrow registry — grounded reading over
+  // NOTEBOOK mode (M2/M4): a DELIBERATELY narrow registry — grounded reading over
   // the notebook's sources (`search_source` by meaning, `read_source`
-  // sequentially) + the create-card workflow (`list_decks` then `create_card`).
-  // `web_search` is offered only when enabled (and the prompt gates it to
-  // explicit user requests). No card-search/browse/progress/fetch_page/edit/SRS
-  // here in V1 — notebook chat is about the sources, not the user's whole
-  // collection.
+  // sequentially, `list_marked_passages` over the user's PDF-reader ink markup) +
+  // the create-card workflow (`list_decks` then `create_card`). `web_search` is
+  // offered only when enabled (and the prompt gates it to explicit user
+  // requests). No card-search/browse/progress/fetch_page/edit/SRS here in V1 —
+  // notebook chat is about the sources, not the user's whole collection.
   if (opts.notebook) {
-    const registry: Tool[] = [searchSource, readSource, listDecks, createCard];
+    const registry: Tool[] = [searchSource, readSource, listMarkedPassages, listDecks, createCard];
     if (webOn) registry.push(webSearch);
     return registry;
   }

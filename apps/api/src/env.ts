@@ -149,6 +149,13 @@ export const env = {
     SOURCE_CHUNKS_PAGE: Number(process.env.SOURCE_CHUNKS_PAGE ?? 50),
     // Sequential-reading tool: source chunks per read_source slice.
     READ_SOURCE_CHUNKS: Number(process.env.READ_SOURCE_CHUNKS ?? 3),
+    // ── PDF reader annotations (M4) — OPTIONAL ───────────────────────────────
+    // Byte cap on one page's ink strokes (JSON.stringify(body.strokes) length).
+    // Over it ⇒ PUT 400 `annotation_too_large` (DoS guard alongside the
+    // per-page stroke/point caps in @neuronexus/shared). Default 512 KiB.
+    SOURCE_ANNOTATION_MAX_BYTES: Number(
+      process.env.SOURCE_ANNOTATION_MAX_BYTES ?? 512 * 1024,
+    ),
   },
 };
 

@@ -84,7 +84,7 @@ const notebooks = {
     cardsEmpty: 'No cards from this source yet.',
   },
 
-  // Center reader (M2) — the active source's parsed chunks.
+  // Center reader (M2 text mode + M4 PDF mode) — the active source's content.
   reader: {
     empty: 'Select a source to read it here.',
     notReady: 'This source is still being indexed.',
@@ -93,6 +93,36 @@ const notebooks = {
     chunkCount: '{count} sections',
     loadMore: 'Load more',
     loading: 'Loading…',
+    // M4 PDF reader: loading / error.
+    loadingBytes: '{loaded} / {total} KB',
+    loadError: 'Could not open this PDF.',
+    openText: 'Open the text view',
+    // Mode toggle.
+    modePdf: 'PDF',
+    modeText: 'Text',
+    // Toolbar (ink tools + zoom + page jump + save state).
+    toolbar: 'Reader tools',
+    toolHand: 'Move / scroll',
+    toolPen: 'Pen',
+    toolHighlighter: 'Highlighter',
+    toolEraser: 'Eraser',
+    fingerDraw: 'Draw with finger',
+    undo: 'Undo',
+    redo: 'Redo',
+    width: 'Width {n}',
+    color_lime: 'Lime',
+    color_amber: 'Amber',
+    color_rose: 'Rose',
+    color_sky: 'Sky',
+    color_violet: 'Violet',
+    color_white: 'White',
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
+    zoomReset: 'Fit width',
+    pageJump: 'Go to page',
+    saving: 'Saving…',
+    saved: 'Saved',
+    saveError: 'Save failed — retry',
   },
 
   // Card → source backlinks (M3) — the "Sources" panel on a card.

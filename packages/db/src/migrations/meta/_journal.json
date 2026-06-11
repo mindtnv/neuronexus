@@ -120,6 +120,13 @@
       "when": 1781173761147,
       "tag": "0016_brief_carmella_unuscione",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1781182694708,
+      "tag": "0017_faulty_vampiro",
+      "breakpoints": true
     }
   ]
 }

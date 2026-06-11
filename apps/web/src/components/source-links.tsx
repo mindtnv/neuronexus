@@ -90,6 +90,8 @@ export const SourceLinksPanel = ({ cardId }: { cardId: string }) => {
           const params = new URLSearchParams({ source: item.sourceId });
           if (item.sourceChunkId) params.set('chunk', item.sourceChunkId);
           if (item.position != null) params.set('pos', String(item.position));
+          // M4 — a known page opens a PDF source in the native reader at that page.
+          if (item.page != null) params.set('page', String(item.page));
           router.push(`/notebooks/${item.notebookId}?${params.toString()}`);
         };
         return (

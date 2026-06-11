@@ -23,6 +23,7 @@ import type {
   MessageMention,
   MessageUsage,
   NoteField,
+  PageAnnotations,
   ToolCallRecord,
 } from '@neuronexus/shared';
 import { user } from './auth.ts';
@@ -752,6 +753,40 @@ export const cardSources = pgTable(
   ],
 );
 
+// ── source_annotations ─────────────────────────────────────────────────────────
+// PDF reader ink markup (M4): one row per (source, page) holding the page's
+// VECTOR ink strokes (normalized page coordinates) + the `marked_text` extracted
+// from under the strokes (the AI-visible markup, read by `list_marked_passages`).
+// `page` is 1-BASED (the pdf.js convention). The (source_id, page) unique is a
+// PLAIN (non-partial) unique so the PUT can `onConflictDoUpdate` on it with no
+// WHERE. Sources are user-owned; `user_id` is still the first conjunct on every
+// query (the (user_id) index supports the per-source list). Both FKs CASCADE so
+// deleting a source/user drops its annotations.
+
+export const sourceAnnotations = pgTable(
+  'source_annotations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    sourceId: uuid('source_id')
+      .notNull()
+      .references(() => sources.id, { onDelete: 'cascade' }),
+    // 1-based page index (pdf.js convention).
+    page: integer('page').notNull(),
+    strokes: jsonb('strokes').notNull().$type<PageAnnotations>(),
+    markedText: text('marked_text'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Plain (non-partial) unique upsert key — one annotation row per (source, page).
+    uniqueIndex('source_annotations_source_page_uq').on(t.sourceId, t.page),
+    index('source_annotations_user_idx').on(t.userId),
+  ],
+);
+
 // ── relations ──────────────────────────────────────────────────────────────
 
 export const profileRelations = relations(profile, ({ one }) => ({
@@ -839,6 +874,12 @@ export const sourcesRelations = relations(sources, ({ one, many }) => ({
   user: one(user, { fields: [sources.userId], references: [user.id] }),
   notebook: one(notebooks, { fields: [sources.notebookId], references: [notebooks.id] }),
   chunks: many(sourceChunks),
+  annotations: many(sourceAnnotations),
+}));
+
+export const sourceAnnotationsRelations = relations(sourceAnnotations, ({ one }) => ({
+  user: one(user, { fields: [sourceAnnotations.userId], references: [user.id] }),
+  source: one(sources, { fields: [sourceAnnotations.sourceId], references: [sources.id] }),
 }));
 
 export const sourceChunksRelations = relations(sourceChunks, ({ one }) => ({
@@ -897,3 +938,5 @@ export type SourceChunk = typeof sourceChunks.$inferSelect;
 export type NewSourceChunk = typeof sourceChunks.$inferInsert;
 export type CardSource = typeof cardSources.$inferSelect;
 export type NewCardSource = typeof cardSources.$inferInsert;
+export type SourceAnnotation = typeof sourceAnnotations.$inferSelect;
+export type NewSourceAnnotation = typeof sourceAnnotations.$inferInsert;

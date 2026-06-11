@@ -57,6 +57,12 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob:",
               "font-src 'self' data:",
+              // M4 PDF reader: pdf.js boots its worker from a same-origin
+              // `/_next/static/media/pdf.worker.min.mjs` chunk (covered by
+              // script-src 'self'); `worker-src 'self' blob:` is explicit so the
+              // worker is allowed under the strict `default-src 'self'` and the
+              // pdf.js blob-wrapper fallback (cross-origin chunk path) still works.
+              "worker-src 'self' blob:",
               `connect-src ${connectSrc}`,
               "frame-ancestors 'none'",
               "base-uri 'self'",

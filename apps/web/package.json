@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "SERWIST_SUPPRESS_TURBOPACK_WARNING=1 next dev --webpack --port 3001",
-    "build": "SERWIST_SUPPRESS_TURBOPACK_WARNING=1 next build --webpack",
+    "dev": "bun scripts/copy-pdfjs.mjs && SERWIST_SUPPRESS_TURBOPACK_WARNING=1 next dev --webpack --port 3001",
+    "build": "bun scripts/copy-pdfjs.mjs && SERWIST_SUPPRESS_TURBOPACK_WARNING=1 next build --webpack",
     "start": "next start --port 3001",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.sw.json --noEmit"
   },
@@ -25,6 +25,7 @@
     "markdown-it": "^14.2.0",
     "mermaid": "^11.12.0",
     "next": "16.2.4",
+    "pdfjs-dist": "^5.4.530",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "ts-fsrs": "^5.3.2",

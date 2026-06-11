@@ -52,6 +52,7 @@ import {
   type AddKind,
 } from '@/components/screens/notebooks';
 import { ChatPanel } from '@/components/chat/chat-panel';
+import { PdfReader, type PdfReaderHandle } from '@/components/pdf-reader/pdf-reader';
 
 type WorkspaceTab = 'sources' | 'reader' | 'chat';
 
@@ -164,6 +165,12 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   // Active reader source + its loaded chunk pages.
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
+  // PDF|Text reader mode for the active source (M4). PDF sources default to 'pdf'
+  // (persisted per source in localStorage); non-PDF sources are always 'text'.
+  const [readerMode, setReaderMode] = useState<'pdf' | 'text'>('text');
+  const pdfReaderRef = useRef<PdfReaderHandle>(null);
+  // A pending page jump (from a citation / ?page=) fulfilled once the PDF mounts.
+  const pendingPageRef = useRef<number | undefined>(undefined);
   const [chunks, setChunks] = useState<SourceChunkRow[]>([]);
   const [chunkTotal, setChunkTotal] = useState(0);
   const [nextFrom, setNextFrom] = useState<number | null>(0);
@@ -191,6 +198,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const sourceParam = searchParams.get('source');
   const chunkParam = searchParams.get('chunk');
   const posParam = searchParams.get('pos');
+  const pageParam = searchParams.get('page');
   const threadParam = searchParams.get('thread');
   // Pending scroll-to target, set from the URL or a citation; cleared once done.
   const pendingScrollRef = useRef<{ chunkId?: string; pos?: number } | null>(null);
@@ -343,18 +351,79 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     pendingScrollRef.current = { chunkId, pos };
   }, []);
 
-  // Consume ?source=&chunk=&pos= once sources have loaded.
+  // Jump the PDF reader to a page (citation in PDF mode / ?page=). If the reader
+  // is already mounted, scroll now; else stash for the PdfReader's initialPage.
+  const jumpToPage = useCallback((page?: number) => {
+    if (page == null || !Number.isFinite(page) || page < 1) return;
+    pendingPageRef.current = page;
+    pdfReaderRef.current?.scrollToPage(page, true);
+  }, []);
+
+  // Reader-mode hydrate when the active source changes: PDF sources read the
+  // per-source preference (default 'pdf'); everything else is text-only.
+  useEffect(() => {
+    const src = sources.find((s) => s.id === activeSourceId) ?? null;
+    if (src?.kind === 'pdf') {
+      let stored: string | null = null;
+      try {
+        stored = localStorage.getItem(`nn:nb:readermode:${src.id}`);
+      } catch {
+        stored = null;
+      }
+      setReaderMode(stored === 'text' ? 'text' : 'pdf');
+    } else {
+      setReaderMode('text');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSourceId, sources]);
+
+  const setReaderModePersisted = useCallback(
+    (m: 'pdf' | 'text') => {
+      setReaderMode(m);
+      if (activeSourceId) {
+        try {
+          localStorage.setItem(`nn:nb:readermode:${activeSourceId}`, m);
+        } catch {
+          /* best-effort */
+        }
+      }
+    },
+    [activeSourceId],
+  );
+
+  // Consume ?source=&chunk=&pos=&page= once sources have loaded.
   const consumedSourceParamRef = useRef<string | null>(null);
   useEffect(() => {
     if (!sourcesLoaded || !sourceParam) return;
-    const token = `${sourceParam}:${chunkParam ?? ''}:${posParam ?? ''}`;
+    const token = `${sourceParam}:${chunkParam ?? ''}:${posParam ?? ''}:${pageParam ?? ''}`;
     if (consumedSourceParamRef.current === token) return;
     consumedSourceParamRef.current = token;
-    if (!sources.some((s) => s.id === sourceParam)) return;
+    const src = sources.find((s) => s.id === sourceParam);
+    if (!src) return;
     setActiveSourceId(sourceParam);
     if (!isDesktop) setTab('reader');
-    openChunk(chunkParam ?? undefined, posParam != null ? Number(posParam) : undefined);
-  }, [sourcesLoaded, sourceParam, chunkParam, posParam, sources, isDesktop, openChunk]);
+    // A ?page= deep link opens a PDF source in PDF mode at that page; otherwise
+    // fall back to the text-chunk jump (chunk id / position).
+    const pageNum = pageParam != null ? Number(pageParam) : undefined;
+    if (src.kind === 'pdf' && pageNum != null && Number.isFinite(pageNum) && pageNum >= 1) {
+      setReaderModePersisted('pdf');
+      pendingPageRef.current = pageNum;
+      jumpToPage(pageNum);
+    } else {
+      openChunk(chunkParam ?? undefined, posParam != null ? Number(posParam) : undefined);
+    }
+  }, [
+    sourcesLoaded,
+    sourceParam,
+    chunkParam,
+    posParam,
+    pageParam,
+    sources,
+    isDesktop,
+    openChunk,
+    jumpToPage,
+    setReaderModePersisted,
+  ]);
 
   // Consume ?thread= once (notebook chat thread selection).
   const consumedThreadParamRef = useRef<string | null>(null);
@@ -567,6 +636,10 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       loading={chunksLoading}
       hasMore={nextFrom != null}
       onLoadMore={() => activeSourceId && nextFrom != null && void loadChunks(activeSourceId, nextFrom, true)}
+      readerMode={readerMode}
+      onReaderMode={setReaderModePersisted}
+      pdfReaderRef={pdfReaderRef}
+      pendingPage={pendingPageRef.current}
       t={t}
     />
   );
@@ -579,9 +652,18 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       activeThreadId={activeThreadId}
       onThreadChange={onThreadChange}
       onSourceCitation={(c) => {
-        if (c.sourceId) {
-          setActiveSourceId(c.sourceId);
-          if (!isDesktop) setTab('reader');
+        if (!c.sourceId) return;
+        const src = sources.find((s) => s.id === c.sourceId);
+        setActiveSourceId(c.sourceId);
+        if (!isDesktop) setTab('reader');
+        // PDF source + a known page → jump the PDF reader to that page; else
+        // (no page, or non-PDF) fall back to the text-chunk jump.
+        if (src?.kind === 'pdf' && c.page != null) {
+          setReaderModePersisted('pdf');
+          pendingPageRef.current = c.page;
+          jumpToPage(c.page);
+        } else {
+          if (src?.kind === 'pdf') setReaderModePersisted('text');
           openChunk(c.sourceChunkId, c.position);
         }
       }}
@@ -996,11 +1078,31 @@ interface ReaderPanelProps {
   loading: boolean;
   hasMore: boolean;
   onLoadMore: () => void;
+  // M4 PDF mode.
+  readerMode: 'pdf' | 'text';
+  onReaderMode: (m: 'pdf' | 'text') => void;
+  pdfReaderRef: React.RefObject<PdfReaderHandle | null>;
+  pendingPage?: number;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
 const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
-  ({ source, chunks, total, loading, hasMore, onLoadMore, t }, ref) => {
+  (
+    {
+      source,
+      chunks,
+      total,
+      loading,
+      hasMore,
+      onLoadMore,
+      readerMode,
+      onReaderMode,
+      pdfReaderRef,
+      pendingPage,
+      t,
+    },
+    ref,
+  ) => {
     // Auto-load the next page when the sentinel scrolls into view.
     const sentinelRef = useRef<HTMLDivElement>(null);
     useEffect(() => {
@@ -1035,6 +1137,21 @@ const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
       );
     }
 
+    // M4 — native PDF reader (pdf.js + ink). Mounts only for a ready PDF source in
+    // PDF mode; pdf.js is dynamically imported INSIDE PdfReader (never SSR'd).
+    if (source.kind === 'pdf' && readerMode === 'pdf' && source.status === 'ready') {
+      return (
+        <PdfReader
+          key={source.id}
+          ref={pdfReaderRef}
+          sourceId={source.id}
+          initialPage={pendingPage}
+          onMode={onReaderMode}
+          t={t}
+        />
+      );
+    }
+
     return (
       <div
         ref={ref}
@@ -1059,6 +1176,28 @@ const ReaderPanel = React.forwardRef<HTMLDivElement, ReaderPanelProps>(
             >
               {source.title}
             </h3>
+            {/* PDF sources can switch back to the native PDF reader. */}
+            {source.kind === 'pdf' && (
+              <button
+                type="button"
+                onClick={() => onReaderMode('pdf')}
+                style={{
+                  flexShrink: 0,
+                  height: 28,
+                  padding: '0 10px',
+                  borderRadius: 'var(--r-md)',
+                  border: '1px solid var(--border)',
+                  background: 'var(--surface-2)',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  fontFamily: 'var(--font-sans)',
+                }}
+              >
+                {t('notebooks.reader.modePdf')}
+              </button>
+            )}
             {total > 0 && (
               <span style={{ fontSize: 11.5, color: 'var(--text-dim)', flexShrink: 0 }}>
                 {t('notebooks.reader.chunkCount', { count: total })}
