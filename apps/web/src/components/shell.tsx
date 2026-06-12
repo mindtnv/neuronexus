@@ -119,13 +119,10 @@ export const NNSidebar = ({
   const profile = useNN((s) => s.profile);
 
   // Window Controls Overlay: the logo plate is the window's top-left corner, so
-  // the macOS traffic lights land ON it — shift the logo right past them and
-  // make the plate a drag region. The collapsed plate (60px) can't clear the
-  // ~80px controls strip, so there the logo hides and the plate stays as a bare
-  // drag surface. Without WCO lightsInset is 0 and nothing changes.
-  const { active: wcoActive, rect: wcoRect } = useWindowControlsOverlay();
-  const lightsInset = wcoActive && wcoRect ? wcoRect.x : 0;
-  const hideLogo = Boolean(collapsed) && lightsInset > 16;
+  // the macOS traffic lights land ON it. Native apps (Linear/Notion/Slack) keep
+  // that corner bare — the logo hides entirely and the plate stays a clean
+  // 45px drag strip under the lights. Branding lives in the workspace chip.
+  const { active: wcoActive } = useWindowControlsOverlay();
 
   const totalCards = cards.length || 0;
   const workspaceName = t('app.workspace', { name: (profile?.name ?? 'Alex').toLowerCase() });
@@ -152,7 +149,6 @@ export const NNSidebar = ({
           // border-box here) so the sidebar logo plate and the toolbar share one
           // continuous bottom hairline instead of a 16px step at the corner.
           padding: collapsed ? '0 12px' : '0 18px',
-          paddingLeft: collapsed ? 12 : Math.max(18, lightsInset + 6),
           borderBottom: '1px solid var(--border)',
           display: 'flex',
           alignItems: 'center',
@@ -160,7 +156,7 @@ export const NNSidebar = ({
           height: 45,
         }}
       >
-        {!hideLogo && <NNLogo showText={!collapsed} />}
+        {!wcoActive && <NNLogo showText={!collapsed} />}
       </div>
 
       {!collapsed && (
@@ -301,6 +297,24 @@ export const NNTopbar = ({
   if (zenMode) return null;
 
   const basePad = isMobile ? 12 : 24;
+  // Toolbar buttons: bordered squares in a browser tab; borderless 32px ghost
+  // icons (hover tint via .nn-tb-ghost — inline background would beat CSS :hover)
+  // when the strip doubles as the OS titlebar. Native macOS toolbars are tighter,
+  // hence the smaller gap too.
+  const tbBtnClass = wco ? 'nn-tb-ghost' : undefined;
+  const tbBtn: CSSProperties = {
+    width: wco ? 32 : 36,
+    height: wco ? 32 : 36,
+    borderRadius: wco ? 8 : 9,
+    background: wco ? undefined : 'transparent',
+    border: wco ? 'none' : '1px solid var(--border)',
+    color: 'var(--text)',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    flexShrink: 0,
+  };
   return (
     <header
       className="nn-chrome"
@@ -311,7 +325,7 @@ export const NNTopbar = ({
         borderBottom: '1px solid var(--border)',
         display: 'flex',
         alignItems: 'center',
-        gap: isMobile ? 8 : 16,
+        gap: isMobile ? 8 : wco ? 8 : 16,
         background: 'var(--surface)',
         backdropFilter: 'blur(18px)',
         WebkitBackdropFilter: 'blur(18px)',
@@ -329,19 +343,8 @@ export const NNTopbar = ({
           aria-label={t('chrome.toggleSidebar')}
           title={`${t('chrome.toggleSidebar')} (⌘B)`}
           onClick={() => toggleSidebar()}
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 9,
-            background: 'transparent',
-            border: '1px solid var(--border)',
-            color: 'var(--text)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
+          className={tbBtnClass}
+          style={tbBtn}
         >
           <NNIcon name="stack" size={16} color="var(--text)" />
         </button>
@@ -351,19 +354,8 @@ export const NNTopbar = ({
           type="button"
           aria-label={t('topbar.menuLabel')}
           onClick={() => window.dispatchEvent(new CustomEvent('nn:open-drawer'))}
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 9,
-            background: 'transparent',
-            border: '1px solid var(--border)',
-            color: 'var(--text)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
+          className={tbBtnClass}
+          style={tbBtn}
         >
           <NNIcon name="stack" size={16} color="var(--text)" />
         </button>
@@ -372,9 +364,9 @@ export const NNTopbar = ({
         <h1
           style={{
             margin: 0,
-            fontSize: isMobile ? 13 : 14,
-            fontWeight: isMobile ? 600 : 500,
-            letterSpacing: 0,
+            fontSize: wco ? 13 : isMobile ? 13 : 14,
+            fontWeight: wco ? 590 : isMobile ? 600 : 500,
+            letterSpacing: wco ? -0.2 : 0,
             color: 'var(--text)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -405,19 +397,8 @@ export const NNTopbar = ({
         aria-label={t('topbar.searchLabel')}
         title={t('topbar.searchPlaceholder')}
         onClick={() => window.dispatchEvent(new CustomEvent('nn:open-palette'))}
-        style={{
-          width: 36,
-          height: 36,
-          borderRadius: 9,
-          background: 'transparent',
-          border: '1px solid var(--border)',
-          color: 'var(--text)',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          flexShrink: 0,
-        }}
+        className={tbBtnClass}
+        style={tbBtn}
       >
         <NNIcon name="search" size={16} color="var(--text)" />
       </button>
@@ -430,7 +411,7 @@ export const NNTopbar = ({
             icon="plus"
             title={t('topbar.newCard')}
             ariaLabel={t('topbar.newCard')}
-            style={{ width: 36, padding: 0 }}
+            style={wco ? { width: 32, height: 32, padding: 0, border: 'none', borderRadius: 8 } : { width: 36, padding: 0 }}
           />
         </Link>
       ) : (
@@ -438,9 +419,9 @@ export const NNTopbar = ({
           <button
             type="button"
             style={{
-              width: 36,
-              height: 36,
-              borderRadius: 9,
+              width: wco ? 32 : 36,
+              height: wco ? 32 : 36,
+              borderRadius: wco ? 8 : 9,
               background: 'var(--lime-500)',
               color: '#0d1608',
               border: '1px solid var(--lime-500)',

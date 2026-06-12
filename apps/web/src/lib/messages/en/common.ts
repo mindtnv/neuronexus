@@ -80,6 +80,8 @@ const common = {
   },
   chrome: {
     toggleSidebar: 'Toggle sidebar',
+    wcoHintTitle: 'Merge the title bar',
+    wcoHint: 'Click ⌄ in the window title bar — the app toolbar will take its place. One click, remembered forever.',
   },
   states: {
     loading: 'Loading…',

@@ -2062,3 +2062,32 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
+[data-wco='1'] {
+  cursor: default;
+}
+/* Titlebar ghost buttons — background lives HERE (not inline) so :hover can win. */
+.nn-tb-ghost {
+  background: transparent;
+  transition: background 100ms ease, transform 80ms ease;
+}
+.nn-tb-ghost:hover {
+  background: var(--surface-3);
+}
+.nn-tb-ghost:active {
+  background: var(--surface-2);
+  transform: scale(0.93);
+}
+[data-theme='light'] .nn-tb-ghost:hover {
+  background: rgba(0, 0, 0, 0.065);
+}
+[data-theme='light'] .nn-tb-ghost:active {
+  background: rgba(0, 0, 0, 0.12);
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-tb-ghost {
+    transition: none;
+  }
+  .nn-tb-ghost:active {
+    transform: none;
+  }
+}

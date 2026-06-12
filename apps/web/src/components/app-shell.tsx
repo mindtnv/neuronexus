@@ -4,11 +4,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useNN } from '@/lib/store';
-import { useUI, readSidebarCollapsed } from '@/lib/ui-store';
+import { useUI, readSidebarCollapsed, detectDisplayMode, readWindowControlsOverlay } from '@/lib/ui-store';
 import { NNSidebar } from './shell';
 import { BottomTabs } from './bottom-tabs';
 import GlobalOverlays from './overlays/global-overlays';
-import { ToastsStack } from './toasts';
+import { ToastsStack, raiseToast } from './toasts';
 
 export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => {
   const bp = useBreakpoint();
@@ -36,6 +36,30 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
   useEffect(() => {
     if (zenMode && pathname !== '/review') setZen(false);
   }, [pathname, zenMode, setZen]);
+
+  // One-time WCO onboarding hint: Chromium only merges the app into the window
+  // titlebar after the user clicks the ⌄ toggle (then the choice persists), and
+  // that affordance is easy to miss. If this is an installed desktop PWA where
+  // the overlay is AVAILABLE but not enabled, nudge once via an info toast.
+  // All conditions are read at fire time (3 s after mount) — the overlay state
+  // resolves asynchronously, so checking navigator directly avoids stale state.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const timer = window.setTimeout(() => {
+      try {
+        if (window.localStorage.getItem('nn:wco:hint') === '1') return;
+        if (detectDisplayMode(window, navigator) !== 'standalone') return;
+        const hasWco = (navigator as Navigator & { windowControlsOverlay?: unknown }).windowControlsOverlay != null;
+        const { active } = readWindowControlsOverlay(navigator);
+        if (!hasWco || active) return;
+        raiseToast({ kind: 'info', titleKey: 'chrome.wcoHintTitle', descriptionKey: 'chrome.wcoHint', durationMs: 12000 });
+        window.localStorage.setItem('nn:wco:hint', '1');
+      } catch {
+        // localStorage unavailable — skip the hint, never crash the shell.
+      }
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // Listen for global "open drawer" event so the mobile topbar can trigger it without prop drilling
   useEffect(() => {
