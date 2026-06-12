@@ -42,7 +42,12 @@ import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
-import { useArtifactStatus } from '@/lib/use-artifact-status';
+import { useArtifactStatus, useArtifactTimers } from '@/lib/use-artifact-status';
+import {
+  formatCharCount,
+  formatElapsedSeconds,
+  splitElapsed,
+} from '@/lib/artifact-progress';
 import { parseArtifactCitations, stripSrcTokens } from '@/lib/notebook-artifacts';
 import { QuizPlayer } from '@/components/notebook/quiz-player';
 import type { buildAttemptAnswers } from '@/lib/quiz-player';
@@ -164,6 +169,10 @@ export const StudioPanel = ({
   // Poll the list while any job is non-terminal (pending|generating).
   useArtifactStatus({ items: artifacts, refresh, enabled: chatEnabled });
 
+  // Live elapsed timers (anchored on first non-terminal sighting, NOT createdAt —
+  // a regenerate keeps the old createdAt). `now` ticks every second while running.
+  const { startedAt, now } = useArtifactTimers(artifacts);
+
   // Keep the open viewer fresh: when a polled list row for the open artifact
   // flips to ready, re-fetch the full content.
   const openListRow = useMemo(
@@ -196,6 +205,18 @@ export const StudioPanel = ({
       void loadFull(openId);
     }
   }, [openId, openListRow, loadFull]);
+
+  // LIVE viewer: while the open artifact is still generating, poll its FULL
+  // content every ~2s so the growing partial text streams into the viewer (the
+  // list-row status alone stays 'generating', so the status-change effect above
+  // never re-fires during a stream). Stops the instant it goes terminal.
+  const openFullStatus = openFull?.status ?? null;
+  useEffect(() => {
+    if (!openId) return;
+    if (openFullStatus !== 'pending' && openFullStatus !== 'generating') return;
+    const interval = setInterval(() => void loadFull(openId), 2000);
+    return () => clearInterval(interval);
+  }, [openId, openFullStatus, loadFull]);
 
   const openArtifact = useCallback(
     (a: NotebookArtifact) => {
@@ -408,7 +429,16 @@ export const StudioPanel = ({
               <ArtifactRow
                 key={a.id}
                 artifact={a}
-                onOpen={() => a.status === 'ready' && openArtifact(a)}
+                // A ready row opens the final viewer; a generating row opens the
+                // LIVE viewer (growing partial text + caret). pending/error don't open.
+                onOpen={() =>
+                  (a.status === 'ready' || a.status === 'generating') && openArtifact(a)
+                }
+                elapsedMs={
+                  a.status === 'generating'
+                    ? (startedAt(a.id) ? now - startedAt(a.id)! : 0)
+                    : undefined
+                }
                 onRegenerate={() => void onRegenerate(a)}
                 onDelete={() => void onDelete(a)}
                 t={t}
@@ -464,27 +494,32 @@ const StudioTile = ({
 const ArtifactRow = ({
   artifact,
   onOpen,
+  elapsedMs,
   onRegenerate,
   onDelete,
   t,
 }: {
   artifact: NotebookArtifact;
   onOpen: () => void;
+  /** Elapsed ms since the job was first seen generating (live timer). */
+  elapsedMs?: number;
   onRegenerate: () => void;
   onDelete: () => void;
   t: Tfn;
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const ready = artifact.status === 'ready';
+  // A generating row is openable too (LIVE viewer); pending/error are not.
+  const openable = artifact.status === 'ready' || artifact.status === 'generating';
   const terminal = artifact.status === 'ready' || artifact.status === 'error';
 
   return (
-    <div className="nn-source-row" style={{ cursor: ready ? 'pointer' : 'default' }}>
+    <div className="nn-source-row" style={{ cursor: openable ? 'pointer' : 'default' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <button
           type="button"
-          onClick={ready ? onOpen : undefined}
-          disabled={!ready}
+          onClick={openable ? onOpen : undefined}
+          disabled={!openable}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -493,7 +528,7 @@ const ArtifactRow = ({
             minWidth: 0,
             background: 'transparent',
             border: 'none',
-            cursor: ready ? 'pointer' : 'default',
+            cursor: openable ? 'pointer' : 'default',
             padding: 0,
             textAlign: 'left',
           }}
@@ -514,7 +549,13 @@ const ArtifactRow = ({
             {artifact.title}
           </span>
         </button>
-        <ArtifactStatusBadge status={artifact.status} errorCode={artifact.errorCode} t={t} />
+        <ArtifactStatusBadge
+          status={artifact.status}
+          errorCode={artifact.errorCode}
+          progressChars={artifact.progressChars}
+          elapsedMs={elapsedMs}
+          t={t}
+        />
         <div
           className="nn-source-row-actions"
           style={{ display: 'flex', gap: 0, flexShrink: 0, position: 'relative' }}
@@ -566,13 +607,36 @@ const ArtifactRow = ({
   );
 };
 
+/** «N сек» / «N мин M сек» from elapsed ms via the pure splitters. */
+function formatElapsed(elapsedMs: number, t: Tfn): string {
+  const { minutes, seconds } = splitElapsed(formatElapsedSeconds(elapsedMs));
+  return minutes > 0
+    ? t('notebooks.studio.elapsedMin', { minutes, seconds })
+    : t('notebooks.studio.elapsedSec', { seconds });
+}
+
+/** The bare formatted count «1 234» / «12,3 тыс.» (no «симв.» unit). */
+function liveCharsDisplay(n: number, t: Tfn): string {
+  const c = formatCharCount(n);
+  return c.isThousands ? `${c.display} ${t('notebooks.studio.charsK')}` : c.display;
+}
+
+/** «≈1 234 симв.» / «≈12,3 тыс. симв.» from a raw char count. */
+function formatChars(n: number, t: Tfn): string {
+  return t('notebooks.studio.chars', { chars: liveCharsDisplay(n, t) });
+}
+
 const ArtifactStatusBadge = ({
   status,
   errorCode,
+  progressChars,
+  elapsedMs,
   t,
 }: {
   status: ArtifactStatus;
   errorCode: string | null;
+  progressChars?: number;
+  elapsedMs?: number;
   t: Tfn;
 }) => {
   if (status === 'ready') return null;
@@ -584,13 +648,24 @@ const ArtifactStatusBadge = ({
       </NNBadge>
     );
   }
-  // pending | generating — a soft pulsing badge.
+  if (status === 'pending') {
+    return (
+      <NNBadge tone="amber" size="xs">
+        <span className="nn-pulse-dot" style={{ marginRight: 4 }} />
+        {t('notebooks.studio.queued')}
+      </NNBadge>
+    );
+  }
+  // generating — a soft pulsing badge with a live elapsed timer + char counter.
+  const parts: string[] = [];
+  if (typeof elapsedMs === 'number') parts.push(formatElapsed(elapsedMs, t));
+  if (typeof progressChars === 'number' && progressChars > 0) {
+    parts.push(formatChars(progressChars, t));
+  }
   return (
     <NNBadge tone="amber" size="xs">
       <span className="nn-pulse-dot" style={{ marginRight: 4 }} />
-      {status === 'generating'
-        ? t('notebooks.studio.statusGenerating')
-        : t('notebooks.studio.statusPending')}
+      {parts.length > 0 ? parts.join(' · ') : t('notebooks.studio.statusGenerating')}
     </NNBadge>
   );
 };
@@ -619,6 +694,9 @@ const ArtifactViewer = ({
   t: Tfn;
 }) => {
   const contentMd = artifact?.contentMd ?? '';
+  // A job still running streams partial raw text into content_md — show it live
+  // (md: caret-tailed prose; quiz: a placeholder, the raw JSON isn't readable).
+  const live = artifact != null && (artifact.status === 'generating' || artifact.status === 'pending');
   const { prose, footnotes } = useMemo(() => parseArtifactCitations(contentMd), [contentMd]);
   const html = useMemo(
     () => renderCardHtml(ARTIFACT_MD_NOTE_TYPE, { Body: prose }, 'front'),
@@ -650,30 +728,36 @@ const ArtifactViewer = ({
         <span style={{ flex: 1 }} />
         {artifact && (
           <>
-            <NNBtn
-              variant="ghost"
-              size="sm"
-              icon="clip"
-              ariaLabel={t('notebooks.studio.copy')}
-              title={t('notebooks.studio.copy')}
-              onClick={onCopy}
-            />
-            <NNBtn
-              variant="ghost"
-              size="sm"
-              icon="doc"
-              ariaLabel={t('notebooks.studio.toNote')}
-              title={t('notebooks.studio.toNote')}
-              onClick={() => void onSaveToNote(artifact.title, contentMd)}
-            />
-            <NNBtn
-              variant="ghost"
-              size="sm"
-              icon="sync"
-              ariaLabel={t('notebooks.studio.regenerate')}
-              title={t('notebooks.studio.regenerate')}
-              onClick={onRegenerate}
-            />
+            {/* Copy / to-note / regenerate finalize a READY doc — hidden while a
+                stream is still running (only delete + back make sense live). */}
+            {!live && (
+              <>
+                <NNBtn
+                  variant="ghost"
+                  size="sm"
+                  icon="clip"
+                  ariaLabel={t('notebooks.studio.copy')}
+                  title={t('notebooks.studio.copy')}
+                  onClick={onCopy}
+                />
+                <NNBtn
+                  variant="ghost"
+                  size="sm"
+                  icon="doc"
+                  ariaLabel={t('notebooks.studio.toNote')}
+                  title={t('notebooks.studio.toNote')}
+                  onClick={() => void onSaveToNote(artifact.title, contentMd)}
+                />
+                <NNBtn
+                  variant="ghost"
+                  size="sm"
+                  icon="sync"
+                  ariaLabel={t('notebooks.studio.regenerate')}
+                  title={t('notebooks.studio.regenerate')}
+                  onClick={onRegenerate}
+                />
+              </>
+            )}
             <NNBtn
               variant="ghost"
               size="sm"
@@ -687,11 +771,62 @@ const ArtifactViewer = ({
       </div>
 
       <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
-        {loading || !artifact ? (
+        {(loading && !artifact) || (!artifact) ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <NNSkeleton style={{ height: 18, width: '60%' }} />
             <NNSkeleton style={{ height: 120 }} />
           </div>
+        ) : live && artifact.type === 'quiz' ? (
+          // Quiz streams raw JSON into content_md — unreadable as markdown; show a
+          // placeholder with the live char count instead.
+          <div className="nn-empty-state" style={{ paddingTop: 28, paddingBottom: 28 }}>
+            <span className="nn-empty-state-icon">
+              <span className="nn-spin" style={{ display: 'flex' }}>
+                <NNIcon name="sync" size={22} color="var(--lime-400)" />
+              </span>
+            </span>
+            <p className="nn-empty-state-hint">
+              {t('notebooks.studio.quizGenerating', {
+                chars: liveCharsDisplay(contentMd.length, t),
+              })}
+            </p>
+          </div>
+        ) : live ? (
+          // Markdown types: render the partial prose with a blinking caret. Skip the
+          // footnote row — [src:] tokens finalize (intersect) only at ready.
+          <>
+            <h3
+              style={{
+                fontSize: 15,
+                fontWeight: 700,
+                color: 'var(--text)',
+                margin: '0 0 10px',
+                fontFamily: 'var(--font-sans)',
+                wordBreak: 'break-word',
+              }}
+            >
+              {artifact.title}
+            </h3>
+            {contentMd.length === 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: 0 }}>
+                {t('notebooks.studio.liveGenerating')}
+              </p>
+            ) : (
+              <div style={{ position: 'relative' }}>
+                <SafeHtml
+                  html={html}
+                  style={{
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: 13.5,
+                    lineHeight: 1.6,
+                    color: 'var(--text)',
+                    wordBreak: 'break-word',
+                  }}
+                />
+                <span className="nn-artifact-caret" aria-hidden="true" />
+              </div>
+            )}
+          </>
         ) : (
           <>
             <h3

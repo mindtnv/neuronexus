@@ -38,7 +38,13 @@ import {
 } from '@neuronexus/shared';
 import { env } from '../env.ts';
 import { rootLogger } from '../logger.ts';
-import { AiDisabledError, complete, type ChatMessage } from './openai-client.ts';
+import {
+  AiDisabledError,
+  chatStream,
+  complete,
+  isChatStreamEnabled,
+  type ChatMessage,
+} from './openai-client.ts';
 import { applyArtifactCitations } from './citations.ts';
 
 // ── Context sampling (Р4) ──────────────────────────────────────────────────────
@@ -453,6 +459,74 @@ async function completeBounded(messages: ChatMessage[], timeoutMs: number): Prom
   }
 }
 
+/** A sentinel error: the artifact row vanished/changed mid-stream (cancel-on-delete). */
+class ArtifactCancelled extends Error {
+  constructor() {
+    super('artifact_cancelled');
+    this.name = 'ArtifactCancelled';
+  }
+}
+
+/**
+ * STREAM `chatStream()` into `content_md` with LIVE partial persistence (A). The
+ * deltas are accumulated into the full raw text; no more often than
+ * `ARTIFACT_PROGRESS_FLUSH_MS` (throttled by TIME, not chunks) the accumulated
+ * raw text is flushed to the row via an `UPDATE … WHERE id AND status='generating'
+ * RETURNING id`. ZERO rows ⇒ the artifact was deleted/regenerated concurrently:
+ * we abort the underlying fetch and throw `ArtifactCancelled` (DELETE-during-
+ * generation now actually STOPS the work). The whole stream is bounded by
+ * `timeoutMs` (Р16) — on the deadline the fetch is aborted and `ArtifactTimeout`
+ * thrown. Returns the FULL accumulated raw text (the caller post-processes it
+ * exactly like the `complete()` reply: [src:] intersect for md, parseQuiz for quiz).
+ */
+async function streamBounded(
+  artifactId: string,
+  messages: ChatMessage[],
+  timeoutMs: number,
+): Promise<string> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  let acc = '';
+  // Start the throttle clock at worker entry so the FIRST chunk also waits one
+  // interval before its flush (avoids a write per token on a fast stream).
+  let lastFlush = Date.now();
+
+  // Persist the accumulated raw text; 0 rows ⇒ the row is gone (cancel-on-delete).
+  const flush = async (): Promise<void> => {
+    const rows = await db
+      .update(notebookArtifacts)
+      .set({ contentMd: acc, updatedAt: new Date() })
+      .where(and(eq(notebookArtifacts.id, artifactId), eq(notebookArtifacts.status, 'generating')))
+      .returning({ id: notebookArtifacts.id });
+    if (rows.length === 0) {
+      controller.abort();
+      throw new ArtifactCancelled();
+    }
+  };
+
+  try {
+    for await (const delta of chatStream(messages, { signal: controller.signal })) {
+      acc += delta;
+      const now = Date.now();
+      if (now - lastFlush >= env.ai.ARTIFACT_PROGRESS_FLUSH_MS) {
+        lastFlush = now;
+        await flush();
+      }
+    }
+  } catch (err) {
+    if (timedOut) throw new ArtifactTimeout();
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+  return acc;
+}
+
 /** Map a thrown error to the machine error code stored on the row. */
 function classifyError(err: unknown): ArtifactErrorCode {
   if (err instanceof AiDisabledError) return 'ai_disabled';
@@ -480,6 +554,22 @@ async function casArtifact(
     )
     .returning({ id: notebookArtifacts.id });
   return rows.length > 0;
+}
+
+/**
+ * Produce the raw model reply for an artifact (A). PREFERS streaming via
+ * `chatStream` (live partial persistence into `content_md` + a growing char
+ * counter + cancel-on-delete) when the effective client offers it; falls back to
+ * the single-shot `complete()` when it doesn't (a fake with only `complete` —
+ * every pre-existing test — takes this branch, so the fallback path is unchanged).
+ * Both are bounded by `ARTIFACT_TIMEOUT_MS`. Throws `ArtifactCancelled` (stream
+ * path only) when the row vanished mid-flight; other throws classify to a code.
+ */
+async function runGeneration(artifactId: string, messages: ChatMessage[]): Promise<string> {
+  if (isChatStreamEnabled()) {
+    return streamBounded(artifactId, messages, env.ai.ARTIFACT_TIMEOUT_MS);
+  }
+  return completeBounded(messages, env.ai.ARTIFACT_TIMEOUT_MS);
 }
 
 // ── Worker (Р2/Р4/Р5) ──────────────────────────────────────────────────────────
@@ -523,11 +613,11 @@ export async function generateArtifact(
       const questionCount = clampQuestionCount(opts.questionCount);
       let raw: string;
       try {
-        raw = await completeBounded(
-          buildQuizMessages(ctx.chunks, questionCount),
-          env.ai.ARTIFACT_TIMEOUT_MS,
-        );
+        raw = await runGeneration(artifactId, buildQuizMessages(ctx.chunks, questionCount));
       } catch (err) {
+        // A concurrent delete/regenerate aborted the stream — exit, do NOT write
+        // (the row is gone or already re-claimed; a 0-row CAS would no-op anyway).
+        if (err instanceof ArtifactCancelled) return;
         const code = classifyError(err);
         if (code === 'generation_failed') {
           rootLogger.error({ err, artifactId }, 'ai.artifact.generation_failed');
@@ -540,6 +630,8 @@ export async function generateArtifact(
         await failArtifact(artifactId, 'invalid_quiz');
         return;
       }
+      // content_md held the partial raw JSON during streaming — overwrite it with
+      // NULL at ready (the structured quiz lives in content_json, Р8).
       await casArtifact(artifactId, ['generating'], {
         status: 'ready',
         contentJson: quiz,
@@ -552,11 +644,12 @@ export async function generateArtifact(
 
     let raw: string;
     try {
-      raw = await completeBounded(
+      raw = await runGeneration(
+        artifactId,
         buildArtifactMessages(type as Exclude<NotebookArtifactType, 'quiz'>, ctx.chunks),
-        env.ai.ARTIFACT_TIMEOUT_MS,
       );
     } catch (err) {
+      if (err instanceof ArtifactCancelled) return;
       const code = classifyError(err);
       if (code === 'generation_failed') {
         rootLogger.error({ err, artifactId }, 'ai.artifact.generation_failed');

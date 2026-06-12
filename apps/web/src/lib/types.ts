@@ -197,6 +197,9 @@ export interface NotebookArtifact {
   sourceIds: string[];
   errorCode: string | null;
   model: string | null;
+  /** Live char count of the partial text a streaming job has produced so far
+   *  (list variant, pending|generating only — 0 for terminal rows). */
+  progressChars?: number;
   /** Markdown body (full variant, markdown types). Absent on the list row. */
   contentMd?: string | null;
   /** Structured quiz payload (full variant, type='quiz'). Absent on the list row. */

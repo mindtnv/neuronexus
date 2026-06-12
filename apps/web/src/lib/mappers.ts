@@ -213,6 +213,8 @@ export function notebookArtifactFromApi(row: any): NotebookArtifact {
     sourceIds: Array.isArray(row.sourceIds) ? (row.sourceIds as string[]) : [],
     errorCode: row.errorCode ?? null,
     model: row.model ?? null,
+    // progressChars rides the LIGHT list row (live job progress); absent on GET.
+    progressChars: typeof row.progressChars === 'number' ? row.progressChars : undefined,
     // contentMd / contentJson only ride the FULL artifact GET.
     contentMd: typeof row.contentMd === 'string' ? row.contentMd : undefined,
     contentJson: row.contentJson ?? undefined,

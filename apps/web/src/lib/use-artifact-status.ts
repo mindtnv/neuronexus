@@ -12,7 +12,7 @@
 // against an ArtifactStatus and the terminal sets differ. So this hook owns its
 // own tiny terminal-set check; the pure helper is exported for unit tests.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ARTIFACT_STATUSES, type ArtifactStatus } from '@neuronexus/shared';
 
 const NONTERMINAL = new Set<ArtifactStatus>(['pending', 'generating']);
@@ -74,4 +74,51 @@ export function useArtifactStatus({
   }, [enabled, hasPending, intervalMs]);
 
   return hasPending;
+}
+
+// ── Per-artifact «started at» tracking (live elapsed timer) ───────────────────
+// The elapsed timer is anchored on the moment an artifact was FIRST observed
+// non-terminal in THIS session — NOT createdAt (a regenerate keeps the old
+// createdAt). A Map<id, startedAtMs> records first sighting and forgets ids that
+// reach a terminal status (so a later regenerate restarts the clock).
+
+/**
+ * Track when each artifact first appeared non-terminal. Returns a stable getter
+ * `startedAt(id)` (the recorded ms, or undefined if not currently running) and a
+ * `now` value that ticks every second WHILE any job runs — components read both
+ * to render «N сек since startedAt». Pure-ish: the Map lives in a ref; only the
+ * `now` ticker drives re-renders.
+ */
+export function useArtifactTimers(items: { id: string; status: ArtifactStatus }[]): {
+  startedAt: (id: string) => number | undefined;
+  now: number;
+} {
+  const startedRef = useRef<Map<string, number>>(new Map());
+  const hasPending = anyArtifactNonTerminal(items);
+  const [now, setNow] = useState(() => Date.now());
+
+  // Record first non-terminal sighting; drop terminal/vanished ids.
+  const nowMs = Date.now();
+  const liveIds = new Set<string>();
+  for (const a of items) {
+    if (NONTERMINAL.has(a.status)) {
+      liveIds.add(a.id);
+      if (!startedRef.current.has(a.id)) startedRef.current.set(a.id, nowMs);
+    }
+  }
+  for (const id of [...startedRef.current.keys()]) {
+    if (!liveIds.has(id)) startedRef.current.delete(id);
+  }
+
+  // Tick `now` every second while anything is running so the timer advances.
+  useEffect(() => {
+    if (!hasPending) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [hasPending]);
+
+  return {
+    startedAt: (id: string) => startedRef.current.get(id),
+    now,
+  };
 }

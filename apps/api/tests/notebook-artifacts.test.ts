@@ -528,6 +528,181 @@ describe('artifact lifecycle — regenerate / delete / get', () => {
 
 // ── reconcile-on-startup ──────────────────────────────────────────────────────
 
+// ── streaming generation: partial flush + cancel-on-delete (A/D) ──────────────
+//
+// When the effective client offers `chatStream` (plain, tool-less), the worker
+// PREFERS it over `complete()` and persists the accumulated raw text into
+// content_md every ARTIFACT_PROGRESS_FLUSH_MS while generating (live progress).
+// A concurrent DELETE makes a partial flush UPDATE 0 rows ⇒ the stream aborts and
+// the row stays gone (cancel-on-delete). The pre-existing complete()-only fakes
+// (above) hit the FALLBACK path — those tests pin it.
+
+/** A resolvable promise (a gate the test releases to advance the stream). */
+function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+describe('generateArtifact — streaming (chatStream) partial persistence', () => {
+  beforeEach(async () => {
+    await resetTestDb();
+    lastPrompt = '';
+  });
+  afterEach(() => __resetAiClientForTests());
+
+  test('partial flush: content_md holds the accumulated text mid-stream (status generating)', async () => {
+    const { env } = await import('../src/env.ts');
+    const savedFlush = env.ai.ARTIFACT_PROGRESS_FLUSH_MS;
+    try {
+      env.ai.ARTIFACT_PROGRESS_FLUSH_MS = 1;
+      const { userId } = await signUpAndCookie(app, uniqueEmail());
+      const nb = await freshNotebook(userId);
+      const { sourceId } = await seedSource(userId, nb, 'Doc', ['alpha', 'beta']);
+
+      // A gated stream: yield "Hello ", PAUSE (test observes), then "world".
+      const gate1 = deferred();
+      const gate2 = deferred();
+      __setAiClientForTests({
+        async *chatStream(): AsyncIterable<string> {
+          await Bun.sleep(3); // ensure > FLUSH_MS elapses before the first flush
+          yield 'Hello ';
+          gate1.resolve();
+          await gate2.promise;
+          yield 'world.';
+        },
+      });
+
+      const id = await insertArtifact(userId, nb, [sourceId]);
+      // Run the worker WITHOUT awaiting; observe the partial flush at the pause.
+      const run = generateArtifact(id);
+
+      await gate1.promise;
+      // Give the worker a tick to perform the flush after receiving the first chunk.
+      await Bun.sleep(10);
+      const mid = await getArtifact(id);
+      expect(mid.status).toBe('generating');
+      expect(mid.contentMd).toContain('Hello');
+      expect(mid.contentMd).not.toContain('world');
+
+      // Release the rest and let it finish.
+      gate2.resolve();
+      await run;
+      const done = await getArtifact(id);
+      expect(done.status).toBe('ready');
+      expect(done.contentMd).toContain('Hello world.');
+      expect(done.model).toBeTruthy();
+    } finally {
+      env.ai.ARTIFACT_PROGRESS_FLUSH_MS = savedFlush;
+    }
+  });
+
+  test('final: ready, [src:] intersect applied to the FULL streamed text', async () => {
+    const { userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await freshNotebook(userId);
+    const { sourceId, chunkIds } = await seedSource(userId, nb, 'Doc', ['alpha', 'beta']);
+    const validId = chunkIds[0]!;
+    const bogusId = '00000000-0000-0000-0000-000000000000';
+    // Stream the citations in fragments — the intersect runs on the JOINED text.
+    __setAiClientForTests({
+      async *chatStream(): AsyncIterable<string> {
+        yield `One [src:${validId}]. `;
+        yield `Two [src:${bogusId}].`;
+      },
+    });
+
+    const id = await insertArtifact(userId, nb, [sourceId]);
+    await generateArtifact(id);
+
+    const row = await getArtifact(id);
+    expect(row.status).toBe('ready');
+    expect(row.contentMd).toContain(`[src:${validId}]`);
+    expect(row.contentMd).not.toContain(bogusId);
+  });
+
+  test('DELETE mid-stream: the generator aborts, the row does not resurrect', async () => {
+    const { env } = await import('../src/env.ts');
+    const savedFlush = env.ai.ARTIFACT_PROGRESS_FLUSH_MS;
+    try {
+      env.ai.ARTIFACT_PROGRESS_FLUSH_MS = 1;
+      const { userId } = await signUpAndCookie(app, uniqueEmail());
+      const nb = await freshNotebook(userId);
+      const { sourceId } = await seedSource(userId, nb, 'Doc', ['alpha']);
+
+      const id = await insertArtifact(userId, nb, [sourceId]);
+      let yieldedAfterDelete = false;
+      __setAiClientForTests({
+        async *chatStream(): AsyncIterable<string> {
+          await Bun.sleep(3);
+          yield 'first chunk ';
+          // The worker now flushes; it finds 0 rows (deleted below) and aborts.
+          await db.delete(artifactsTable).where(eq(artifactsTable.id, id));
+          await Bun.sleep(3);
+          yield 'second chunk ';
+          yieldedAfterDelete = true; // reached only if the abort failed
+          yield 'third chunk';
+        },
+      });
+
+      await generateArtifact(id); // must not throw, must not resurrect the row
+
+      const rows = await db.select().from(artifactsTable).where(eq(artifactsTable.id, id));
+      expect(rows.length).toBe(0); // not resurrected
+      // The abort happened on the flush AFTER the delete — the generator should not
+      // have run to completion (best-effort: the loop stopped requesting chunks).
+      expect(yieldedAfterDelete).toBe(false);
+    } finally {
+      env.ai.ARTIFACT_PROGRESS_FLUSH_MS = savedFlush;
+    }
+  });
+
+  test('fallback: a fake with complete but NO chatStream uses the single-shot path', async () => {
+    const { userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await freshNotebook(userId);
+    const { sourceId } = await seedSource(userId, nb, 'Doc', ['alpha']);
+    // complete-only fake (no chatStream) ⇒ runGeneration falls back to complete().
+    installComplete('# Single shot');
+    const id = await insertArtifact(userId, nb, [sourceId]);
+    await generateArtifact(id);
+    const row = await getArtifact(id);
+    expect(row.status).toBe('ready');
+    expect(row.contentMd).toContain('# Single shot');
+  });
+
+  test('quiz via stream: final content_json valid, content_md NULL', async () => {
+    const { userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await freshNotebook(userId);
+    const { sourceId } = await seedSource(userId, nb, 'Doc', ['alpha', 'beta', 'gamma']);
+    const quizJson = JSON.stringify({
+      questions: [
+        { kind: 'tf', prompt: 'Alpha is first?', answer: true },
+        { kind: 'tf', prompt: 'Beta is second?', answer: true },
+        { kind: 'tf', prompt: 'Gamma is third?', answer: true },
+      ],
+    });
+    // Stream the JSON in two fragments so parseQuiz runs on the joined text.
+    const half = Math.floor(quizJson.length / 2);
+    __setAiClientForTests({
+      async *chatStream(): AsyncIterable<string> {
+        yield quizJson.slice(0, half);
+        yield quizJson.slice(half);
+      },
+    });
+
+    const id = await insertArtifact(userId, nb, [sourceId], { type: 'quiz' });
+    await generateArtifact(id);
+
+    const row = await getArtifact(id);
+    expect(row.status).toBe('ready');
+    expect(row.contentMd).toBeNull();
+    const quiz = row.contentJson as { questions: { kind: string }[] } | null;
+    expect(quiz?.questions.length).toBe(3);
+    expect(quiz?.questions[0]!.kind).toBe('tf');
+  });
+});
+
 describe('reconcileArtifactsOnStartup', () => {
   beforeEach(async () => {
     await resetTestDb();

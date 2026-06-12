@@ -138,6 +138,14 @@ const notebooks = {
     statusPending: 'Queued',
     statusGenerating: 'Generating…',
     statusError: 'Failed',
+    // Live progress of a streaming generation.
+    queued: 'queued…',
+    elapsedSec: '{seconds}s',
+    elapsedMin: '{minutes}m {seconds}s',
+    charsK: 'k',
+    chars: '≈{chars} chars',
+    liveGenerating: 'Generating…',
+    quizGenerating: 'Generating quiz… ≈{chars} chars',
     // Row actions + viewer.
     regenerate: 'Regenerate',
     delete: 'Delete',

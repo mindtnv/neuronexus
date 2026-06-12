@@ -1033,6 +1033,10 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
           sourceIds: notebookArtifacts.sourceIds,
           errorCode: notebookArtifacts.errorCode,
           model: notebookArtifacts.model,
+          // Live-progress char counter for a job still running (A/B): the length
+          // of the partial raw text the streaming worker has flushed so far. 0 for
+          // terminal rows (content_md is the FINAL doc there — not a progress hint).
+          progressChars: sql<number>`CASE WHEN ${notebookArtifacts.status} IN ('pending','generating') THEN COALESCE(length(${notebookArtifacts.contentMd}), 0) ELSE 0 END`,
           createdAt: notebookArtifacts.createdAt,
           updatedAt: notebookArtifacts.updatedAt,
         })

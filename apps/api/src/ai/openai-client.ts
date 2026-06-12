@@ -70,6 +70,13 @@ export interface ChatStreamOpts {
   model?: string;
   /** Optional per-request child logger for usage lines. */
   log?: Logger;
+  /**
+   * Optional abort signal — aborting tears the gateway fetch mid-stream. The
+   * artifact streamer passes one so a deadline / cancel-on-delete actually stops
+   * the underlying request (an injected fake may ignore it; the loop stops
+   * pulling regardless).
+   */
+  signal?: AbortSignal;
 }
 
 export interface AgentChatStreamOpts extends ChatStreamOpts {
@@ -162,6 +169,17 @@ export function isEmbeddingEnabled(): boolean {
  */
 export function isChatEnabled(): boolean {
   return chatEnabled || Boolean(injected?.chatStream) || Boolean(injected?.chatStreamAgentic);
+}
+
+/**
+ * Whether the plain (tool-less) `chatStream` surface is usable RIGHT NOW — the
+ * real env-enabled path OR an injected fake that provides `chatStream`. The
+ * artifact generator uses this to prefer streaming (live partial persistence)
+ * over `complete()`; a fake with only `complete` (every pre-existing test) makes
+ * this `false`, so the worker falls back to the single-shot `complete()` path.
+ */
+export function isChatStreamEnabled(): boolean {
+  return Boolean(injected?.chatStream) || chatEnabled;
 }
 
 // ── Backoff helper ───────────────────────────────────────────────────────────
@@ -349,6 +367,7 @@ export async function* chatStream(
       'content-type': 'application/json',
       authorization: `Bearer ${apiKey}`,
     },
+    signal: opts.signal,
     body: JSON.stringify({ model, messages, stream: true }),
   });
 

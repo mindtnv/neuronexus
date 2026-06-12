@@ -169,11 +169,22 @@ export const env = {
     // Even, round-robin sample of source chunks fed to ONE artifact-generation
     // `complete()` call (Р4). ~50-60k tokens max at 800-token chunks (Р16).
     ARTIFACT_CONTEXT_CHUNKS: Number(process.env.ARTIFACT_CONTEXT_CHUNKS ?? 60),
-    // Per-artifact generation timeout (Promise.race like ai/title.ts). A slow
-    // self-hosted gateway summarizing 60 chunks routinely takes tens of seconds.
-    ARTIFACT_TIMEOUT_MS: Number(process.env.ARTIFACT_TIMEOUT_MS ?? 60_000),
-    // Notebook overview (Р6) — a smaller, sync single-`complete()` call.
-    NOTEBOOK_OVERVIEW_TIMEOUT_MS: Number(process.env.NOTEBOOK_OVERVIEW_TIMEOUT_MS ?? 20_000),
+    // Per-artifact generation timeout (Promise.race like ai/title.ts). The
+    // artifact is an ASYNC job behind status polling, so this bound only guards
+    // against zombie `generating` rows — it must be generous: a reasoning-heavy
+    // model on a slow self-hosted gateway takes MINUTES to digest a ~50k-token
+    // context (a 60s default timed out on every real generation).
+    ARTIFACT_TIMEOUT_MS: Number(process.env.ARTIFACT_TIMEOUT_MS ?? 300_000),
+    // Throttle for partial-content persistence during STREAMING generation. While
+    // the streaming `chatStream` is active, the accumulated raw text is flushed to
+    // `content_md` no more often than once per this interval (ms) — the studio's
+    // live viewer reads the growing text via status polling, and a 0-row UPDATE
+    // (the row was deleted/changed concurrently) aborts the stream (cancel-on-delete).
+    ARTIFACT_PROGRESS_FLUSH_MS: Number(process.env.ARTIFACT_PROGRESS_FLUSH_MS ?? 1_500),
+    // Notebook overview (Р6) — a smaller, sync single-`complete()` call. Sync
+    // means the browser fetch holds — keep tighter than artifacts, but 20s was
+    // not enough for reasoning models even at half the context.
+    NOTEBOOK_OVERVIEW_TIMEOUT_MS: Number(process.env.NOTEBOOK_OVERVIEW_TIMEOUT_MS ?? 60_000),
     // Per-notebook artifact cap (Р16) → 409 `too_many_artifacts`.
     MAX_ARTIFACTS_PER_NOTEBOOK: Number(process.env.MAX_ARTIFACTS_PER_NOTEBOOK ?? 50),
     // ── «Блокноты 2.0» concept-map (N4 / Р10) — OPTIONAL ─────────────────────

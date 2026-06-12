@@ -130,6 +130,14 @@ const notebooks = {
     statusPending: 'В очереди',
     statusGenerating: 'Генерация…',
     statusError: 'Ошибка',
+    // Живой прогресс стриминговой генерации.
+    queued: 'в очереди…',
+    elapsedSec: '{seconds} сек',
+    elapsedMin: '{minutes} мин {seconds} сек',
+    charsK: 'тыс.',
+    chars: '≈{chars} симв.',
+    liveGenerating: 'Генерируется…',
+    quizGenerating: 'Генерируется квиз… ≈{chars} симв.',
     // Действия строки + просмотрщик.
     regenerate: 'Перегенерировать',
     delete: 'Удалить',
