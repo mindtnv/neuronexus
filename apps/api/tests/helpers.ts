@@ -30,6 +30,10 @@ const TABLES = [
   'source_annotations',
   'source_reading_state',
   'source_chunks',
+  // «Блокноты 2.0» (N1): notes/artifacts/quiz attempts hang off notebooks.
+  'quiz_attempts',
+  'notebook_artifacts',
+  'notebook_notes',
   'notebook_sources',
   'sources',
   'notebooks',

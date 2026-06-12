@@ -26,6 +26,7 @@ import type {
   MessageUsage,
   NoteField,
   PageAnnotations,
+  QuizContent,
   ToolCallRecord,
 } from '@neuronexus/shared';
 import { user } from './auth.ts';
@@ -623,10 +624,132 @@ export const notebooks = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
+    // ── «Блокноты 2.0» metadata (Р13, N1) — all additive/nullable except the
+    // two booleans (NOT NULL DEFAULT false). ───────────────────────────────────
+    emoji: text('emoji'),
+    color: text('color'), // one of NOTEBOOK_COLORS (deck palette); validated at the API
+    description: text('description'), // ≤500 (validated at the API)
+    pinned: boolean('pinned').notNull().default(false),
+    archived: boolean('archived').notNull().default(false),
+    // Overview cache (Р6, N2): a generated briefing + suggested questions, keyed
+    // by `overviewFingerprint` = hash(sorted ready sourceIds + each chunkCount).
+    overview: text('overview'),
+    suggestedQuestions: jsonb('suggested_questions').$type<string[]>(),
+    overviewFingerprint: text('overview_fingerprint'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('notebooks_user_idx').on(t.userId)],
+);
+
+// ── notebook_notes ───────────────────────────────────────────────────────────
+// «Блокноты 2.0» (Р1, N1): a user-editable markdown note — either hand-written
+// (`kind:'manual'`) or a saved chat answer (`kind:'answer'`, Р7). A saved answer
+// REFERENCES the message it came from (`message_id` SET NULL — the note survives
+// regenerate/thread-delete via its `citations` snapshot), but lives by its own
+// content. Both notebook + user FKs CASCADE; `user_id` stays the first conjunct.
+
+export const notebookNotes = pgTable(
+  'notebook_notes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    notebookId: uuid('notebook_id')
+      .notNull()
+      .references(() => notebooks.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(), // ≤NOTE_TITLE_MAX (API)
+    content: text('content').notNull(), // markdown, ≤NOTE_CONTENT_MAX (API)
+    kind: text('kind').notNull().default('manual'), // 'manual' | 'answer'
+    // Snapshot of the saved answer's SourceCitation[] (kind='answer'); null else.
+    citations: jsonb('citations').$type<Citation[]>(),
+    // The chat message this note was saved from (Р7). SET NULL on message delete
+    // — the note keeps living off its content + citations snapshot.
+    messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
+    pinned: boolean('pinned').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Per-notebook listing: pinned-first, recency-second.
+    index('notebook_notes_nb_pinned_updated_idx').on(
+      t.notebookId,
+      t.pinned.desc(),
+      t.updatedAt.desc(),
+    ),
+    index('notebook_notes_user_idx').on(t.userId),
+  ],
+);
+
+// ── notebook_artifacts ─────────────────────────────────────────────────────────
+// «Блокноты 2.0» (Р1/Р2, schema in N1 / generation in N2-N3): a GENERATED study
+// document. The ROW IS THE JOB (simplified sources-ingest pattern): `status`
+// drives a single-`complete()` async generation (pending→generating→ready|error).
+// Markdown types write `content_md`; the structured `quiz` writes `content_json`.
+// `source_ids` snapshots the generation scope (for display + regenerate); the
+// async worker pulls `user_id` from THIS row (no session). `error_code` is a
+// MACHINE code mapped to i18n on the client (like ingest). Both FKs CASCADE.
+
+export const notebookArtifacts = pgTable(
+  'notebook_artifacts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    notebookId: uuid('notebook_id')
+      .notNull()
+      .references(() => notebooks.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(), // NOTEBOOK_ARTIFACT_TYPES
+    status: text('status').notNull().default('pending'), // ARTIFACT_STATUSES
+    title: text('title').notNull(),
+    contentMd: text('content_md'),
+    contentJson: jsonb('content_json').$type<QuizContent>(),
+    sourceIds: jsonb('source_ids').notNull().$type<string[]>(),
+    errorCode: text('error_code'), // ARTIFACT_ERROR_CODES (machine code)
+    model: text('model'), // effective CHAT_MODEL at generation time
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('notebook_artifacts_nb_created_idx').on(t.notebookId, t.createdAt.desc()),
+    index('notebook_artifacts_user_idx').on(t.userId),
+    // One generation per notebook at a time (Р16): the CAS concurrency check
+    // probes for a pending|generating row of the notebook.
+    index('notebook_artifacts_active_idx')
+      .on(t.notebookId)
+      .where(sql`status IN ('pending','generating')`),
+  ],
+);
+
+// ── quiz_attempts ──────────────────────────────────────────────────────────────
+// «Блокноты 2.0» (Р8, schema in N1 / scoring in N3): one persisted run of a quiz
+// artifact. `answers` is the per-question record; `correct`/`total` are the
+// server-recomputed score (MCQ/TF auto-graded, `open` is the human's self-grade).
+// CASCADE on the artifact: deleting the quiz drops its attempt history (the
+// history is meaningless without the artifact; created cards survive via
+// card_sources). `user_id` is the first conjunct.
+
+export const quizAttempts = pgTable(
+  'quiz_attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    artifactId: uuid('artifact_id')
+      .notNull()
+      .references(() => notebookArtifacts.id, { onDelete: 'cascade' }),
+    answers: jsonb('answers').notNull(),
+    correct: integer('correct').notNull(),
+    total: integer('total').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('quiz_attempts_artifact_created_idx').on(t.artifactId, t.createdAt.desc()),
+    index('quiz_attempts_user_idx').on(t.userId),
+  ],
 );
 
 // ── notebook_sources ───────────────────────────────────────────────────────────
@@ -988,6 +1111,31 @@ export const notebooksRelations = relations(notebooks, ({ one, many }) => ({
   user: one(user, { fields: [notebooks.userId], references: [user.id] }),
   sourceLinks: many(notebookSources),
   conversations: many(conversations),
+  notes: many(notebookNotes),
+  artifacts: many(notebookArtifacts),
+}));
+
+export const notebookNotesRelations = relations(notebookNotes, ({ one }) => ({
+  user: one(user, { fields: [notebookNotes.userId], references: [user.id] }),
+  notebook: one(notebooks, { fields: [notebookNotes.notebookId], references: [notebooks.id] }),
+  message: one(messages, { fields: [notebookNotes.messageId], references: [messages.id] }),
+}));
+
+export const notebookArtifactsRelations = relations(notebookArtifacts, ({ one, many }) => ({
+  user: one(user, { fields: [notebookArtifacts.userId], references: [user.id] }),
+  notebook: one(notebooks, {
+    fields: [notebookArtifacts.notebookId],
+    references: [notebooks.id],
+  }),
+  attempts: many(quizAttempts),
+}));
+
+export const quizAttemptsRelations = relations(quizAttempts, ({ one }) => ({
+  user: one(user, { fields: [quizAttempts.userId], references: [user.id] }),
+  artifact: one(notebookArtifacts, {
+    fields: [quizAttempts.artifactId],
+    references: [notebookArtifacts.id],
+  }),
 }));
 
 export const notebookSourcesRelations = relations(notebookSources, ({ one }) => ({
@@ -1069,6 +1217,12 @@ export type Message = typeof messages.$inferSelect;
 export type NewMessage = typeof messages.$inferInsert;
 export type Notebook = typeof notebooks.$inferSelect;
 export type NewNotebook = typeof notebooks.$inferInsert;
+export type NotebookNote = typeof notebookNotes.$inferSelect;
+export type NewNotebookNote = typeof notebookNotes.$inferInsert;
+export type NotebookArtifact = typeof notebookArtifacts.$inferSelect;
+export type NewNotebookArtifact = typeof notebookArtifacts.$inferInsert;
+export type QuizAttempt = typeof quizAttempts.$inferSelect;
+export type NewQuizAttempt = typeof quizAttempts.$inferInsert;
 export type Source = typeof sources.$inferSelect;
 export type NewSource = typeof sources.$inferInsert;
 export type SourceChunk = typeof sourceChunks.$inferSelect;

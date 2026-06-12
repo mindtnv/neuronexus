@@ -13,6 +13,7 @@ export * from './builtin-note-types.ts';
 export * from './media.ts';
 export * from './kb-chunk.ts';
 export * from './notebook-source.ts';
+export * from './notebook.ts';
 export * from './annotations.ts';
 export * from './chat-models.ts';
 export * from './rag-prompt.ts';

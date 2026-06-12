@@ -4,7 +4,8 @@
 
 import { State, type Card as FsrsCard } from 'ts-fsrs';
 import type { RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Note, NoteType, Profile, Review } from './types';
+import type { NotebookColor, NotebookNoteKind } from '@neuronexus/shared';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Note, Notebook, NotebookNote, NoteType, Profile, Review } from './types';
 
 type IsoOrDate = string | Date | null | undefined;
 
@@ -169,6 +170,44 @@ export function profileFromApi(row: any): Profile {
       ? (row.unlockedSpecies as Profile['unlockedSpecies'])
       : ['fern'],
     createdAt: toEpoch(row.createdAt),
+  };
+}
+
+// ── «Блокноты 2.0» (N1) ───────────────────────────────────────────────────────
+// Notebook + note rows keep ISO date strings (like Source) — the list/notes UI
+// renders relative/badge timestamps, not the epoch-number FSRS math.
+
+export function notebookFromApi(row: any): Notebook {
+  return {
+    id: row.id,
+    title: row.title,
+    emoji: row.emoji ?? null,
+    color: (row.color ?? null) as NotebookColor | null,
+    description: row.description ?? null,
+    pinned: row.pinned ?? false,
+    archived: row.archived ?? false,
+    // Counts are present only on the GET /notebooks grid payload.
+    sourceCount: typeof row.sourceCount === 'number' ? row.sourceCount : undefined,
+    noteCount: typeof row.noteCount === 'number' ? row.noteCount : undefined,
+    cardCount: typeof row.cardCount === 'number' ? row.cardCount : undefined,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function notebookNoteFromApi(row: any): NotebookNote {
+  return {
+    id: row.id,
+    notebookId: row.notebookId,
+    title: row.title,
+    content: row.content ?? '',
+    kind: (row.kind ?? 'manual') as NotebookNoteKind,
+    citations: Array.isArray(row.citations) ? (row.citations as unknown[]) : null,
+    messageId: row.messageId ?? null,
+    pinned: row.pinned ?? false,
+    excerpt: typeof row.excerpt === 'string' ? row.excerpt : undefined,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 

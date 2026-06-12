@@ -51,11 +51,33 @@ import {
 } from '@/components/screens/notebooks';
 import { ChatPanel, type ComposerPrefillHandle } from '@/components/chat/chat-panel';
 import { TextChunkReader, type TextChunkReaderHandle } from '@/components/screens/text-reader';
+import { NotesPanel } from '@/components/notebook/notes-panel';
 import { useSourceStatus } from '@/lib/use-source-status';
 import { prefillKey } from '@/lib/library-handoff';
 import type { LibraryItem } from '@/lib/types';
 
-type WorkspaceTab = 'sources' | 'chat';
+type WorkspaceTab = 'sources' | 'chat' | 'dock';
+
+// Right-dock tabs (Р12). N1 ships a single «Заметки» tab; the array is the
+// extension seam for N2's «Обзор» / «Студия».
+type DockTab = 'notes';
+
+/**
+ * Derive a saved-answer note title (Р7): the first ~60 chars of the content with
+ * markdown emphasis + [src:]/[card:] grounding tokens stripped, collapsed
+ * whitespace, ellipsized. Falls back to a generic label for empty content.
+ */
+function noteTitleFromContent(content: string, fallback: string): string {
+  const stripped = content
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '') // images
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // links → label
+    .replace(/\[(?:src|card):[^\]]+\]/g, '') // grounding tokens
+    .replace(/[#*_`>~]/g, '') // markdown emphasis/heading/code marks
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (stripped.length === 0) return fallback;
+  return stripped.length > 60 ? `${stripped.slice(0, 60).trimEnd()}…` : stripped;
+}
 
 export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const t = useT();
@@ -77,6 +99,10 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const listLibrary = useNN((s) => s.listLibrary);
   const attachSources = useNN((s) => s.attachSources);
   const detachSource = useNN((s) => s.detachSource);
+  const listNotebookNotes = useNN((s) => s.listNotebookNotes);
+  const createNotebookNote = useNN((s) => s.createNotebookNote);
+  const patchNotebookNote = useNN((s) => s.patchNotebookNote);
+  const deleteNotebookNote = useNN((s) => s.deleteNotebookNote);
 
   const [notebook, setNotebook] = useState<Notebook | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
@@ -93,6 +119,63 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   // M5 — composer prefill ref (chat ← library «Спросить» handoff + viewer).
   const composerPrefillRef = useRef<ComposerPrefillHandle | null>(null);
+
+  // ── Right dock (Р12): tabs + collapse (N1 = «Заметки» only) ────────────────────
+  const dockKey = `nn:nb:dock:${notebookId}`;
+  const [dockTab] = useState<DockTab>('notes');
+  const [dockCollapsed, setDockCollapsed] = useState(false);
+  // Imperative refresh of the notes panel (after «save answer from chat»).
+  const notesRefreshRef = useRef<(() => void) | null>(null);
+
+  // Hydrate the dock-collapsed state from localStorage once.
+  const dockHydratedRef = useRef(false);
+  useEffect(() => {
+    if (dockHydratedRef.current) return;
+    dockHydratedRef.current = true;
+    try {
+      setDockCollapsed(localStorage.getItem(dockKey) === 'collapsed');
+    } catch {
+      /* best-effort */
+    }
+  }, [dockKey]);
+
+  const toggleDock = useCallback(() => {
+    setDockCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(dockKey, next ? 'collapsed' : 'open');
+      } catch {
+        /* best-effort */
+      }
+      return next;
+    });
+  }, [dockKey]);
+
+  // Prefill the chat composer (notes «В карточки» + library handoff share this).
+  const prefillChat = useCallback((text: string) => {
+    composerPrefillRef.current?.prefill(text);
+  }, []);
+
+  // «В заметки» (Р7) — save a finished assistant answer as a note.
+  const onSaveAnswer = useCallback(
+    async (payload: { content: string; citations: unknown[]; messageId?: string }) => {
+      try {
+        await createNotebookNote(notebookId, {
+          title: noteTitleFromContent(payload.content, t('notebooks.notes.addTitle')),
+          content: payload.content,
+          kind: 'answer',
+          citations: payload.citations,
+          messageId: payload.messageId,
+        });
+        raiseToast({ kind: 'info', title: t('notebooks.notes.savedFromChat') });
+        notesRefreshRef.current?.();
+        if (dockCollapsed) toggleDock();
+      } catch {
+        raiseToast({ kind: 'info', title: t('notebooks.notes.createFailed') });
+      }
+    },
+    [createNotebookNote, notebookId, t, dockCollapsed, toggleDock],
+  );
 
   // ── Citation viewer (text-mode chunk reader over a cited source) ───────────────
   const [viewer, setViewer] = useState<{
@@ -475,6 +558,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       activeThreadId={activeThreadId}
       composerPrefillRef={composerPrefillRef}
       onThreadChange={onThreadChange}
+      onSaveAnswer={onSaveAnswer}
       onSourceCitation={(c) => {
         if (!c.sourceId) return;
         openViewer({
@@ -485,6 +569,77 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         });
       }}
     />
+  );
+
+  // ── Right dock (Р12): «Заметки» tab (N1) ───────────────────────────────────────
+  const notesPanel = (
+    <NotesPanel
+      notebookId={notebookId}
+      listNotes={listNotebookNotes}
+      createNote={createNotebookNote}
+      patchNote={patchNotebookNote}
+      deleteNote={deleteNotebookNote}
+      onPrefillChat={(text) => {
+        prefillChat(text);
+        if (!isDesktop) setTab('chat');
+      }}
+      refreshRef={notesRefreshRef}
+      t={t}
+    />
+  );
+
+  // Dock header: tab pills (N1 = one) + a collapse toggle (desktop). The collapse
+  // toggle lives in the dock header so the chat column reclaims the width.
+  const dockHeader = (
+    <div
+      className="nn-chrome"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '6px 8px',
+        borderBottom: '1px solid var(--border)',
+        flexShrink: 0,
+        minHeight: 40,
+      }}
+    >
+      {([{ key: 'notes' as DockTab, labelKey: 'notebooks.notes.tab' }]).map(({ key, labelKey }) => (
+        <button
+          key={key}
+          type="button"
+          className={`nn-ws-tab${dockTab === key ? ' active' : ''}`}
+          onClick={() => undefined}
+        >
+          {t(labelKey)}
+        </button>
+      ))}
+      <span style={{ flex: 1 }} />
+      <NNBtn
+        variant="ghost"
+        size="sm"
+        icon="chevr"
+        ariaLabel={t('notebooks.notes.dockCollapse')}
+        title={t('notebooks.notes.dockCollapse')}
+        onClick={toggleDock}
+      />
+    </div>
+  );
+
+  const dockColumn = (
+    <div
+      style={{
+        width: 340,
+        flexShrink: 0,
+        borderLeft: '1px solid var(--border)',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        background: 'var(--surface)',
+      }}
+    >
+      {dockHeader}
+      <div style={{ flex: 1, minHeight: 0 }}>{notesPanel}</div>
+    </div>
   );
 
   // Citation viewer — right drawer (desktop) / fullscreen sheet (mobile).
@@ -584,8 +739,14 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {chatPanel}
           </div>
-          {/* Citation viewer — right drawer (desktop). */}
-          {citationViewer}
+          {/* Right side: the citation viewer (transient) takes precedence over the
+              dock; otherwise the dock column (or a thin expand rail when collapsed). */}
+          {citationViewer ??
+            (dockCollapsed ? (
+              <DockExpandRail label={t('notebooks.notes.dockExpand')} onExpand={toggleDock} />
+            ) : (
+              dockColumn
+            ))}
         </div>
       </div>
     );
@@ -610,6 +771,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         {([
           { key: 'sources', labelKey: 'notebooks.workspace.tabSources' },
           { key: 'chat', labelKey: 'notebooks.workspace.tabChat' },
+          { key: 'dock', labelKey: 'notebooks.notes.tab' },
         ] as { key: WorkspaceTab; labelKey: string }[]).map(({ key: tk, labelKey }) => (
           <button
             key={tk}
@@ -628,12 +790,34 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           </div>
         )}
         {tab === 'chat' && chatPanel}
+        {tab === 'dock' && <div style={{ flex: 1, minHeight: 0 }}>{notesPanel}</div>}
       </div>
       {/* Citation viewer — fullscreen sheet (mobile). */}
       {citationViewer}
     </div>
   );
 };
+
+// ── Right-dock collapsed rail (desktop) ────────────────────────────────────────
+// A thin vertical strip with a single «expand» affordance — clicking re-opens the
+// dock. Cheap to render; keeps the chat column wide while collapsed.
+
+const DockExpandRail = ({ label, onExpand }: { label: string; onExpand: () => void }) => (
+  <div
+    style={{
+      width: 40,
+      flexShrink: 0,
+      borderLeft: '1px solid var(--border)',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      paddingTop: 8,
+      background: 'var(--surface)',
+    }}
+  >
+    <NNBtn variant="ghost" size="sm" icon="doc" ariaLabel={label} title={label} onClick={onExpand} />
+  </div>
+);
 
 // ── Citation viewer ───────────────────────────────────────────────────────────
 

@@ -897,6 +897,74 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 /* L2 — library reader table-of-contents row hover. */
 .nn-toc-row:hover { background: var(--surface-2); }
 
+/* ── «Блокноты 2.0» (N1) — notebook grid list (Р13) ───────────────────────── */
+.nn-nb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+@media (max-width: 720px) {
+  .nn-nb-grid { grid-template-columns: 1fr; }
+}
+.nn-nb-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 120ms ease, box-shadow 140ms ease;
+  font-family: var(--font-sans);
+}
+.nn-nb-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-2);
+  box-shadow: var(--shadow-lg);
+}
+.nn-nb-card:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-pin {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  pointer-events: none;
+}
+.nn-nb-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: var(--r-md);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+.nn-emoji-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: border-color 100ms ease, background 100ms ease;
+}
+.nn-emoji-cell:hover { background: var(--surface-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  .nn-nb-card { transition: border-color 120ms ease; }
+  .nn-nb-card:hover { transform: none; }
+}
+
+[data-theme="light"] .nn-nb-card { background: var(--surface); border-color: var(--border); }
+
 /* Continue-reading shelf card. */
 .nn-lib-shelf-card {
   display: flex;

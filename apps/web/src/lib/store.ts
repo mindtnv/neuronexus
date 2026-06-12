@@ -7,14 +7,16 @@ import {
   cardFromApi,
   deckFromApi,
   filteredDeckFromApi,
+  notebookFromApi,
+  notebookNoteFromApi,
   noteTypeFromApi,
   presetFromApi,
   profileFromApi,
   reviewFromApi,
 } from './mappers';
 import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NoteType, Profile, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
-import type { SourceKind, SourceMime } from '@neuronexus/shared';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookNote, NoteType, Profile, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
+import type { NotebookColor, NotebookNoteKind, SourceKind, SourceMime } from '@neuronexus/shared';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
 // and profile — fetched at bootstrap, mutated optimistically-ish on each API
@@ -244,14 +246,34 @@ interface State {
   // mirror), so these are thin Eden pass-throughs that return server rows; the
   // /notebooks screen owns the list state + polling.
 
-  /** List the user's notebooks (GET /notebooks), newest-first. */
-  listNotebooks: () => Promise<Notebook[]>;
+  /** List the user's notebooks (GET /notebooks). Pinned-first, recency-second;
+   *  pass `{ archived: true }` for the archive shelf. Rows carry grid counts. */
+  listNotebooks: (params?: { archived?: boolean }) => Promise<Notebook[]>;
   /** Create a notebook (POST /notebooks). */
   createNotebook: (title: string) => Promise<Notebook>;
-  /** Rename a notebook (PATCH /notebooks/:id). */
+  /** Rename a notebook (PATCH /notebooks/:id) — title-only convenience. */
   renameNotebook: (id: string, title: string) => Promise<Notebook>;
+  /** One notebook's full row (GET /notebooks/:id) — incl. metadata. */
+  getNotebook: (id: string) => Promise<Notebook>;
+  /** Patch notebook metadata (PATCH /notebooks/:id) — title/emoji/color/
+   *  description/pinned/archived (Р13). Empty patch is a no-op (returns the row). */
+  patchNotebook: (id: string, patch: NotebookPatch) => Promise<Notebook>;
   /** Delete a notebook + its sources (DELETE /notebooks/:id). */
   deleteNotebook: (id: string) => Promise<void>;
+
+  // ── Notebook notes (Р1/Р7, N1) ───────────────────────────────────────────────
+  /** List a notebook's notes (GET /notebooks/:id/notes) — pinned-first, opt `q`. */
+  listNotebookNotes: (notebookId: string, q?: string) => Promise<NotebookNote[]>;
+  /** Create a note (POST /notebooks/:id/notes). */
+  createNotebookNote: (notebookId: string, input: CreateNoteInput) => Promise<NotebookNote>;
+  /** Patch a note (PATCH /notebooks/:id/notes/:noteId) — title?/content?/pinned?. */
+  patchNotebookNote: (
+    notebookId: string,
+    noteId: string,
+    patch: { title?: string; content?: string; pinned?: boolean },
+  ) => Promise<NotebookNote>;
+  /** Delete a note (DELETE /notebooks/:id/notes/:noteId). */
+  deleteNotebookNote: (notebookId: string, noteId: string) => Promise<void>;
 
   /** List a notebook's sources with computed indexing progress (GET /notebooks/:id/sources). */
   listSources: (notebookId: string) => Promise<Source[]>;
@@ -347,6 +369,27 @@ export interface LibraryPatch {
   description?: string;
   tags?: string[];
   readingStatus?: ReadingStatus;
+}
+
+/** Editable notebook metadata (explicit-field PATCH, Р13). `null` clears
+ *  emoji/color/description. */
+export interface NotebookPatch {
+  title?: string;
+  emoji?: string | null;
+  color?: NotebookColor | null;
+  description?: string | null;
+  pinned?: boolean;
+  archived?: boolean;
+}
+
+/** New-note body (POST /notebooks/:id/notes). `kind`/`citations`/`messageId`
+ *  ride only the «save chat answer» path (Р7). */
+export interface CreateNoteInput {
+  title: string;
+  content: string;
+  kind?: NotebookNoteKind;
+  citations?: unknown[] | null;
+  messageId?: string;
 }
 
 /** A 409 duplicate_source on library upload carries the existing source id. */
@@ -882,21 +925,64 @@ export const useNN = create<State>()((set, get) => ({
 
   // ── NotebookLM sources (M1) ──────────────────────────────────────────────────
 
-  async listNotebooks() {
-    const res = (await ok(await (api as any).notebooks.get())) as { items: Notebook[] };
-    return res.items;
+  async listNotebooks(params) {
+    const query: Record<string, string> = {};
+    if (params?.archived) query.archived = 'true';
+    const res = (await ok(await (api as any).notebooks.get({ query }))) as { items: any[] };
+    return res.items.map(notebookFromApi);
   },
 
   async createNotebook(title) {
-    return (await ok(await (api as any).notebooks.post({ title }))) as Notebook;
+    return notebookFromApi(await ok(await (api as any).notebooks.post({ title })));
   },
 
   async renameNotebook(id, title) {
-    return (await ok(await (api as any).notebooks({ id }).patch({ title }))) as Notebook;
+    return notebookFromApi(await ok(await (api as any).notebooks({ id }).patch({ title })));
+  },
+
+  async getNotebook(id) {
+    return notebookFromApi(await ok(await (api as any).notebooks({ id }).get()));
+  },
+
+  async patchNotebook(id, patch) {
+    return notebookFromApi(await ok(await (api as any).notebooks({ id }).patch(patch)));
   },
 
   async deleteNotebook(id) {
     await ok(await (api as any).notebooks({ id }).delete());
+  },
+
+  // ── Notebook notes (Р1/Р7, N1) ───────────────────────────────────────────────
+
+  async listNotebookNotes(notebookId, q) {
+    const query: Record<string, string> = {};
+    if (q && q.trim()) query.q = q.trim();
+    const res = (await ok(
+      await (api as any).notebooks({ id: notebookId }).notes.get({ query }),
+    )) as { items: any[] };
+    return res.items.map(notebookNoteFromApi);
+  },
+
+  async createNotebookNote(notebookId, input) {
+    const body: Record<string, unknown> = { title: input.title, content: input.content };
+    if (input.kind) body.kind = input.kind;
+    if (input.citations != null) body.citations = input.citations;
+    if (input.messageId) body.messageId = input.messageId;
+    return notebookNoteFromApi(
+      await ok(await (api as any).notebooks({ id: notebookId }).notes.post(body)),
+    );
+  },
+
+  async patchNotebookNote(notebookId, noteId, patch) {
+    return notebookNoteFromApi(
+      await ok(
+        await (api as any).notebooks({ id: notebookId }).notes({ noteId }).patch(patch),
+      ),
+    );
+  },
+
+  async deleteNotebookNote(notebookId, noteId) {
+    await ok(await (api as any).notebooks({ id: notebookId }).notes({ noteId }).delete());
   },
 
   async listSources(notebookId) {

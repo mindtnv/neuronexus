@@ -275,6 +275,14 @@ export interface ChatPanelProps {
   /** Parent-owned ref the panel populates with an imperative `prefill(text)`
    *  (M5 reader «Спросить»). Additive — the global chat never passes it. */
   composerPrefillRef?: React.MutableRefObject<ComposerPrefillHandle | null>;
+  /** «В заметки» (Р7) — save a finished assistant answer into the notebook's
+   *  notes. ADDITIVE; the button renders ONLY when this prop is passed (notebook
+   *  mode). The global /chat never passes it, so nothing changes there. */
+  onSaveAnswer?: (payload: {
+    content: string;
+    citations: unknown[];
+    messageId?: string;
+  }) => void;
 }
 
 export const ChatPanel = ({
@@ -285,6 +293,7 @@ export const ChatPanel = ({
   onThreadChange,
   onSourceCitation,
   composerPrefillRef,
+  onSaveAnswer,
 }: ChatPanelProps = {}) => {
   const t = useT();
   const { locale } = useLocale();
@@ -1496,6 +1505,25 @@ export const ChatPanel = ({
     [],
   );
 
+  // «В заметки» (Р7): save a finished assistant answer into the notebook's notes.
+  // The STORED content keeps its [src:] tokens (the note viewer renders them as
+  // plain text in N1); only SOURCE citations are snapshotted (card citations are
+  // notebook-irrelevant). `messageId` is the persisted assistant row id — omitted
+  // for a still-ephemeral (never-reloaded) turn so the server accepts it without
+  // the back-ref.
+  const saveAnswer = useCallback(
+    (m: MessageVM) => {
+      if (!onSaveAnswer) return;
+      const citations = (m.citations ?? []).filter(isSourceCitation) as unknown[];
+      onSaveAnswer({
+        content: m.content,
+        citations,
+        messageId: m.id && !m.id.startsWith('local-') ? m.id : undefined,
+      });
+    },
+    [onSaveAnswer],
+  );
+
   // ── Render: setup notice when chat is unconfigured ───────────────────────────
 
   if (statusLoaded && status && !status.chatEnabled) {
@@ -1705,6 +1733,7 @@ export const ChatPanel = ({
                         m.role === 'assistant' && !m.streaming && i === messages.length - 1 && !sending
                       }
                       onCopy={() => void copyMessage(m.content)}
+                      onSaveAnswer={onSaveAnswer ? () => saveAnswer(m) : undefined}
                       onRegenerate={() => void regenerate()}
                       // Edit-and-rerun only on the LAST user message, when idle (AC4.1).
                       canEdit={m.role === 'user' && i === messages.length - 1 && !sending}
@@ -2207,6 +2236,9 @@ interface MessageRowProps {
   canRegenerate?: boolean;
   /** Copy this message's clean prose to the clipboard (assistant only). */
   onCopy?: () => void;
+  /** «В заметки» (Р7) — save this answer into the notebook's notes (notebook
+   *  mode only; undefined ⇒ the button is hidden). */
+  onSaveAnswer?: () => void;
   /** Regenerate the last assistant turn (assistant only). */
   onRegenerate?: () => void;
   /** Show the edit-and-rerun affordance (only on the last user message). */
@@ -2244,6 +2276,7 @@ const MessageRow = ({
   onConfirm,
   canRegenerate = false,
   onCopy,
+  onSaveAnswer,
   onRegenerate,
   canEdit = false,
   onEdit,
@@ -2642,6 +2675,18 @@ const MessageRow = ({
           >
             {t('chat.message.copy')}
           </NNBtn>
+          {onSaveAnswer && (
+            <NNBtn
+              size="sm"
+              variant="ghost"
+              icon="doc"
+              ariaLabel={t('notebooks.notes.saveAnswer')}
+              title={t('notebooks.notes.saveAnswer')}
+              onClick={() => onSaveAnswer()}
+            >
+              {t('notebooks.notes.saveAnswer')}
+            </NNBtn>
+          )}
           {canRegenerate && (
             <NNBtn
               size="sm"

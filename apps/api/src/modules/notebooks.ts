@@ -22,18 +22,22 @@
 // embedding; these routes only enqueue.
 
 import { Elysia, t } from 'elysia';
-import { and, asc, count, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   cardSources,
   cards,
+  conversations,
   db,
   decks,
+  messages,
+  notebookNotes,
   notebooks,
   notebookSources,
   sourceAnnotations,
   sourceChunks,
   sourceMarks,
   sources,
+  type Citation,
   type Db,
   type Source,
 } from '@neuronexus/db';
@@ -44,9 +48,20 @@ import {
   MARK_QUOTE_MAX,
   MARK_RECTS_MAX,
   MARKED_TEXT_MAX,
+  MAX_NOTES_PER_NOTEBOOK,
+  NOTE_CITATIONS_MAX_BYTES,
+  NOTE_CONTENT_MAX,
+  NOTE_EXCERPT_MAX,
+  NOTE_TITLE_MAX,
+  NOTEBOOK_COLORS,
+  NOTEBOOK_DESCRIPTION_MAX,
+  NOTEBOOK_EMOJI_MAX,
+  NOTEBOOK_NOTE_KINDS,
+  NOTEBOOK_TITLE_MAX,
   SOURCE_MARK_COLORS,
   type InkStroke,
   type MarkRect,
+  type NotebookNoteKind,
   type PageAnnotations,
   type SourceMarkKind,
 } from '@neuronexus/shared';
@@ -173,6 +188,72 @@ const MARKS_PER_SOURCE_CAP = 2000;
 const MARK_KINDS = new Set<SourceMarkKind>(['highlight', 'note']);
 const MARK_COLORS = new Set<string>(SOURCE_MARK_COLORS);
 
+// ── «Блокноты 2.0» (N1) metadata + notes helpers ─────────────────────────────
+const NOTEBOOK_COLOR_SET = new Set<string>(NOTEBOOK_COLORS);
+const NOTE_KIND_SET = new Set<NotebookNoteKind>(NOTEBOOK_NOTE_KINDS);
+
+/**
+ * Deterministic overview fingerprint (Р6): a stable hash of the notebook's
+ * READY sources (sorted by id) + each source's chunk count. Drives the
+ * «обзор устарел» staleness check on the client — it does NOT use
+ * `sources.updated_at` (cover/author backfills bump that, causing false
+ * invalidation). Exported so N2's overview generator reuses the SAME function
+ * (one source of truth for the cache key). FNV-1a hex (no Node `crypto`
+ * import needed; determinism is all that matters here).
+ */
+export function computeOverviewFingerprint(
+  ready: { sourceId: string; chunkCount: number }[],
+): string {
+  const parts = ready
+    .map((r) => `${r.sourceId}:${r.chunkCount}`)
+    .sort()
+    .join('|');
+  // FNV-1a 32-bit over the canonical string.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < parts.length; i++) {
+    h ^= parts.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * The current (recomputed) overview fingerprint for a notebook: its READY
+ * attached sources + each one's COUNT(source_chunks). Empty (no ready sources)
+ * ⇒ a fixed sentinel so the client can tell "nothing to summarize" apart from a
+ * stale cache. user-scoped (the join carries the notebook + user predicate).
+ */
+async function currentOverviewFingerprint(
+  userId: string,
+  notebookId: string,
+): Promise<string> {
+  const rows = await db
+    .select({
+      sourceId: sources.id,
+      chunkCount: count(sourceChunks.id),
+    })
+    .from(notebookSources)
+    .innerJoin(sources, eq(sources.id, notebookSources.sourceId))
+    .leftJoin(sourceChunks, eq(sourceChunks.sourceId, sources.id))
+    .where(
+      and(
+        eq(notebookSources.userId, userId),
+        eq(notebookSources.notebookId, notebookId),
+        eq(sources.status, 'ready'),
+      ),
+    )
+    .groupBy(sources.id);
+  if (rows.length === 0) return 'empty';
+  return computeOverviewFingerprint(
+    rows.map((r) => ({ sourceId: r.sourceId, chunkCount: Number(r.chunkCount) })),
+  );
+}
+
+/** One-line note excerpt: collapse whitespace, cap to NOTE_EXCERPT_MAX chars. */
+function noteExcerpt(content: string): string {
+  return excerptFront(content, NOTE_EXCERPT_MAX);
+}
+
 /**
  * Structural validation of a mark's `rects` payload (M5). Mirrors
  * `validateStrokes`'s plain-boolean style: 1..MARK_RECTS_MAX rects, each with
@@ -203,17 +284,49 @@ function validateMarkRects(raw: unknown): raw is MarkRect[] {
 export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   .use(authPlugin)
   // ── notebooks ───────────────────────────────────────────────────────────────
+  // Grid list (Р13): metadata + per-notebook counts in ONE query (no N+1) +
+  // `?archived=` filter (default: only non-archived). Ordered pinned-first,
+  // recency-second. Counts:
+  //  - sourceCount: attached library sources (notebook_sources edges).
+  //  - noteCount: notebook_notes rows.
+  //  - cardCount: DISTINCT cards BORN in this notebook (card_sources.notebook_id),
+  //    LIVE only (the FK-cascade keeps card_sources.card_id valid, so a plain
+  //    count of distinct card_id over the user's edges is already live).
   .get(
     '/',
-    async ({ user }) => {
+    async ({ user, query }) => {
+      const archived = query.archived === 'true';
+      // One-query counts via correlated subqueries. The subquery tables are
+      // ALIASED (ns/nn/cs/c) and the outer correlation references the
+      // (non-aliased) `notebooks.id` LITERALLY — drizzle's `${col}` interpolation
+      // renders columns UNQUALIFIED inside an `sql` template, so a `${cards.id}`
+      // would collide with `card_sources.id` ("id" is ambiguous). cardCount JOINs
+      // `cards` so a deleted card (its card_sources edge cascades away) is never
+      // counted — LIVE cards born in this notebook only.
       const rows = await db
-        .select()
+        .select({
+          notebook: notebooks,
+          sourceCount: sql<number>`(SELECT count(*)::int FROM notebook_sources ns WHERE ns.notebook_id = notebooks.id)`,
+          noteCount: sql<number>`(SELECT count(*)::int FROM notebook_notes nn WHERE nn.notebook_id = notebooks.id)`,
+          cardCount: sql<number>`(SELECT count(DISTINCT cs.card_id)::int FROM card_sources cs JOIN cards c ON c.id = cs.card_id WHERE cs.notebook_id = notebooks.id)`,
+        })
         .from(notebooks)
-        .where(eq(notebooks.userId, user.id))
-        .orderBy(desc(notebooks.createdAt));
-      return { items: rows };
+        .where(and(eq(notebooks.userId, user.id), eq(notebooks.archived, archived)))
+        .orderBy(desc(notebooks.pinned), desc(notebooks.updatedAt));
+      const items = rows.map((r) => ({
+        ...r.notebook,
+        sourceCount: Number(r.sourceCount),
+        noteCount: Number(r.noteCount),
+        cardCount: Number(r.cardCount),
+      }));
+      return { items };
     },
-    { auth: true },
+    {
+      auth: true,
+      query: t.Object({
+        archived: t.Optional(t.Union([t.Literal('true'), t.Literal('false')])),
+      }),
+    },
   )
   .post(
     '/',
@@ -236,12 +349,61 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       body: t.Object({ title: t.String({ minLength: 1, maxLength: 200 }) }),
     },
   )
+  // Update notebook metadata via an EXPLICIT field map (Р13): title|emoji|color|
+  // description|pinned|archived. Empty body → 400 `nothing_to_update`. `updatedAt`
+  // bumps ONLY on CONTENT fields (title/emoji/color/description) — pin/archive
+  // toggles preserve recency (Р15, the pinned-threads pattern). Validations:
+  // title 1..NOTEBOOK_TITLE_MAX, emoji ≤NOTEBOOK_EMOJI_MAX, description
+  // ≤NOTEBOOK_DESCRIPTION_MAX, color ∈ NOTEBOOK_COLORS. null on emoji/color/
+  // description CLEARS the field.
   .patch(
     '/:id',
     async ({ user, params, body, status }) => {
+      const set: Record<string, unknown> = {};
+      let contentChanged = false;
+
+      if (body.title !== undefined) {
+        const title = body.title.trim();
+        if (title.length < 1 || title.length > NOTEBOOK_TITLE_MAX) {
+          return status(400, { error: 'invalid_title' });
+        }
+        set.title = title;
+        contentChanged = true;
+      }
+      if (body.emoji !== undefined) {
+        if (body.emoji !== null && body.emoji.length > NOTEBOOK_EMOJI_MAX) {
+          return status(400, { error: 'invalid_emoji' });
+        }
+        set.emoji = body.emoji === null || body.emoji.length === 0 ? null : body.emoji;
+        contentChanged = true;
+      }
+      if (body.color !== undefined) {
+        if (body.color !== null && !NOTEBOOK_COLOR_SET.has(body.color)) {
+          return status(400, { error: 'invalid_color' });
+        }
+        set.color = body.color;
+        contentChanged = true;
+      }
+      if (body.description !== undefined) {
+        if (body.description !== null && body.description.length > NOTEBOOK_DESCRIPTION_MAX) {
+          return status(400, { error: 'invalid_description' });
+        }
+        set.description =
+          body.description === null || body.description.length === 0 ? null : body.description;
+        contentChanged = true;
+      }
+      // Non-content toggles — do NOT bump updatedAt (Р15).
+      if (body.pinned !== undefined) set.pinned = body.pinned;
+      if (body.archived !== undefined) set.archived = body.archived;
+
+      if (Object.keys(set).length === 0) {
+        return status(400, { error: 'nothing_to_update' });
+      }
+      if (contentChanged) set.updatedAt = new Date();
+
       const [row] = await db
         .update(notebooks)
-        .set({ title: body.title, updatedAt: new Date() })
+        .set(set)
         .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
         .returning();
       if (!row) return status(404, { error: 'not_found' });
@@ -250,8 +412,34 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
     {
       auth: true,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),
-      body: t.Object({ title: t.String({ minLength: 1, maxLength: 200 }) }),
+      body: t.Object({
+        title: t.Optional(t.String({ maxLength: NOTEBOOK_TITLE_MAX + 1 })),
+        emoji: t.Optional(t.Union([t.String({ maxLength: NOTEBOOK_EMOJI_MAX + 1 }), t.Null()])),
+        color: t.Optional(t.Union([t.String({ maxLength: 24 }), t.Null()])),
+        description: t.Optional(
+          t.Union([t.String({ maxLength: NOTEBOOK_DESCRIPTION_MAX + 1 }), t.Null()]),
+        ),
+        pinned: t.Optional(t.Boolean()),
+        archived: t.Optional(t.Boolean()),
+      }),
     },
+  )
+  // Notebook detail (Р13/Р6): the full row + the CURRENT recomputed overview
+  // fingerprint so the client can compare it to the cached `overviewFingerprint`
+  // and offer «Обновить обзор». user-scoped 404.
+  .get(
+    '/:id',
+    async ({ user, params, status }) => {
+      const [row] = await db
+        .select()
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!row) return status(404, { error: 'not_found' });
+      const currentFingerprint = await currentOverviewFingerprint(user.id, params.id);
+      return { ...row, currentFingerprint };
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   )
   .delete(
     '/:id',
@@ -475,6 +663,255 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       params: t.Object({
         id: t.String({ format: 'uuid' }),
         sourceId: t.String({ format: 'uuid' }),
+      }),
+    },
+  )
+  // ── notebook notes (Р1/Р7/Р15, N1) ───────────────────────────────────────────
+  // A note is user-editable markdown (manual) or a saved chat answer (answer).
+  // ALL routes are user-scoped (the notebook ownership SELECT is the first guard;
+  // a foreign notebook/note → 404 with zero rows touched). Any CONTENT mutation
+  // (POST/PATCH-content/DELETE) bumps `notebooks.updated_at` in the SAME tx (Р15).
+
+  // List a notebook's notes (Р13/Р12): pinned-first, recency-second; optional
+  // `q` ILIKE over title+content. Returns both full `content` and a light
+  // `excerpt` (≤NOTE_EXCERPT_MAX) so the list can render cheaply (Р8 gotcha).
+  // Cap LIBRARY_PAGE (no cursor in V1 — the per-notebook note cap bounds it).
+  .get(
+    '/:id/notes',
+    async ({ user, params, query, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      const q = query.q?.trim();
+      const search =
+        q && q.length > 0
+          ? or(ilike(notebookNotes.title, `%${q}%`), ilike(notebookNotes.content, `%${q}%`))
+          : undefined;
+
+      const rows = await db
+        .select()
+        .from(notebookNotes)
+        .where(
+          and(
+            eq(notebookNotes.userId, user.id),
+            eq(notebookNotes.notebookId, params.id),
+            ...(search ? [search] : []),
+          ),
+        )
+        .orderBy(desc(notebookNotes.pinned), desc(notebookNotes.updatedAt))
+        .limit(env.ai.LIBRARY_PAGE);
+
+      const items = rows.map((r) => ({ ...r, excerpt: noteExcerpt(r.content) }));
+      return { items };
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      query: t.Object({ q: t.Optional(t.String({ maxLength: 200 })) }),
+    },
+  )
+  // Create a note. `kind` defaults to 'manual'; 'answer' is a saved chat answer
+  // (Р7) carrying a `citations` snapshot + a `messageId` back-ref. The messageId
+  // is VALIDATED server-side: the message must belong to the user AND to a
+  // conversation bound to THIS notebook (else 400 `invalid_message`). Caps:
+  // title/content over the limit → 400 `invalid_note`; per-notebook count over
+  // the cap → 409 `too_many_notes`; citations snapshot over the byte cap → 400
+  // `invalid_note`. Bumps notebooks.updated_at (Р15).
+  .post(
+    '/:id/notes',
+    async ({ user, params, body, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      const title = body.title.trim();
+      if (title.length < 1 || title.length > NOTE_TITLE_MAX) {
+        return status(400, { error: 'invalid_note' });
+      }
+      if (body.content.length > NOTE_CONTENT_MAX) {
+        return status(400, { error: 'invalid_note' });
+      }
+      const kind = body.kind ?? 'manual';
+      if (!NOTE_KIND_SET.has(kind as NotebookNoteKind)) {
+        return status(400, { error: 'invalid_note' });
+      }
+      // Opaque citations snapshot — structure not deeply validated (Р7), just
+      // byte-capped to bound the row size.
+      if (body.citations !== undefined && body.citations !== null) {
+        if (JSON.stringify(body.citations).length > NOTE_CITATIONS_MAX_BYTES) {
+          return status(400, { error: 'invalid_note' });
+        }
+      }
+
+      // messageId validation: the message must be the user's AND belong to a
+      // conversation bound to THIS notebook (spoof-resistant — Р7 invariant).
+      if (body.messageId !== undefined && body.messageId !== null) {
+        const [msg] = await db
+          .select({ id: messages.id })
+          .from(messages)
+          .innerJoin(conversations, eq(conversations.id, messages.conversationId))
+          .where(
+            and(
+              eq(messages.id, body.messageId),
+              eq(messages.userId, user.id),
+              eq(conversations.notebookId, params.id),
+            ),
+          )
+          .limit(1);
+        if (!msg) return status(400, { error: 'invalid_message' });
+      }
+
+      // Best-effort per-notebook cap (Р16; two parallel POSTs may overshoot by 1,
+      // accepted — no advisory lock).
+      const [{ n }] = await db
+        .select({ n: count() })
+        .from(notebookNotes)
+        .where(
+          and(eq(notebookNotes.userId, user.id), eq(notebookNotes.notebookId, params.id)),
+        );
+      if (n >= MAX_NOTES_PER_NOTEBOOK) return status(409, { error: 'too_many_notes' });
+
+      const row = await db.transaction(async (tx) => {
+        const [created] = await tx
+          .insert(notebookNotes)
+          .values({
+            userId: user.id,
+            notebookId: params.id,
+            title,
+            content: body.content,
+            kind,
+            citations: (body.citations as Citation[] | undefined) ?? null,
+            messageId: body.messageId ?? null,
+          })
+          .returning();
+        await bumpNotebookUpdatedAt(tx, user.id, params.id);
+        return created!;
+      });
+      return row;
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        title: t.String({ minLength: 1, maxLength: NOTE_TITLE_MAX + 1 }),
+        content: t.String({ maxLength: NOTE_CONTENT_MAX + 1 }),
+        kind: t.Optional(t.String({ maxLength: 16 })),
+        // Opaque jsonb snapshot (byte-capped in-handler). Keep permissive.
+        citations: t.Optional(t.Unknown()),
+        messageId: t.Optional(t.String({ format: 'uuid' })),
+      }),
+    },
+  )
+  // Patch a note: title?/content?/pinned?. Empty body → 400 `nothing_to_update`.
+  // updatedAt bumps ONLY on title/content (Р15, like the notebook PATCH). Any
+  // content mutation bumps notebooks.updated_at. user-scoped 404 (foreign
+  // notebook OR foreign note → 404, zero rows touched).
+  .patch(
+    '/:id/notes/:noteId',
+    async ({ user, params, body, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      const set: Record<string, unknown> = {};
+      let contentChanged = false;
+      if (body.title !== undefined) {
+        const title = body.title.trim();
+        if (title.length < 1 || title.length > NOTE_TITLE_MAX) {
+          return status(400, { error: 'invalid_note' });
+        }
+        set.title = title;
+        contentChanged = true;
+      }
+      if (body.content !== undefined) {
+        if (body.content.length > NOTE_CONTENT_MAX) {
+          return status(400, { error: 'invalid_note' });
+        }
+        set.content = body.content;
+        contentChanged = true;
+      }
+      if (body.pinned !== undefined) set.pinned = body.pinned;
+      if (Object.keys(set).length === 0) {
+        return status(400, { error: 'nothing_to_update' });
+      }
+      if (contentChanged) set.updatedAt = new Date();
+
+      const row = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(notebookNotes)
+          .set(set)
+          .where(
+            and(
+              eq(notebookNotes.id, params.noteId),
+              eq(notebookNotes.notebookId, params.id),
+              eq(notebookNotes.userId, user.id),
+            ),
+          )
+          .returning();
+        if (!updated) return null;
+        await bumpNotebookUpdatedAt(tx, user.id, params.id);
+        return updated;
+      });
+      if (!row) return status(404, { error: 'not_found' });
+      return row;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        noteId: t.String({ format: 'uuid' }),
+      }),
+      body: t.Object({
+        title: t.Optional(t.String({ maxLength: NOTE_TITLE_MAX + 1 })),
+        content: t.Optional(t.String({ maxLength: NOTE_CONTENT_MAX + 1 })),
+        pinned: t.Optional(t.Boolean()),
+      }),
+    },
+  )
+  // Delete a note. user-scoped 404. Bumps notebooks.updated_at (Р15).
+  .delete(
+    '/:id/notes/:noteId',
+    async ({ user, params, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      const ok = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .delete(notebookNotes)
+          .where(
+            and(
+              eq(notebookNotes.id, params.noteId),
+              eq(notebookNotes.notebookId, params.id),
+              eq(notebookNotes.userId, user.id),
+            ),
+          )
+          .returning({ id: notebookNotes.id });
+        if (!row) return false;
+        await bumpNotebookUpdatedAt(tx, user.id, params.id);
+        return true;
+      });
+      if (!ok) return status(404, { error: 'not_found' });
+      return { ok: true };
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        noteId: t.String({ format: 'uuid' }),
       }),
     },
   );
@@ -1232,4 +1669,16 @@ function excerptFront(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat.length === 0) return '';
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/**
+ * Bump `notebooks.updated_at` inside the caller's tx (Р15 — any note/artifact/
+ * attach mutation marks the notebook active so the grid sorts by activity).
+ * user-scoped (a foreign notebook simply touches zero rows).
+ */
+async function bumpNotebookUpdatedAt(tx: Tx, userId: string, notebookId: string): Promise<void> {
+  await tx
+    .update(notebooks)
+    .set({ updatedAt: new Date() })
+    .where(and(eq(notebooks.id, notebookId), eq(notebooks.userId, userId)));
 }

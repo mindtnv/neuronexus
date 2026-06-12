@@ -4,6 +4,8 @@ import type {
   FieldValues,
   IngestErrorCode,
   MarkRect,
+  NotebookColor,
+  NotebookNoteKind,
   NoteField,
   RenderKind,
   SourceKind,
@@ -154,6 +156,35 @@ export interface Card {
 export interface Notebook {
   id: string;
   title: string;
+  /** «Блокноты 2.0» metadata (Р13) — all nullable. */
+  emoji: string | null;
+  color: NotebookColor | null;
+  description: string | null;
+  pinned: boolean;
+  archived: boolean;
+  /** Grid counts folded into GET /notebooks (no N+1). Absent on a bare row. */
+  sourceCount?: number;
+  noteCount?: number;
+  cardCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A notebook note (Р1/Р7) — user markdown (`manual`) or a saved chat answer
+ *  (`answer`). The list view also folds in a light `excerpt`. */
+export interface NotebookNote {
+  id: string;
+  notebookId: string;
+  title: string;
+  content: string;
+  kind: NotebookNoteKind;
+  /** Snapshot of source citations for kind='answer' (opaque; rendered as-is). */
+  citations: unknown[] | null;
+  /** Back-ref to the chat message a saved answer came from (null otherwise). */
+  messageId: string | null;
+  pinned: boolean;
+  /** One-line excerpt (list view only). */
+  excerpt?: string;
   createdAt: string;
   updatedAt: string;
 }
