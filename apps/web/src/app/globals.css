@@ -899,11 +899,15 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 /* L2 — library reader table-of-contents row hover. */
 .nn-toc-row:hover { background: var(--surface-2); }
 
-/* ── «Блокноты 2.0» (N1) — notebook grid list (Р13) ───────────────────────── */
+/* ── «Блокноты 2.0» (N1) — notebook grid list (Р13; A3 redesign) ───────────── */
+/* Grid: 3 cols desktop, 2 tablet, 1 mobile (spec A3.3). */
 .nn-nb-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
+}
+@media (max-width: 1100px) {
+  .nn-nb-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 720px) {
   .nn-nb-grid { grid-template-columns: 1fr; }
@@ -912,10 +916,11 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   position: relative;
   display: flex;
   flex-direction: column;
-  padding: 14px;
+  min-height: 168px;
+  padding: 18px 18px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: 14px;
   cursor: pointer;
   transition: transform 140ms ease, border-color 120ms ease, box-shadow 140ms ease;
   font-family: var(--font-sans);
@@ -923,9 +928,12 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-nb-card:hover {
   transform: translateY(-2px);
   border-color: var(--border-2);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
 }
 .nn-nb-card:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-card .nn-nb-menu-anchor { opacity: 0; transition: opacity 120ms ease; }
+.nn-nb-card:hover .nn-nb-menu-anchor,
+.nn-nb-card:focus-within .nn-nb-menu-anchor { opacity: 1; }
 .nn-nb-pin {
   position: absolute;
   top: 8px;
@@ -933,17 +941,141 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   display: flex;
   pointer-events: none;
 }
-.nn-nb-avatar {
-  display: flex;
+/* 34×34 tone-tinted icon/emoji tile (A3) */
+.nn-nb-tile {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 34px;
+  height: 34px;
   flex-shrink: 0;
-  border-radius: var(--r-md);
-  font-size: 22px;
+  border-radius: 10px;
+  font-size: 17px;
   font-weight: 700;
   line-height: 1;
+}
+/* Screen-topbar live search box (A3) */
+.nn-nb-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  min-width: 240px;
+  padding: 0 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  transition: border-color 120ms ease;
+}
+.nn-nb-search:focus-within { border-color: var(--border-2); }
+.nn-nb-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.nn-nb-search input::placeholder { color: var(--text-dim); }
+/* Section labels («Продолжить» / «Все блокноты») */
+.nn-nb-section-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  margin-bottom: 10px;
+}
+.nn-nb-card + .nn-nb-section-label,
+.nn-nb-continue + .nn-nb-section-label { margin-top: 28px; }
+/* «Продолжить» wide strip (A3.2) */
+.nn-nb-continue {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  margin-bottom: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  cursor: pointer;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  transition: transform 140ms ease, border-color 120ms ease, box-shadow 140ms ease;
+}
+.nn-nb-continue:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-2);
+  box-shadow: var(--shadow-md);
+}
+.nn-nb-continue:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-continue-glow {
+  position: absolute;
+  top: -60px;
+  right: -40px;
+  width: 320px;
+  height: 220px;
+  pointer-events: none;
+  background: radial-gradient(closest-side, rgba(132, 87, 232, 0.10), transparent 70%);
+}
+.nn-nb-continue-tile {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1;
+}
+/* amber «generating» pulse dot (A3) */
+.nn-nb-pulse {
+  width: 5px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--amber-400);
+  animation: nn-nb-pulse 1.4s ease-in-out infinite;
+}
+@keyframes nn-nb-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+/* «Новый блокнот» dashed create tile (A3.4) */
+.nn-nb-create {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 168px;
+  padding: 18px;
+  background: transparent;
+  border: 1px dashed var(--border-2);
+  border-radius: 14px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.nn-nb-create:hover {
+  border-color: var(--lime-500);
+  background: rgba(154, 209, 85, 0.04);
+}
+.nn-nb-create:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-create-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
 }
 .nn-emoji-cell {
   display: flex;
@@ -961,11 +1093,17 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-emoji-cell:hover { background: var(--surface-3); }
 
 @media (prefers-reduced-motion: reduce) {
-  .nn-nb-card { transition: border-color 120ms ease; }
-  .nn-nb-card:hover { transform: none; }
+  .nn-nb-card,
+  .nn-nb-continue { transition: border-color 120ms ease; }
+  .nn-nb-card:hover,
+  .nn-nb-continue:hover { transform: none; }
+  .nn-nb-pulse { animation: none; }
 }
 
-[data-theme="light"] .nn-nb-card { background: var(--surface); border-color: var(--border); }
+[data-theme="light"] .nn-nb-card,
+[data-theme="light"] .nn-nb-continue { background: var(--surface); border-color: var(--border); }
+[data-theme="light"] .nn-nb-search { background: var(--surface); border-color: var(--border); }
+[data-theme="light"] .nn-nb-create-plus { background: var(--surface-2); border-color: var(--border); }
 
 /* ── «Блокноты 2.0» N2 — studio + overview dock ─────────────────────────────── */
 
@@ -1506,4 +1644,284 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-lib-card:hover,
   .nn-lib-shelf-card:hover { transform: none; }
   .nn-lib-drop-overlay { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* ── Notebook chat redesign (A2) ────────────────────────────────────────────
+   Empty-state suggestion cards, numbered citation chips, source chips, action
+   buttons and the composer card. Hover/translate effects mirror the design
+   bundle; all reduced-motion-guarded below. */
+
+/* Empty-state 2×2 suggestion cards. */
+.nn-nb-sug { transition: border-color 140ms ease, background 140ms ease, transform 140ms ease, box-shadow 140ms ease; }
+.nn-nb-sug:hover:not(:disabled) {
+  border-color: var(--border-2);
+  background: var(--surface-2);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+.nn-nb-sug:disabled { cursor: default; opacity: 0.6; }
+
+/* «Обновить подсказки» ghost button. */
+.nn-nb-refresh { transition: color 120ms ease; }
+.nn-nb-refresh:hover:not(:disabled) { color: var(--text-muted); }
+
+/* Inline numbered citation chip (¹²) — superscript, clickable. The static
+   variant (in the source chips row) is non-interactive vertical-align. */
+.nn-nb-cite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 15px;
+  min-width: 15px;
+  padding: 0 3px;
+  border-radius: 5px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  vertical-align: text-top;
+  background: rgba(167, 136, 255, 0.12);
+  color: var(--violet-400);
+  border: 1px solid rgba(167, 136, 255, 0.28);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.nn-nb-cite:not(.nn-nb-cite-static) { margin-left: 3px; }
+.nn-nb-cite:hover { background: rgba(167, 136, 255, 0.22); }
+.nn-nb-cite-static { cursor: inherit; }
+
+/* Numbered source chip under an answer. */
+.nn-nb-srcchip { transition: border-color 140ms ease; }
+.nn-nb-srcchip:hover:not(:disabled) { border-color: rgba(167, 136, 255, 0.4); }
+
+/* Assistant action buttons (copy / save / regenerate). */
+.nn-nb-action { transition: background 120ms ease, color 120ms ease; }
+.nn-nb-action:hover { background: var(--surface-2); color: var(--text-muted); }
+
+/* Composer card. */
+.nn-nb-composer { transition: border-color 140ms ease, box-shadow 140ms ease; }
+.nn-nb-composer:focus-within { border-color: var(--ink-600); }
+.nn-nb-composer:hover { border-color: var(--ink-600); }
+
+.nn-nb-icon-btn { transition: background 120ms ease, color 120ms ease; }
+.nn-nb-icon-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+
+.nn-nb-send { transition: background 120ms ease, box-shadow 120ms ease, opacity 120ms ease; }
+.nn-nb-send:hover:not(:disabled) { background: var(--lime-400); box-shadow: var(--glow-lime); }
+.nn-nb-send:disabled { cursor: not-allowed; opacity: 0.45; }
+
+/* Light theme overrides — the violet/lime accents already use tokens, but the
+   composer hover border + citation chip read better with a softer tint. */
+[data-theme='light'] .nn-nb-cite {
+  background: rgba(132, 87, 232, 0.10);
+  border-color: rgba(132, 87, 232, 0.22);
+}
+[data-theme='light'] .nn-nb-cite:hover { background: rgba(132, 87, 232, 0.18); }
+[data-theme='light'] .nn-nb-composer:hover,
+[data-theme='light'] .nn-nb-composer:focus-within { border-color: var(--border-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .nn-nb-sug,
+  .nn-nb-refresh,
+  .nn-nb-cite,
+  .nn-nb-srcchip,
+  .nn-nb-action,
+  .nn-nb-composer,
+  .nn-nb-icon-btn,
+  .nn-nb-send { transition: none; }
+  .nn-nb-sug:hover:not(:disabled) { transform: none; }
+}
+
+/* ── «Блокноты — редизайн» A4 — workspace topbar + sources rail + studio ─────── */
+
+/* Workspace topbar: «К блокнотам» ghost back button, tone tile, title + meta. */
+.nn-nb-ws-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px 0 6px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 120ms ease, color 120ms ease;
+}
+.nn-nb-ws-back:hover { background: var(--surface-2); color: var(--text); }
+.nn-nb-ws-back:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-ws-sep {
+  width: 1px;
+  height: 20px;
+  flex-shrink: 0;
+  background: var(--border-2);
+}
+.nn-nb-ws-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* Sources rail — «Подключить из библиотеки» dashed connect button. */
+.nn-nb-connect {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 11px;
+  cursor: pointer;
+  background: transparent;
+  border: 1px dashed var(--border-2);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.nn-nb-connect:hover { border-color: var(--lime-500); color: var(--text); }
+.nn-nb-connect:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+
+/* Rail lime link-button («Снять выбор» / «Выбрать все»). */
+.nn-nb-rail-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--lime-400);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  transition: color 120ms ease;
+}
+.nn-nb-rail-link:hover { color: var(--lime-300, var(--lime-400)); }
+.nn-nb-rail-link:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; border-radius: 4px; }
+
+/* Lime-filled checkbox (NBCheck) — the «в чате» scope toggle. The native input
+   is visually hidden; this span is the painted box. */
+.nn-nb-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  border: 1px solid var(--border-2);
+  background: transparent;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+.nn-nb-check.on {
+  border-color: var(--lime-500);
+  background: var(--lime-500);
+}
+.nn-nb-check.disabled { opacity: 0.4; }
+.nn-nb-check-input:focus-visible + .nn-nb-check {
+  outline: 2px solid var(--lime-500);
+  outline-offset: 2px;
+}
+
+/* Source-row cover (mini book spine) — image or kind-toned gradient + letter. */
+.nn-nb-cover {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: inset 2px 0 0 rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.nn-nb-cover-letter {
+  font-family: var(--font-serif);
+  color: rgba(255, 255, 255, 0.92);
+  line-height: 1;
+}
+
+/* Studio segment-tab strip (Обзор / Заметки / Студия). */
+.nn-nb-seg {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.nn-nb-seg-tab {
+  flex: 1;
+  height: 27px;
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.nn-nb-seg-tab:hover { color: var(--text); }
+.nn-nb-seg-tab.active {
+  background: var(--surface);
+  border-color: var(--border-2);
+  box-shadow: var(--shadow-sm);
+  color: var(--text);
+  font-weight: 600;
+}
+.nn-nb-seg-tab:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+
+/* Document indeterminate progress bar (generating). */
+.nn-nb-doc-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+  position: relative;
+}
+.nn-nb-doc-progress-inner {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 38%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--amber-500), var(--amber-400));
+  animation: nn-nb-slide 1.7s ease-in-out infinite;
+}
+@keyframes nn-nb-slide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(290%); }
+}
+
+[data-theme='light'] .nn-nb-connect { background: var(--surface); }
+[data-theme='light'] .nn-nb-seg { background: var(--surface); border-color: var(--border); }
+[data-theme='light'] .nn-nb-seg-tab.active { background: var(--surface-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .nn-nb-ws-back,
+  .nn-nb-connect,
+  .nn-nb-rail-link,
+  .nn-nb-check,
+  .nn-nb-seg-tab { transition: none; }
+  /* Static centered fill instead of the slide — keyframe 0 parks the bar
+     off-screen, which would read as «not running» without motion. */
+  .nn-nb-doc-progress-inner {
+    animation: none;
+    transform: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.5;
+  }
 }

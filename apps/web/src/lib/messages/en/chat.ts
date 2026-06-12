@@ -33,6 +33,10 @@ const m = {
       'Chat is grounded in your own cards. Answers cite the cards they came from; anything outside your cards is labelled as such.',
     you: 'You',
     assistant: 'Assistant',
+    // Assistant name in the answer header (A2 redesign).
+    assistantName: 'NeuroNexus',
+    // «by N sources» meta in a notebook answer header (N = scope size).
+    bySources: 'by {count} sources',
     thinking: 'Thinking…',
     sources: 'From your cards',
     sourcesCount: 'Cards used: {count}',
@@ -48,6 +52,10 @@ const m = {
     placeholder: 'Ask about your cards or tell me what to do…',
     send: 'Send',
     sending: 'Sending…',
+    // Caption next to the Enter badge in the composer's bottom row (A2 redesign).
+    sendHint: 'to send',
+    // Disclaimer under the composer (both modes).
+    disclaimer: 'Answers may be inaccurate — verify anything important against the source.',
     // Stop the in-flight stream (toggles in for Send while streaming).
     stop: 'Stop',
     // Model (reasoning-level) picker — hidden when no allow-list is configured.
@@ -113,6 +121,8 @@ const m = {
     copy: 'Copy',
     copied: 'Copied',
     regenerate: 'Regenerate',
+    // Short label for the «again» action in the action row (A2 redesign).
+    regenerateShort: 'Again',
     openCard: 'Open card',
     // Recovery affordance on a trailing user turn with no answer (stopped/torn).
     stoppedRetry: 'Stopped — regenerate?',

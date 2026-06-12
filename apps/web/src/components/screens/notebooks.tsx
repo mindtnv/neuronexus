@@ -24,13 +24,14 @@ import {
   SOURCE_NONTERMINAL_STATUSES,
   type IngestErrorCode,
   type NotebookColor,
+  type SourceKind,
   type SourceMime,
   type SourceStatus,
 } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
 import { api, ok } from '@/lib/api';
 import { useNN } from '@/lib/store';
-import type { Notebook, Source } from '@/lib/types';
+import type { Notebook, NotebookCoverSource, Source } from '@/lib/types';
 import { useIsMobile } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
@@ -59,6 +60,18 @@ const EMOJI_PRESETS = [
   '🎯', '🚀', '🎨', '🎵', '💻', '📈', '🏛️', '⚖️',
 ];
 
+/**
+ * Enter/Space activation for card-divs carrying role="button" (a11y) — the
+ * target guard keeps inner real buttons (⋯ menu, «Открыть») from double-firing:
+ * their own Enter-click bubbles a keydown up to the card.
+ */
+const pressToOpen = (open: () => void) => (e: React.KeyboardEvent) => {
+  if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    open();
+  }
+};
+
 /** Hand-rolled relative «updated N ago» (no dep) — uses notebooks.meta.* keys. */
 function relativeUpdated(iso: string | undefined, t: Tfn): string {
   if (!iso) return '';
@@ -72,6 +85,107 @@ function relativeUpdated(iso: string | undefined, t: Tfn): string {
   if (hours < 24) return t('notebooks.meta.relativeHours', { count: hours });
   return t('notebooks.meta.relativeDays', { count: Math.floor(hours / 24) });
 }
+
+// ── Cover-fan tones per source kind (A3 redesign) ──────────────────────────────
+const COVER_KIND_TONE: Record<SourceKind, string> = {
+  pdf: 'var(--rose-500)',
+  epub: 'var(--violet-500)',
+  url: 'var(--sky-400)',
+  text: 'var(--amber-500)',
+};
+
+/** Card meta line: «N источников · M документов» (the `documents` count is the
+ *  notebook's studio artifacts). Reuses the existing flat-count i18n style. */
+function metaLine(nb: Notebook, t: Tfn): string {
+  const sources = t('notebooks.meta.sourcesMeta', { count: nb.sourceCount ?? 0 });
+  const docs = t('notebooks.meta.documentsMeta', { count: nb.artifactCount ?? 0 });
+  return `${sources}${t('notebooks.meta.metaSep')}${docs}`;
+}
+
+/** One fanned mini-cover — a real `/m/<uuid>` image when present, else a
+ *  kind-tinted gradient tile with the title's first letter in the serif face. */
+const NotebookMiniCover = ({
+  cover,
+  index,
+  count,
+  w,
+  h,
+}: {
+  cover: NotebookCoverSource;
+  index: number;
+  count: number;
+  w: number;
+  h: number;
+}) => {
+  const [failed, setFailed] = useState(false);
+  const tone = COVER_KIND_TONE[cover.kind] ?? 'var(--text-muted)';
+  const showImage = Boolean(cover.coverMediaId) && !failed;
+  const letter = cover.title.trim().charAt(0).toUpperCase() || '?';
+  return (
+    <span
+      style={{
+        marginLeft: index === 0 ? 0 : -7,
+        transform: `rotate(${(index - (count - 1) / 2) * 4}deg)`,
+        transformOrigin: 'bottom center',
+        zIndex: index,
+        position: 'relative',
+        filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.3))',
+      }}
+      aria-hidden
+    >
+      <span
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: w,
+          height: h,
+          borderRadius: 4,
+          overflow: 'hidden',
+          background: showImage
+            ? 'var(--surface-3)'
+            : `linear-gradient(135deg, color-mix(in srgb, ${tone} 30%, var(--surface-3)), var(--surface-3))`,
+          border: '1px solid var(--border)',
+        }}
+      >
+        {showImage ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={`/m/${cover.coverMediaId}`}
+            alt=""
+            onError={() => setFailed(true)}
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        ) : (
+          <span
+            style={{
+              fontFamily: 'var(--font-serif)',
+              fontSize: Math.round(h * 0.4),
+              fontWeight: 400,
+              color: tone,
+              lineHeight: 1,
+            }}
+          >
+            {letter}
+          </span>
+        )}
+      </span>
+    </span>
+  );
+};
+
+/** The fanned mini-cover stack (≤4) at the foot of a notebook card. */
+const NotebookCoverFan = ({ covers }: { covers: NotebookCoverSource[] }) => {
+  const shown = covers.slice(0, 4);
+  if (shown.length === 0) return null;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'flex-end' }}>
+      {shown.map((c, i) => (
+        <NotebookMiniCover key={i} cover={c} index={i} count={shown.length} w={22} h={31} />
+      ))}
+    </span>
+  );
+};
 
 export const NONTERMINAL = new Set<SourceStatus>(SOURCE_NONTERMINAL_STATUSES);
 
@@ -196,7 +310,22 @@ export const NotebooksScreen = () => {
       if (!trimmed || trimmed === nb.title) return;
       try {
         const updated = await patchNotebook(nb.id, { title: trimmed });
-        setNotebooks((prev) => prev.map((n) => (n.id === nb.id ? { ...updated, sourceCount: n.sourceCount, noteCount: n.noteCount, cardCount: n.cardCount } : n)));
+        setNotebooks((prev) =>
+          prev.map((n) =>
+            n.id === nb.id
+              ? {
+                  ...updated,
+                  sourceCount: n.sourceCount,
+                  noteCount: n.noteCount,
+                  cardCount: n.cardCount,
+                  artifactCount: n.artifactCount,
+                  generatingCount: n.generatingCount,
+                  generatingTitle: n.generatingTitle,
+                  coverSources: n.coverSources,
+                }
+              : n,
+          ),
+        );
       } catch {
         raiseToast({ kind: 'info', title: t('notebooks.meta.saveFailed') });
       }
@@ -291,79 +420,84 @@ export const NotebooksScreen = () => {
   }
 
   // ── Render: notebook grid list ────────────────────────────────────────────────
+  // «Продолжить» = the first notebook of the (server-sorted pinned/recency) list.
+  // Shown only on the active shelf when there's at least one notebook and no
+  // active search filter (spec A3.2).
+  const continueNb = !archived && !search.trim() && notebooks.length > 0 ? notebooks[0] : null;
+
   return (
     <div style={{ padding: isMobile ? 16 : 24, maxWidth: 1040, margin: '0 auto', width: '100%' }}>
       {createOpen && (
         <CreateNotebookDialog onCreate={onCreate} onClose={() => setCreateOpen(false)} t={t} />
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
-        <h2
-          style={{
-            fontSize: 17,
-            fontWeight: 700,
-            fontFamily: 'var(--font-sans)',
-            color: 'var(--text)',
-            margin: 0,
-            flex: 1,
-            minWidth: 120,
-          }}
-        >
-          {t('notebooks.list.heading')}
-        </h2>
+      {/* Screen topbar: title + mono count + search + archive toggle + create */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 10, marginRight: 'auto' }}>
+          <h2
+            style={{
+              fontSize: 17,
+              fontWeight: 600,
+              letterSpacing: -0.3,
+              fontFamily: 'var(--font-sans)',
+              color: 'var(--text)',
+              margin: 0,
+            }}
+          >
+            {t('notebooks.list.title')}
+          </h2>
+          <span className="mono" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+            {notebooks.length}
+          </span>
+        </span>
+
+        {/* Live title-filter search (no ⌘K — that's owned by the global palette) */}
+        <span className="nn-nb-search">
+          <NNIcon name="search" size={14} color="var(--text-dim)" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t('notebooks.list.search')}
+            aria-label={t('notebooks.list.search')}
+          />
+        </span>
+
         <NNBtn
           variant={archived ? 'soft' : 'ghost'}
-          size="sm"
+          size="md"
           icon="stack"
           active={archived}
           onClick={() => setArchived((v) => !v)}
         >
           {archived ? t('notebooks.list.showActive') : t('notebooks.list.showArchive')}
         </NNBtn>
-        <NNBtn variant="primary" size="sm" icon="plus" onClick={() => setCreateOpen(true)}>
+        <NNBtn variant="primary" size="md" icon="plus" onClick={() => setCreateOpen(true)}>
           {t('notebooks.list.create')}
         </NNBtn>
       </div>
 
-      {/* Search */}
-      <div style={{ position: 'relative', marginBottom: 16, maxWidth: 360 }}>
-        <span
-          style={{
-            position: 'absolute',
-            left: 10,
-            top: '50%',
-            transform: 'translateY(-50%)',
-            pointerEvents: 'none',
-            display: 'flex',
-          }}
-        >
-          <NNIcon name="search" size={14} color="var(--text-dim)" />
-        </span>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t('notebooks.list.search')}
-          style={{
-            width: '100%',
-            height: 34,
-            padding: '0 12px 0 31px',
-            fontSize: 13.5,
-            fontFamily: 'var(--font-sans)',
-            color: 'var(--text)',
-            background: 'var(--surface-2)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--r-md)',
-            outline: 'none',
-            boxSizing: 'border-box',
-          }}
-        />
-      </div>
+      {/* «Продолжить» strip */}
+      {continueNb && (
+        <>
+          <div className="nn-nb-section-label">{t('notebooks.meta.sectionContinue')}</div>
+          <ContinueCard
+            notebook={continueNb}
+            onOpen={() => router.push(`/notebooks/${continueNb.id}`)}
+            t={t}
+          />
+        </>
+      )}
+
+      {/* «Все блокноты» section label (only with a populated grid) */}
+      {!archived && filtered.length > 0 && (
+        <div className="nn-nb-section-label">{t('notebooks.meta.sectionAll')}</div>
+      )}
 
       {!notebooksLoaded ? (
         <div className="nn-nb-grid">
-          <NNSkeleton style={{ height: 132 }} />
-          <NNSkeleton style={{ height: 132 }} />
-          <NNSkeleton style={{ height: 132 }} />
+          <NNSkeleton style={{ height: 168 }} />
+          <NNSkeleton style={{ height: 168 }} />
+          <NNSkeleton style={{ height: 168 }} />
         </div>
       ) : filtered.length === 0 ? (
         <div className="nn-empty-state" style={{ paddingTop: 48, paddingBottom: 48 }}>
@@ -377,6 +511,11 @@ export const NotebooksScreen = () => {
                 ? t('notebooks.list.emptyArchived')
                 : t('notebooks.list.empty')}
           </p>
+          {!search.trim() && !archived && (
+            <NNBtn variant="primary" size="sm" icon="plus" onClick={() => setCreateOpen(true)}>
+              {t('notebooks.list.create')}
+            </NNBtn>
+          )}
         </div>
       ) : (
         <div className="nn-nb-grid">
@@ -392,11 +531,122 @@ export const NotebooksScreen = () => {
               t={t}
             />
           ))}
+          {/* «Новый блокнот» dashed create tile — only on the active shelf */}
+          {!archived && <CreateTile onClick={() => setCreateOpen(true)} t={t} />}
         </div>
       )}
     </div>
   );
 };
+
+// ── «Продолжить» strip — the first (pinned/recency-sorted) notebook ─────────────
+
+const ContinueCard = ({
+  notebook,
+  onOpen,
+  t,
+}: {
+  notebook: Notebook;
+  onOpen: () => void;
+  t: Tfn;
+}) => {
+  const accent = notebook.color ? NOTEBOOK_COLOR_VAR[notebook.color] : 'var(--violet-500)';
+  const avatarChar =
+    notebook.emoji && notebook.emoji.length > 0
+      ? notebook.emoji
+      : notebook.title.trim().charAt(0).toUpperCase() || '?';
+  const subtitle = notebook.description?.trim() ? notebook.description : metaLine(notebook, t);
+  const generating = (notebook.generatingCount ?? 0) > 0;
+  const generatingLabel = notebook.generatingTitle
+    ? t('notebooks.meta.generatingTitle', { title: notebook.generatingTitle })
+    : t('notebooks.meta.generatingCount', { count: notebook.generatingCount ?? 0 });
+
+  return (
+    <div
+      className="nn-nb-continue"
+      onClick={onOpen}
+      onKeyDown={pressToOpen(onOpen)}
+      role="button"
+      tabIndex={0}
+    >
+      <span className="nn-nb-continue-glow" aria-hidden />
+      <span
+        className="nn-nb-continue-tile"
+        style={{
+          background: `color-mix(in srgb, ${accent} 14%, transparent)`,
+          border: `1px solid color-mix(in srgb, ${accent} 28%, transparent)`,
+          color: accent,
+        }}
+        aria-hidden
+      >
+        {avatarChar}
+      </span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span
+          style={{
+            display: 'block',
+            fontSize: 14.5,
+            fontWeight: 600,
+            color: 'var(--text)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {notebook.title}
+        </span>
+        <span
+          style={{
+            display: 'block',
+            fontSize: 12,
+            color: 'var(--text-muted)',
+            marginTop: 2,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {subtitle}
+        </span>
+      </span>
+      {generating && (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            fontSize: 11,
+            color: 'var(--amber-400)',
+            flexShrink: 0,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span className="nn-nb-pulse" aria-hidden />
+          {generatingLabel}
+        </span>
+      )}
+      <NNBtn size="sm" variant="soft" iconRight="arrow" onClick={onOpen}>
+        {t('notebooks.meta.open')}
+      </NNBtn>
+    </div>
+  );
+};
+
+// ── «Новый блокнот» dashed create tile ──────────────────────────────────────────
+
+const CreateTile = ({ onClick, t }: { onClick: () => void; t: Tfn }) => (
+  <button type="button" className="nn-nb-create" onClick={onClick}>
+    <span className="nn-nb-create-plus" aria-hidden>
+      <NNIcon name="plus" size={16} color="var(--lime-400)" />
+    </span>
+    <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)' }}>
+      {t('notebooks.meta.newCardTitle')}
+    </span>
+    <span style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: -4 }}>
+      {t('notebooks.meta.newCardHint')}
+    </span>
+  </button>
+);
 
 // ── Notebook grid card ─────────────────────────────────────────────────────────
 
@@ -424,54 +674,34 @@ const NotebookCard = ({
       ? notebook.emoji
       : notebook.title.trim().charAt(0).toUpperCase() || '?';
   const updated = relativeUpdated(notebook.updatedAt, t);
+  const covers = notebook.coverSources ?? [];
 
   return (
-    <div className="nn-nb-card" onClick={onOpen} role="button" tabIndex={0}>
+    <div
+      className="nn-nb-card"
+      onClick={onOpen}
+      onKeyDown={pressToOpen(onOpen)}
+      role="button"
+      tabIndex={0}
+    >
       {notebook.pinned && (
         <span className="nn-nb-pin" title={t('notebooks.meta.pinned')}>
           <NNIcon name="pin" size={12} color="var(--lime-400)" />
         </span>
       )}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
         <span
-          className="nn-nb-avatar"
+          className="nn-nb-tile"
           style={{
-            background: `color-mix(in srgb, ${accent} 18%, var(--surface-2))`,
+            background: `color-mix(in srgb, ${accent} 13%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${accent} 30%, transparent)`,
             color: accent,
           }}
           aria-hidden
         >
           {avatarChar}
         </span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: 15,
-              fontWeight: 700,
-              color: 'var(--text)',
-              fontFamily: 'var(--font-sans)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {notebook.title}
-          </div>
-          {notebook.description && (
-            <div
-              style={{
-                fontSize: 12.5,
-                color: 'var(--text-dim)',
-                marginTop: 3,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {notebook.description}
-            </div>
-          )}
-        </div>
+        <span style={{ flex: 1 }} />
         <div
           className="nn-nb-menu-anchor"
           style={{ position: 'relative', flexShrink: 0 }}
@@ -539,21 +769,42 @@ const NotebookCard = ({
         </div>
       </div>
 
-      {/* Count chips */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
-        <NNBadge tone="neutral" size="xs">
-          {t('notebooks.meta.sourcesChip', { count: notebook.sourceCount ?? 0 })}
-        </NNBadge>
-        <NNBadge tone="neutral" size="xs">
-          {t('notebooks.meta.notesChip', { count: notebook.noteCount ?? 0 })}
-        </NNBadge>
-        <NNBadge tone="neutral" size="xs">
-          {t('notebooks.meta.cardsChip', { count: notebook.cardCount ?? 0 })}
-        </NNBadge>
+      {/* Title + meta line */}
+      <div style={{ marginTop: 14 }}>
+        <div
+          style={{
+            fontSize: 15.5,
+            fontWeight: 600,
+            letterSpacing: -0.2,
+            color: 'var(--text)',
+            fontFamily: 'var(--font-sans)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {notebook.title}
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 3 }}>
+          {metaLine(notebook, t)}
+        </div>
+      </div>
+
+      {/* Cover fan + relative-updated */}
+      <div
+        style={{
+          marginTop: 'auto',
+          paddingTop: 14,
+          display: 'flex',
+          alignItems: 'flex-end',
+          gap: 10,
+        }}
+      >
+        <NotebookCoverFan covers={covers} />
         <span style={{ flex: 1 }} />
         {updated && (
-          <span style={{ fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-            {t('notebooks.meta.updated', { time: updated })}
+          <span style={{ fontSize: 10.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+            {updated}
           </span>
         )}
       </div>

@@ -30,6 +30,8 @@ import {
   MAX_SOURCE_BYTES_DEFAULT,
   SOURCE_MIME_TO_KIND,
   type IngestErrorCode,
+  type NotebookColor,
+  type SourceKind,
   type SourceMime,
 } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
@@ -39,13 +41,13 @@ import type {
   Source,
   SourceLinkedCard,
 } from '@/lib/types';
+import type { SourceCitation } from '@neuronexus/shared';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import {
   AddSourceForm,
-  sourceIcon,
   statusTone,
   type AddKind,
 } from '@/components/screens/notebooks';
@@ -85,6 +87,85 @@ function noteTitleFromContent(content: string, fallback: string): string {
   if (stripped.length === 0) return fallback;
   return stripped.length > 60 ? `${stripped.slice(0, 60).trimEnd()}…` : stripped;
 }
+
+type Tfn = (key: string, params?: Record<string, string | number>) => string;
+
+// ── Workspace header tone + source-cover tones (A4 redesign) ───────────────────
+const NOTEBOOK_COLOR_VAR: Record<NotebookColor, string> = {
+  lime: 'var(--lime-500)',
+  amber: 'var(--amber-500)',
+  violet: 'var(--violet-500)',
+  sky: 'var(--sky-400)',
+  rose: 'var(--rose-500)',
+  neutral: 'var(--text-muted)',
+};
+
+/** Mini-cover (book spine) tone per source kind. */
+const COVER_KIND_TONE: Record<SourceKind, string> = {
+  pdf: 'rose',
+  epub: 'violet',
+  url: 'sky',
+  text: 'amber',
+};
+
+/** Hand-rolled relative «updated N ago» (no dep) — reuses notebooks.meta.* keys
+ *  (mirrors the A3 list helper; kept local — the list one is module-private). */
+function relativeUpdated(iso: string | undefined, t: Tfn): string {
+  if (!iso) return '';
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return '';
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return t('notebooks.meta.relativeNow');
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 60) return t('notebooks.meta.relativeMinutes', { count: mins });
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return t('notebooks.meta.relativeHours', { count: hours });
+  return t('notebooks.meta.relativeDays', { count: Math.floor(hours / 24) });
+}
+
+/** A source-row mini book-spine cover: the real `/m/<uuid>` image when present,
+ *  else a kind-toned gradient with the title's first letter in the serif face. */
+const SourceCover = ({
+  source,
+  w = 26,
+  h = 36,
+}: {
+  source: Source;
+  w?: number;
+  h?: number;
+}) => {
+  const [failed, setFailed] = useState(false);
+  const tone = COVER_KIND_TONE[source.kind] ?? 'sky';
+  const showImage = Boolean(source.coverMediaId) && !failed;
+  const letter = source.title.trim().charAt(0).toUpperCase() || '?';
+  return (
+    <span
+      className="nn-nb-cover"
+      style={{
+        width: w,
+        height: h,
+        background: showImage
+          ? 'var(--surface-3)'
+          : `linear-gradient(150deg, var(--${tone}-500), var(--${tone}-600, var(--${tone}-500)))`,
+      }}
+      aria-hidden
+    >
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={`/m/${source.coverMediaId}`}
+          alt=""
+          onError={() => setFailed(true)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      ) : (
+        <span className="nn-nb-cover-letter" style={{ fontSize: Math.round(h * 0.42) }}>
+          {letter}
+        </span>
+      )}
+    </span>
+  );
+};
 
 export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const t = useT();
@@ -358,6 +439,24 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     setNotebookDetail((prev) => (prev ? { ...prev, ...patch } : prev));
   }, []);
 
+  // «Обновить подсказки» (A2 ChatPanel.onRefreshSuggestions) — regenerate the
+  // overview (its `questions` ARE the suggested-prompt pills) and merge the
+  // refreshed cache into the shared detail state, exactly like OverviewPanel's
+  // manual generate. The ChatPanel guards this on chatEnabled + a busy flag.
+  const refreshSuggestions = useCallback(async () => {
+    try {
+      const res = await generateOverview(notebookId);
+      onDetailChange({
+        overview: res.overview,
+        suggestedQuestions: res.questions,
+        overviewFingerprint: res.fingerprint,
+        currentFingerprint: res.fingerprint,
+      });
+    } catch {
+      raiseToast({ kind: 'info', title: t('notebooks.overview.failed') });
+    }
+  }, [generateOverview, notebookId, onDetailChange, t]);
+
   // ── Consume the library handoff prefill on mount ───────────────────────────────
   const consumedPrefillRef = useRef(false);
   useEffect(() => {
@@ -414,6 +513,17 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     [scopeKey],
   );
 
+  // Bulk select-all / clear over the READY sources (the rail's select-all box +
+  // footer link). Only ready sources can be checked into the chat scope.
+  const readyIds = useMemo(
+    () => sources.filter((s) => s.status === 'ready').map((s) => s.id),
+    [sources],
+  );
+  const allSelected = readyIds.length > 0 && readyIds.every((id) => scope.has(id));
+  const toggleSelectAll = useCallback(() => {
+    setScopePersisted(allSelected ? new Set() : new Set(readyIds));
+  }, [allSelected, readyIds, setScopePersisted]);
+
   // ── Poll non-terminal sources (shared useSourceStatus hook) ───────────────────
   useSourceStatus({
     items: sources,
@@ -431,7 +541,13 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           if (s.status !== 'ready' && updated.status === 'ready') {
             newlyReadyIds.push(updated.id);
           }
-          return updated;
+          // `getSource` (the poll's fetchOne) doesn't carry the list-only reading
+          // state; keep the existing values so the rail subline doesn't blank.
+          return {
+            ...updated,
+            readingStatus: updated.readingStatus ?? s.readingStatus ?? null,
+            readingPercent: updated.readingPercent ?? s.readingPercent ?? null,
+          };
         }),
       );
       if (newlyReadyIds.length > 0) {
@@ -710,6 +826,10 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       onOpenAdd={() => setAddOpen(true)}
       onAttachFromLibrary={() => setAttachOpen(true)}
       onToggleScope={toggleScope}
+      readyCount={readyIds.length}
+      selectedCount={readyIds.filter((id) => scope.has(id)).length}
+      allSelected={allSelected}
+      onToggleSelectAll={toggleSelectAll}
       onRename={onRenameSource}
       onDetach={onDetachSource}
       onReadInLibrary={onReadInLibrary}
@@ -722,6 +842,21 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   // Suggested questions for the empty notebook thread (Р6) — from the detail cache.
   const suggestedQuestions = notebookDetail?.suggestedQuestions ?? undefined;
 
+  // Stable identity — the inline-citation DOM decoration effect in ChatPanel
+  // keys on this callback; a fresh arrow per render would re-run it every time.
+  const onCitationClick = useCallback(
+    (c: SourceCitation) => {
+      if (!c.sourceId) return;
+      openViewer({
+        sourceId: c.sourceId,
+        chunkId: c.sourceChunkId,
+        pos: c.position,
+        page: c.page,
+      });
+    },
+    [openViewer],
+  );
+
   const chatPanel = (
     <ChatPanel
       mode="notebook"
@@ -732,15 +867,8 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       onThreadChange={onThreadChange}
       onSaveAnswer={onSaveAnswer}
       suggestedQuestions={suggestedQuestions}
-      onSourceCitation={(c) => {
-        if (!c.sourceId) return;
-        openViewer({
-          sourceId: c.sourceId,
-          chunkId: c.sourceChunkId,
-          pos: c.position,
-          page: c.page,
-        });
-      }}
+      onRefreshSuggestions={chatEnabled ? refreshSuggestions : undefined}
+      onSourceCitation={onCitationClick}
     />
   );
 
@@ -827,25 +955,25 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 2,
-        padding: '6px 8px',
+        gap: 8,
+        padding: '8px 10px',
         borderBottom: '1px solid var(--border)',
         flexShrink: 0,
-        minHeight: 40,
-        overflowX: 'auto',
+        minHeight: 44,
       }}
     >
-      {DOCK_TABS.map(({ key, labelKey }) => (
-        <button
-          key={key}
-          type="button"
-          className={`nn-ws-tab${dockTab === key ? ' active' : ''}`}
-          onClick={() => selectDockTab(key)}
-        >
-          {t(labelKey)}
-        </button>
-      ))}
-      <span style={{ flex: 1 }} />
+      <div className="nn-nb-seg" style={{ flex: 1, minWidth: 0 }}>
+        {DOCK_TABS.map(({ key, labelKey }) => (
+          <button
+            key={key}
+            type="button"
+            className={`nn-nb-seg-tab${dockTab === key ? ' active' : ''}`}
+            onClick={() => selectDockTab(key)}
+          >
+            {t(labelKey)}
+          </button>
+        ))}
+      </div>
       <NNBtn
         variant="ghost"
         size="sm"
@@ -921,39 +1049,81 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   ) : null;
 
   // ── Layout ─────────────────────────────────────────────────────────────────────
+  // Topbar tone tile + meta. The basic `notebook` row carries color/emoji/
+  // updatedAt; `sources.length` is the live attached count.
+  const headerAccent = notebook?.color ? NOTEBOOK_COLOR_VAR[notebook.color] : 'var(--violet-500)';
+  const headerEmoji = notebook?.emoji && notebook.emoji.length > 0 ? notebook.emoji : null;
+  const headerUpdated = relativeUpdated(notebook?.updatedAt, t);
+  const headerMeta = [
+    t('notebooks.workspace.headerSources', { count: sources.length }),
+    headerUpdated ? t('notebooks.meta.updated', { time: headerUpdated }) : null,
+  ]
+    .filter(Boolean)
+    .join(t('notebooks.workspace.headerMetaSep'));
+
   const header = (
     <div
       className="nn-chrome"
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 8,
+        gap: 10,
         padding: '7px 12px',
         borderBottom: '1px solid var(--border)',
         flexShrink: 0,
         minHeight: 44,
       }}
     >
-      <NNBtn variant="ghost" size="sm" icon="chevl" onClick={() => router.push('/notebooks')}>
-        {t('notebooks.sources.back')}
-      </NNBtn>
-      <h2
-        style={{
-          fontSize: 14,
-          fontWeight: 700,
-          fontFamily: 'var(--font-sans)',
-          color: 'var(--text)',
-          margin: 0,
-          flex: 1,
-          minWidth: 0,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          letterSpacing: '-0.01em',
-        }}
+      <button
+        type="button"
+        className="nn-nb-ws-back"
+        onClick={() => router.push('/notebooks')}
       >
-        {notebook?.title ?? t('notebooks.sources.heading')}
-      </h2>
+        <NNIcon name="chevl" size={14} color="currentColor" />
+        {t('notebooks.sources.back')}
+      </button>
+      <span className="nn-nb-ws-sep" aria-hidden />
+      <span
+        className="nn-nb-ws-tile"
+        style={{
+          background: `color-mix(in srgb, ${headerAccent} 14%, transparent)`,
+          border: `1px solid color-mix(in srgb, ${headerAccent} 25%, transparent)`,
+          color: headerAccent,
+        }}
+        aria-hidden
+      >
+        {headerEmoji ?? <NNIcon name="book" size={14} color={headerAccent} />}
+      </span>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+        <h2
+          style={{
+            fontSize: 16,
+            fontWeight: 600,
+            fontFamily: 'var(--font-sans)',
+            color: 'var(--text)',
+            margin: 0,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            letterSpacing: '-0.02em',
+            lineHeight: 1.2,
+          }}
+        >
+          {notebook?.title ?? t('notebooks.sources.heading')}
+        </h2>
+        <span
+          style={{
+            fontSize: 12.5,
+            color: 'var(--text-dim)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {headerMeta}
+        </span>
+      </div>
       {/* Tablet (Р12): open the dock as a right-side sheet. A badge-dot signals
           non-empty notes. */}
       {isTablet && (
@@ -1002,9 +1172,10 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
               width: 260,
               flexShrink: 0,
               borderRight: '1px solid var(--border)',
-              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              minHeight: 0,
             }}
-            className="nn-scroll"
           >
             {sourcesPanel}
           </div>
@@ -1035,18 +1206,19 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
                 boxShadow: 'var(--shadow-lg)',
               }}
             >
-              <div className="nn-chrome" style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '6px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0, minHeight: 40, overflowX: 'auto' }}>
-                {DOCK_TABS.map(({ key, labelKey }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`nn-ws-tab${dockTab === key ? ' active' : ''}`}
-                    onClick={() => selectDockTab(key)}
-                  >
-                    {t(labelKey)}
-                  </button>
-                ))}
-                <span style={{ flex: 1 }} />
+              <div className="nn-chrome" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0, minHeight: 44 }}>
+                <div className="nn-nb-seg" style={{ flex: 1, minWidth: 0 }}>
+                  {DOCK_TABS.map(({ key, labelKey }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`nn-nb-seg-tab${dockTab === key ? ' active' : ''}`}
+                      onClick={() => selectDockTab(key)}
+                    >
+                      {t(labelKey)}
+                    </button>
+                  ))}
+                </div>
                 <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} title={t('library.details.close')} onClick={() => setDockSheetOpen(false)} />
               </div>
               <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -1069,12 +1241,13 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <div
             style={{
-              width: 280,
+              width: 292,
               flexShrink: 0,
               borderRight: '1px solid var(--border)',
-              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              minHeight: 0,
             }}
-            className="nn-scroll"
           >
             {sourcesPanel}
           </div>
@@ -1127,7 +1300,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       </div>
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {tab === 'sources' && (
-          <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto' }}>
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             {sourcesPanel}
           </div>
         )}
@@ -1139,23 +1312,23 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
               className="nn-chrome"
               style={{
                 display: 'flex',
-                gap: 2,
-                padding: '6px 10px',
+                padding: '8px 10px',
                 borderBottom: '1px solid var(--border)',
                 flexShrink: 0,
-                overflowX: 'auto',
               }}
             >
-              {DOCK_TABS.map(({ key, labelKey }) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`nn-ws-tab${dockTab === key ? ' active' : ''}`}
-                  onClick={() => selectDockTab(key)}
-                >
-                  {t(labelKey)}
-                </button>
-              ))}
+              <div className="nn-nb-seg" style={{ flex: 1, minWidth: 0 }}>
+                {DOCK_TABS.map(({ key, labelKey }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`nn-nb-seg-tab${dockTab === key ? ' active' : ''}`}
+                    onClick={() => selectDockTab(key)}
+                  >
+                    {t(labelKey)}
+                  </button>
+                ))}
+              </div>
             </div>
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               {dockBody(dockTab)}
@@ -1308,12 +1481,19 @@ interface SourcesPanelProps {
   onOpenAdd: () => void;
   onAttachFromLibrary: () => void;
   onToggleScope: (id: string) => void;
+  /** Number of READY sources (the selectable pool). */
+  readyCount: number;
+  /** Number of READY sources currently checked into the chat scope. */
+  selectedCount: number;
+  /** True when every ready source is checked (drives the select-all box). */
+  allSelected: boolean;
+  onToggleSelectAll: () => void;
   onRename: (src: Source) => void;
   onDetach: (src: Source) => void;
   onReadInLibrary: (src: Source) => void;
   listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
   onOpenCard: (cardId: string) => void;
-  t: (key: string, params?: Record<string, string | number>) => string;
+  t: Tfn;
 }
 
 const SourcesPanel = ({
@@ -1325,6 +1505,10 @@ const SourcesPanel = ({
   onOpenAdd,
   onAttachFromLibrary,
   onToggleScope,
+  readyCount,
+  selectedCount,
+  allSelected,
+  onToggleSelectAll,
   onRename,
   onDetach,
   onReadInLibrary,
@@ -1332,66 +1516,174 @@ const SourcesPanel = ({
   onOpenCard,
   t,
 }: SourcesPanelProps) => (
-  <div style={{ padding: '10px 8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 4px', marginBottom: 2 }}>
-      <span
-        className="nn-chrome"
-        style={{
-          fontSize: 11,
-          fontWeight: 700,
-          textTransform: 'uppercase',
-          letterSpacing: '0.07em',
-          color: 'var(--text-dim)',
-          flex: 1,
-          userSelect: 'none',
-        }}
-      >
+  <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    {/* Rail header — «Источники» + mono count + add. */}
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '0 14px',
+        height: 44,
+        flexShrink: 0,
+        borderBottom: '1px solid var(--border)',
+      }}
+    >
+      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
         {t('notebooks.sources.heading')}
       </span>
-      <NNBtn variant="ghost" size="sm" icon="plus" onClick={onOpenAdd}>
-        {t('notebooks.sources.add')}
-      </NNBtn>
+      <span className="nn-chrome" style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>
+        {sources.length}
+      </span>
+      <span style={{ flex: 1 }} />
+      <NNBtn
+        variant="ghost"
+        size="sm"
+        icon="plus"
+        ariaLabel={t('notebooks.sources.add')}
+        title={t('notebooks.sources.add')}
+        onClick={onOpenAdd}
+      />
     </div>
 
-    {/* Add from the library (attach an existing material). */}
-    <div style={{ padding: '0 4px' }}>
-      <NNBtn variant="soft" size="sm" icon="book" block onClick={onAttachFromLibrary}>
-        {t('library.workspace.attachFromLibrary')}
-      </NNBtn>
-    </div>
+    <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 12px 8px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {/* «Подключить из библиотеки» — dashed connect button. */}
+      <button type="button" className="nn-nb-connect" onClick={onAttachFromLibrary}>
+        <NNIcon name="book" size={15} color="var(--lime-400)" />
+        <span style={{ flex: 1 }}>{t('notebooks.sources.connectFromLibrary')}</span>
+        <NNIcon name="chevr" size={13} color="var(--text-dim)" />
+      </button>
 
-    {addOpen && <AddSourceForm {...addProps} />}
+      {addOpen && <AddSourceForm {...addProps} />}
 
-    {!loaded ? (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <NNSkeleton style={{ height: 44 }} />
-        <NNSkeleton style={{ height: 44 }} />
-        <NNSkeleton style={{ height: 44 }} />
-      </div>
-    ) : sources.length === 0 ? (
-      <div className="nn-empty-state" style={{ paddingTop: 24, paddingBottom: 24 }}>
-        <span className="nn-empty-state-icon"><NNIcon name="stack" size={28} color="var(--text-dim)" /></span>
-        <p className="nn-empty-state-hint">{t('notebooks.sources.empty')}</p>
-      </div>
-    ) : (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        {sources.map((src) => (
-          <WorkspaceSourceRow
-            key={src.id}
-            source={src}
-            inScope={scope.has(src.id)}
-            onToggleScope={() => onToggleScope(src.id)}
-            onRename={() => onRename(src)}
-            onDetach={() => onDetach(src)}
-            onReadInLibrary={() => onReadInLibrary(src)}
-            listSourceCards={listSourceCards}
-            onOpenCard={onOpenCard}
-            t={t}
+      {/* «В этом блокноте» label + «все» + select-all checkbox. */}
+      {sources.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px 2px' }}>
+          <span
+            className="nn-chrome"
+            style={{
+              flex: 1,
+              fontSize: 10.5,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              color: 'var(--text-dim)',
+            }}
+          >
+            {t('notebooks.sources.inThisNotebook')}
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('notebooks.sources.all')}</span>
+          <NNCheck
+            on={allSelected}
+            disabled={readyCount === 0}
+            label={allSelected ? t('notebooks.sources.clearSelection') : t('notebooks.sources.selectAll')}
+            onChange={onToggleSelectAll}
           />
-        ))}
+        </div>
+      )}
+
+      {!loaded ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <NNSkeleton style={{ height: 50 }} />
+          <NNSkeleton style={{ height: 50 }} />
+          <NNSkeleton style={{ height: 50 }} />
+        </div>
+      ) : sources.length === 0 ? (
+        <div className="nn-empty-state" style={{ paddingTop: 24, paddingBottom: 24 }}>
+          <span className="nn-empty-state-icon"><NNIcon name="stack" size={28} color="var(--text-dim)" /></span>
+          <p className="nn-empty-state-hint">{t('notebooks.sources.empty')}</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {sources.map((src) => (
+            <WorkspaceSourceRow
+              key={src.id}
+              source={src}
+              inScope={scope.has(src.id)}
+              onToggleScope={() => onToggleScope(src.id)}
+              onRename={() => onRename(src)}
+              onDetach={() => onDetach(src)}
+              onReadInLibrary={() => onReadInLibrary(src)}
+              listSourceCards={listSourceCards}
+              onOpenCard={onOpenCard}
+              t={t}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+
+    {/* Footer — «Выбрано N из M» + lime select-all / clear link. */}
+    {sources.length > 0 && (
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '12px 14px',
+          flexShrink: 0,
+          borderTop: '1px solid var(--border)',
+        }}
+      >
+        <span style={{ flex: 1, fontSize: 11.5, color: 'var(--text-dim)' }}>
+          {t('notebooks.sources.selectedOf', { count: selectedCount, total: readyCount })}
+        </span>
+        <button
+          type="button"
+          className="nn-nb-rail-link"
+          disabled={readyCount === 0}
+          onClick={onToggleSelectAll}
+          style={readyCount === 0 ? { opacity: 0.4, cursor: 'default' } : undefined}
+        >
+          {allSelected ? t('notebooks.sources.clearSelection') : t('notebooks.sources.selectAll')}
+        </button>
       </div>
     )}
   </div>
+);
+
+// ── NBCheck — the lime-filled «in chat» scope checkbox (visually hidden native
+//    input for a11y + a painted box, matching the design's NBCheck). ──────────
+const NNCheck = ({
+  on,
+  disabled = false,
+  label,
+  onChange,
+}: {
+  on: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange: () => void;
+}) => (
+  <label
+    style={{
+      display: 'inline-flex',
+      cursor: disabled ? 'default' : 'pointer',
+      flexShrink: 0,
+      position: 'relative',
+    }}
+    title={label}
+  >
+    <input
+      type="checkbox"
+      className="nn-nb-check-input"
+      checked={on}
+      disabled={disabled}
+      onChange={onChange}
+      aria-label={label}
+      style={{
+        position: 'absolute',
+        opacity: 0,
+        width: 16,
+        height: 16,
+        margin: 0,
+        cursor: disabled ? 'default' : 'pointer',
+      }}
+    />
+    <span className={`nn-nb-check${on ? ' on' : ''}${disabled ? ' disabled' : ''}`} aria-hidden>
+      {on && <NNIcon name="check" size={11} color="#0d1608" strokeWidth={2.6} />}
+    </span>
+  </label>
 );
 
 const WorkspaceSourceRow = ({
@@ -1413,7 +1705,7 @@ const WorkspaceSourceRow = ({
   onReadInLibrary: () => void;
   listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
   onOpenCard: (cardId: string) => void;
-  t: (key: string, params?: Record<string, string | number>) => string;
+  t: Tfn;
 }) => {
   const isError = source.status === 'error';
   const ready = source.status === 'ready';
@@ -1421,6 +1713,26 @@ const WorkspaceSourceRow = ({
     isError && source.errorCode
       ? t(`notebooks.status.${source.errorCode as IngestErrorCode}`)
       : t(`notebooks.status.${source.status}`);
+
+  // Subline: ready → «{author} · прочитано N%» (author → kind label when absent;
+  // percent omitted when null). Non-ready rows show the ingest status badge.
+  const kindLabel = t(
+    source.kind === 'pdf'
+      ? 'notebooks.sources.kindPdf'
+      : source.kind === 'epub'
+        ? 'notebooks.sources.kindEpub'
+        : source.kind === 'url'
+          ? 'notebooks.sources.kindUrl'
+          : 'notebooks.sources.kindText',
+  );
+  const sublineParts: string[] = [];
+  if (ready) {
+    sublineParts.push(source.author?.trim() || kindLabel);
+    if (typeof source.readingPercent === 'number') {
+      sublineParts.push(t('notebooks.sources.readPercent', { pct: Math.round(source.readingPercent * 100) }));
+    }
+  }
+  const subline = sublineParts.join(' · ');
 
   const [cardsOpen, setCardsOpen] = useState(false);
   const [cards, setCards] = useState<SourceLinkedCard[] | null>(null);
@@ -1444,17 +1756,8 @@ const WorkspaceSourceRow = ({
 
   return (
     <div className="nn-source-row">
-      {/* Main row: checkbox + icon + title (→ read in library) + status badge */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <input
-          type="checkbox"
-          checked={inScope}
-          disabled={!ready}
-          onChange={onToggleScope}
-          aria-label={t('notebooks.workspace.inChat')}
-          title={t('notebooks.workspace.inChat')}
-          style={{ width: 14, height: 14, cursor: ready ? 'pointer' : 'default', accentColor: 'var(--lime-500)', flexShrink: 0 }}
-        />
+      {/* Main row: mini-cover + title/subline (→ read in library) + lime check */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button
           type="button"
           onClick={onReadInLibrary}
@@ -1462,7 +1765,7 @@ const WorkspaceSourceRow = ({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 6,
+            gap: 10,
             flex: 1,
             minWidth: 0,
             background: 'transparent',
@@ -1472,49 +1775,110 @@ const WorkspaceSourceRow = ({
             textAlign: 'left',
           }}
         >
-          <NNIcon name={sourceIcon(source.kind)} size={13} color="var(--text-muted)" />
-          <span
-            style={{
-              fontSize: 13,
-              fontWeight: 500,
-              color: 'var(--text-muted)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              minWidth: 0,
-              flex: 1,
-              transition: 'color 100ms',
-            }}
-          >
-            {source.title}
+          <SourceCover source={source} />
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span
+              style={{
+                display: 'block',
+                fontSize: 13,
+                fontWeight: 500,
+                color: 'var(--text)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {source.title}
+            </span>
+            {ready ? (
+              subline && (
+                <span
+                  style={{
+                    display: 'block',
+                    fontSize: 11,
+                    color: 'var(--text-dim)',
+                    marginTop: 1,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {subline}
+                </span>
+              )
+            ) : (
+              <span style={{ display: 'inline-flex', marginTop: 3 }}>
+                <NNBadge tone={statusTone(source.status)} size="xs">
+                  {statusLabel}
+                </NNBadge>
+              </span>
+            )}
           </span>
         </button>
-        {source.status !== 'ready' && (
-          <NNBadge tone={statusTone(source.status)} size="xs">
-            {statusLabel}
-          </NNBadge>
-        )}
-        <div className="nn-source-row-actions" style={{ display: 'flex', gap: 0, flexShrink: 0, position: 'relative' }}>
-          <NNBtn
-            variant="ghost"
-            size="sm"
-            icon="edit"
-            ariaLabel={t('notebooks.sources.rename')}
-            title={t('notebooks.sources.rename')}
-            onClick={onRename}
+        {ready && (
+          <NNCheck
+            on={inScope}
+            label={t('notebooks.workspace.inChat')}
+            onChange={onToggleScope}
           />
-          <NNBtn
-            variant="ghost"
-            size="sm"
-            icon="dots"
-            ariaLabel={t('library.item.menu')}
+        )}
+        {/* One compact ⋯ only — rename/cards/library/detach all live in the menu.
+            Two inline buttons + a sub-row crushed the 292px rail (titles ellipsed
+            to nothing); reference rows are cover · text · check, actions hidden. */}
+        <div className="nn-source-row-actions" style={{ flexShrink: 0, position: 'relative' }}>
+          <button
+            type="button"
+            className="nn-nb-icon-btn"
+            aria-label={t('library.item.menu')}
             title={t('library.item.menu')}
             onClick={() => setMenuOpen((v) => !v)}
-          />
+            style={{
+              width: 28,
+              height: 28,
+              flexShrink: 0,
+              borderRadius: 8,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--text-dim)',
+              cursor: 'pointer',
+              padding: 0,
+            }}
+          >
+            <NNIcon name="dots" size={14} />
+          </button>
           {menuOpen && (
             <>
               <div onClick={() => setMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-              <div className="nn-lib-menu" style={{ right: 0, top: 'calc(100% + 4px)', minWidth: 180 }}>
+              <div className="nn-lib-menu" style={{ right: 0, top: 'calc(100% + 4px)', minWidth: 200 }}>
+                <button
+                  type="button"
+                  className="nn-lib-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onRename();
+                  }}
+                >
+                  <NNIcon name="edit" size={14} color="var(--text-muted)" />
+                  {t('notebooks.sources.rename')}
+                </button>
+                {ready && (
+                  <button
+                    type="button"
+                    className="nn-lib-menu-item"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void toggleCards();
+                    }}
+                  >
+                    <NNIcon name="stack" size={14} color="var(--text-muted)" />
+                    {cards === null
+                      ? t('notebooks.workspace.cardsButton')
+                      : t('notebooks.workspace.cardsCount', { count: cards.length })}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="nn-lib-menu-item"
@@ -1542,34 +1906,6 @@ const WorkspaceSourceRow = ({
           )}
         </div>
       </div>
-
-      {/* Cards counter row (ready sources only) */}
-      {ready && (
-        <div style={{ display: 'flex', alignItems: 'center', marginTop: 4, paddingLeft: 20 }}>
-          <button
-            type="button"
-            onClick={toggleCards}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 3,
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              color: 'var(--text-dim)',
-              fontFamily: 'var(--font-sans)',
-              fontSize: 11,
-              padding: '1px 4px',
-              borderRadius: 'var(--r-xs)',
-            }}
-          >
-            <NNIcon name="stack" size={11} color="var(--text-dim)" />
-            {cards === null
-              ? t('notebooks.workspace.cardsButton')
-              : t('notebooks.workspace.cardsCount', { count: cards.length })}
-          </button>
-        </div>
-      )}
 
       {cardsOpen && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4, paddingLeft: 20 }}>

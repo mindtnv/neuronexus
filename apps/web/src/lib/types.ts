@@ -157,6 +157,13 @@ export interface Card {
 // stay as ISO strings — the library screen renders relative/badge UI, not the
 // epoch-number FSRS math the mappers do for cards.
 
+/** One attached source in a notebook's cover fan (GET /notebooks grid payload). */
+export interface NotebookCoverSource {
+  title: string;
+  kind: SourceKind;
+  coverMediaId: string | null;
+}
+
 export interface Notebook {
   id: string;
   title: string;
@@ -170,6 +177,14 @@ export interface Notebook {
   sourceCount?: number;
   noteCount?: number;
   cardCount?: number;
+  /** «Блокноты редизайн» (A3) — studio document counts + cover fan folded into
+   *  the GET /notebooks grid payload (no N+1). Absent on a bare/detail row. */
+  artifactCount?: number;
+  generatingCount?: number;
+  /** Title of the most recent in-flight artifact (for the «Продолжить» strip). */
+  generatingTitle?: string | null;
+  /** ≤4 attached sources (oldest-attach first) for the cover fan. */
+  coverSources?: NotebookCoverSource[];
   /** «Блокноты 2.0» (N2, Р6) overview cache — present on the GET /notebooks/:id
    *  detail row (and after a generate). `overview`/`suggestedQuestions` are null
    *  until the first generation; `overviewFingerprint` is the scope hash at that
@@ -327,6 +342,13 @@ export interface Source {
   indexed: number;
   /** Computed progress denominator: total chunk count (0 until parsed). */
   total: number;
+  /** Metadata (M-Library) — present on the row, surfaced in the workspace rail. */
+  author: string | null;
+  coverMediaId: string | null;
+  /** Reading state from `GET /notebooks/:id/sources` (per-source, user-scoped).
+   *  `readingPercent` is a 0..1 fraction (null when never opened). */
+  readingStatus: ReadingStatus | null;
+  readingPercent: number | null;
   createdAt: string;
   updatedAt: string;
 }

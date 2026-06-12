@@ -41,7 +41,7 @@ import {
   MAX_MEDIA_BYTES,
   MEDIA_MIME_ALLOWLIST,
 } from '@neuronexus/shared';
-import { NNBtn, NNCard, NNIcon, NNSkeleton, NNBadge } from '@/components/ui';
+import { NNBtn, NNCard, NNIcon, NNKbd, NNSkeleton, NNBadge } from '@/components/ui';
 import { RichCard } from '@/components/rich-card';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { api, ok } from '@/lib/api';
@@ -86,6 +86,14 @@ import { ThreadRail } from '@/components/chat/thread-rail';
 import { ConfirmDiff } from '@/components/chat/confirm-diff';
 import { MentionPopover, SlashMenu, mentionItems } from '@/components/chat/mention-popover';
 import { useCodeCopyButtons } from '@/components/chat/code-copy';
+import { useInlineCitations } from '@/components/chat/source-citations';
+import {
+  buildCitationNumbering,
+  citationCoverLetter,
+  citationCoverTone,
+  citationLocation,
+  type CitationNumbering,
+} from '@/lib/chat-citations';
 import { useStickToBottom } from '@/lib/use-stick-to-bottom';
 import { cardFromApi } from '@/lib/mappers';
 import { useNN } from '@/lib/store';
@@ -175,6 +183,13 @@ function stripCardTokens(text: string): string {
     .replace(SRC_TOKEN_RE, '')
     .replace(/[ \t]{2,}/g, ' ');
 }
+// Notebook citation variant — keeps the `[src:<id>]` tokens in the prose so the
+// inline-citation DOM decoration (`useInlineCitations`) can turn them into
+// numbered chips. Only the card tokens (never numbered in notebook mode) are
+// stripped. Used when `citeNumbers` is passed to AssistantMarkdown.
+function stripCardTokensKeepSrc(text: string): string {
+  return text.replace(CARD_TOKEN_RE, '').replace(/[ \t]{2,}/g, ' ');
+}
 
 // Validate a web-search result URL before rendering it as an <a href>. Mirrors
 // the sanitizer's uponSanitizeAttribute scheme discipline (https?: / mailto:),
@@ -210,16 +225,30 @@ const CHAT_MD_NOTE_TYPE = {
 const AssistantMarkdown = ({
   content,
   final,
+  citeNumbers,
+  citationOf,
+  onCite,
   t,
 }: {
   content: string;
   /** Code-copy buttons decorate only FINAL renders (no churn while streaming). */
   final: boolean;
+  /** Notebook mode: chunkId → number for inline numbered citations. When passed,
+   *  the `[src:]` tokens are KEPT in the prose and decorated into chips. */
+  citeNumbers?: Map<string, number>;
+  citationOf?: (chunkId: string) => SourceCitation | undefined;
+  onCite?: (c: SourceCitation) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) => {
+  const citeMode = !!citeNumbers && (citeNumbers.size ?? 0) > 0;
   const html = useMemo(
-    () => renderCardHtml(CHAT_MD_NOTE_TYPE, { Body: stripCardTokens(content) }, 'front'),
-    [content],
+    () =>
+      renderCardHtml(
+        CHAT_MD_NOTE_TYPE,
+        { Body: citeMode ? stripCardTokensKeepSrc(content) : stripCardTokens(content) },
+        'front',
+      ),
+    [content, citeMode],
   );
   const hostRef = useRef<HTMLDivElement>(null);
   const copyLabels = useMemo(
@@ -229,6 +258,18 @@ const AssistantMarkdown = ({
   // B3 — post-render DOM decoration of `pre` blocks; the sanitizer never sees
   // the button. Scoped to THIS host only (cited RichCards are unaffected).
   useCodeCopyButtons(hostRef, { html, final }, copyLabels);
+  // A2 — inline numbered citation chips (notebook mode only). Same post-render
+  // decoration discipline; gated off entirely in card mode (`enabled`).
+  const noCite = useMemo(() => new Map<string, number>(), []);
+  const noopCitation = useCallback(() => undefined, []);
+  const noopCite = useCallback(() => {}, []);
+  useInlineCitations(
+    hostRef,
+    { html, final, enabled: citeMode && !!onCite },
+    citeNumbers ?? noCite,
+    citationOf ?? noopCitation,
+    onCite ?? noopCite,
+  );
   return (
     <div ref={hostRef}>
       <SafeHtml
@@ -287,6 +328,11 @@ export interface ChatPanelProps {
    *  Р6). ADDITIVE — rendered ONLY in notebook mode (the global /chat builds its
    *  own deck/due suggestions). A click sends the question directly. */
   suggestedQuestions?: string[];
+  /** Regenerate the notebook's suggested questions (A2 «Обновить подсказки»).
+   *  ADDITIVE — the «Обновить подсказки» ghost button renders in the notebook
+   *  empty state ONLY when this prop is passed. The workspace wires it to its
+   *  overview regenerate; not passed ⇒ the button is hidden. */
+  onRefreshSuggestions?: () => Promise<void> | void;
 }
 
 export const ChatPanel = ({
@@ -299,6 +345,7 @@ export const ChatPanel = ({
   composerPrefillRef,
   onSaveAnswer,
   suggestedQuestions,
+  onRefreshSuggestions,
 }: ChatPanelProps = {}) => {
   const t = useT();
   const { locale } = useLocale();
@@ -360,6 +407,9 @@ export const ChatPanel = ({
   // Sticky across sessions (localStorage); only shown/restored when the server
   // offers fetch_page (status.fetchPageEnabled).
   const [research, setResearch] = useState(false);
+  // «Обновить подсказки» (A2) in-flight flag — disables the ghost button + swaps
+  // the sync glyph for a spinner while the workspace regenerates the overview.
+  const [refreshingSuggestions, setRefreshingSuggestions] = useState(false);
 
   // Composer @-mention chips (D1): cards explicitly attached to the next send.
   const [mentionChips, setMentionChips] = useState<{ cardId: string; label: string }[]>([]);
@@ -1625,101 +1675,89 @@ export const ChatPanel = ({
                 <NNSkeleton height={96} />
               </div>
             ) : messages.length === 0 ? (
-              <div
-                style={{
-                  margin: 'auto',
-                  maxWidth: 460,
-                  textAlign: 'center',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: 12,
-                }}
-              >
-                <NNIcon name="sparkle" size={34} color="var(--violet-400)" />
-                <h2
+              isNotebook ? (
+                <NotebookChatEmpty
+                  questions={!activeId ? (suggestedQuestions ?? []) : []}
+                  sending={sending}
+                  onAsk={(q) => void sendContent(q)}
+                  onRefresh={
+                    onRefreshSuggestions
+                      ? async () => {
+                          if (refreshingSuggestions) return;
+                          setRefreshingSuggestions(true);
+                          try {
+                            await onRefreshSuggestions();
+                          } finally {
+                            setRefreshingSuggestions(false);
+                          }
+                        }
+                      : undefined
+                  }
+                  refreshing={refreshingSuggestions}
+                  t={t}
+                />
+              ) : (
+                <div
                   style={{
-                    fontSize: 20,
-                    fontWeight: 700,
-                    fontFamily: 'var(--font-sans)',
-                    color: 'var(--text)',
-                    margin: 0,
+                    margin: 'auto',
+                    maxWidth: 460,
+                    textAlign: 'center',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 12,
                   }}
                 >
-                  {t('chat.stream.emptyTitle')}
-                </h2>
-                <p style={{ fontSize: 14, lineHeight: 1.55, color: 'var(--text-muted)', margin: 0 }}>
-                  {t('chat.stream.emptySubtitle')}
-                </p>
-                {/* Suggested prompts — new conversations only; click = send now.
-                    Hidden in notebook mode (the source scope drives the chat). */}
-                {!isNotebook && !activeId && suggestions.length > 0 && (
-                  <div
+                  <NNIcon name="sparkle" size={34} color="var(--violet-400)" />
+                  <h2
                     style={{
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      justifyContent: 'center',
-                      gap: 8,
-                      marginTop: 6,
+                      fontSize: 20,
+                      fontWeight: 700,
+                      fontFamily: 'var(--font-sans)',
+                      color: 'var(--text)',
+                      margin: 0,
                     }}
                   >
-                    {suggestions.map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        disabled={sending}
-                        onClick={() => void sendContent(s)}
-                        style={{
-                          border: '1px solid var(--border)',
-                          background: 'var(--surface-2)',
-                          color: 'var(--text-muted)',
-                          borderRadius: 999,
-                          padding: '7px 14px',
-                          fontSize: 12.5,
-                          fontFamily: 'var(--font-sans)',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {/* Notebook mode: the workspace's suggested questions (Р6) — sent
-                    directly, same affordance, distinct source. */}
-                {isNotebook && !activeId && (suggestedQuestions?.length ?? 0) > 0 && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      justifyContent: 'center',
-                      gap: 8,
-                      marginTop: 6,
-                    }}
-                  >
-                    {suggestedQuestions!.map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        disabled={sending}
-                        onClick={() => void sendContent(s)}
-                        style={{
-                          border: '1px solid var(--border)',
-                          background: 'var(--surface-2)',
-                          color: 'var(--text-muted)',
-                          borderRadius: 999,
-                          padding: '7px 14px',
-                          fontSize: 12.5,
-                          fontFamily: 'var(--font-sans)',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+                    {t('chat.stream.emptyTitle')}
+                  </h2>
+                  <p style={{ fontSize: 14, lineHeight: 1.55, color: 'var(--text-muted)', margin: 0 }}>
+                    {t('chat.stream.emptySubtitle')}
+                  </p>
+                  {/* Suggested prompts — new conversations only; click = send now. */}
+                  {!activeId && suggestions.length > 0 && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        justifyContent: 'center',
+                        gap: 8,
+                        marginTop: 6,
+                      }}
+                    >
+                      {suggestions.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          disabled={sending}
+                          onClick={() => void sendContent(s)}
+                          style={{
+                            border: '1px solid var(--border)',
+                            background: 'var(--surface-2)',
+                            color: 'var(--text-muted)',
+                            borderRadius: 999,
+                            padding: '7px 14px',
+                            fontSize: 12.5,
+                            fontFamily: 'var(--font-sans)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
             ) : (
               <div
                 style={{
@@ -1779,6 +1817,8 @@ export const ChatPanel = ({
                       onEdit={(text) => void editAndRegenerate(text)}
                       onOpenCard={(cardId) => router.push(`/cards?focus=${cardId}`)}
                       onSourceCitation={onSourceCitation}
+                      isNotebook={isNotebook}
+                      sourceCount={isNotebook ? sourceIds?.length : undefined}
                       modelLabel={(id) => status?.models?.find((mm) => mm.id === id)?.label ?? id}
                       locale={locale}
                       t={t}
@@ -1892,7 +1932,9 @@ export const ChatPanel = ({
           )}
           </div>
 
-          {/* Composer */}
+          {/* Composer (A2 redesign) — a centered card with the textarea on top
+              and a single bottom controls row (attach · model · context · send).
+              All behavior preserved (popovers, drag/paste, queue, stop). */}
           <div
             onDragOver={(e) => {
               if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
@@ -1905,51 +1947,50 @@ export const ChatPanel = ({
               }
             }}
             style={{
-              borderTop: '1px solid var(--border)',
-              padding: isMobile ? '10px 12px' : '14px 28px',
-              background: 'var(--surface)',
+              padding: isMobile ? '6px 12px 12px' : '6px 24px 14px',
+              background: 'var(--bg)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
             }}
           >
             <div
+              className="nn-nb-composer"
               style={{
+                width: '100%',
+                maxWidth: messages.length === 0 ? 560 : 620,
+                background: 'var(--surface)',
+                border: '1px solid var(--border-2)',
+                borderRadius: 16,
+                boxShadow: 'var(--shadow-md)',
+                padding: '10px 12px',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 8,
-                maxWidth: 760,
-                width: '100%',
-                margin: '0 auto',
+                position: 'relative',
               }}
             >
-              {/* Per-turn controls: model (reasoning) picker + deck scope + the
-                  deep-research mode toggle. The model picker is hidden entirely
-                  when no allow-list is configured (status.models empty); the
-                  research toggle is hidden when the server has no fetch_page.
-                  Notebook mode keeps ONLY the model picker (deck scope + research
-                  are replaced by the workspace source-checkbox scope). */}
-              {((status?.models?.length ?? 0) > 0 ||
-                (!isNotebook && sortedDecks.length > 0) ||
-                (!isNotebook && status?.fetchPageEnabled === true)) && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  {(status?.models?.length ?? 0) > 0 && (
-                    <ModelPicker
-                      models={status?.models ?? []}
-                      value={model}
-                      onSelect={selectModel}
-                      t={t}
-                    />
-                  )}
-                  {!isNotebook && sortedDecks.length > 0 && (
-                    <DeckScopePicker
-                      decks={sortedDecks}
-                      value={deckScope}
-                      onSelect={setDeckScope}
-                      t={t}
-                    />
-                  )}
-                  {!isNotebook && status?.fetchPageEnabled === true && (
-                    <ResearchToggle active={research} onToggle={toggleResearch} t={t} />
-                  )}
-                </div>
+              {/* Composer popovers (D1/D2) — anchored above the card; the textarea
+                  keeps focus, keyboard handled in its onKeyDown. */}
+              {trigger?.kind === 'mention' && mentionResults && (
+                <MentionPopover
+                  results={mentionResults}
+                  activeIndex={popoverIdx}
+                  onPick={pickMention}
+                  onHover={setPopoverIdx}
+                  isMobile={isMobile}
+                  t={t}
+                />
+              )}
+              {trigger?.kind === 'slash' && slashCommands.length > 0 && (
+                <SlashMenu
+                  commands={slashCommands}
+                  activeIndex={popoverIdx}
+                  onPick={pickSlash}
+                  onHover={setPopoverIdx}
+                  isMobile={isMobile}
+                  t={t}
+                />
               )}
               {/* Mention chips (D1) — cards attached to the next send. */}
               {mentionChips.length > 0 && (
@@ -2077,172 +2118,254 @@ export const ChatPanel = ({
                   ))}
                 </div>
               )}
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, position: 'relative' }}>
-                {/* Composer popovers (D1/D2) — anchored above the textarea; the
-                    textarea keeps focus, keyboard handled in its onKeyDown. */}
-                {trigger?.kind === 'mention' && mentionResults && (
-                  <MentionPopover
-                    results={mentionResults}
-                    activeIndex={popoverIdx}
-                    onPick={pickMention}
-                    onHover={setPopoverIdx}
-                    isMobile={isMobile}
-                    t={t}
-                  />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                accept={[
+                  ...(status?.visionEnabled !== false ? (MEDIA_MIME_ALLOWLIST as readonly string[]) : []),
+                  '.txt',
+                  '.md',
+                  '.markdown',
+                  '.csv',
+                  '.json',
+                  '.log',
+                ].join(',')}
+                onChange={(e) => {
+                  const files = e.target.files;
+                  if (files && files.length > 0) void addAttachmentFiles(Array.from(files));
+                  e.target.value = '';
+                }}
+              />
+              <textarea
+                ref={textareaRef}
+                value={draft}
+                onChange={(e) => {
+                  updateDraft(e.target.value, activeId);
+                  refreshTrigger(e.target.value);
+                }}
+                onPaste={(e) => {
+                  // Pasted screenshots/files become attachments, not garbled text.
+                  const files = e.clipboardData?.files;
+                  if (files && files.length > 0) {
+                    e.preventDefault();
+                    void addAttachmentFiles(Array.from(files));
+                  }
+                }}
+                onClick={() => refreshTrigger(draft)}
+                onKeyUp={(e) => {
+                  // Caret moves (arrows left/right, Home/End) keep the trigger honest.
+                  if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+                    refreshTrigger(draft);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  // Popover navigation FIRST (D1/D2): arrows move, Enter/Tab pick,
+                  // Esc closes (and never reaches any other Esc handler).
+                  if (trigger) {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setTrigger(null);
+                      return;
+                    }
+                    if (popoverCount > 0) {
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        setPopoverIdx((i) => (i + 1) % popoverCount);
+                        return;
+                      }
+                      if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        setPopoverIdx((i) => (i - 1 + popoverCount) % popoverCount);
+                        return;
+                      }
+                      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                        e.preventDefault();
+                        if (trigger.kind === 'mention') pickMention(popoverIdx);
+                        else pickSlash(popoverIdx);
+                        return;
+                      }
+                    } else if (e.key === 'Enter' && !e.shiftKey) {
+                      // Zero results: Enter closes the popover and sends (no dead key).
+                      setTrigger(null);
+                    }
+                  }
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+                placeholder={t(
+                  isNotebook
+                    ? 'notebooks.chat.composerPlaceholder'
+                    : research
+                      ? 'chat.composer.researchPlaceholder'
+                      : 'chat.composer.placeholder',
                 )}
-                {trigger?.kind === 'slash' && slashCommands.length > 0 && (
-                  <SlashMenu
-                    commands={slashCommands}
-                    activeIndex={popoverIdx}
-                    onPick={pickSlash}
-                    onHover={setPopoverIdx}
-                    isMobile={isMobile}
-                    t={t}
-                  />
-                )}
-                {/* Attach button + hidden file input (images via the media
-                    pipeline; text files inlined). Paste/drop also land here. */}
+                rows={1}
+                style={{
+                  width: '100%',
+                  resize: 'none',
+                  minHeight: 24,
+                  maxHeight: 160,
+                  padding: '2px 4px',
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  fontFamily: 'var(--font-sans)',
+                  fontSize: 13.5,
+                  lineHeight: 1.45,
+                  outline: 'none',
+                }}
+              />
+              {/* Bottom controls row — attach · model pill · context chip ·
+                  spacer · ⏎ kbd · send/stop. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <button
                   type="button"
+                  className="nn-nb-icon-btn"
                   aria-label={t('chat.composer.attach')}
                   title={t('chat.composer.attach')}
                   onClick={() => fileInputRef.current?.click()}
                   disabled={attachChips.length >= ATTACH_MAX}
                   style={{
-                    display: 'flex',
+                    width: 28,
+                    height: 28,
+                    flexShrink: 0,
+                    borderRadius: 8,
+                    display: 'inline-flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    width: 42,
-                    height: 42,
-                    flexShrink: 0,
-                    borderRadius: 'var(--r-md)',
-                    border: '1px solid var(--border-2)',
-                    background: 'var(--surface-2)',
+                    background: 'transparent',
+                    border: 'none',
                     color: attachChips.length >= ATTACH_MAX ? 'var(--text-dim)' : 'var(--text-muted)',
                     cursor: attachChips.length >= ATTACH_MAX ? 'default' : 'pointer',
                   }}
                 >
                   <NNIcon name="clip" size={16} />
                 </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  hidden
-                  accept={[
-                    ...(status?.visionEnabled !== false ? (MEDIA_MIME_ALLOWLIST as readonly string[]) : []),
-                    '.txt',
-                    '.md',
-                    '.markdown',
-                    '.csv',
-                    '.json',
-                    '.log',
-                  ].join(',')}
-                  onChange={(e) => {
-                    const files = e.target.files;
-                    if (files && files.length > 0) void addAttachmentFiles(Array.from(files));
-                    e.target.value = '';
-                  }}
-                />
-                <textarea
-                  ref={textareaRef}
-                  value={draft}
-                  onChange={(e) => {
-                    updateDraft(e.target.value, activeId);
-                    refreshTrigger(e.target.value);
-                  }}
-                  onPaste={(e) => {
-                    // Pasted screenshots/files become attachments, not garbled text.
-                    const files = e.clipboardData?.files;
-                    if (files && files.length > 0) {
-                      e.preventDefault();
-                      void addAttachmentFiles(Array.from(files));
-                    }
-                  }}
-                  onClick={() => refreshTrigger(draft)}
-                  onKeyUp={(e) => {
-                    // Caret moves (arrows left/right, Home/End) keep the trigger honest.
-                    if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
-                      refreshTrigger(draft);
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    // Popover navigation FIRST (D1/D2): arrows move, Enter/Tab pick,
-                    // Esc closes (and never reaches any other Esc handler).
-                    if (trigger) {
-                      if (e.key === 'Escape') {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setTrigger(null);
-                        return;
-                      }
-                      if (popoverCount > 0) {
-                        if (e.key === 'ArrowDown') {
-                          e.preventDefault();
-                          setPopoverIdx((i) => (i + 1) % popoverCount);
-                          return;
-                        }
-                        if (e.key === 'ArrowUp') {
-                          e.preventDefault();
-                          setPopoverIdx((i) => (i - 1 + popoverCount) % popoverCount);
-                          return;
-                        }
-                        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                          e.preventDefault();
-                          if (trigger.kind === 'mention') pickMention(popoverIdx);
-                          else pickSlash(popoverIdx);
-                          return;
-                        }
-                      } else if (e.key === 'Enter' && !e.shiftKey) {
-                        // Zero results: Enter closes the popover and sends (no dead key).
-                        setTrigger(null);
-                      }
-                    }
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      void send();
-                    }
-                  }}
-                  placeholder={t(
-                    research ? 'chat.composer.researchPlaceholder' : 'chat.composer.placeholder',
-                  )}
-                  rows={1}
-                  style={{
-                    flex: 1,
-                    resize: 'none',
-                    minHeight: 42,
-                    maxHeight: 160,
-                    padding: '10px 14px',
-                    borderRadius: 'var(--r-md)',
-                    border: '1px solid var(--border-2)',
-                    background: 'var(--surface-2)',
-                    color: 'var(--text)',
-                    fontFamily: 'var(--font-sans)',
-                    fontSize: 14,
-                    lineHeight: 1.45,
-                    outline: 'none',
-                  }}
-                />
+                {(status?.models?.length ?? 0) > 0 && (
+                  <ModelPicker
+                    models={status?.models ?? []}
+                    value={model}
+                    onSelect={selectModel}
+                    t={t}
+                  />
+                )}
+                {/* Context chip: notebook → «N источников» (read-only); global →
+                    deck-scope + research pills (existing per-turn controls). */}
+                {isNotebook ? (
+                  sourceIds != null && (
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        fontSize: 11.5,
+                        color: 'var(--text-dim)',
+                        fontFamily: 'var(--font-sans)',
+                      }}
+                    >
+                      <NNIcon name="book" size={12} color="var(--text-dim)" />
+                      {t('notebooks.chat.sourceScope', { count: sourceIds.length })}
+                    </span>
+                  )
+                ) : (
+                  <>
+                    {sortedDecks.length > 0 && (
+                      <DeckScopePicker
+                        decks={sortedDecks}
+                        value={deckScope}
+                        onSelect={setDeckScope}
+                        t={t}
+                      />
+                    )}
+                    {status?.fetchPageEnabled === true && (
+                      <ResearchToggle active={research} onToggle={toggleResearch} t={t} />
+                    )}
+                  </>
+                )}
+                <span style={{ flex: 1 }} />
+                {!isMobile && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 11,
+                      color: 'var(--text-dim)',
+                      fontFamily: 'var(--font-sans)',
+                    }}
+                  >
+                    <NNKbd>⏎</NNKbd>
+                    {t('chat.composer.sendHint')}
+                  </span>
+                )}
                 {/* Send toggles to Stop while a turn is in flight (S6 / AC3.3). */}
                 {sending ? (
-                  <NNBtn variant="danger" size="lg" icon="pause" onClick={stopTurn}>
-                    {t('chat.composer.stop')}
-                  </NNBtn>
+                  <button
+                    type="button"
+                    aria-label={t('chat.composer.stop')}
+                    title={t('chat.composer.stop')}
+                    onClick={stopTurn}
+                    style={{
+                      width: 32,
+                      height: 32,
+                      flexShrink: 0,
+                      borderRadius: 10,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                      background: 'var(--rose-500)',
+                      border: '1px solid var(--rose-500)',
+                      color: '#fff',
+                    }}
+                  >
+                    <NNIcon name="pause" size={14} color="#fff" />
+                  </button>
                 ) : (
-                  <NNBtn
-                    variant="primary"
-                    size="lg"
-                    icon="arrow"
+                  <button
+                    type="button"
+                    className="nn-nb-send"
+                    aria-label={t('chat.composer.send')}
+                    title={t('chat.composer.send')}
                     onClick={() => void send()}
                     disabled={
                       (draft.trim().length === 0 && attachChips.length === 0) ||
                       attachChips.some((a) => a.uploading)
                     }
+                    style={{
+                      width: 32,
+                      height: 32,
+                      flexShrink: 0,
+                      borderRadius: 10,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'var(--lime-500)',
+                      border: '1px solid var(--lime-500)',
+                      color: '#0d1608',
+                    }}
                   >
-                    {t('chat.composer.send')}
-                  </NNBtn>
+                    <NNIcon name="send" size={15} color="#0d1608" strokeWidth={2} />
+                  </button>
                 )}
               </div>
+            </div>
+            {/* Disclaimer (both modes). */}
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 10.5,
+                color: 'var(--text-dim)',
+                fontFamily: 'var(--font-sans)',
+                textAlign: 'center',
+              }}
+            >
+              {t('chat.composer.disclaimer')}
             </div>
           </div>
         </section>
@@ -2288,6 +2411,11 @@ interface MessageRowProps {
   onOpenCard?: (cardId: string) => void;
   /** A source citation chip was clicked (workspace scrolls the reader). */
   onSourceCitation?: (c: SourceCitation) => void;
+  /** Notebook mode (A2): numbered inline citations + «по N источникам» meta. */
+  isNotebook?: boolean;
+  /** Size of the active source scope — drives «по N источникам» (undefined ⇒
+   *  hidden). Notebook mode only. */
+  sourceCount?: number;
   /** Resolve a model id to its picker label (B6) — falls back to the raw id. */
   modelLabel?: (id: string) => string;
   /** Active locale for absolute-timestamp formatting on hover. */
@@ -2321,6 +2449,8 @@ const MessageRow = ({
   onEdit,
   onOpenCard,
   onSourceCitation,
+  isNotebook = false,
+  sourceCount,
   modelLabel,
   locale,
   t,
@@ -2335,6 +2465,21 @@ const MessageRow = ({
   const [editDraft, setEditDraft] = useState('');
   const toolCalls = message.toolCalls ?? [];
   const hasReasoning = (message.reasoning ?? '').trim().length > 0;
+  // Notebook numbered citations (A2): build the per-message chunkId→number map +
+  // ordered chip list from the prose's first-appearance order. Card mode skips
+  // this (numbering stays empty ⇒ inline decoration is a no-op).
+  const numbering: CitationNumbering = useMemo(
+    () =>
+      isNotebook
+        ? buildCitationNumbering(message.content, message.citations)
+        : { numberOf: new Map(), ordered: [] },
+    [isNotebook, message.content, message.citations],
+  );
+  const citationOf = useCallback(
+    (chunkId: string): SourceCitation | undefined =>
+      numbering.ordered.find((o) => o.citation.sourceChunkId === chunkId)?.citation,
+    [numbering],
+  );
   // While the turn is still streaming and the final answer hasn't begun, the
   // thinking placeholder shows; once any prose/tool work exists it gives way.
   const isStreaming = !!message.streaming;
@@ -2485,13 +2630,15 @@ const MessageRow = ({
                 </div>
               )}
               <div
+                className="nn-nb-user-bubble"
                 style={{
                   padding: '10px 14px',
-                  borderRadius: 'var(--r-lg)',
+                  borderRadius: '16px 16px 4px 16px',
                   background: 'var(--surface-3)',
+                  border: '1px solid var(--border)',
                   color: 'var(--text)',
                   fontFamily: 'var(--font-sans)',
-                  fontSize: 14,
+                  fontSize: 13.5,
                   lineHeight: 1.5,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
@@ -2552,21 +2699,31 @@ const MessageRow = ({
     <div className="nn-msg-row" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div
         title={formatTimestamp(message.createdAt, locale)}
-        style={{ display: 'flex', alignItems: 'center', gap: 7 }}
+        style={{ display: 'flex', alignItems: 'center', gap: 8 }}
       >
-        <NNIcon name="sparkle" size={15} color="var(--violet-400)" />
         <span
           style={{
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: 1,
-            textTransform: 'uppercase',
-            color: 'var(--text-dim)',
-            fontFamily: 'var(--font-sans)',
+            width: 28,
+            height: 28,
+            borderRadius: 9,
+            flexShrink: 0,
+            background: 'rgba(167,136,255,0.12)',
+            border: '1px solid rgba(167,136,255,0.25)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
         >
-          {t('chat.stream.assistant')}
+          <NNIcon name="sparkle" size={14} color="var(--violet-400)" />
         </span>
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-sans)' }}>
+          {t('chat.stream.assistantName')}
+        </span>
+        {isNotebook && sourceCount != null && (
+          <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-sans)' }}>
+            {t('chat.stream.bySources', { count: sourceCount })}
+          </span>
+        )}
         {formatTimeShort(message.createdAt, locale) && (
           <span
             className="nn-msg-time"
@@ -2617,7 +2774,14 @@ const MessageRow = ({
           The inline [card:<id>] grounding tokens are stripped — the sources are
           shown in the collapsible block below. */}
       {answerStarted ? (
-        <AssistantMarkdown content={message.content} final={!isStreaming} t={t} />
+        <AssistantMarkdown
+          content={message.content}
+          final={!isStreaming}
+          citeNumbers={isNotebook ? numbering.numberOf : undefined}
+          citationOf={isNotebook ? citationOf : undefined}
+          onCite={isNotebook ? onSourceCitation : undefined}
+          t={t}
+        />
       ) : isStreaming ? (
         <span style={{ fontSize: 13, color: 'var(--text-dim)', fontStyle: 'italic' }}>
           {phase === 'calling_tool'
@@ -2626,10 +2790,29 @@ const MessageRow = ({
         </span>
       ) : null}
 
-      {/* Cited cards — collapsed by default into a count summary (they can be
-          large); expandable to the full RichCard list (AC8), clearly delimited
-          as "from your cards" so they're visibly distinct from the prose above. */}
-      {message.citations.length > 0 && (
+      {/* Notebook mode (A2): a row of numbered source chips — each NBCite number
+          + a 15×21 letter-tile cover + «Title · стр. N». Click → onSourceCitation
+          (the workspace scrolls the reader). Inline ¹² chips in the prose share
+          the same numbering. */}
+      {isNotebook && numbering.ordered.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, paddingTop: 2 }}>
+          {numbering.ordered.map(({ n, citation }) => (
+            <NumberedSourceChip
+              key={`nbsrc-${citation.sourceChunkId}-${n}`}
+              n={n}
+              citation={citation}
+              onClick={onSourceCitation}
+              t={t}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Cited cards (card mode) — collapsed by default into a count summary
+          (they can be large); expandable to the full RichCard list (AC8),
+          clearly delimited as "from your cards". Notebook mode renders the
+          numbered chip row above instead. */}
+      {!isNotebook && message.citations.length > 0 && (
         <div
           style={{
             display: 'flex',
@@ -2700,43 +2883,25 @@ const MessageRow = ({
         </div>
       )}
 
-      {/* Per-message actions: copy clean prose + (last assistant only) regenerate
-          + a dim model · token badge (B6). Only on a finished turn with prose. */}
+      {/* Per-message actions: copy clean prose + «В заметки» + (last assistant
+          only) regenerate + a dim model · token badge (B6). Ghost 26px buttons
+          (A2). Only on a finished turn with prose. */}
       {!isStreaming && answerStarted && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          <NNBtn
-            size="sm"
-            variant="ghost"
-            icon="stack"
-            ariaLabel={t('chat.message.copy')}
-            title={t('chat.message.copy')}
-            onClick={() => onCopy?.()}
-          >
-            {t('chat.message.copy')}
-          </NNBtn>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', marginLeft: -9 }}>
+          <ActionBtn icon="copy" label={t('chat.message.copy')} onClick={() => onCopy?.()} />
           {onSaveAnswer && (
-            <NNBtn
-              size="sm"
-              variant="ghost"
-              icon="doc"
-              ariaLabel={t('notebooks.notes.saveAnswer')}
-              title={t('notebooks.notes.saveAnswer')}
+            <ActionBtn
+              icon="note"
+              label={t('notebooks.notes.saveAnswer')}
               onClick={() => onSaveAnswer()}
-            >
-              {t('notebooks.notes.saveAnswer')}
-            </NNBtn>
+            />
           )}
           {canRegenerate && (
-            <NNBtn
-              size="sm"
-              variant="ghost"
+            <ActionBtn
               icon="sync"
-              ariaLabel={t('chat.message.regenerate')}
-              title={t('chat.message.regenerate')}
+              label={t('chat.message.regenerateShort')}
               onClick={() => onRegenerate?.()}
-            >
-              {t('chat.message.regenerate')}
-            </NNBtn>
+            />
           )}
           {(message.model || usageTotal(message.usage) > 0) && (
             <span
@@ -2766,6 +2931,313 @@ const MessageRow = ({
         </div>
       )}
     </div>
+  );
+};
+
+// ── Notebook empty state (A2) ────────────────────────────────────────────────
+// Violet-glow hero + serif title + 2×2 suggestion cards + «Обновить подсказки».
+// Suggestion icons/tones cycle by index (bolt/amber, clock/sky, bulb/lime,
+// target/violet); clicking a card sends the question. The refresh button renders
+// only when `onRefresh` is passed (workspace wires it to the overview regen).
+
+const EMPTY_SUGGESTION_STYLES = [
+  { icon: 'bolt', tone: 'amber' },
+  { icon: 'clock', tone: 'sky' },
+  { icon: 'bulb', tone: 'lime' },
+  { icon: 'target', tone: 'violet' },
+] as const;
+
+const NotebookChatEmpty = ({
+  questions,
+  sending,
+  onAsk,
+  onRefresh,
+  refreshing,
+  t,
+}: {
+  questions: string[];
+  sending: boolean;
+  onAsk: (q: string) => void;
+  onRefresh?: () => void;
+  refreshing: boolean;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) => (
+  <div
+    style={{
+      margin: 'auto',
+      position: 'relative',
+      width: '100%',
+      maxWidth: 600,
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      padding: '8px 0',
+    }}
+  >
+    {/* Violet radial glow behind the hero. */}
+    <div
+      aria-hidden
+      style={{
+        position: 'absolute',
+        top: -24,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: 560,
+        height: 380,
+        maxWidth: '100%',
+        pointerEvents: 'none',
+        background: 'radial-gradient(closest-side, rgba(132,87,232,0.10), transparent 72%)',
+      }}
+    />
+    <span
+      style={{
+        width: 54,
+        height: 54,
+        borderRadius: 16,
+        marginBottom: 20,
+        background: 'var(--surface)',
+        border: '1px solid var(--border-2)',
+        boxShadow: 'var(--glow-violet)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <NNIcon name="sparkle" size={24} color="var(--violet-400)" />
+    </span>
+    <h1
+      style={{
+        margin: 0,
+        fontFamily: 'var(--font-serif)',
+        fontWeight: 400,
+        fontSize: 36,
+        letterSpacing: -0.4,
+        color: 'var(--text)',
+        textAlign: 'center',
+      }}
+    >
+      {t('notebooks.chat.heroTitle')}
+    </h1>
+    <p
+      style={{
+        margin: '10px 0 0',
+        fontSize: 13.5,
+        lineHeight: 1.6,
+        color: 'var(--text-muted)',
+        textAlign: 'center',
+        maxWidth: 420,
+      }}
+    >
+      {t('notebooks.chat.heroSubtitle')}
+    </p>
+
+    {questions.length > 0 && (
+      <div
+        style={{
+          marginTop: 28,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          width: '100%',
+        }}
+      >
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 10,
+            width: '100%',
+            maxWidth: 560,
+          }}
+        >
+          {questions.slice(0, 4).map((q, i) => {
+            const s = EMPTY_SUGGESTION_STYLES[i % EMPTY_SUGGESTION_STYLES.length];
+            return (
+              <button
+                key={q}
+                type="button"
+                className="nn-nb-sug"
+                disabled={sending}
+                onClick={() => onAsk(q)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 10,
+                  padding: '12px 13px',
+                  borderRadius: 12,
+                  cursor: 'pointer',
+                  background: 'var(--surface)',
+                  border: '1px solid var(--border)',
+                  textAlign: 'left',
+                  fontFamily: 'var(--font-sans)',
+                }}
+              >
+                <span
+                  style={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: 8,
+                    flexShrink: 0,
+                    marginTop: 1,
+                    background: 'var(--surface-2)',
+                    border: '1px solid var(--border)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <NNIcon name={s.icon} size={13} color={`var(--${s.tone}-400)`} />
+                </span>
+                <span style={{ fontSize: 12.5, lineHeight: 1.45, color: 'var(--text-muted)' }}>{q}</span>
+              </button>
+            );
+          })}
+        </div>
+        {onRefresh && (
+          <button
+            type="button"
+            className="nn-nb-refresh"
+            disabled={refreshing}
+            onClick={onRefresh}
+            style={{
+              marginTop: 14,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              height: 28,
+              padding: '0 12px',
+              borderRadius: 999,
+              cursor: refreshing ? 'default' : 'pointer',
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--text-dim)',
+              fontFamily: 'var(--font-sans)',
+              fontSize: 11.5,
+              fontWeight: 500,
+              opacity: refreshing ? 0.6 : 1,
+            }}
+          >
+            <span className={refreshing ? 'nn-spin' : undefined} style={{ display: 'inline-flex' }}>
+              <NNIcon name="sync" size={12} />
+            </span>
+            {t('notebooks.chat.refreshSuggestions')}
+          </button>
+        )}
+      </div>
+    )}
+  </div>
+);
+
+// ── Assistant action button (ghost, 26px) ───────────────────────────────────
+// NBActionBtn from the design — copy / save-to-notes / regenerate under an
+// answer. Hover surface-2 via `.nn-nb-action`.
+
+const ActionBtn = ({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  onClick: () => void;
+}) => (
+  <button
+    type="button"
+    className="nn-nb-action"
+    aria-label={label}
+    title={label}
+    onClick={onClick}
+    style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 6,
+      height: 26,
+      padding: '0 9px',
+      borderRadius: 7,
+      cursor: 'pointer',
+      background: 'transparent',
+      border: 'none',
+      color: 'var(--text-dim)',
+      fontFamily: 'var(--font-sans)',
+      fontSize: 11.5,
+      fontWeight: 500,
+    }}
+  >
+    <NNIcon name={icon} size={13} />
+    {label}
+  </button>
+);
+
+// ── Numbered source chip (NBSourceChip) ──────────────────────────────────────
+// One chip under a grounded answer: the citation number + a 15×21 letter-tile
+// cover (deterministic tone) + «Title · стр. N». Click → onSourceCitation.
+
+const NumberedSourceChip = ({
+  n,
+  citation,
+  onClick,
+  t,
+}: {
+  n: number;
+  citation: SourceCitation;
+  onClick?: (c: SourceCitation) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) => {
+  const clickable = !!onClick;
+  const title = citation.sourceTitle ?? t('chat.source.untitled');
+  const loc = citationLocation(citation, t);
+  const tone = citationCoverTone(citation.sourceId);
+  return (
+    <button
+      type="button"
+      className="nn-nb-srcchip"
+      disabled={!clickable}
+      onClick={() => onClick?.(citation)}
+      title={clickable ? t('chat.source.open') : undefined}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '6px 10px 6px 7px',
+        borderRadius: 9,
+        cursor: clickable ? 'pointer' : 'default',
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        fontFamily: 'var(--font-sans)',
+      }}
+    >
+      <span className="nn-nb-cite nn-nb-cite-static">{n}</span>
+      <span
+        aria-hidden
+        style={{
+          width: 15,
+          height: 21,
+          borderRadius: 4,
+          flexShrink: 0,
+          position: 'relative',
+          background: `linear-gradient(150deg, var(--${tone}-500), var(--${tone}-600))`,
+          boxShadow: 'inset 2px 0 0 rgba(0,0,0,0.25), 0 1px 3px rgba(0,0,0,0.35)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <span
+          style={{
+            fontFamily: 'var(--font-serif)',
+            fontSize: 9,
+            color: 'rgba(255,255,255,0.92)',
+            lineHeight: 1,
+          }}
+        >
+          {citationCoverLetter(citation.sourceTitle)}
+        </span>
+      </span>
+      <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+        <span style={{ color: 'var(--text)', fontWeight: 500 }}>{title}</span>
+        {loc ? ` · ${loc}` : ''}
+      </span>
+    </button>
   );
 };
 

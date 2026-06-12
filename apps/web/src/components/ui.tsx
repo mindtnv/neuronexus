@@ -11,7 +11,7 @@ export type IconName =
   | 'chevd' | 'tag' | 'clock' | 'sparkle' | 'play' | 'pause' | 'eye'
   | 'edit' | 'link' | 'sync' | 'arrow' | 'trophy' | 'target' | 'mic'
   | 'image' | 'dots' | 'filter' | 'grid' | 'stars' | 'bulb' | 'pin'
-  | 'clip' | 'doc' | 'book';
+  | 'clip' | 'doc' | 'book' | 'send' | 'note' | 'copy';
 
 export const NNIcon = ({
   name,
@@ -146,6 +146,22 @@ export const NNIcon = ({
     clip: <path d="M20 11.5l-7.8 7.8a5 5 0 01-7-7l8.5-8.5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.4-2.4l7.8-7.8" {...p} />,
     doc: <path d="M14 3H7a1.5 1.5 0 00-1.5 1.5v15A1.5 1.5 0 007 21h10a1.5 1.5 0 001.5-1.5V7.5L14 3zM14 3v4.5h4.5M9.5 12.5h5M9.5 16h5" {...p} />,
     book: <path d="M4 5a2 2 0 012-2h13v16H6a2 2 0 00-2 2V5zM19 17H6a2 2 0 00-2 2M9 3v14" {...p} />,
+    // Send — upward arrow (composer submit, NBIcon parity).
+    send: <path d="M12 19V5M6 11l6-6 6 6" {...p} />,
+    // Note — page with a folded corner (save-to-notes action).
+    note: (
+      <>
+        <path d="M5 4h14v12l-4 4H5V4z" {...p} />
+        <path d="M15 20v-4h4" {...p} />
+      </>
+    ),
+    // Copy — overlapping sheets.
+    copy: (
+      <>
+        <rect x="9" y="9" width="11" height="11" rx="2" {...p} />
+        <path d="M5 15V6a2 2 0 012-2h9" {...p} />
+      </>
+    ),
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: 'block', flexShrink: 0 }}>

@@ -38,6 +38,7 @@ import {
   sourceAnnotations,
   sourceChunks,
   sourceMarks,
+  sourceReadingState,
   sources,
   type Citation,
   type Db,
@@ -370,23 +371,33 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   //  - cardCount: DISTINCT cards BORN in this notebook (card_sources.notebook_id),
   //    LIVE only (the FK-cascade keeps card_sources.card_id valid, so a plain
   //    count of distinct card_id over the user's edges is already live).
+  //  - artifactCount: total notebook_artifacts rows for this notebook.
+  //  - generatingCount: notebook_artifacts rows with status IN ('pending','generating').
+  //  - generatingTitle: title of the most recent in-flight artifact (null if none).
+  //  - coverSources: ≤4 attached sources (oldest-attach first) with title/kind/coverMediaId
+  //    for the notebook card mosaic in the grid UI.
   .get(
     '/',
     async ({ user, query }) => {
       const archived = query.archived === 'true';
       // One-query counts via correlated subqueries. The subquery tables are
-      // ALIASED (ns/nn/cs/c) and the outer correlation references the
+      // ALIASED (ns/nn/cs/c/na) and the outer correlation references the
       // (non-aliased) `notebooks.id` LITERALLY — drizzle's `${col}` interpolation
       // renders columns UNQUALIFIED inside an `sql` template, so a `${cards.id}`
       // would collide with `card_sources.id` ("id" is ambiguous). cardCount JOINs
       // `cards` so a deleted card (its card_sources edge cascades away) is never
       // counted — LIVE cards born in this notebook only.
+      // coverSources uses a wrapping subquery so LIMIT can be applied inside json_agg.
       const rows = await db
         .select({
           notebook: notebooks,
           sourceCount: sql<number>`(SELECT count(*)::int FROM notebook_sources ns WHERE ns.notebook_id = notebooks.id)`,
           noteCount: sql<number>`(SELECT count(*)::int FROM notebook_notes nn WHERE nn.notebook_id = notebooks.id)`,
           cardCount: sql<number>`(SELECT count(DISTINCT cs.card_id)::int FROM card_sources cs JOIN cards c ON c.id = cs.card_id WHERE cs.notebook_id = notebooks.id)`,
+          artifactCount: sql<number>`(SELECT count(*)::int FROM notebook_artifacts na WHERE na.notebook_id = notebooks.id)`,
+          generatingCount: sql<number>`(SELECT count(*)::int FROM notebook_artifacts na WHERE na.notebook_id = notebooks.id AND na.status IN ('pending','generating'))`,
+          generatingTitle: sql<string | null>`(SELECT na.title FROM notebook_artifacts na WHERE na.notebook_id = notebooks.id AND na.status IN ('pending','generating') ORDER BY na.created_at DESC LIMIT 1)`,
+          coverSources: sql<{ title: string; kind: string; coverMediaId: string | null }[]>`COALESCE((SELECT json_agg(q) FROM (SELECT s.title, s.kind, s.cover_media_id AS "coverMediaId" FROM notebook_sources ns2 JOIN sources s ON s.id = ns2.source_id WHERE ns2.notebook_id = notebooks.id ORDER BY ns2.added_at ASC LIMIT 4) q), '[]'::json)`,
         })
         .from(notebooks)
         .where(and(eq(notebooks.userId, user.id), eq(notebooks.archived, archived)))
@@ -396,6 +407,10 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         sourceCount: Number(r.sourceCount),
         noteCount: Number(r.noteCount),
         cardCount: Number(r.cardCount),
+        artifactCount: Number(r.artifactCount),
+        generatingCount: Number(r.generatingCount),
+        generatingTitle: r.generatingTitle ?? null,
+        coverSources: r.coverSources,
       }));
       return { items };
     },
@@ -477,7 +492,11 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       if (Object.keys(set).length === 0) {
         return status(400, { error: 'nothing_to_update' });
       }
-      if (contentChanged) set.updatedAt = new Date();
+      // Monotonic on the DB clock (see bumpNotebookUpdatedAt) — a host `new Date()`
+      // can land behind the row's DEFAULT-now() stamp on VM clock drift.
+      if (contentChanged) {
+        set.updatedAt = sql`GREATEST(now(), ${notebooks.updatedAt} + interval '1 millisecond')`;
+      }
 
       const [row] = await db
         .update(notebooks)
@@ -562,7 +581,37 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       const items = rows.map((r) => r.source);
       // Computed progress per source: COUNT(embedded) over its chunks (by source_id).
       const indexedBySource = await indexedCountsFor(items.map((s) => s.id));
-      return { items: items.map((s) => withProgress(s, indexedBySource.get(s.id) ?? 0)) };
+      // Reading state (user-scoped): batch fetch by source_id list (no N+1).
+      const readingStateRows =
+        items.length > 0
+          ? await db
+              .select({
+                sourceId: sourceReadingState.sourceId,
+                readingStatus: sourceReadingState.status,
+                readingPercent: sourceReadingState.percent,
+              })
+              .from(sourceReadingState)
+              .where(
+                and(
+                  eq(sourceReadingState.userId, user.id),
+                  inArray(
+                    sourceReadingState.sourceId,
+                    items.map((s) => s.id),
+                  ),
+                ),
+              )
+          : [];
+      const readingBySource = new Map(readingStateRows.map((r) => [r.sourceId, r]));
+      return {
+        items: items.map((s) => {
+          const rs = readingBySource.get(s.id);
+          return {
+            ...withProgress(s, indexedBySource.get(s.id) ?? 0),
+            readingStatus: rs?.readingStatus ?? null,
+            readingPercent: rs?.readingPercent ?? null,
+          };
+        }),
+      };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   )
@@ -938,7 +987,11 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       if (Object.keys(set).length === 0) {
         return status(400, { error: 'nothing_to_update' });
       }
-      if (contentChanged) set.updatedAt = new Date();
+      // Same monotonic form as the notebook PATCH — note rows are DEFAULT-now()
+      // stamped too, so a host clock behind Postgres would un-order the list.
+      if (contentChanged) {
+        set.updatedAt = sql`GREATEST(now(), ${notebookNotes.updatedAt} + interval '1 millisecond')`;
+      }
 
       const row = await db.transaction(async (tx) => {
         const [updated] = await tx
@@ -2417,10 +2470,18 @@ function excerptFront(text: string, max: number): string {
  * Bump `notebooks.updated_at` inside the caller's tx (Р15 — any note/artifact/
  * attach mutation marks the notebook active so the grid sorts by activity).
  * user-scoped (a foreign notebook simply touches zero rows).
+ *
+ * Monotonic on the Postgres clock: the row's previous stamp comes from a DB
+ * DEFAULT now(), so a host-side `new Date()` can land BEHIND it when the
+ * Docker-VM clock drifts from the host's (the same skew persistTranscript
+ * anchors against). GREATEST(now(), prev + 1ms) guarantees the bump always
+ * moves the stamp forward regardless of which clock is ahead.
  */
 async function bumpNotebookUpdatedAt(tx: Tx, userId: string, notebookId: string): Promise<void> {
   await tx
     .update(notebooks)
-    .set({ updatedAt: new Date() })
+    .set({
+      updatedAt: sql`GREATEST(now(), ${notebooks.updatedAt} + interval '1 millisecond')`,
+    })
     .where(and(eq(notebooks.id, notebookId), eq(notebooks.userId, userId)));
 }

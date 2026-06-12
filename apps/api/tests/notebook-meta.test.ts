@@ -13,6 +13,7 @@ import { eq } from 'drizzle-orm';
 import {
   cardSources,
   db,
+  notebookArtifacts as notebookArtifactsTable,
   notebookNotes,
   notebooks,
   notebookSources,
@@ -314,5 +315,193 @@ describe('notebook grid list (Р13)', () => {
     // No ready sources ⇒ the sentinel.
     expect(row.currentFingerprint).toBe('empty');
     expect(row.overviewFingerprint).toBeNull();
+  });
+
+  test('list returns artifactCount / generatingCount / generatingTitle / coverSources', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await createNotebook(cookie, 'StudioNB');
+
+    // Attach 2 sources (oldest-attach first order for coverSources).
+    const [src1, src2] = await db
+      .insert(sourcesTable)
+      .values([
+        { userId, kind: 'text' as const, title: 'Source Alpha', status: 'ready' as const, verified: true },
+        { userId, kind: 'pdf' as const, title: 'Source Beta', status: 'ready' as const, verified: true },
+      ])
+      .returning({ id: sourcesTable.id });
+    // Insert the join edges with a small delay so added_at order is deterministic.
+    await db.insert(notebookSources).values({ userId, notebookId: nb.id, sourceId: src1!.id });
+    await new Promise((r) => setTimeout(r, 5));
+    await db.insert(notebookSources).values({ userId, notebookId: nb.id, sourceId: src2!.id });
+
+    // Insert 2 artifacts: one ready, one generating.
+    await db.insert(notebookArtifactsTable).values([
+      {
+        userId,
+        notebookId: nb.id,
+        type: 'summary',
+        status: 'ready',
+        title: 'Finished Summary',
+        sourceIds: [src1!.id],
+      },
+      {
+        userId,
+        notebookId: nb.id,
+        type: 'faq',
+        status: 'generating',
+        title: 'Live FAQ',
+        sourceIds: [src1!.id],
+      },
+    ]);
+
+    const res = await callApp(app, 'GET', '/notebooks', { cookie });
+    expect(res.status).toBe(200);
+    const item = (
+      await res.json<{
+        items: (NotebookRow & {
+          artifactCount: number;
+          generatingCount: number;
+          generatingTitle: string | null;
+          coverSources: { title: string; kind: string; coverMediaId: string | null }[];
+        })[];
+      }>()
+    ).items.find((i) => i.id === nb.id)!;
+
+    expect(item.artifactCount).toBe(2);
+    expect(item.generatingCount).toBe(1);
+    expect(item.generatingTitle).toBe('Live FAQ');
+    // coverSources should be 2 items in oldest-attach-first order.
+    expect(item.coverSources).toHaveLength(2);
+    expect(item.coverSources[0]!.title).toBe('Source Alpha');
+    expect(item.coverSources[0]!.kind).toBe('text');
+    expect(item.coverSources[0]!.coverMediaId).toBeNull();
+    expect(item.coverSources[1]!.title).toBe('Source Beta');
+    expect(item.coverSources[1]!.kind).toBe('pdf');
+  });
+
+  test('coverSources is capped at 4', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await createNotebook(cookie, 'BigNB');
+
+    // Insert 6 sources and attach them.
+    const srcs = await db
+      .insert(sourcesTable)
+      .values(
+        Array.from({ length: 6 }, (_, i) => ({
+          userId,
+          kind: 'text' as const,
+          title: `S${i + 1}`,
+          status: 'ready' as const,
+          verified: true,
+        })),
+      )
+      .returning({ id: sourcesTable.id });
+    for (const s of srcs) {
+      await db.insert(notebookSources).values({ userId, notebookId: nb.id, sourceId: s.id });
+      await new Promise((r) => setTimeout(r, 2));
+    }
+
+    const res = await callApp(app, 'GET', '/notebooks', { cookie });
+    const item = (
+      await res.json<{ items: (NotebookRow & { coverSources: unknown[] })[] }>()
+    ).items.find((i) => i.id === nb.id)!;
+
+    expect(item.coverSources).toHaveLength(4);
+  });
+
+  test('list: no artifacts → artifactCount=0, generatingCount=0, generatingTitle=null', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await createNotebook(cookie, 'EmptyNB');
+
+    const res = await callApp(app, 'GET', '/notebooks', { cookie });
+    const item = (
+      await res.json<{
+        items: (NotebookRow & {
+          artifactCount: number;
+          generatingCount: number;
+          generatingTitle: string | null;
+          coverSources: unknown[];
+        })[];
+      }>()
+    ).items.find((i) => i.id === nb.id)!;
+
+    expect(item.artifactCount).toBe(0);
+    expect(item.generatingCount).toBe(0);
+    expect(item.generatingTitle).toBeNull();
+    expect(item.coverSources).toEqual([]);
+  });
+
+  test('foreign user cannot see another user notebook in list', async () => {
+    const a = await signUpAndCookie(app, uniqueEmail('a'));
+    const b = await signUpAndCookie(app, uniqueEmail('b'));
+    await createNotebook(b.cookie, 'Secret');
+
+    const res = await callApp(app, 'GET', '/notebooks', { cookie: a.cookie });
+    const { items } = await res.json<{ items: NotebookRow[] }>();
+    expect(items).toHaveLength(0);
+  });
+});
+
+describe('notebook sources list — readingPercent + readingStatus (A1)', () => {
+  beforeEach(async () => {
+    await resetTestDb();
+  });
+  afterEach(() => {
+    __resetAiClientForTests();
+  });
+
+  test('readingStatus and readingPercent appear after a reading-state PUT', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await createNotebook(cookie, 'Reading NB');
+
+    const [src] = await db
+      .insert(sourcesTable)
+      .values({ userId, kind: 'pdf' as const, title: 'MyPDF', status: 'ready' as const, verified: true })
+      .returning({ id: sourcesTable.id });
+    await db.insert(notebookSources).values({ userId, notebookId: nb.id, sourceId: src!.id });
+
+    // Before any reading-state update: null values.
+    const before = await callApp(app, 'GET', `/notebooks/${nb.id}/sources`, { cookie });
+    expect(before.status).toBe(200);
+    const beforeItem = (await before.json<{ items: { id: string; readingStatus: string | null; readingPercent: number | null }[] }>()).items[0]!;
+    expect(beforeItem.readingStatus).toBeNull();
+    expect(beforeItem.readingPercent).toBeNull();
+
+    // PUT reading-state → auto-transitions to 'reading', stores percent.
+    const put = await callApp(app, 'PUT', `/library/items/${src!.id}/reading-state`, {
+      cookie,
+      body: { percent: 0.4, page: 5 },
+    });
+    expect(put.status).toBe(200);
+
+    // Now sources list should reflect the reading state.
+    const after = await callApp(app, 'GET', `/notebooks/${nb.id}/sources`, { cookie });
+    const afterItem = (await after.json<{ items: { id: string; readingStatus: string | null; readingPercent: number | null }[] }>()).items[0]!;
+    expect(afterItem.readingStatus).toBe('reading');
+    expect(afterItem.readingPercent).toBeCloseTo(0.4, 2);
+  });
+
+  test('sources include author and coverMediaId fields', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await createNotebook(cookie, 'Meta NB');
+
+    const [src] = await db
+      .insert(sourcesTable)
+      .values({ userId, kind: 'pdf' as const, title: 'Rich PDF', status: 'ready' as const, verified: true, author: 'Alan Turing' })
+      .returning({ id: sourcesTable.id });
+    await db.insert(notebookSources).values({ userId, notebookId: nb.id, sourceId: src!.id });
+
+    const res = await callApp(app, 'GET', `/notebooks/${nb.id}/sources`, { cookie });
+    const item = (await res.json<{ items: { id: string; author: string | null; coverMediaId: string | null }[] }>()).items[0]!;
+    expect(item.author).toBe('Alan Turing');
+    expect(item.coverMediaId).toBeNull();
+  });
+
+  test('foreign notebook → 404 for sources list', async () => {
+    const a = await signUpAndCookie(app, uniqueEmail('a'));
+    const b = await signUpAndCookie(app, uniqueEmail('b'));
+    const nb = await createNotebook(b.cookie, 'B NB');
+    const res = await callApp(app, 'GET', `/notebooks/${nb.id}/sources`, { cookie: a.cookie });
+    expect(res.status).toBe(404);
   });
 });

@@ -38,7 +38,7 @@ import {
   type ArtifactStatus,
   type NotebookArtifactType,
 } from '@neuronexus/shared';
-import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
+import { NNBtn, NNCard, NNIcon, NNSkeleton } from '@/components/ui';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
@@ -71,6 +71,16 @@ const TYPE_ICON: Record<NotebookArtifactType, string> = {
   timeline: 'clock',
   glossary: 'tag',
   quiz: 'target',
+};
+
+// Per-type accent tone (A4 redesign) — the generation-tile icon backdrop.
+const TYPE_TONE: Record<NotebookArtifactType, string> = {
+  summary: 'lime',
+  study_guide: 'sky',
+  faq: 'amber',
+  timeline: 'violet',
+  glossary: 'rose',
+  quiz: 'sky',
 };
 
 // The non-quiz markdown types, in generation-tile order (quiz is appended last
@@ -424,7 +434,7 @@ export const StudioPanel = ({
             <p className="nn-empty-state-hint">{t('notebooks.studio.empty')}</p>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {artifacts.map((a) => (
               <ArtifactRow
                 key={a.id}
@@ -445,6 +455,22 @@ export const StudioPanel = ({
               />
             ))}
           </div>
+        )}
+
+        {/* Footnote under the document list (only when the tiles are shown). */}
+        {chatEnabled && (
+          <p
+            style={{
+              marginTop: 12,
+              marginBottom: 0,
+              fontSize: 10.5,
+              lineHeight: 1.5,
+              color: 'var(--text-dim)',
+              padding: '0 2px',
+            }}
+          >
+            {t('notebooks.studio.docsHint')}
+          </p>
         )}
       </div>
     </div>
@@ -473,13 +499,22 @@ const StudioTile = ({
     onClick={onClick}
     title={t(`notebooks.studio.type_${type}Desc`)}
   >
-    <span className="nn-studio-tile-icon">
+    <span
+      className="nn-studio-tile-icon"
+      style={{
+        width: 24,
+        height: 24,
+        borderRadius: 7,
+        background: `color-mix(in srgb, var(--${TYPE_TONE[type]}-500) 14%, transparent)`,
+        border: `1px solid color-mix(in srgb, var(--${TYPE_TONE[type]}-500) 30%, transparent)`,
+      }}
+    >
       {busy ? (
         <span className="nn-spin" style={{ display: 'flex' }}>
-          <NNIcon name="sync" size={16} color="var(--lime-400)" />
+          <NNIcon name="sync" size={13} color={`var(--${TYPE_TONE[type]}-400)`} />
         </span>
       ) : (
-        <NNIcon name={TYPE_ICON[type]} size={16} color="var(--lime-400)" />
+        <NNIcon name={TYPE_ICON[type]} size={13} color={`var(--${TYPE_TONE[type]}-400)`} />
       )}
     </span>
     <span className="nn-studio-tile-body">
@@ -490,6 +525,21 @@ const StudioTile = ({
 );
 
 // ── Artifact list row ─────────────────────────────────────────────────────────
+
+/** Hand-rolled relative «N ago» (no dep) — reuses notebooks.meta.* keys (mirrors
+ *  the workspace/list helpers). Used for the «Готово · {time}» ready subline. */
+function relativeWhen(iso: string | undefined, t: Tfn): string {
+  if (!iso) return '';
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return '';
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return t('notebooks.meta.relativeNow');
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 60) return t('notebooks.meta.relativeMinutes', { count: mins });
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return t('notebooks.meta.relativeHours', { count: hours });
+  return t('notebooks.meta.relativeDays', { count: Math.floor(hours / 24) });
+}
 
 const ArtifactRow = ({
   artifact,
@@ -509,13 +559,39 @@ const ArtifactRow = ({
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const ready = artifact.status === 'ready';
+  const generating = artifact.status === 'generating';
+  const pending = artifact.status === 'pending';
+  const isError = artifact.status === 'error';
+  const inFlight = generating || pending;
   // A generating row is openable too (LIVE viewer); pending/error are not.
-  const openable = artifact.status === 'ready' || artifact.status === 'generating';
-  const terminal = artifact.status === 'ready' || artifact.status === 'error';
+  const openable = ready || generating;
+  const terminal = ready || isError;
+
+  // Icon-tile tone: lime (ready) / amber (generating) / sky (pending) / rose (error).
+  const tone = ready ? 'lime' : isError ? 'rose' : generating ? 'amber' : 'sky';
+
+  // Subline per status.
+  const liveParts: string[] = [];
+  if (generating) {
+    if (typeof elapsedMs === 'number') liveParts.push(formatElapsed(elapsedMs, t));
+    if (typeof artifact.progressChars === 'number' && artifact.progressChars > 0) {
+      liveParts.push(formatChars(artifact.progressChars, t));
+    }
+  }
 
   return (
-    <div className="nn-source-row" style={{ cursor: openable ? 'pointer' : 'default' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+    <div
+      className="nn-source-row"
+      style={{
+        cursor: openable ? 'pointer' : 'default',
+        background: 'var(--surface-2)',
+        border: '1px solid var(--border)',
+        borderLeft: '1px solid var(--border)',
+        padding: '10px 11px',
+        borderRadius: 'var(--r-md)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button
           type="button"
           onClick={openable ? onOpen : undefined}
@@ -523,7 +599,7 @@ const ArtifactRow = ({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 7,
+            gap: 10,
             flex: 1,
             minWidth: 0,
             background: 'transparent',
@@ -533,79 +609,138 @@ const ArtifactRow = ({
             textAlign: 'left',
           }}
         >
-          <NNIcon name={TYPE_ICON[artifact.type]} size={14} color="var(--text-muted)" />
           <span
             style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: 'var(--text)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              minWidth: 0,
-              flex: 1,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 26,
+              height: 26,
+              flexShrink: 0,
+              borderRadius: 8,
+              background: `color-mix(in srgb, var(--${tone}-500) 12%, transparent)`,
+              border: `1px solid color-mix(in srgb, var(--${tone}-500) 28%, transparent)`,
             }}
           >
-            {artifact.title}
+            <NNIcon name={TYPE_ICON[artifact.type]} size={13} color={`var(--${tone}-400)`} />
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span
+              style={{
+                display: 'block',
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: 'var(--text)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {artifact.title}
+            </span>
+            {/* Subline: ready → «Готово · N ago»; generating → amber pulse + live;
+                pending → queued; error → error-code prose (rose). */}
+            {ready ? (
+              <span style={{ display: 'block', fontSize: 10.5, color: 'var(--text-dim)' }}>
+                {t('notebooks.studio.readyAt', { time: relativeWhen(artifact.updatedAt, t) })}
+              </span>
+            ) : isError ? (
+              <span style={{ display: 'block', fontSize: 10.5, color: 'var(--rose-400)' }}>
+                {t(`notebooks.studio.error_${errorCodeOf(artifact.errorCode)}`)}
+              </span>
+            ) : (
+              <span
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  fontSize: 10.5,
+                  color: 'var(--amber-400)',
+                }}
+              >
+                <span className="nn-pulse-dot" />
+                {pending
+                  ? t('notebooks.studio.queued')
+                  : liveParts.length > 0
+                    ? liveParts.join(' · ')
+                    : t('notebooks.studio.statusGenerating')}
+              </span>
+            )}
           </span>
         </button>
-        <ArtifactStatusBadge
-          status={artifact.status}
-          errorCode={artifact.errorCode}
-          progressChars={artifact.progressChars}
-          elapsedMs={elapsedMs}
-          t={t}
-        />
-        <div
-          className="nn-source-row-actions"
-          style={{ display: 'flex', gap: 0, flexShrink: 0, position: 'relative' }}
-        >
+        {/* In-flight → a cancel (delete) affordance; otherwise the ⋯ menu. */}
+        {inFlight ? (
           <NNBtn
             variant="ghost"
             size="sm"
-            icon="dots"
-            ariaLabel={t('notebooks.studio.regenerate')}
-            title={t('notebooks.studio.regenerate')}
-            onClick={() => setMenuOpen((v) => !v)}
+            icon="x"
+            ariaLabel={t('notebooks.studio.cancelGeneration')}
+            title={t('notebooks.studio.cancelGeneration')}
+            onClick={onDelete}
           />
-          {menuOpen && (
-            <>
-              <div
-                onClick={() => setMenuOpen(false)}
-                style={{ position: 'fixed', inset: 0, zIndex: 40 }}
-              />
-              <div className="nn-lib-menu" style={{ right: 0, top: 'calc(100% + 4px)', minWidth: 180 }}>
-                <button
-                  type="button"
-                  className="nn-lib-menu-item"
-                  disabled={!terminal}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onRegenerate();
-                  }}
-                >
-                  <NNIcon name="sync" size={14} color="var(--text-muted)" />
-                  {t('notebooks.studio.regenerate')}
-                </button>
-                <button
-                  type="button"
-                  className="nn-lib-menu-item"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onDelete();
-                  }}
-                >
-                  <NNIcon name="x" size={14} color="var(--text-muted)" />
-                  {t('notebooks.studio.delete')}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+        ) : (
+          <div
+            className="nn-source-row-actions"
+            style={{ display: 'flex', gap: 0, flexShrink: 0, position: 'relative', opacity: 1 }}
+          >
+            <NNBtn
+              variant="ghost"
+              size="sm"
+              icon="dots"
+              ariaLabel={t('notebooks.studio.regenerate')}
+              title={t('notebooks.studio.regenerate')}
+              onClick={() => setMenuOpen((v) => !v)}
+            />
+            {menuOpen && (
+              <>
+                <div
+                  onClick={() => setMenuOpen(false)}
+                  style={{ position: 'fixed', inset: 0, zIndex: 40 }}
+                />
+                <div className="nn-lib-menu" style={{ right: 0, top: 'calc(100% + 4px)', minWidth: 180 }}>
+                  <button
+                    type="button"
+                    className="nn-lib-menu-item"
+                    disabled={!terminal}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onRegenerate();
+                    }}
+                  >
+                    <NNIcon name="sync" size={14} color="var(--text-muted)" />
+                    {t('notebooks.studio.regenerate')}
+                  </button>
+                  <button
+                    type="button"
+                    className="nn-lib-menu-item"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onDelete();
+                    }}
+                  >
+                    <NNIcon name="x" size={14} color="var(--text-muted)" />
+                    {t('notebooks.studio.delete')}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
+      {/* Indeterminate progress bar while generating. */}
+      {generating && (
+        <div className="nn-nb-doc-progress" style={{ marginTop: 8 }}>
+          <span className="nn-nb-doc-progress-inner" />
+        </div>
+      )}
     </div>
   );
 };
+
+/** Normalize an artifact error code to a known key (fallback generation_failed). */
+function errorCodeOf(code: string | null): ArtifactErrorCode {
+  return (code && ARTIFACT_ERROR_CODE_SET.has(code) ? code : 'generation_failed') as ArtifactErrorCode;
+}
 
 /** «N сек» / «N мин M сек» from elapsed ms via the pure splitters. */
 function formatElapsed(elapsedMs: number, t: Tfn): string {
@@ -625,50 +760,6 @@ function liveCharsDisplay(n: number, t: Tfn): string {
 function formatChars(n: number, t: Tfn): string {
   return t('notebooks.studio.chars', { chars: liveCharsDisplay(n, t) });
 }
-
-const ArtifactStatusBadge = ({
-  status,
-  errorCode,
-  progressChars,
-  elapsedMs,
-  t,
-}: {
-  status: ArtifactStatus;
-  errorCode: string | null;
-  progressChars?: number;
-  elapsedMs?: number;
-  t: Tfn;
-}) => {
-  if (status === 'ready') return null;
-  if (status === 'error') {
-    const code = errorCode && ARTIFACT_ERROR_CODE_SET.has(errorCode) ? errorCode : 'generation_failed';
-    return (
-      <NNBadge tone="rose" size="xs">
-        {t(`notebooks.studio.error_${code as ArtifactErrorCode}`)}
-      </NNBadge>
-    );
-  }
-  if (status === 'pending') {
-    return (
-      <NNBadge tone="amber" size="xs">
-        <span className="nn-pulse-dot" style={{ marginRight: 4 }} />
-        {t('notebooks.studio.queued')}
-      </NNBadge>
-    );
-  }
-  // generating — a soft pulsing badge with a live elapsed timer + char counter.
-  const parts: string[] = [];
-  if (typeof elapsedMs === 'number') parts.push(formatElapsed(elapsedMs, t));
-  if (typeof progressChars === 'number' && progressChars > 0) {
-    parts.push(formatChars(progressChars, t));
-  }
-  return (
-    <NNBadge tone="amber" size="xs">
-      <span className="nn-pulse-dot" style={{ marginRight: 4 }} />
-      {parts.length > 0 ? parts.join(' · ') : t('notebooks.studio.statusGenerating')}
-    </NNBadge>
-  );
-};
 
 // ── Artifact viewer ──────────────────────────────────────────────────────────
 

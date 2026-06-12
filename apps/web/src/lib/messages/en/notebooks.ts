@@ -39,6 +39,13 @@ const notebooks = {
     search: 'Search notebooks…',
     showArchive: 'Archive',
     showActive: 'Active',
+    // «Notebooks redesign» (A3) — screen topbar + list sections + create tile.
+    title: 'Notebooks',
+    sectionContinue: 'Continue',
+    sectionAll: 'All notebooks',
+    open: 'Open',
+    newCardTitle: 'New notebook',
+    newCardHint: 'From library books or files',
   },
 
   // «Notebooks 2.0» (N1) — metadata, list tiles, the create dialog.
@@ -46,6 +53,12 @@ const notebooks = {
     sourcesChip: '{count} sources',
     notesChip: '{count} notes',
     cardsChip: '{count} cards',
+    // «Notebooks redesign» (A3) — card meta line «N sources · M documents».
+    sourcesMeta: '{count} sources',
+    documentsMeta: '{count} docs',
+    metaSep: ' · ',
+    generatingTitle: '{title} generating',
+    generatingCount: '{count} docs in progress',
     updated: 'updated {time}',
     relativeNow: 'just now',
     relativeMinutes: '{count}m ago',
@@ -93,6 +106,17 @@ const notebooks = {
     createFailed: 'Could not save the note.',
     savedFromChat: 'Saved to notes',
     saveAnswer: 'To notes',
+  },
+
+  // Notebook chat redesign (A2) — empty state, placeholder, scope.
+  chat: {
+    heroTitle: 'Ask your books',
+    heroSubtitle:
+      'Answers draw only on the selected sources — every claim links back to a specific place in the book.',
+    refreshSuggestions: 'Refresh suggestions',
+    composerPlaceholder: 'Ask about the selected sources…',
+    // `{count}` — number of sources in the active scope (rail checkboxes).
+    sourceScope: '{count} sources',
   },
 
   // «Notebooks 2.0» (N2) — the Overview tab (right dock, default).
@@ -155,6 +179,10 @@ const notebooks = {
     copied: 'Copied',
     toNote: 'To a note',
     savedToNote: 'Saved to notes',
+    // A4 redesign — ready-document row, cancel generation, list footnote.
+    cancelGeneration: 'Cancel generation',
+    readyAt: 'Ready · {time}',
+    docsHint: 'Documents are generated from the selected sources and saved to the notebook.',
     // Toasts keyed by the machine error code (ARTIFACT_ERROR_CODES) + route codes.
     createFailed: 'Could not generate. Please try again.',
     err_no_sources: 'Select at least one ready source.',
@@ -256,6 +284,18 @@ const notebooks = {
     tooMany: 'You\'ve reached the source limit for this notebook.',
     progress: '{indexed} / {total} indexed',
     back: 'Back to notebooks',
+    // Sources rail (A4): connect, «In this notebook» section, selection, sublines.
+    connectFromLibrary: 'Add from library',
+    inThisNotebook: 'In this notebook',
+    all: 'all',
+    selectAll: 'Select all',
+    clearSelection: 'Clear selection',
+    selectedOf: '{count} of {total} selected',
+    readPercent: '{pct}% read',
+    kindPdf: 'PDF',
+    kindEpub: 'EPUB',
+    kindUrl: 'Web page',
+    kindText: 'Text',
   },
 
   // Add-source dialog: kind picker + per-kind fields.
@@ -292,6 +332,9 @@ const notebooks = {
     // W5(a) — collapsible chat column.
     chatCollapse: 'Collapse chat',
     chatExpand: 'Expand chat',
+    // Workspace topbar (A4): meta line under the notebook title.
+    headerSources: '{count} sources',
+    headerMetaSep: ' · ',
   },
 
   // Center reader (M2 text mode + M4 PDF mode) — the active source's content.

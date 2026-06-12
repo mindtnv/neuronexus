@@ -4,7 +4,7 @@
 
 import { State, type Card as FsrsCard } from 'ts-fsrs';
 import type { RenderKind } from '@neuronexus/shared';
-import type { ArtifactStatus, NotebookArtifactType, NotebookColor, NotebookNoteKind } from '@neuronexus/shared';
+import type { ArtifactStatus, NotebookArtifactType, NotebookColor, NotebookNoteKind, SourceKind } from '@neuronexus/shared';
 import type { QuizAttemptAnswer } from '@neuronexus/shared';
 import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Note, Notebook, NotebookArtifact, NotebookNote, NoteType, Profile, QuizAttempt, Review } from './types';
 
@@ -191,6 +191,17 @@ export function notebookFromApi(row: any): Notebook {
     sourceCount: typeof row.sourceCount === 'number' ? row.sourceCount : undefined,
     noteCount: typeof row.noteCount === 'number' ? row.noteCount : undefined,
     cardCount: typeof row.cardCount === 'number' ? row.cardCount : undefined,
+    // Studio document counts + cover fan — grid payload only (A3 redesign).
+    artifactCount: typeof row.artifactCount === 'number' ? row.artifactCount : undefined,
+    generatingCount: typeof row.generatingCount === 'number' ? row.generatingCount : undefined,
+    generatingTitle: row.generatingTitle ?? null,
+    coverSources: Array.isArray(row.coverSources)
+      ? (row.coverSources as { title: string; kind: SourceKind; coverMediaId: string | null }[]).map((c) => ({
+          title: c.title,
+          kind: c.kind,
+          coverMediaId: c.coverMediaId ?? null,
+        }))
+      : undefined,
     // Overview cache (N2) — present on the GET /notebooks/:id detail row.
     overview: row.overview ?? null,
     suggestedQuestions: Array.isArray(row.suggestedQuestions)
