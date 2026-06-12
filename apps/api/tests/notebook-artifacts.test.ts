@@ -280,6 +280,22 @@ describe('buildArtifactContext — round-robin + even sample', () => {
     expect(lastPrompt).toContain('BetaBook');
   });
 
+  test('md prompt carries the rich-markup directive (mermaid + GFM tables)', async () => {
+    const { userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await freshNotebook(userId);
+    const a = await seedSource(userId, nb, 'AlphaBook', ['a0', 'a1']);
+    installComplete('ok');
+
+    const id = await insertArtifact(userId, nb, [a.sourceId]);
+    await generateArtifact(id);
+    // The reader renders the full RichCard pipeline — the generator is told to
+    // actually use it (diagrams grounded in the material, tokens kept out of
+    // mermaid blocks). Pin the directive so a prompt refactor can't drop it.
+    expect(lastPrompt).toContain('mermaid');
+    expect(lastPrompt).toContain('pipe tables');
+    expect(lastPrompt).toContain('NEVER inside mermaid blocks');
+  });
+
   test('evenSample picks first..last, distinct, ascending', () => {
     expect(evenSample([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 3)).toEqual([0, 5, 9]);
     expect(evenSample([0, 1, 2], 5)).toEqual([0, 1, 2]); // count ≥ len ⇒ all

@@ -2,28 +2,24 @@
 
 // StudioPanel («Блокноты 2.0» N2, Р12 «Студия» tab) — the right-dock studio
 // surface: a grid of generation tiles, the artifact list with job-status badges
-// (polled by use-artifact-status while any job is non-terminal), and an
-// overlay viewer that renders a ready artifact's markdown with clickable
-// `[src:]` footnote chips.
+// (polled by use-artifact-status while any job is non-terminal). Opening a
+// document mounts the FULL-WINDOW ArtifactReader overlay (the 340px dock was a
+// «микро окно» for a generated document); the panel just owns the open-id +
+// content fetch/polling and threads them into the reader.
 //
 //  • Tiles: 5 markdown types (summary/study_guide/faq/timeline/glossary) + a
 //    `quiz` tile (N3) that opens a question-count dialog before generating. A
 //    markdown tile click POSTs createArtifact(type) over the workspace's checked
 //    source scope, then optimistically refreshes the list. 4xx/409 errors map to
 //    an i18n toast by the machine error code (generation_in_progress → «Дождитесь…»).
-//  • A ready `quiz` artifact opens the QuizPlayer (instead of the markdown
-//    viewer): question-by-question runner → server-scored result → «слабые места
-//    → карточки» chat-prefill + attempt history.
 //  • List rows: type icon + title + status badge (spinner/pulse for pending/
 //    generating, rose for error with the errorCode prose, plain for ready) +
-//    updatedAt + a ⋯ menu (regenerate / delete with confirm). A ready row opens
-//    the viewer.
-//  • Viewer: markdown via the SAME card render pipeline (renderCardHtml →
-//    SafeHtml). [src:<chunkId>] tokens are stripped from the prose and rendered
-//    as a numbered, clickable footnote row ([1][2]…) — a click calls
-//    `onOpenCitation(chunkId)` (the workspace resolves the chunk's source and
-//    opens its citation-viewer). Buttons: copy (markdown, tokens stripped), to a
-//    note, regenerate, delete.
+//    updatedAt + a ⋯ menu (regenerate / delete with confirm). A ready/generating
+//    row opens the reader overlay.
+//  • Reader overlay (ArtifactReader): full-window, centered readable column. md
+//    renders via the RichCard pipeline with inline numbered `[src:]` citation
+//    chips + a footnote row (click → onOpenCitation); a ready `quiz` embeds the
+//    QuizPlayer. Actions: copy, to a note, download .md, regenerate, delete.
 //  • Gating: !chatEnabled ⇒ a setup notice instead of the tiles (degrade).
 //
 // Panel-local state; the parent owns the store methods + the chat-prefill /
@@ -39,7 +35,6 @@ import {
   type NotebookArtifactType,
 } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNSkeleton } from '@/components/ui';
-import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { useArtifactStatus, useArtifactTimers } from '@/lib/use-artifact-status';
@@ -48,20 +43,11 @@ import {
   formatElapsedSeconds,
   splitElapsed,
 } from '@/lib/artifact-progress';
-import { parseArtifactCitations, stripSrcTokens } from '@/lib/notebook-artifacts';
-import { QuizPlayer } from '@/components/notebook/quiz-player';
+import { ArtifactReader } from '@/components/notebook/artifact-reader';
 import type { buildAttemptAnswers } from '@/lib/quiz-player';
 import type { NotebookArtifact, QuizAttempt } from '@/lib/types';
 
 type Tfn = (key: string, params?: Record<string, string | number>) => string;
-
-// A single-field "basic" note-type that feeds artifact markdown through the card
-// render pipeline (markdown-it → DOMPurify via SafeHtml) — same pattern as the
-// notes panel + chat AssistantMarkdown. The sanitizer stays the single boundary.
-const ARTIFACT_MD_NOTE_TYPE = {
-  kind: 'basic' as const,
-  templates: [{ name: 'artifact', ord: 0, frontTemplate: '{{Body}}', backTemplate: '{{Body}}' }],
-};
 
 // The icon shown per artifact type (from the available NNIcon set).
 const TYPE_ICON: Record<NotebookArtifactType, string> = {
@@ -302,54 +288,41 @@ export const StudioPanel = ({
     [confirm, t, deleteArtifact, notebookId, openId],
   );
 
-  // ── Render: viewer ──────────────────────────────────────────────────────────────
-  if (openId) {
-    const closeViewer = () => {
-      setOpenId(null);
-      setOpenFull(null);
-    };
-    // A ready quiz opens the PLAYER, not the markdown viewer.
-    if (openFull && openFull.type === 'quiz' && openFull.status === 'ready') {
-      return (
-        <QuizPlayer
+  const closeViewer = useCallback(() => {
+    setOpenId(null);
+    setOpenFull(null);
+  }, []);
+
+  // ── Render: list + tiles (the reader is a full-window overlay over them) ──────────
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      {/* Full-window reader overlay — a ready/generating document opens here. */}
+      {openId && (
+        <ArtifactReader
           notebookId={notebookId}
           artifact={openFull}
-          sourceIds={openFull.sourceIds ?? openListRow?.sourceIds ?? []}
+          loading={openLoading}
+          sourceIds={openFull?.sourceIds ?? openListRow?.sourceIds ?? []}
           submitQuizAttempt={submitQuizAttempt}
           listQuizAttempts={listQuizAttempts}
           onOpenCitation={onOpenCitation}
+          onSaveToNote={onSaveToNote}
           onPrefillChat={onPrefillChat}
-          onBack={closeViewer}
+          onRegenerate={() => {
+            if (!openFull) return;
+            // Kick the regenerate and close the reader so the user sees the pending
+            // badge + live polling (the reader would otherwise show the stale/old
+            // content while the new one generates).
+            void onRegenerate(openFull);
+            closeViewer();
+          }}
+          onDelete={() => {
+            if (openFull) void onDelete(openFull);
+          }}
+          onClose={closeViewer}
           t={t}
         />
-      );
-    }
-    return (
-      <ArtifactViewer
-        artifact={openFull}
-        loading={openLoading}
-        sourceIds={openFull?.sourceIds ?? openListRow?.sourceIds ?? []}
-        onBack={closeViewer}
-        onOpenCitation={onOpenCitation}
-        onSaveToNote={onSaveToNote}
-        onRegenerate={() => {
-          if (!openFull) return;
-          // Kick the regenerate and return to the list so the user sees the
-          // pending badge + live polling (the viewer would otherwise show the
-          // stale/old content while the new one generates).
-          void onRegenerate(openFull);
-          setOpenId(null);
-          setOpenFull(null);
-        }}
-        onDelete={() => openFull && void onDelete(openFull)}
-        t={t}
-      />
-    );
-  }
-
-  // ── Render: list + tiles ─────────────────────────────────────────────────────────
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      )}
       {quizDialogOpen && (
         <QuizCountDialog
           onConfirm={onQuizConfirm}
@@ -760,210 +733,6 @@ function liveCharsDisplay(n: number, t: Tfn): string {
 function formatChars(n: number, t: Tfn): string {
   return t('notebooks.studio.chars', { chars: liveCharsDisplay(n, t) });
 }
-
-// ── Artifact viewer ──────────────────────────────────────────────────────────
-
-const ArtifactViewer = ({
-  artifact,
-  loading,
-  sourceIds,
-  onBack,
-  onOpenCitation,
-  onSaveToNote,
-  onRegenerate,
-  onDelete,
-  t,
-}: {
-  artifact: NotebookArtifact | null;
-  loading: boolean;
-  sourceIds: string[];
-  onBack: () => void;
-  onOpenCitation: (chunkId: string, sourceIds: string[]) => void;
-  onSaveToNote: (title: string, contentMd: string) => void | Promise<void>;
-  onRegenerate: () => void;
-  onDelete: () => void;
-  t: Tfn;
-}) => {
-  const contentMd = artifact?.contentMd ?? '';
-  // A job still running streams partial raw text into content_md — show it live
-  // (md: caret-tailed prose; quiz: a placeholder, the raw JSON isn't readable).
-  const live = artifact != null && (artifact.status === 'generating' || artifact.status === 'pending');
-  const { prose, footnotes } = useMemo(() => parseArtifactCitations(contentMd), [contentMd]);
-  const html = useMemo(
-    () => renderCardHtml(ARTIFACT_MD_NOTE_TYPE, { Body: prose }, 'front'),
-    [prose],
-  );
-
-  const onCopy = useCallback(() => {
-    void navigator.clipboard
-      ?.writeText(stripSrcTokens(contentMd))
-      .then(() => raiseToast({ kind: 'info', title: t('notebooks.studio.copied') }))
-      .catch(() => undefined);
-  }, [contentMd, t]);
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '8px 10px',
-          borderBottom: '1px solid var(--border)',
-          flexShrink: 0,
-        }}
-      >
-        <NNBtn variant="ghost" size="sm" icon="chevl" onClick={onBack}>
-          {t('notebooks.studio.back')}
-        </NNBtn>
-        <span style={{ flex: 1 }} />
-        {artifact && (
-          <>
-            {/* Copy / to-note / regenerate finalize a READY doc — hidden while a
-                stream is still running (only delete + back make sense live). */}
-            {!live && (
-              <>
-                <NNBtn
-                  variant="ghost"
-                  size="sm"
-                  icon="clip"
-                  ariaLabel={t('notebooks.studio.copy')}
-                  title={t('notebooks.studio.copy')}
-                  onClick={onCopy}
-                />
-                <NNBtn
-                  variant="ghost"
-                  size="sm"
-                  icon="doc"
-                  ariaLabel={t('notebooks.studio.toNote')}
-                  title={t('notebooks.studio.toNote')}
-                  onClick={() => void onSaveToNote(artifact.title, contentMd)}
-                />
-                <NNBtn
-                  variant="ghost"
-                  size="sm"
-                  icon="sync"
-                  ariaLabel={t('notebooks.studio.regenerate')}
-                  title={t('notebooks.studio.regenerate')}
-                  onClick={onRegenerate}
-                />
-              </>
-            )}
-            <NNBtn
-              variant="ghost"
-              size="sm"
-              icon="x"
-              ariaLabel={t('notebooks.studio.delete')}
-              title={t('notebooks.studio.delete')}
-              onClick={onDelete}
-            />
-          </>
-        )}
-      </div>
-
-      <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
-        {(loading && !artifact) || (!artifact) ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <NNSkeleton style={{ height: 18, width: '60%' }} />
-            <NNSkeleton style={{ height: 120 }} />
-          </div>
-        ) : live && artifact.type === 'quiz' ? (
-          // Quiz streams raw JSON into content_md — unreadable as markdown; show a
-          // placeholder with the live char count instead.
-          <div className="nn-empty-state" style={{ paddingTop: 28, paddingBottom: 28 }}>
-            <span className="nn-empty-state-icon">
-              <span className="nn-spin" style={{ display: 'flex' }}>
-                <NNIcon name="sync" size={22} color="var(--lime-400)" />
-              </span>
-            </span>
-            <p className="nn-empty-state-hint">
-              {t('notebooks.studio.quizGenerating', {
-                chars: liveCharsDisplay(contentMd.length, t),
-              })}
-            </p>
-          </div>
-        ) : live ? (
-          // Markdown types: render the partial prose with a blinking caret. Skip the
-          // footnote row — [src:] tokens finalize (intersect) only at ready.
-          <>
-            <h3
-              style={{
-                fontSize: 15,
-                fontWeight: 700,
-                color: 'var(--text)',
-                margin: '0 0 10px',
-                fontFamily: 'var(--font-sans)',
-                wordBreak: 'break-word',
-              }}
-            >
-              {artifact.title}
-            </h3>
-            {contentMd.length === 0 ? (
-              <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: 0 }}>
-                {t('notebooks.studio.liveGenerating')}
-              </p>
-            ) : (
-              <div style={{ position: 'relative' }}>
-                <SafeHtml
-                  html={html}
-                  style={{
-                    fontFamily: 'var(--font-sans)',
-                    fontSize: 13.5,
-                    lineHeight: 1.6,
-                    color: 'var(--text)',
-                    wordBreak: 'break-word',
-                  }}
-                />
-                <span className="nn-artifact-caret" aria-hidden="true" />
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            <h3
-              style={{
-                fontSize: 15,
-                fontWeight: 700,
-                color: 'var(--text)',
-                margin: '0 0 10px',
-                fontFamily: 'var(--font-sans)',
-                wordBreak: 'break-word',
-              }}
-            >
-              {artifact.title}
-            </h3>
-            <SafeHtml
-              html={html}
-              style={{
-                fontFamily: 'var(--font-sans)',
-                fontSize: 13.5,
-                lineHeight: 1.6,
-                color: 'var(--text)',
-                wordBreak: 'break-word',
-              }}
-            />
-            {footnotes.length > 0 && (
-              <div className="nn-studio-footnotes">
-                {footnotes.map((f) => (
-                  <button
-                    key={f.chunkId}
-                    type="button"
-                    className="nn-studio-footnote"
-                    onClick={() => onOpenCitation(f.chunkId, sourceIds)}
-                    title={t('notebooks.backlinks.open')}
-                  >
-                    <NNIcon name="doc" size={10} color="var(--sky-400)" />
-                    {f.n}
-                  </button>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-};
 
 // ── Quiz question-count dialog (N3) ─────────────────────────────────────────────
 // A small modal: presets (5/10/15/20) + a slider, default QUIZ_QUESTIONS_DEFAULT.

@@ -179,6 +179,10 @@ const notebooks = {
     copied: 'Copied',
     toNote: 'To a note',
     savedToNote: 'Saved to notes',
+    // Full-window document reader.
+    download: 'Download .md',
+    readerClose: 'Close',
+    untitled: 'Document',
     // A4 redesign — ready-document row, cancel generation, list footnote.
     cancelGeneration: 'Cancel generation',
     readyAt: 'Ready · {time}',

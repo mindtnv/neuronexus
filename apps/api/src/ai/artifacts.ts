@@ -177,13 +177,13 @@ const ARTIFACT_TYPE_INSTRUCTION: Record<
   string
 > = {
   summary:
-    'Write a structured briefing overview of the material: a short lead paragraph, then the key points organized under clear Markdown headings. Be faithful and concise.',
+    'Write a structured briefing overview of the material: a short lead paragraph, then the key points organized under clear Markdown headings. Where the material describes a process, system, or web of related ideas, add a ```mermaid diagram (flowchart TD or mindmap) that maps it. Be faithful and concise.',
   study_guide:
-    'Write a study guide: an overview, a «Key concepts» section (term + short explanation), the main themes broken into sections, and a «Self-check questions» list at the end.',
+    'Write a study guide: an overview, a «Key concepts» section formatted as a GFM pipe table (term | short explanation), the main themes broken into sections, and a «Self-check questions» list at the end. If the themes connect into a structure, sketch it as a ```mermaid mindmap or flowchart.',
   faq:
     'Write a FAQ: the most useful questions a learner would ask about this material, each with a concise answer grounded in the material. Use bold questions followed by answers.',
   timeline:
-    'Write a timeline: the events / stages / developments in the material in chronological order as a Markdown list. If the material is not chronological, order it by the progression of its argument or exposition instead.',
+    'Write a timeline: the events / stages / developments in the material in chronological order. Lead with a ```mermaid timeline (or flowchart LR for stage progressions) that captures the sequence, then expand each entry as a Markdown list with details. If the material is not chronological, order it by the progression of its argument or exposition instead.',
   glossary:
     'Write a glossary: the important terms and named concepts from the material, each with a concise definition grounded in the material. Format as a Markdown definition list (bold term — definition).',
 };
@@ -213,6 +213,17 @@ function buildArtifactMessages(
     'specific excerpt, cite it by appending its marker inline, e.g. «… as defined [src:abc]».',
     'Cite using ONLY the [src:<id>] markers present in the material — never invent an id.',
     'Output GitHub-Flavored Markdown. Do NOT wrap the whole answer in a code fence.',
+    // Rich-markup directive: the artifact reader renders the full pipeline
+    // (GFM tables, ```mermaid islands, KaTeX via \(...\), highlighted code), so
+    // the generator should USE it — a wall of prose is the failure mode.
+    'Use rich Markdown actively, not just prose: ## headings, **bold** key terms,',
+    'GFM pipe tables for comparisons and structured facts, fenced code blocks for',
+    'code or commands, and ```mermaid diagrams (flowchart TD/LR, sequenceDiagram,',
+    'timeline, mindmap) whenever the material has processes, relationships, stages,',
+    'or hierarchies worth visualizing. Diagrams must be grounded in the material —',
+    'never invent structure. Keep mermaid node labels short (a few words); put',
+    '[src:] citations in the surrounding text, NEVER inside mermaid blocks or tables',
+    'headers. For math, use KaTeX \\(...\\) / \\[...\\] (not $...$).',
     ARTIFACT_TYPE_INSTRUCTION[type],
   ].join(' ');
   return [

@@ -1257,6 +1257,105 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-artifact-caret { animation: none; opacity: 1; }
 }
 
+/* ── Full-window studio document reader (ArtifactReader) ──────────────────────
+   The 340px dock was a «микро окно» for a generated document — a ready artifact
+   now opens in a full-window overlay with a centered, readable column. */
+.nn-artifact-reader-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  background: rgba(0, 0, 0, 0.55);
+}
+.nn-artifact-reader {
+  position: fixed;
+  inset: 0;
+  z-index: 96;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.nn-artifact-reader-quiz,
+.nn-artifact-reader-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.nn-artifact-reader-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.nn-artifact-reader-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 8px;
+}
+.nn-artifact-reader-title {
+  flex-shrink: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  color: var(--text);
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nn-artifact-reader-head-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--border);
+}
+.nn-artifact-reader-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg);
+}
+.nn-artifact-reader-col {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 28px 32px 80px;
+}
+.nn-artifact-reader-doc-title {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: var(--font-sans);
+  color: var(--text);
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin: 0 0 18px;
+  word-break: break-word;
+}
+.nn-artifact-reader-prose {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text);
+  word-break: break-word;
+}
+.nn-artifact-reader-live-meta {
+  margin: 14px 0 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+@media (max-width: 720px) {
+  .nn-artifact-reader-col { padding: 18px 18px 64px; }
+  .nn-artifact-reader-doc-title { font-size: 20px; }
+}
+
+[data-theme="light"] .nn-artifact-reader-backdrop { background: rgba(0, 0, 0, 0.4); }
 [data-theme="light"] .nn-studio-tile { background: var(--surface); }
 [data-theme="light"] .nn-suggest-pill { background: var(--surface); }
 
