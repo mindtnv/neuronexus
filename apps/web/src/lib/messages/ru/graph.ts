@@ -1,5 +1,4 @@
 const m = {
-  pageSubtitle: '{nodes} узлов · {links} связей · {clusters} кластеров',
   toolbar: {
     force: 'Force',
     clusters: 'Кластеры',
@@ -50,23 +49,6 @@ const m = {
     mastered: 'освоено {pct}%',
     new: 'новая',
     askAi: 'Спросить AI про этот узел',
-  },
-  hover: {
-    hovered: 'Под курсором',
-    nothing: 'Ничего не выбрано',
-    hint: 'Наведи на узел, чтобы увидеть карту здесь.',
-    previewHint: 'Наведи на узел для превью карты',
-    stats: 'Статистика',
-    reviews: 'Повторы',
-    lapses: 'lapses',
-    stability: 'stability',
-    links: 'Связей',
-    tags: 'Теги · {n}',
-    mastery: 'освоение',
-    linkedOne: '{n} связанный узел',
-    linkedMany: '{n} связанных узлов',
-    mastered: 'освоено {pct}%',
-    new: 'новая',
   },
   constellation: {
     view: 'Созвездие',

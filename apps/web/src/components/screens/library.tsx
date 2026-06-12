@@ -320,7 +320,7 @@ export const LibraryScreen = () => {
       for (const file of files) {
         const mime = mimeForFile(file);
         if (!mime) {
-          raiseToast({ kind: 'info', title: t('library.toast.unsupported') });
+          raiseToast({ kind: 'error', title: t('library.toast.unsupported') });
           continue;
         }
         accepted.push({ file, mime });
@@ -337,10 +337,10 @@ export const LibraryScreen = () => {
             // Offer to open the existing item rather than silently skipping.
             await confirmDuplicate(file.name, err.existingSourceId);
           } else if (err instanceof LibraryFullError) {
-            raiseToast({ kind: 'info', title: t('library.toast.libraryFull') });
+            raiseToast({ kind: 'error', title: t('library.toast.libraryFull') });
             break;
           } else {
-            raiseToast({ kind: 'info', title: t('library.toast.uploadFailed') });
+            raiseToast({ kind: 'error', title: t('library.toast.uploadFailed') });
           }
         }
       }
@@ -400,9 +400,9 @@ export const LibraryScreen = () => {
         setAddDialog(null);
       } catch (err) {
         if (err instanceof LibraryFullError) {
-          raiseToast({ kind: 'info', title: t('library.toast.libraryFull') });
+          raiseToast({ kind: 'error', title: t('library.toast.libraryFull') });
         } else {
-          raiseToast({ kind: 'info', title: t('library.add.failed') });
+          raiseToast({ kind: 'error', title: t('library.add.failed') });
         }
       }
     },
@@ -535,7 +535,7 @@ export const LibraryScreen = () => {
         ) : (
           <div className="nn-empty-state" style={{ paddingTop: 56 }}>
             <span className="nn-empty-state-icon"><NNIcon name="book" size={36} color="var(--text-dim)" /></span>
-            <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', margin: 0, fontFamily: 'var(--font-sans)' }}>
+            <h3 className="nn-h1" style={{ fontSize: 22 }}>
               {t('library.empty.title')}
             </h3>
             <p className="nn-empty-state-hint" style={{ maxWidth: 320 }}>{t('library.empty.hint')}</p>
@@ -843,7 +843,7 @@ const FilterChip = ({ active, onClick, children }: { active: boolean; onClick: (
 
 const ContinueShelf = ({ items, onOpen, t }: { items: LibraryItem[]; onOpen: (id: string) => void; t: Tr }) => (
   <div style={{ marginBottom: 18 }}>
-    <h3 style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', margin: '0 0 8px', fontFamily: 'var(--font-sans)' }}>
+    <h3 className="nn-section-label" style={{ margin: '0 0 8px' }}>
       {t('library.shelf.continueReading')}
     </h3>
     <div className="nn-scroll" style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
@@ -1329,7 +1329,7 @@ const DetailsPanel = ({
         setDetail((prev) => (prev ? { ...prev, ...updated } : prev));
         onPatched(updated);
       } catch {
-        raiseToast({ kind: 'info', title: t('library.details.saveFailed') });
+        raiseToast({ kind: 'error', title: t('library.details.saveFailed') });
       }
     },
     [patchLibraryItem, itemId, onPatched, t],
@@ -1397,7 +1397,7 @@ const DetailsPanel = ({
       await deleteLibraryItem(itemId);
       onDeleted(itemId);
     } catch {
-      raiseToast({ kind: 'info', title: t('library.details.saveFailed') });
+      raiseToast({ kind: 'error', title: t('library.details.saveFailed') });
     }
   }, [detail, confirm, t, deleteLibraryItem, itemId, onDeleted]);
 
@@ -1419,7 +1419,7 @@ const DetailsPanel = ({
       setDetail((prev) => (prev ? { ...prev, status: 'pending', errorCode: null } : prev));
       void reload();
     } catch {
-      raiseToast({ kind: 'info', title: t('library.reingest.failed') });
+      raiseToast({ kind: 'error', title: t('library.reingest.failed') });
     }
   }, [detail, confirm, t, reingestLibraryItem, itemId, reload]);
 
@@ -1452,7 +1452,7 @@ const DetailsPanel = ({
       >
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', flex: 1 }}>
+          <span className="nn-section-label" style={{ margin: 0, flex: 1 }}>
             {t('library.details.title')}
           </span>
           <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} title={t('library.details.close')} onClick={onClose} />
@@ -1659,7 +1659,7 @@ const NotebookAttachPicker = ({
         await attachSources(nbId, [sourceId]);
         onAttached();
       } catch {
-        raiseToast({ kind: 'info', title: t('library.details.saveFailed') });
+        raiseToast({ kind: 'error', title: t('library.details.saveFailed') });
       } finally {
         setBusy(false);
       }

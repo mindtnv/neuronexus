@@ -1,5 +1,4 @@
 const m = {
-  pageSubtitle: '{nodes} nodes · {links} links · {clusters} clusters',
   toolbar: {
     force: 'Force',
     clusters: 'Clusters',
@@ -50,23 +49,6 @@ const m = {
     mastered: 'mastered {pct}%',
     new: 'new',
     askAi: 'Ask AI about this node',
-  },
-  hover: {
-    hovered: 'Hovered node',
-    nothing: 'Nothing hovered',
-    hint: 'Hover a node to preview its card here.',
-    previewHint: 'Hover a node to preview the card',
-    stats: 'Stats',
-    reviews: 'Reviews',
-    lapses: 'Lapses',
-    stability: 'Stability',
-    links: 'Links',
-    tags: 'Tags · {n}',
-    mastery: 'mastery',
-    linkedOne: '{n} linked node',
-    linkedMany: '{n} linked nodes',
-    mastered: 'mastered {pct}%',
-    new: 'new',
   },
   constellation: {
     view: 'Constellation view',

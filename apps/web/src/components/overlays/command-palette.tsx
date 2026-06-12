@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { NNIcon, NNKbd } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
-import type { Card, Deck, DeckColor } from '@/lib/types';
+import type { Card, Deck, DeckColor, LibraryItem, Notebook } from '@/lib/types';
 import { useT } from '@/lib/i18n';
 
 // NeuroNexus — Command Palette (⌘K)
@@ -34,12 +34,17 @@ const buildStaticCmdData: StaticBuilder = (t) => {
     { group: GRP_QUICK, id: 'review-now', icon: 'bolt',  label: t('overlays.palette.quick.reviewNow.label'), sub: t('overlays.palette.quick.reviewNow.sub'), kbd: [], href: '/review' },
     { group: GRP_QUICK, id: 'new-card',   icon: 'plus',  label: t('overlays.palette.quick.newCard.label'),   sub: t('overlays.palette.quick.newCard.sub'),   kbd: [], href: '/editor' },
     { group: GRP_QUICK, id: 'new-deck',   icon: 'stack', label: t('overlays.palette.quick.newDeck.label'),   sub: null, kbd: [], href: '/decks' },
-    { group: GRP_NAV,   id: 'nav-home',     icon: 'home',     label: t('overlays.palette.quick.goHome'),     sub: null, kbd: [], href: '/' },
-    { group: GRP_NAV,   id: 'nav-review',   icon: 'bolt',     label: t('overlays.palette.quick.goReview'),   sub: null, kbd: [], href: '/review' },
-    { group: GRP_NAV,   id: 'nav-graph',    icon: 'graph',    label: t('overlays.palette.quick.goGraph'),    sub: null, kbd: [], href: '/graph' },
-    { group: GRP_NAV,   id: 'nav-decks',    icon: 'stack',    label: t('overlays.palette.quick.goDecks'),    sub: null, kbd: [], href: '/decks' },
-    { group: GRP_NAV,   id: 'nav-stats',    icon: 'target',   label: t('overlays.palette.quick.goStats'),    sub: null, kbd: [], href: '/stats' },
-    { group: GRP_NAV,   id: 'nav-settings', icon: 'settings', label: t('overlays.palette.quick.goSettings'), sub: null, kbd: [], href: '/settings' },
+    { group: GRP_NAV,   id: 'nav-home',      icon: 'home',     label: t('overlays.palette.quick.goHome'),      sub: null, kbd: [], href: '/' },
+    { group: GRP_NAV,   id: 'nav-review',    icon: 'bolt',     label: t('overlays.palette.quick.goReview'),    sub: null, kbd: [], href: '/review' },
+    { group: GRP_NAV,   id: 'nav-graph',     icon: 'graph',    label: t('overlays.palette.quick.goGraph'),     sub: null, kbd: [], href: '/graph' },
+    { group: GRP_NAV,   id: 'nav-decks',     icon: 'stack',    label: t('overlays.palette.quick.goDecks'),     sub: null, kbd: [], href: '/decks' },
+    { group: GRP_NAV,   id: 'nav-library',   icon: 'book',     label: t('overlays.palette.quick.goLibrary'),   sub: null, kbd: [], href: '/library' },
+    { group: GRP_NAV,   id: 'nav-notebooks', icon: 'doc',      label: t('overlays.palette.quick.goNotebooks'), sub: null, kbd: [], href: '/notebooks' },
+    { group: GRP_NAV,   id: 'nav-chat',      icon: 'sparkle',  label: t('overlays.palette.quick.goChat'),      sub: null, kbd: [], href: '/chat' },
+    { group: GRP_NAV,   id: 'nav-garden',    icon: 'garden',   label: t('overlays.palette.quick.goGarden'),    sub: null, kbd: [], href: '/garden' },
+    { group: GRP_NAV,   id: 'nav-note-types',icon: 'grid',     label: t('overlays.palette.quick.goNoteTypes'), sub: null, kbd: [], href: '/note-types' },
+    { group: GRP_NAV,   id: 'nav-stats',     icon: 'target',   label: t('overlays.palette.quick.goStats'),     sub: null, kbd: [], href: '/stats' },
+    { group: GRP_NAV,   id: 'nav-settings',  icon: 'settings', label: t('overlays.palette.quick.goSettings'),  sub: null, kbd: [], href: '/settings' },
   ];
 };
 
@@ -76,17 +81,61 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
 
   const decks = useNN((s) => s.decks);
   const cards = useNN((s) => s.cards);
+  const listLibrary = useNN((s) => s.listLibrary);
+  const listNotebooks = useNN((s) => s.listNotebooks);
+
+  // Knowledge-domain search data (P3.2). Notebooks load once on open + filter
+  // client-side (small list); library sources are fetched server-side with a
+  // debounced `q` (reuses the same idiom as the card debounce reset below).
+  const [notebooks, setNotebooks] = useState<Notebook[]>([]);
+  const [sources, setSources] = useState<LibraryItem[]>([]);
 
   const STATIC_CMD_DATA = useMemo(() => buildStaticCmdData(t), [t]);
   const GROUP_ORDER = useMemo(() => [
     t('overlays.palette.groups.quickActions'),
     t('overlays.palette.groups.cards'),
     t('overlays.palette.groups.decks'),
+    t('overlays.palette.groups.sources'),
+    t('overlays.palette.groups.notebooks'),
     t('overlays.palette.groups.graph'),
     t('overlays.palette.groups.navigate'),
   ], [t]);
   const groupCards = t('overlays.palette.groups.cards');
   const groupDecks = t('overlays.palette.groups.decks');
+  const groupSources = t('overlays.palette.groups.sources');
+  const groupNotebooks = t('overlays.palette.groups.notebooks');
+
+  // Load notebooks once when the palette opens (graceful: empty on failure).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const nbs = await listNotebooks();
+        if (!cancelled) setNotebooks(nbs);
+      } catch {
+        if (!cancelled) setNotebooks([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [listNotebooks]);
+
+  // Debounced library source search (server-side `q`). Empty query → show the
+  // most recent items; any error degrades silently to no source rows.
+  useEffect(() => {
+    const q = query.trim();
+    let cancelled = false;
+    const id = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await listLibrary(q ? { q, limit: 6 } : { limit: 6 });
+          if (!cancelled) setSources(res.items);
+        } catch {
+          if (!cancelled) setSources([]);
+        }
+      })();
+    }, 180);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [query, listLibrary]);
 
   // Filter + group
   const filtered = useMemo<Record<string, CmdItem[]>>(() => {
@@ -131,11 +180,37 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
         } satisfies CmdItem;
       });
 
+    // Library sources are already query-filtered server-side; client-filter is a
+    // cheap belt-and-suspenders so a stale debounce frame doesn't show non-matches.
+    const sourceItems: CmdItem[] = sources
+      .filter((s) => matches(q, s.title, s.author))
+      .slice(0, 6)
+      .map((s) => ({
+        group: groupSources,
+        id: `source-${s.id}`,
+        icon: 'book',
+        label: s.title.trim() || t('overlays.palette.untitledCard'),
+        sub: t('overlays.palette.sourceItemSub', { kind: s.kind.toUpperCase() }),
+        href: `/library/${s.id}`,
+      } satisfies CmdItem));
+
+    const notebookItems: CmdItem[] = notebooks
+      .filter((n) => matches(q, n.title))
+      .slice(0, 6)
+      .map((n) => ({
+        group: groupNotebooks,
+        id: `notebook-${n.id}`,
+        icon: 'doc',
+        label: n.title.trim() || t('overlays.palette.untitledCard'),
+        sub: t('overlays.palette.notebookItemSub'),
+        href: `/notebooks/${n.id}`,
+      } satisfies CmdItem));
+
     const staticItems = STATIC_CMD_DATA.filter((d) =>
       matches(q, d.label, d.sub, d.group),
     );
 
-    const everything: CmdItem[] = [...staticItems, ...cardItems, ...deckItems];
+    const everything: CmdItem[] = [...staticItems, ...cardItems, ...deckItems, ...sourceItems, ...notebookItems];
 
     // Group
     const groups: Record<string, CmdItem[]> = {};
@@ -158,7 +233,7 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
       if (!(key in ordered) && groups[key].length) ordered[key] = groups[key];
     }
     return ordered;
-  }, [query, cards, decks, STATIC_CMD_DATA, GROUP_ORDER, groupCards, groupDecks, t]);
+  }, [query, cards, decks, sources, notebooks, STATIC_CMD_DATA, GROUP_ORDER, groupCards, groupDecks, groupSources, groupNotebooks, t]);
 
   const flatItems = useMemo(() => Object.values(filtered).flat(), [filtered]);
 

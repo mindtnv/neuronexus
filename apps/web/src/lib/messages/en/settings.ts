@@ -1,5 +1,4 @@
 const m = {
-  pageSubtitle: 'Profile · goals · algorithm',
   nav: {
     account: 'Account',
     learning: 'Learning',
@@ -34,6 +33,33 @@ const m = {
     subtitle: 'Standing preferences for the chat assistant — tone, language, focus.',
     placeholder: 'E.g. “Always answer in German. Keep answers short. Prefer examples over theory.”',
     hint: 'Applied to every chat turn. Can never override grounding or confirm-before-write.',
+  },
+  // Appearance — theme + language (P3.3).
+  appearance: {
+    title: 'Appearance',
+    subtitle: 'Theme and interface language.',
+    theme: 'Theme',
+    themeDark: 'Dark',
+    themeLight: 'Light',
+    themeSystem: 'System',
+    language: 'Language',
+  },
+  // AI status — read-only feature flags from GET /ai/status (P3.3b). No keys/URLs.
+  aiStatus: {
+    title: 'AI status',
+    subtitle: 'Which AI features are enabled on the server.',
+    hint: 'Configured via .env — read-only here.',
+    on: 'On',
+    off: 'Off',
+    chat: 'Chat',
+    embedding: 'Embeddings',
+    webSearch: 'Web search',
+    vision: 'Image input',
+    notebooks: 'Notebooks',
+    chatModel: 'Chat model',
+    embeddingModel: 'Embedding model',
+    models: 'Model picker',
+    none: '—',
   },
   algoHeading: 'Algorithm (FSRS-5)',
   algoIntro: 'The Free Spaced Repetition Scheduler v5 tuned to your data. Anki compatibility is preserved for imports.',
@@ -161,6 +187,24 @@ const m = {
     retentionPct: '{pct}% (override)',
     retentionInherit: 'Inherit global',
     boundTo: 'bound to {n} deck(s)',
+  },
+  garden: {
+    title: 'Garden plant',
+    subtitle: '{n} of 6 unlocked. Pick which one grows in the center of your garden.',
+  },
+  weightsSubtitle:
+    'The FSRS algorithm schedules your reviews. Parameters are shared across users for now; per-weight personalization is coming in a future version.',
+  signOut: {
+    title: 'Sign out',
+    subtitle: 'Your session closes, your data stays — sign back in to continue.',
+  },
+  species: {
+    fern: { label: 'Fern', unlock: 'Default' },
+    cactus: { label: 'Cactus', unlock: 'Level 5' },
+    succulent: { label: 'Succulent', unlock: '1,000 reviews' },
+    bonsai: { label: 'Bonsai', unlock: 'Streak 100' },
+    sakura: { label: 'Sakura', unlock: 'Streak 30' },
+    mushroom: { label: 'Mushroom', unlock: 'Streak 365' },
   },
 };
 export default m;

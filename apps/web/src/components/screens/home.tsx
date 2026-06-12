@@ -9,7 +9,8 @@ import { countDueCards } from '@/lib/cards';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
 import { reviewFromApi } from '@/lib/mappers';
-import type { Review } from '@/lib/types';
+import type { LibraryItem, Notebook, Review } from '@/lib/types';
+import { sourceKindToneVar } from '@/lib/source-kind';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT, useDateLocale } from '@/lib/i18n';
@@ -24,10 +25,17 @@ export const NNHome = () => {
   const bootstrapped = useNN((s) => s.bootstrapped);
   const cards = useNN((s) => s.cards);
   const profile = useNN((s) => s.profile);
+  const listLibrary = useNN((s) => s.listLibrary);
+  const listNotebooks = useNN((s) => s.listNotebooks);
 
   const [recentReviews, setRecentReviews] = useState<Review[]>([]);
   const [monthReviews, setMonthReviews] = useState<Review[]>([]);
   const [lastReviewAt, setLastReviewAt] = useState<number | null>(null);
+
+  // ── Knowledge domains (P3.1) — lazy, post-bootstrap, graceful-hide on empty ──
+  const [reading, setReading] = useState<LibraryItem[]>([]);
+  const [notebooks, setNotebooks] = useState<Notebook[]>([]);
+  const [chatEnabled, setChatEnabled] = useState(false);
 
   useEffect(() => {
     if (!bootstrapped) return;
@@ -60,6 +68,34 @@ export const NNHome = () => {
     };
   }, [bootstrapped]);
 
+  // Knowledge domains — lazy after bootstrap, in parallel. Each branch degrades
+  // independently: a failed/empty fetch just leaves its section hidden. The AI
+  // tile gates on /ai/status.chatEnabled (same source the chat screen reads).
+  useEffect(() => {
+    if (!bootstrapped) return;
+    let cancelled = false;
+    void (async () => {
+      const [readingRes, nbRes, statusRes] = await Promise.all([
+        listLibrary({ reading: 'reading', sort: 'lastRead', limit: 3 }).catch(() => null),
+        listNotebooks().catch(() => null),
+        (async () => {
+          try {
+            return (await ok(await (api as any).ai.status.get())) as { chatEnabled?: boolean };
+          } catch {
+            return null;
+          }
+        })(),
+      ]);
+      if (cancelled) return;
+      setReading(readingRes?.items ?? []);
+      setNotebooks(nbRes ?? []);
+      setChatEnabled(Boolean(statusRes?.chatEnabled));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapped, listLibrary, listNotebooks]);
+
   const now = useMemo(() => new Date(), []);
 
   const dueCount = useMemo(
@@ -85,7 +121,8 @@ export const NNHome = () => {
   const reviewCount = Math.max(0, dueCount - newCount - learningCount);
   const estMinutes = Math.round(dueCount * 0.25);
 
-  // Today's reviewed minutes — TODO: sum durationMs from today's reviews for real impl.
+  // Today's reviewed minutes — sums durationMs across today's reviews (fallback
+  // to the server ledger below, which is authoritative once it rolls up).
   const todayReviewedMinutes = useMemo(() => {
     const today = startOfDay(now).getTime();
     const msToday = recentReviews
@@ -389,9 +426,231 @@ export const NNHome = () => {
           </div>
         </NNCard>
       </div>
+
+      {(reading.length > 0 || notebooks.length > 0 || chatEnabled) && (
+        <HomeKnowledge
+          reading={reading}
+          notebooks={notebooks}
+          chatEnabled={chatEnabled}
+          isMobile={isMobile}
+          onOpen={(href) => router.push(href)}
+          t={t}
+        />
+      )}
     </div>
   );
 };
+
+// ── Knowledge domains block (P3.1) ───────────────────────────────────────────
+// Reuses the notebooks visual language (.nn-section-label eyebrows, tone tiles,
+// letter-tile covers) — no new CSS. Only renders the sub-blocks that have data.
+function HomeKnowledge({
+  reading,
+  notebooks,
+  chatEnabled,
+  isMobile,
+  onOpen,
+  t,
+}: {
+  reading: LibraryItem[];
+  notebooks: Notebook[];
+  chatEnabled: boolean;
+  isMobile: boolean;
+  onOpen: (href: string) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  return (
+    <div style={{ marginTop: isMobile ? 14 : 24, display: 'grid', gap: isMobile ? 14 : 20 }}>
+      {reading.length > 0 && (
+        <section>
+          <div className="nn-section-label">{t('home.knowledge.continueReading')}</div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
+              gap: isMobile ? 10 : 14,
+            }}
+          >
+            {reading.slice(0, 3).map((item) => {
+              const tone = sourceKindToneVar(item.kind);
+              const letter = item.title.trim().charAt(0).toUpperCase() || '?';
+              const pct = item.percent != null ? Math.round(item.percent * 100) : null;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onOpen(`/library/${item.id}`)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: 14,
+                    borderRadius: 14,
+                    background: 'var(--surface)',
+                    border: '1px solid var(--border)',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  <span
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 40,
+                      height: 52,
+                      flexShrink: 0,
+                      borderRadius: 6,
+                      overflow: 'hidden',
+                      background: item.coverUrl
+                        ? 'var(--surface-3)'
+                        : `linear-gradient(135deg, color-mix(in srgb, ${tone} 30%, var(--surface-3)), var(--surface-3))`,
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    {item.coverUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={item.coverUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    ) : (
+                      <span style={{ fontFamily: 'var(--font-serif)', fontSize: 22, color: tone, lineHeight: 1 }}>
+                        {letter}
+                      </span>
+                    )}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span
+                      style={{
+                        display: 'block',
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        color: 'var(--text)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {item.title}
+                    </span>
+                    {pct != null && (
+                      <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-dim)', marginTop: 3 }}>
+                        {t('home.knowledge.readPercent', { n: pct })}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {notebooks.length > 0 && (
+        <section>
+          <div className="nn-section-label">{t('home.knowledge.notebooks')}</div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
+              gap: isMobile ? 10 : 14,
+            }}
+          >
+            {notebooks.slice(0, 3).map((nb) => (
+              <button
+                key={nb.id}
+                type="button"
+                onClick={() => onOpen(`/notebooks/${nb.id}`)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: 14,
+                  borderRadius: 14,
+                  background: 'var(--surface)',
+                  border: '1px solid var(--border)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontFamily: 'inherit',
+                }}
+              >
+                <span
+                  className="nn-nb-tile"
+                  style={{ background: 'color-mix(in srgb, var(--violet-400) 16%, var(--surface-2))', color: 'var(--violet-400)' }}
+                  aria-hidden
+                >
+                  {nb.emoji || nb.title.trim().charAt(0).toUpperCase() || '?'}
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span
+                    style={{
+                      display: 'block',
+                      fontSize: 13.5,
+                      fontWeight: 600,
+                      color: 'var(--text)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {nb.title}
+                  </span>
+                  {nb.sourceCount != null && (
+                    <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-dim)', marginTop: 3 }}>
+                      {t('home.knowledge.sourceCount', { n: nb.sourceCount })}
+                    </span>
+                  )}
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {chatEnabled && (
+        <button
+          type="button"
+          onClick={() => onOpen('/chat')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 14,
+            padding: 16,
+            borderRadius: 14,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            cursor: 'pointer',
+            textAlign: 'left',
+            fontFamily: 'inherit',
+          }}
+        >
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 40,
+              height: 40,
+              flexShrink: 0,
+              borderRadius: 12,
+              background: 'color-mix(in srgb, var(--violet-400) 16%, transparent)',
+            }}
+          >
+            <NNIcon name="sparkle" size={19} color="var(--violet-400)" />
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
+              {t('home.knowledge.askAi')}
+            </span>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
+              {t('home.knowledge.askAiDesc')}
+            </span>
+          </span>
+          <NNIcon name="chevr" size={16} color="var(--text-dim)" />
+        </button>
+      )}
+    </div>
+  );
+}
 
 function HomeSkeleton({ isMobile }: { isMobile: boolean }) {
   return (

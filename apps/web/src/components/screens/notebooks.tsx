@@ -24,7 +24,6 @@ import {
   SOURCE_NONTERMINAL_STATUSES,
   type IngestErrorCode,
   type NotebookColor,
-  type SourceKind,
   type SourceMime,
   type SourceStatus,
 } from '@neuronexus/shared';
@@ -34,6 +33,8 @@ import { useNN } from '@/lib/store';
 import type { Notebook, NotebookCoverSource, Source } from '@/lib/types';
 import { useIsMobile } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
+import { relativeUpdated } from '@/lib/notebook-format';
+import { sourceKindToneVar } from '@/lib/source-kind';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 
@@ -72,28 +73,6 @@ const pressToOpen = (open: () => void) => (e: React.KeyboardEvent) => {
   }
 };
 
-/** Hand-rolled relative «updated N ago» (no dep) — uses notebooks.meta.* keys. */
-function relativeUpdated(iso: string | undefined, t: Tfn): string {
-  if (!iso) return '';
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return '';
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return t('notebooks.meta.relativeNow');
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 60) return t('notebooks.meta.relativeMinutes', { count: mins });
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return t('notebooks.meta.relativeHours', { count: hours });
-  return t('notebooks.meta.relativeDays', { count: Math.floor(hours / 24) });
-}
-
-// ── Cover-fan tones per source kind (A3 redesign) ──────────────────────────────
-const COVER_KIND_TONE: Record<SourceKind, string> = {
-  pdf: 'var(--rose-500)',
-  epub: 'var(--violet-500)',
-  url: 'var(--sky-400)',
-  text: 'var(--amber-500)',
-};
-
 /** Card meta line: «N источников · M документов» (the `documents` count is the
  *  notebook's studio artifacts). Reuses the existing flat-count i18n style. */
 function metaLine(nb: Notebook, t: Tfn): string {
@@ -118,7 +97,7 @@ const NotebookMiniCover = ({
   h: number;
 }) => {
   const [failed, setFailed] = useState(false);
-  const tone = COVER_KIND_TONE[cover.kind] ?? 'var(--text-muted)';
+  const tone = sourceKindToneVar(cover.kind);
   const showImage = Boolean(cover.coverMediaId) && !failed;
   const letter = cover.title.trim().charAt(0).toUpperCase() || '?';
   return (
@@ -290,7 +269,7 @@ export const NotebooksScreen = () => {
         }
         setCreateOpen(false);
       } catch {
-        raiseToast({ kind: 'info', title: t('notebooks.list.tooMany') });
+        raiseToast({ kind: 'error', title: t('notebooks.list.tooMany') });
       }
     },
     [createNotebook, patchNotebook, t],
@@ -327,7 +306,7 @@ export const NotebooksScreen = () => {
           ),
         );
       } catch {
-        raiseToast({ kind: 'info', title: t('notebooks.meta.saveFailed') });
+        raiseToast({ kind: 'error', title: t('notebooks.meta.saveFailed') });
       }
     },
     [prompt, t, patchNotebook],
@@ -351,7 +330,7 @@ export const NotebooksScreen = () => {
           );
         });
       } catch {
-        raiseToast({ kind: 'info', title: t('notebooks.meta.saveFailed') });
+        raiseToast({ kind: 'error', title: t('notebooks.meta.saveFailed') });
       }
     },
     [patchNotebook, t],
@@ -364,7 +343,7 @@ export const NotebooksScreen = () => {
         // The row leaves the current shelf (active ↔ archive).
         setNotebooks((prev) => prev.filter((n) => n.id !== nb.id));
       } catch {
-        raiseToast({ kind: 'info', title: t('notebooks.meta.saveFailed') });
+        raiseToast({ kind: 'error', title: t('notebooks.meta.saveFailed') });
       }
     },
     [patchNotebook, t],
@@ -383,7 +362,7 @@ export const NotebooksScreen = () => {
         await deleteNotebook(nb.id);
         setNotebooks((prev) => prev.filter((n) => n.id !== nb.id));
       } catch {
-        raiseToast({ kind: 'info', title: t('notebooks.meta.saveFailed') });
+        raiseToast({ kind: 'error', title: t('notebooks.meta.saveFailed') });
       }
     },
     [confirm, t, deleteNotebook],

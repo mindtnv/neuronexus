@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ANKI_DEFAULTS, MIN_RETENTION, MAX_RETENTION } from '@neuronexus/shared';
-import { NNBadge, NNBtn } from '@/components/ui';
+import { NNBadge, NNBtn, NNIcon } from '@/components/ui';
 import { signOut, useSession } from '@/lib/auth';
 import { api, ok } from '@/lib/api';
 import { useNN } from '@/lib/store';
@@ -11,11 +11,25 @@ import type { DeckOptionsPreset } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
+import { LocaleToggle } from '@/components/locale-toggle';
+import { getTheme, setTheme, type ThemePref } from '@/lib/theme';
 import {
   isNotificationsEnabled,
   requestNotificationPermission,
   setNotificationsEnabled,
 } from '@/lib/notify';
+
+// Read-only flag snapshot from GET /ai/status (P3.3b) — never exposes keys/URLs.
+type AiStatusFlags = {
+  chatEnabled: boolean;
+  embeddingEnabled: boolean;
+  webSearchEnabled?: boolean;
+  visionEnabled?: boolean;
+  notebooksEnabled?: boolean;
+  chatModel?: string | null;
+  embeddingModel?: string | null;
+  models?: { id: string; label?: string; default?: boolean }[];
+};
 
 // ─────────────────────────────────────────────
 // SETTINGS — only the controls that are actually wired to the server.
@@ -248,6 +262,37 @@ export const NNSettings = () => {
   const unlocked = profile?.unlockedSpecies ?? ['fern'];
   const currentSpecies = profile?.plantSpecies ?? 'fern';
 
+  // ── Theme preference (P3.3a) ─────────────────────────────────────────────
+  const [theme, setThemePref] = useState<ThemePref>('system');
+  useEffect(() => {
+    setThemePref(getTheme());
+  }, []);
+  const pickTheme = (next: ThemePref) => {
+    setThemePref(next);
+    setTheme(next);
+  };
+
+  // ── AI status (P3.3b) — read-only feature flags + models, lazy on mount ──
+  const [aiStatus, setAiStatus] = useState<AiStatusFlags | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const s = (await ok(await (api as any).ai.status.get())) as AiStatusFlags;
+        if (!cancelled) setAiStatus(s);
+      } catch {
+        if (!cancelled) setAiStatus(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const themeOptions: { key: ThemePref; label: string }[] = [
+    { key: 'dark', label: t('settings.appearance.themeDark') },
+    { key: 'light', label: t('settings.appearance.themeLight') },
+    { key: 'system', label: t('settings.appearance.themeSystem') },
+  ];
+
   return (
     <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : '28px 40px', maxWidth: 880, width: '100%', margin: '0 auto' }}>
       {/* ── Profile ── */}
@@ -296,6 +341,65 @@ export const NNSettings = () => {
             </div>
           </Field>
         </div>
+      </Section>
+
+      {/* ── Appearance (P3.3) — theme + language ── */}
+      <Section title={t('settings.appearance.title')} subtitle={t('settings.appearance.subtitle')}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 14 : 18 }}>
+          <Field label={t('settings.appearance.theme')}>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {themeOptions.map((o) => {
+                const active = theme === o.key;
+                return (
+                  <button
+                    key={o.key}
+                    type="button"
+                    onClick={() => { if (!active) pickTheme(o.key); }}
+                    aria-pressed={active}
+                    style={{
+                      flex: 1,
+                      padding: '10px 6px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      background: active ? 'var(--lime-500)' : 'var(--surface-2)',
+                      color: active ? '#0a0b0d' : 'var(--text)',
+                      border: active ? '1px solid var(--lime-500)' : '1px solid var(--border)',
+                      fontSize: 13,
+                      fontWeight: 500,
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+          <Field label={t('settings.appearance.language')}>
+            <LocaleToggle />
+          </Field>
+        </div>
+      </Section>
+
+      {/* ── AI status (P3.3b) — read-only feature flags from GET /ai/status ── */}
+      <Section
+        title={t('settings.aiStatus.title')}
+        subtitle={t('settings.aiStatus.subtitle')}
+        accent={<NNBadge tone="neutral" size="xs">{t('settings.aiStatus.hint')}</NNBadge>}
+      >
+        <AiFlagRow label={t('settings.aiStatus.chat')} on={aiStatus?.chatEnabled} t={t} />
+        <AiFlagRow label={t('settings.aiStatus.embedding')} on={aiStatus?.embeddingEnabled} t={t} />
+        <AiFlagRow label={t('settings.aiStatus.webSearch')} on={aiStatus?.webSearchEnabled} t={t} />
+        <AiFlagRow label={t('settings.aiStatus.vision')} on={aiStatus?.visionEnabled} t={t} />
+        <AiFlagRow label={t('settings.aiStatus.notebooks')} on={aiStatus?.notebooksEnabled} t={t} />
+        <InfoRow label={t('settings.aiStatus.chatModel')} value={aiStatus?.chatModel || t('settings.aiStatus.none')} />
+        <InfoRow label={t('settings.aiStatus.embeddingModel')} value={aiStatus?.embeddingModel || t('settings.aiStatus.none')} />
+        {aiStatus?.models && aiStatus.models.length > 0 && (
+          <InfoRow
+            label={t('settings.aiStatus.models')}
+            value={aiStatus.models.map((m) => m.label || m.id).join(' · ')}
+          />
+        )}
       </Section>
 
       {/* ── Agent instructions (C5) — standing preferences for the chat agent ── */}
@@ -363,7 +467,7 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Plant species picker ── */}
-      <Section title="Растение сада" subtitle={`Открыто: ${unlocked.length} из 6. Выбери, какое растёт в центре сада.`}>
+      <Section title={t('settings.garden.title')} subtitle={t('settings.garden.subtitle', { n: unlocked.length })}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
           {SPECIES.map((s) => {
             const isUnlocked = unlocked.includes(s.key);
@@ -377,7 +481,7 @@ export const NNSettings = () => {
                 style={{
                   padding: '14px 10px',
                   borderRadius: 12,
-                  background: active ? 'rgba(154,209,85,0.14)' : 'var(--surface-2)',
+                  background: active ? 'color-mix(in srgb, var(--lime-400) 14%, transparent)' : 'var(--surface-2)',
                   border: `1px solid ${active ? 'var(--lime-500)' : 'var(--border)'}`,
                   color: 'var(--text)',
                   cursor: isUnlocked ? 'pointer' : 'not-allowed',
@@ -393,9 +497,9 @@ export const NNSettings = () => {
                 <span style={{ fontSize: 28 }} aria-hidden>
                   {s.emoji}
                 </span>
-                <span style={{ fontSize: 12.5, fontWeight: 500 }}>{s.label}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 500 }}>{t(`settings.species.${s.key}.label`)}</span>
                 {!isUnlocked && (
-                  <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{s.unlock}</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{t(`settings.species.${s.key}.unlock`)}</span>
                 )}
               </button>
             );
@@ -406,7 +510,7 @@ export const NNSettings = () => {
       {/* ── FSRS algorithm info (read-only) ── */}
       <Section
         title={t('settings.weights.title')}
-        subtitle="Алгоритм FSRS — используется для планирования повторов. Параметры пока общие для всех пользователей; персонализация веса — в следующих версиях."
+        subtitle={t('settings.weightsSubtitle')}
         accent={<NNBadge tone="neutral" size="xs">{t('settings.weights.advanced')}</NNBadge>}
       >
         <InfoRow label="Learning steps" value={ANKI_DEFAULTS.learningSteps.join(' · ')} />
@@ -428,8 +532,9 @@ export const NNSettings = () => {
         }
       >
         {presets.length === 0 && presetEditing !== 'new' && (
-          <div style={{ fontSize: 13, color: 'var(--text-dim)', padding: '8px 0' }}>
-            {t('settings.deckOptions.noPresets')}
+          <div className="nn-empty-state" style={{ paddingTop: 12, paddingBottom: 12 }}>
+            <span className="nn-empty-state-icon"><NNIcon name="stack" size={22} color="var(--text-dim)" /></span>
+            <p className="nn-empty-state-hint">{t('settings.deckOptions.noPresets')}</p>
           </div>
         )}
         {presetDeleteError && (
@@ -571,12 +676,12 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Danger zone ── */}
-      <div style={{ ...cardStyle, borderColor: 'rgba(251, 113, 133, 0.25)', marginBottom: 24 }}>
+      <div style={{ ...cardStyle, borderColor: 'color-mix(in srgb, var(--rose-400) 25%, transparent)', marginBottom: 24 }}>
         {/* Sign out */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid rgba(251,113,133,0.15)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid color-mix(in srgb, var(--rose-400) 15%, transparent)' }}>
           <div style={{ flex: 1, minWidth: 200 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--rose-500)' }}>Выйти из аккаунта</div>
-            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>Сессия закроется, данные останутся — зайди снова, чтобы продолжить.</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--rose-500)' }}>{t('settings.signOut.title')}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{t('settings.signOut.subtitle')}</div>
           </div>
           <NNBtn size="md" variant="danger" icon="x" onClick={handleSignOut}>{t('auth.signOut')}</NNBtn>
         </div>
@@ -660,7 +765,7 @@ function Section({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>{label}</div>
+      <div className="nn-section-label" style={{ marginBottom: 6 }}>{label}</div>
       {children}
     </div>
   );
@@ -671,6 +776,51 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div style={{ display: 'flex', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--border)' }}>
       <span style={{ flex: 1, fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
       <span className="mono" style={{ fontSize: 12, color: 'var(--text)' }}>{value}</span>
+    </div>
+  );
+}
+
+// On/off feature-flag row for the AI status section (P3.3b). `on` is undefined
+// while the status is still loading → renders the "off" pill (degrade, no flash).
+function AiFlagRow({
+  label,
+  on,
+  t,
+}: {
+  label: string;
+  on: boolean | undefined;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  const enabled = on === true;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+      <span style={{ flex: 1, fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          padding: '3px 9px',
+          borderRadius: 999,
+          fontSize: 11,
+          fontWeight: 500,
+          background: enabled
+            ? 'color-mix(in srgb, var(--lime-400) 14%, transparent)'
+            : 'var(--surface-2)',
+          color: enabled ? 'var(--lime-400)' : 'var(--text-dim)',
+          border: `1px solid ${enabled ? 'color-mix(in srgb, var(--lime-400) 30%, transparent)' : 'var(--border)'}`,
+        }}
+      >
+        <span
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: enabled ? 'var(--lime-500)' : 'var(--text-dim)',
+          }}
+        />
+        {enabled ? t('settings.aiStatus.on') : t('settings.aiStatus.off')}
+      </span>
     </div>
   );
 }
@@ -806,11 +956,13 @@ function PresetForm({
   );
 }
 
-const SPECIES: { key: 'fern' | 'cactus' | 'succulent' | 'bonsai' | 'sakura' | 'mushroom'; emoji: string; label: string; unlock: string }[] = [
-  { key: 'fern', emoji: '🌿', label: 'Папоротник', unlock: 'По умолчанию' },
-  { key: 'cactus', emoji: '🌵', label: 'Кактус', unlock: 'Уровень 5' },
-  { key: 'succulent', emoji: '🌱', label: 'Суккулент', unlock: '1 000 повторов' },
-  { key: 'bonsai', emoji: '🌳', label: 'Бонсай', unlock: 'Стрик 100' },
-  { key: 'sakura', emoji: '🌸', label: 'Сакура', unlock: 'Стрик 30' },
-  { key: 'mushroom', emoji: '🍄', label: 'Гриб', unlock: 'Стрик 365' },
+// Labels/unlocks resolve via i18n at render (`settings.species.<key>.*`) — the
+// array is module-level so it can't call t() here.
+const SPECIES: { key: 'fern' | 'cactus' | 'succulent' | 'bonsai' | 'sakura' | 'mushroom'; emoji: string }[] = [
+  { key: 'fern', emoji: '🌿' },
+  { key: 'cactus', emoji: '🌵' },
+  { key: 'succulent', emoji: '🌱' },
+  { key: 'bonsai', emoji: '🌳' },
+  { key: 'sakura', emoji: '🌸' },
+  { key: 'mushroom', emoji: '🍄' },
 ];

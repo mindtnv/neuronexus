@@ -89,7 +89,7 @@ export const NNSessionComplete = () => {
           display: 'flex',
           overflow: 'hidden',
           background:
-            'radial-gradient(ellipse at 50% 0%, rgba(154,209,85,0.08), transparent 60%)',
+            'radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--lime-400) 8%, transparent), transparent 60%)',
         }}
       />
     );
@@ -108,7 +108,7 @@ export const NNSessionComplete = () => {
           padding: isMobile ? '0 14px 32px' : '0 32px 48px',
           textAlign: 'center',
           background:
-            'radial-gradient(ellipse at 50% 0%, rgba(154,209,85,0.08), transparent 60%)',
+            'radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--lime-400) 8%, transparent), transparent 60%)',
         }}
       >
         <div
@@ -350,7 +350,7 @@ export const NNSessionComplete = () => {
               lineHeight: 1.5,
             }}
           >
-            {/* TODO: per-card lapse details aren't captured in nn:lastSession yet. */}
+            {/* Per-card lapse details are not captured by the session store — attentionBody summarises by aggregate only. */}
             {attentionBody}
           </div>
         </NNCard>
@@ -467,7 +467,7 @@ export const NNSessionComplete = () => {
               height: 200,
               borderRadius: '50%',
               background:
-                'radial-gradient(circle, rgba(154,209,85,0.3), transparent 70%)',
+                'radial-gradient(circle, color-mix(in srgb, var(--lime-400) 30%, transparent), transparent 70%)',
               filter: 'blur(20px)',
             }}
           />
@@ -481,10 +481,10 @@ export const NNSessionComplete = () => {
             alignItems: 'center',
             gap: 8,
             padding: 12,
-            background: 'rgba(243,182,85,0.06)',
+            background: 'color-mix(in srgb, var(--amber-400) 6%, transparent)',
             borderRadius: 10,
             width: '100%',
-            border: '1px solid rgba(243,182,85,0.2)',
+            border: '1px solid color-mix(in srgb, var(--amber-400) 20%, transparent)',
           }}
         >
           <NNIcon name="flame" size={20} color="var(--amber-400)" />

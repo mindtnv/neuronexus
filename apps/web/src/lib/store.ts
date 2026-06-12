@@ -461,6 +461,22 @@ export class LibraryFullError extends Error {
   }
 }
 
+/** A 429 cooldown from a paid AI endpoint (overview/suggest-card, P1) — the web
+ *  maps it to an info ("wait a moment") toast, NOT an error. */
+export class CooldownError extends Error {
+  retryAfterMs: number;
+  constructor(retryAfterMs: number) {
+    super('cooldown');
+    this.name = 'CooldownError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** True when an unknown error is a CooldownError (cross-bundle-safe name check). */
+export function isCooldownError(err: unknown): err is CooldownError {
+  return err instanceof CooldownError || (err instanceof Error && err.name === 'CooldownError');
+}
+
 export const useNN = create<State>()((set, get) => ({
   bootstrapped: false,
   decks: [],
@@ -1073,9 +1089,11 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async generateOverview(notebookId) {
-    return (await ok(
-      await (api as any).notebooks({ id: notebookId }).overview.post(),
-    )) as { overview: string; questions: string[]; fingerprint: string };
+    const res = await (api as any).notebooks({ id: notebookId }).overview.post();
+    if (res.error?.status === 429 && res.error.value?.error === 'cooldown') {
+      throw new CooldownError(Number(res.error.value.retryAfterMs) || 0);
+    }
+    return (await ok(res)) as { overview: string; questions: string[]; fingerprint: string };
   },
 
   // ── Notebook quiz: attempts (N3) ──────────────────────────────────────────────

@@ -11,6 +11,7 @@ import { cardFromApi } from '@/lib/mappers';
 import { RichCard } from '@/components/rich-card';
 import { SimilarCardsPanel } from '@/components/similar-cards';
 import { SourceLinksPanel } from '@/components/source-links';
+import { raiseToast } from '@/components/toasts';
 import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
 import { useUI } from '@/lib/ui-store';
@@ -33,10 +34,10 @@ type RatingMeta = {
 // hover. No acid fills; the row reads as one calm control strip, not four loud
 // buttons.
 const RATINGS: RatingMeta[] = [
-  { k: 1, labelKey: 'review.ratings.again', tone: 'rose', hue: 'var(--rose-400)', bg: 'rgba(232,120,138,0.05)', bgHover: 'rgba(232,120,138,0.12)' },
-  { k: 2, labelKey: 'review.ratings.hard', tone: 'amber', hue: 'var(--amber-400)', bg: 'rgba(243,182,85,0.05)', bgHover: 'rgba(243,182,85,0.12)' },
-  { k: 3, labelKey: 'review.ratings.good', tone: 'lime', hue: 'var(--lime-400)', bg: 'rgba(154,209,85,0.05)', bgHover: 'rgba(154,209,85,0.12)' },
-  { k: 4, labelKey: 'review.ratings.easy', tone: 'sky', hue: 'var(--sky-400)', bg: 'rgba(85,196,214,0.05)', bgHover: 'rgba(85,196,214,0.12)' },
+  { k: 1, labelKey: 'review.ratings.again', tone: 'rose', hue: 'var(--rose-400)', bg: 'color-mix(in srgb, var(--rose-400) 5%, transparent)', bgHover: 'color-mix(in srgb, var(--rose-400) 12%, transparent)' },
+  { k: 2, labelKey: 'review.ratings.hard', tone: 'amber', hue: 'var(--amber-400)', bg: 'color-mix(in srgb, var(--amber-400) 5%, transparent)', bgHover: 'color-mix(in srgb, var(--amber-400) 12%, transparent)' },
+  { k: 3, labelKey: 'review.ratings.good', tone: 'lime', hue: 'var(--lime-400)', bg: 'color-mix(in srgb, var(--lime-400) 5%, transparent)', bgHover: 'color-mix(in srgb, var(--lime-400) 12%, transparent)' },
+  { k: 4, labelKey: 'review.ratings.easy', tone: 'sky', hue: 'var(--sky-400)', bg: 'color-mix(in srgb, var(--sky-400) 5%, transparent)', bgHover: 'color-mix(in srgb, var(--sky-400) 12%, transparent)' },
 ];
 
 // Friendly label for the render-kind eyebrow (was a raw English token like
@@ -261,11 +262,14 @@ export const NNReviewClassic = () => {
         setSubmitted(false);
         setTypedAnswer('');
         setStartedAt(Date.now());
+      } catch (err) {
+        console.error('grade failed', err);
+        raiseToast({ kind: 'error', title: t('common.toasts.error') });
       } finally {
         lockRef.current = false;
       }
     },
-    [current, grade, sessionMode, startedAt, submitted],
+    [current, grade, sessionMode, startedAt, submitted, t],
   );
 
   // Undo the most recent grade. Restores the card + profile server-side (and in
@@ -764,7 +768,7 @@ export const NNReviewClassic = () => {
           position: 'relative',
           overflow: 'hidden',
           boxShadow: glow
-            ? '0 0 0 1px rgba(154,209,85,0.30), var(--shadow-lg)'
+            ? '0 0 0 1px color-mix(in srgb, var(--lime-400) 30%, transparent), var(--shadow-lg)'
             : 'var(--shadow-lg)',
           transition: 'box-shadow 220ms ease, transform 220ms ease',
         }}
@@ -1230,18 +1234,13 @@ const ReviewEmpty = ({
   const isMobile = bp === 'mobile';
   return (
     <div
+      className="nn-empty-state"
       style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
         gap: 14,
         padding: isMobile ? '0 14px 32px' : '0 32px 48px',
-        textAlign: 'center',
       }}
     >
-      <div style={{ fontFamily: 'var(--font-serif)', fontSize: isMobile ? 36 : 48, color: 'var(--text)', letterSpacing: -1 }}>{title}</div>
+      <h1 className="nn-h1" style={{ fontSize: isMobile ? 36 : 48, letterSpacing: -1 }}>{title}</h1>
       <div style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 460, lineHeight: 1.5 }}>{subtitle}</div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8 }}>
         {cta && href && (

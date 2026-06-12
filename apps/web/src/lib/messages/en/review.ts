@@ -1,5 +1,4 @@
 const m = {
-  pageSubtitle: '{due} due · spaced repetition',
   ratings: {
     again: 'Again',
     hard: 'Hard',

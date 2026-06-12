@@ -28,7 +28,6 @@ import {
   buildGraph,
   countLinks,
   cardMastery,
-  hashFloat,
   semanticToGraphEdges,
   type GraphEdge,
   type GraphNode,
@@ -54,11 +53,7 @@ interface SimLink {
   weight: number;
 }
 
-export const NNGraph = ({ variant = 'force' }: { variant?: 'force' | 'constellation' | 'clusters' }) => {
-  if (variant === 'constellation') return <NNGraphConstellation/>;
-  if (variant === 'clusters') return <NNGraphClusters/>;
-  return <NNGraphForce/>;
-};
+export const NNGraph = () => <NNGraphForce/>;
 
 // ─────────────────────────────────────────────
 // Variant A: Force-directed (default) — real data + interactive
@@ -715,7 +710,10 @@ export const NNGraphForce = () => {
             )}
           </div>
           {legendDecks.length === 0 && (
-            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{t('graph.legend.empty')}</div>
+            <div className="nn-empty-state" style={{ paddingTop: 16, paddingBottom: 16 }}>
+              <span className="nn-empty-state-icon"><NNIcon name="stack" size={20} color="var(--text-dim)" /></span>
+              <p className="nn-empty-state-hint">{t('graph.legend.empty')}</p>
+            </div>
           )}
           {legendDecks.map((d) => {
             const hidden = hiddenDecks.has(d.id);
@@ -1180,14 +1178,15 @@ const NodeDetail = ({
 
       <div style={{ padding: 18, borderTop: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-          <span style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8 }}>
+          <span className="nn-section-label" style={{ margin: 0 }}>
             {t('graph.detail.linkedCards', { n: linksCount })}
           </span>
           <NNBtn size="sm" variant="ghost" icon="plus"/>
         </div>
         {linkedCards.length === 0 && (
-          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-            {t('graph.detail.noLinks')}
+          <div className="nn-empty-state" style={{ paddingTop: 12, paddingBottom: 12 }}>
+            <span className="nn-empty-state-icon"><NNIcon name="link" size={20} color="var(--text-dim)" /></span>
+            <p className="nn-empty-state-hint">{t('graph.detail.noLinks')}</p>
           </div>
         )}
         {linkedCards.map((l, i) => (
@@ -1220,152 +1219,5 @@ const NodeDetail = ({
         <NNBtn block variant="soft" icon="sparkle">{t('graph.detail.askAi')}</NNBtn>
       </div>
     </>
-  );
-};
-
-// ─────────────────────────────────────────────
-// Variant B: Constellation — starmap aesthetic (static mockup)
-// ─────────────────────────────────────────────
-const MOCK_CLUSTERS = [
-  { id: 'g', label: 'German',    color: 'amber',  cx: 0.28, cy: 0.38, n: 34 },
-  { id: 's', label: 'Systems',   color: 'violet', cx: 0.64, cy: 0.32, n: 28 },
-  { id: 'r', label: 'Rust',      color: 'sky',    cx: 0.72, cy: 0.66, n: 22 },
-  { id: 'b', label: 'Biases',    color: 'rose',   cx: 0.32, cy: 0.72, n: 18 },
-  { id: 'c', label: 'Crypto',    color: 'lime',   cx: 0.5,  cy: 0.5,  n: 12 },
-];
-
-const makeMockNodes = (seed: number) => {
-  const Wm = 1200;
-  const Hm = 700;
-  const out: { id: string; x: number; y: number; cluster: string; color: string; size: number; mastery: number }[] = [];
-  MOCK_CLUSTERS.forEach((cl) => {
-    for (let i = 0; i < cl.n; i++) {
-      const a = (i / cl.n) * Math.PI * 2 + Math.sin(seed + i) * 0.8;
-      const r = 40 + Math.abs(Math.sin(seed * 3 + i * 2)) * 100;
-      const x = cl.cx * Wm + Math.cos(a) * r;
-      const y = cl.cy * Hm + Math.sin(a) * r;
-      const mastery = Math.abs(Math.sin(seed + i * 1.7 + cl.cx * 9));
-      out.push({
-        id: `${cl.id}${i}`, x, y, cluster: cl.id, color: cl.color,
-        size: 3 + mastery * 8,
-        mastery,
-      });
-    }
-  });
-  return { nodes: out, Wm, Hm };
-};
-
-export const NNGraphConstellation = () => {
-  const t = useT();
-  const { nodes, Wm, Hm } = makeMockNodes(2);
-  return (
-    <div style={{ flex: 1, position: 'relative', background: 'radial-gradient(ellipse at center, #141721 0%, #06070a 100%)', overflow: 'hidden' }}>
-      <svg viewBox={`0 0 ${Wm} ${Hm}`} style={{ width: '100%', height: '100%' }}>
-        {/* Background stars — deterministic via hashFloat */}
-        {Array.from({ length: 120 }).map((_, i) => {
-          const x = (Math.sin(i * 9.3) * 0.5 + 0.5) * Wm;
-          const y = (Math.cos(i * 7.7) * 0.5 + 0.5) * Hm;
-          const shimmer = hashFloat(`star-${i}`, 3);
-          return <circle key={i} cx={x} cy={y} r={Math.abs(Math.sin(i)) * 1.2}
-            fill="#fff" opacity={0.08 + shimmer * 0.2}/>;
-        })}
-        {/* Constellation lines */}
-        {MOCK_CLUSTERS.map((cl) => {
-          const cn = nodes.filter((n) => n.cluster === cl.id).slice(0, 8);
-          return cn.slice(0, -1).map((n, i) => (
-            <line key={`${cl.id}-${i}`} x1={n.x} y1={n.y} x2={cn[i+1].x} y2={cn[i+1].y}
-              stroke={`var(--${cl.color}-400)`} strokeWidth="0.3" opacity="0.5"/>
-          ));
-        })}
-        {/* Nodes as stars */}
-        {nodes.map((n, i) => (
-          <g key={i}>
-            <circle cx={n.x} cy={n.y} r={n.size + 4} fill={`var(--${n.color}-400)`} opacity={0.12}/>
-            <circle cx={n.x} cy={n.y} r={n.size * 0.7} fill="#fff"/>
-          </g>
-        ))}
-        {/* Cluster names as constellation labels */}
-        {MOCK_CLUSTERS.map((c) => (
-          <text key={c.id} x={c.cx * Wm} y={c.cy * Hm - 140} textAnchor="middle"
-            fontFamily="var(--font-serif)" fontSize="22" fill={`var(--${c.color}-400)`} fontStyle="italic" opacity="0.9">
-            {t(`graph.constellation.clusters.${c.id}`)}
-          </text>
-        ))}
-      </svg>
-
-      <div style={{
-        position: 'absolute', top: 18, left: '50%', transform: 'translateX(-50%)',
-        padding: '10px 16px', background: 'rgba(20,22,30,0.7)', backdropFilter: 'blur(12px)',
-        border: '1px solid rgba(255,255,255,0.08)', borderRadius: 999,
-        display: 'flex', gap: 8, alignItems: 'center',
-      }}>
-        <NNIcon name="stars" size={13} color="var(--violet-400)"/>
-        <span style={{ fontSize: 12, color: 'var(--text)' }}>{t('graph.constellation.view')}</span>
-        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('graph.constellation.sub')}</span>
-      </div>
-    </div>
-  );
-};
-
-// ─────────────────────────────────────────────
-// Variant C: Clusters — bubble chart grouped (static mockup)
-// ─────────────────────────────────────────────
-export const NNGraphClusters = () => {
-  const t = useT();
-  const bp = useBreakpoint();
-  const isMobile = bp === 'mobile';
-  return (
-    <div style={{ flex: 1, padding: isMobile ? 14 : 32, overflow: 'auto' }}>
-      <div style={{
-        display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(320px, 1fr))',
-        gap: isMobile ? 12 : 16,
-      }}>
-        {MOCK_CLUSTERS.map((cl) => (
-          <div key={cl.id} style={{
-            padding: 20, borderRadius: 16, background: 'var(--surface)',
-            border: `1px solid var(--border)`,
-            position: 'relative', overflow: 'hidden',
-          }}>
-            <div style={{
-              position: 'absolute', right: -30, top: -30, width: 180, height: 180,
-              borderRadius: '50%', background: `radial-gradient(circle, rgba(var(--${cl.color}-rgb), 0.15), transparent 70%)`,
-              opacity: 0.4,
-            }}/>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-              <div style={{ width: 10, height: 10, borderRadius: 3, background: `var(--${cl.color}-500)` }}/>
-              <div style={{ fontSize: 15, fontWeight: 600 }}>{t(`graph.constellation.clusters.${cl.id}`)}</div>
-              <div style={{ flex: 1 }}/>
-              <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('graph.clusters.cards', { n: cl.n })}</span>
-            </div>
-            {/* bubble pack */}
-            <svg viewBox="0 0 320 180" style={{ width: '100%', height: 180 }}>
-              {Array.from({ length: cl.n }).map((_, i) => {
-                const a = (i / cl.n) * Math.PI * 2;
-                const r = 20 + (i % 4) * 25;
-                const x = 160 + Math.cos(a + i * 0.3) * r;
-                const y = 90 + Math.sin(a + i * 0.3) * r * 0.6;
-                const s = 4 + Math.abs(Math.sin(i * 2)) * 10;
-                return (
-                  <g key={i}>
-                    <circle cx={x} cy={y} r={s + 2} fill={`var(--${cl.color}-500)`} opacity={0.12}/>
-                    <circle cx={x} cy={y} r={s} fill={`var(--${cl.color}-500)`} opacity={0.4 + (i % 5) * 0.12}/>
-                  </g>
-                );
-              })}
-            </svg>
-            <div style={{
-              display: 'flex', gap: 12, paddingTop: 12, borderTop: '1px solid var(--border)',
-              fontSize: 11.5, color: 'var(--text-muted)',
-            }}>
-              <span><span className="mono" style={{ color: 'var(--lime-400)' }}>84%</span> {t('graph.clusters.mastery')}</span>
-              <span>·</span>
-              <span><span className="mono">12</span> {t('graph.clusters.linksOut')}</span>
-              <div style={{ flex: 1 }}/>
-              <NNBtn size="sm" variant="ghost" iconRight="arrow">{t('graph.clusters.open')}</NNBtn>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 };

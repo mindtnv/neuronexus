@@ -1,5 +1,4 @@
 const m = {
-  pageSubtitle: 'Последние 30 дней · {count} {unit}',
   streak: {
     days: 'стрик {days} дн.',
     level: 'уровень {n}',

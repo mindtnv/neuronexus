@@ -1,9 +1,9 @@
 const m = {
   pageTitle: 'Note types',
-  pageSubtitle: 'Create your own card types — fields, templates, and styling.',
   // List
   list: {
     title: 'Your note types',
+    back: 'Back',
     builtin: 'built-in',
     custom: 'custom',
     empty: 'No note types yet.',

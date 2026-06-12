@@ -6,6 +6,7 @@ import { useNN } from './store';
 import { countDueCards } from './cards';
 import { setBadge } from './app-badge';
 import { notifyDue } from './notify';
+import { applyTheme, getTheme, subscribeSystemTheme } from './theme';
 
 // Pulls the user snapshot (profile / decks / cards) as soon as a session is
 // present. Fires once per app load; resets if the user signs out and signs
@@ -20,6 +21,18 @@ export function Bootstrap() {
   const bootstrap = useNN((s) => s.bootstrap);
   const reset = useNN((s) => s.reset);
   const { data, isPending } = useSession();
+
+  // ── Theme: live OS-scheme subscription (P3.3a) ──────────────────────────
+  // The inline anti-FOUC script already painted the correct scheme before
+  // hydration; this only keeps a 'system'-preference user in sync when the OS
+  // flips light/dark while the app is open. Re-reads the persisted preference at
+  // change time so an explicit choice silently stops following the OS.
+  useEffect(() => {
+    return subscribeSystemTheme(() => {
+      const pref = getTheme();
+      if (pref === 'system') applyTheme('system');
+    });
+  }, []);
 
   // ── App badge (E1) ──────────────────────────────────────────────────────
   // Value-keyed selector: returns a NUMBER so the effect re-runs only when the

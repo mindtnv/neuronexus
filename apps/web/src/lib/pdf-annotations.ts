@@ -12,6 +12,7 @@ import type {
   SourceMarkKind,
 } from '@neuronexus/shared';
 import { api, ok } from '@/lib/api';
+import { CooldownError } from '@/lib/store';
 import type { QuickCardResult, SourceMark, SuggestCardResult } from '@/lib/types';
 
 // Same origin resolution as lib/api.ts / chat-stream.ts.
@@ -170,7 +171,9 @@ export async function suggestCard(
   sourceId: string,
   input: { quote: string; page?: number; locale?: string },
 ): Promise<SuggestCardResult> {
-  return (await ok(
-    await (api as any).sources({ id: sourceId })['suggest-card'].post(input),
-  )) as SuggestCardResult;
+  const res = await (api as any).sources({ id: sourceId })['suggest-card'].post(input);
+  if (res.error?.status === 429 && res.error.value?.error === 'cooldown') {
+    throw new CooldownError(Number(res.error.value.retryAfterMs) || 0);
+  }
+  return (await ok(res)) as SuggestCardResult;
 }

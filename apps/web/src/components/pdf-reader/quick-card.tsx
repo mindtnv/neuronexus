@@ -15,10 +15,11 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { useNN } from '@/lib/store';
+import { isCooldownError, useNN } from '@/lib/store';
 import { buildDeckTree, deckPathLabel, flattenTree } from '@/lib/decks';
 import { NNSelect, type NNSelectOption } from '@/components/nn-select';
 import { quickCard, suggestCard } from '@/lib/pdf-annotations';
+import { raiseToast } from '@/components/toasts';
 import type { Deck, QuickCardResult } from '@/lib/types';
 import type { MarkRect } from '@neuronexus/shared';
 
@@ -117,12 +118,17 @@ export function QuickCardDialog({
       const r = await suggestCard(sourceId, { quote, page, locale });
       setFront(r.front);
       setBack(r.back);
-    } catch {
-      setSuggestError(true);
+    } catch (err) {
+      // 429 cooldown is NOT a failure — it's "you just asked, wait a moment".
+      if (isCooldownError(err)) {
+        raiseToast({ kind: 'info', title: t('notebooks.quickcard.cooldown') });
+      } else {
+        setSuggestError(true);
+      }
     } finally {
       setSuggesting(false);
     }
-  }, [sourceId, quote, page, locale, suggesting]);
+  }, [sourceId, quote, page, locale, suggesting, t]);
 
   const handleSubmit = useCallback(async () => {
     if (!deckId || submitting || !front.trim()) return;

@@ -73,8 +73,8 @@ export const NNGardenGrid = () => {
       {/* Banner */}
       <div style={{
         padding: isMobile ? 16 : 24, borderRadius: 16, marginBottom: isMobile ? 16 : 24,
-        background: 'linear-gradient(135deg, rgba(154,209,85,0.1), rgba(85,196,214,0.06))',
-        border: '1px solid rgba(154,209,85,0.2)',
+        background: 'linear-gradient(135deg, color-mix(in srgb, var(--lime-400) 10%, transparent), color-mix(in srgb, var(--sky-400) 6%, transparent))',
+        border: '1px solid color-mix(in srgb, var(--lime-400) 20%, transparent)',
         display: 'flex',
         flexDirection: isMobile ? 'column' : 'row',
         alignItems: isMobile ? 'flex-start' : 'center',
@@ -174,7 +174,7 @@ export const NNGardenTerrarium = () => {
   return (
     <div style={{
       flex: 1, padding: isMobile ? '16px 14px' : 32, display: 'flex', flexDirection: 'column', alignItems: 'center',
-      background: 'radial-gradient(ellipse at bottom, rgba(154,209,85,0.08), var(--bg))',
+      background: 'radial-gradient(ellipse at bottom, color-mix(in srgb, var(--lime-400) 8%, transparent), var(--bg))',
       overflow: 'auto',
     }}>
       <div style={{ textAlign: 'center', marginBottom: isMobile ? 16 : 32, width: '100%' }}>
@@ -191,7 +191,7 @@ export const NNGardenTerrarium = () => {
         borderRadius: 24, overflow: 'hidden',
         background: 'linear-gradient(180deg, #12171f 0%, #1b2418 70%, #2a2916 100%)',
         border: '1px solid var(--border-2)',
-        boxShadow: 'var(--shadow-lg), inset 0 0 80px rgba(154,209,85,0.08)',
+        boxShadow: 'var(--shadow-lg), inset 0 0 80px color-mix(in srgb, var(--lime-400) 8%, transparent)',
       }}>
         {/* ground */}
         <div style={{
@@ -204,7 +204,7 @@ export const NNGardenTerrarium = () => {
           top: isMobile ? 24 : 40,
           right: isMobile ? 30 : 60,
           width: Math.round(60 * m), height: Math.round(60 * m), borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(243,182,85,0.7), rgba(243,182,85,0.1) 70%)',
+          background: 'radial-gradient(circle, color-mix(in srgb, var(--amber-400) 70%, transparent), color-mix(in srgb, var(--amber-400) 10%, transparent) 70%)',
         }}/>
         {/* central plant — real profile stage */}
         <div style={{
@@ -251,7 +251,7 @@ export const NNGardenTerrarium = () => {
       >
         <Link href="/review">
           <NNBtn size={isMobile ? 'md' : 'lg'} variant="primary" icon="bolt">
-            Повторить карты
+            {t('garden.reviewCards')}
           </NNBtn>
         </Link>
         <Link href="/decks">
@@ -261,7 +261,7 @@ export const NNGardenTerrarium = () => {
         </Link>
         <Link href="/settings">
           <NNBtn size={isMobile ? 'md' : 'lg'} variant="outline" icon="settings">
-            Сменить вид растения
+            {t('garden.changeSpecies')}
           </NNBtn>
         </Link>
       </div>
@@ -296,7 +296,7 @@ export const NNGardenTerrarium = () => {
                 fontSize: 22,
                 padding: '6px 10px',
                 borderRadius: 10,
-                background: active ? 'rgba(154,209,85,0.14)' : 'transparent',
+                background: active ? 'color-mix(in srgb, var(--lime-400) 14%, transparent)' : 'transparent',
                 border: active ? '1px solid var(--lime-500)' : '1px solid transparent',
                 opacity: unlocked ? 1 : 0.28,
                 filter: unlocked ? 'none' : 'grayscale(1)',

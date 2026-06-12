@@ -24,12 +24,6 @@ const m = {
   subCount: '{n} sub',
   totalCards: '{n} cards across all decks',
   gardenHint: 'Review cards to water your garden.',
-  columns: {
-    name: 'Deck',
-    cards: 'Cards',
-    due: 'Due',
-    actions: 'Actions',
-  },
   stats: {
     cards: 'Cards',
     due: 'Due',

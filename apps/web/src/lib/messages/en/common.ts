@@ -101,6 +101,7 @@ const common = {
       title: 'Card suspended',
       description: 'Too many lapses — this card became a leech and was suspended.',
     },
+    error: "Couldn't save — please try again.",
   },
 };
 

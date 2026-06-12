@@ -697,6 +697,30 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   margin: 0;
 }
 
+/* Typographic system (P2.2) — one serif hero + one uppercase eyebrow, modelled
+   on the notebooks language (.nn-nb-* hero + .nn-nb-section-label). Use .nn-h1
+   for a screen title / hero / empty-state headline; .nn-section-label for the
+   small label above a section. Instrument Serif is one-weight — never 700. */
+.nn-h1 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: clamp(26px, 4vw, 32px);
+  line-height: 1.1;
+  letter-spacing: -0.4px;
+  color: var(--text);
+}
+.nn-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  margin: 0 0 10px;
+}
+[data-theme="light"] .nn-h1 { color: var(--text); }
+[data-theme="light"] .nn-section-label { color: var(--text-dim); }
+
 /* Code-block copy button (B3) — injected by decorateCodeBlocks() AFTER the
    sanitized markdown renders (never part of the sanitize pipeline). */
 .nn-code-copy {

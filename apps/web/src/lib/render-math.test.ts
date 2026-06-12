@@ -320,13 +320,19 @@ describe('KaTeX security — the style-permitted path', () => {
 });
 
 describe('single sink — dangerouslySetInnerHTML stays in render-card.tsx only', () => {
+  // The HTML-RENDER sink stays in render-card.tsx. `app/layout.tsx` is the ONE
+  // allowed exception: a STATIC, build-time-constant inline <script> for the
+  // anti-FOUC theme bootstrap (P3.3a) — no user data ever flows into it, so it
+  // carries none of the sanitization risk this invariant guards. Next requires
+  // dangerouslySetInnerHTML to emit an inline script that actually executes.
+  const ALLOWED = new Set(['render-card.tsx', 'app/layout.tsx']);
   test('no other source file uses dangerouslySetInnerHTML', async () => {
     const { Glob } = await import('bun');
     const root = new URL('../', import.meta.url).pathname; // apps/web/src
     const glob = new Glob('**/*.{ts,tsx}');
     const offenders: string[] = [];
     for await (const rel of glob.scan({ cwd: root })) {
-      if (rel.endsWith('render-card.tsx')) continue;
+      if (ALLOWED.has(rel) || rel.endsWith('render-card.tsx')) continue;
       if (rel.endsWith('.test.ts') || rel.endsWith('.test.tsx')) continue;
       const text = await Bun.file(`${root}${rel}`).text();
       if (text.includes('dangerouslySetInnerHTML')) offenders.push(rel);

@@ -59,5 +59,14 @@ const m = {
   daysAgo: '{n} дн. назад',
   hoursAgo: '{n} ч назад',
   minutesAgo: '{n} мин назад',
+  // Домены знаний на Главной (P3.1) — чтение / блокноты / спросить AI.
+  knowledge: {
+    continueReading: 'Продолжить чтение',
+    readPercent: 'прочитано {n}%',
+    notebooks: 'Блокноты',
+    askAi: 'Спросить AI',
+    askAiDesc: 'Чат, заземлённый на твоих карточках и источниках',
+    sourceCount: '{n} источников',
+  },
 };
 export default m;

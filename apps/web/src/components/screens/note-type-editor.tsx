@@ -121,11 +121,13 @@ const NoteTypeList = ({
   onCreate,
   onEdit,
   onDelete,
+  onBack,
 }: {
   noteTypes: NoteType[];
   onCreate: () => void;
   onEdit: (nt: NoteType) => void;
   onDelete: (nt: NoteType) => void;
+  onBack: () => void;
 }) => {
   const t = useT();
   const sorted = useMemo(
@@ -135,7 +137,10 @@ const NoteTypeList = ({
 
   return (
     <div style={{ padding: 24, maxWidth: 760, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+        <NNBtn size="sm" variant="ghost" icon="chevl" onClick={onBack}>
+          {t('noteTypes.list.back')}
+        </NNBtn>
         <div style={sectionTitleStyle}>{t('noteTypes.list.title')}</div>
         <div style={{ flex: 1 }} />
         <NNBtn size="sm" variant="primary" icon="plus" onClick={onCreate}>
@@ -609,7 +614,7 @@ const NoteTypeForm = ({
       {isClone && (
         <div style={{
           marginBottom: 16, padding: '10px 12px',
-          background: 'rgba(85,196,214,0.08)', border: '1px solid rgba(85,196,214,0.28)',
+          background: 'color-mix(in srgb, var(--sky-400) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--sky-400) 28%, transparent)',
           borderRadius: 10, color: 'var(--sky-400)', fontSize: 12.5,
         }}>
           {t('noteTypes.editor.cloneNotice')}
@@ -701,7 +706,7 @@ const NoteTypeForm = ({
           {error && (
             <div style={{
               padding: '10px 12px',
-              background: 'rgba(232,120,138,0.08)', border: '1px solid rgba(232,120,138,0.28)',
+              background: 'color-mix(in srgb, var(--rose-400) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--rose-400) 28%, transparent)',
               borderRadius: 10, color: 'var(--rose-400)', fontSize: 12.5,
             }}>
               {error}
@@ -764,6 +769,12 @@ export const NNNoteTypeEditor = () => {
 
   const goList = useCallback(() => router.replace('/note-types'), [router]);
   const goNew = useCallback(() => router.replace('/note-types?new=1'), [router]);
+  // Leave the (deep-linked) note-types screen — back when there's history,
+  // else fall through to Home so the user is never stranded.
+  const goBack = useCallback(() => {
+    if (typeof window !== 'undefined' && window.history.length > 1) router.back();
+    else router.push('/');
+  }, [router]);
   const goEdit = useCallback(
     (nt: NoteType) => router.replace(`/note-types?edit=${encodeURIComponent(nt.id)}`),
     [router],
@@ -801,6 +812,7 @@ export const NNNoteTypeEditor = () => {
       onCreate={goNew}
       onEdit={goEdit}
       onDelete={handleDelete}
+      onBack={goBack}
     />
   );
 };

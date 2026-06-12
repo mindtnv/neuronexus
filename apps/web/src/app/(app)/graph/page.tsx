@@ -17,7 +17,7 @@ export default function Page() {
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
         <CardsViewSwitcher />
       </div>
-      <NNGraph variant="force" />
+      <NNGraph />
     </NNAppPage>
   );
 }

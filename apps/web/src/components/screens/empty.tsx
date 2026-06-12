@@ -2,66 +2,105 @@
 
 import React from 'react';
 import Link from 'next/link';
+import { State } from 'ts-fsrs';
 import { NNBtn, NNIcon, NNPlant } from '@/components/ui';
+import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
+import type { IconName } from '@/components/ui';
 
 export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 'graph' }) => {
   const t = useT();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
+  const cards = useNN((s) => s.cards);
+
   if (kind === 'first-run') {
-    const starterDecks: { key: string; label: string }[] = [
-      { key: 'top1000', label: t('empty.firstRun.starter.top1000') },
-      { key: 'usStates', label: t('empty.firstRun.starter.usStates') },
-      { key: 'basicFrench', label: t('empty.firstRun.starter.basicFrench') },
-      { key: 'pythonSyntax', label: t('empty.firstRun.starter.pythonSyntax') },
-      { key: 'chemistry101', label: t('empty.firstRun.starter.chemistry101') },
+    // Three onboarding cards — one per product domain (P3.4). Cards/library/chat.
+    const onboarding: { key: string; href: string; icon: IconName; tone: string }[] = [
+      { key: 'deck', href: '/decks', icon: 'stack', tone: 'var(--lime-400)' },
+      { key: 'library', href: '/library', icon: 'book', tone: 'var(--sky-400)' },
+      { key: 'chat', href: '/chat', icon: 'sparkle', tone: 'var(--violet-400)' },
     ];
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: isMobile ? '24px 14px' : 40 }}>
-        <div style={{ textAlign: 'center', maxWidth: 480, width: '100%' }}>
-          <div style={{ width: isMobile ? 96 : 120, height: isMobile ? 96 : 120, borderRadius: 24, background: 'rgba(154,209,85,0.06)', border: '1px solid rgba(154,209,85,0.15)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
+        <div style={{ textAlign: 'center', maxWidth: 640, width: '100%' }}>
+          <div style={{ width: isMobile ? 96 : 120, height: isMobile ? 96 : 120, borderRadius: 24, background: 'color-mix(in srgb, var(--lime-400) 6%, transparent)', border: '1px solid color-mix(in srgb, var(--lime-400) 15%, transparent)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
             <NNPlant stage={1} size={isMobile ? 72 : 90}/>
           </div>
-          <div style={{ fontFamily: 'var(--font-serif)', fontSize: isMobile ? 32 : 38, lineHeight: 1.1, letterSpacing: -1 }}>
-            {t('empty.firstRun.title')}
-          </div>
+          <h1 className="nn-h1">{t('empty.firstRun.title')}</h1>
           <div style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 10, lineHeight: 1.6 }}>
             {t('empty.firstRun.subtitle')}
           </div>
-          <div style={{ display: 'flex', gap: isMobile ? 7 : 10, justifyContent: 'center', marginTop: 24, flexWrap: 'wrap' }}>
-            <Link href="/decks"><NNBtn size="lg" variant="primary" icon="plus">{t('empty.firstRun.newDeck')}</NNBtn></Link>
-          </div>
-          {/* sample decks */}
-          <div style={{ marginTop: isMobile ? 22 : 32, paddingTop: isMobile ? 16 : 24, borderTop: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>{t('empty.firstRun.starterLabel')}</div>
-            <div style={{ display: 'flex', gap: isMobile ? 6 : 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-              {starterDecks.map(d => (
-                <span key={d.key} style={{ padding: '6px 12px', fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 999, color: 'var(--text-muted)' }}>{d.label}</span>
-              ))}
-            </div>
+          {/* Three-domain onboarding cards */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
+              gap: isMobile ? 10 : 14,
+              marginTop: isMobile ? 22 : 28,
+              textAlign: 'left',
+            }}
+          >
+            {onboarding.map((o) => (
+              <Link
+                key={o.key}
+                href={o.href}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                  padding: 18,
+                  borderRadius: 14,
+                  background: 'var(--surface)',
+                  border: '1px solid var(--border)',
+                  color: 'inherit',
+                  textDecoration: 'none',
+                  transition: 'border-color 120ms ease, transform 120ms ease',
+                }}
+              >
+                <span
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 10,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: `color-mix(in srgb, ${o.tone} 14%, transparent)`,
+                  }}
+                >
+                  <NNIcon name={o.icon} size={18} color={o.tone} />
+                </span>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
+                  {t(`empty.firstRun.cards.${o.key}.title`)}
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                  {t(`empty.firstRun.cards.${o.key}.desc`)}
+                </div>
+              </Link>
+            ))}
           </div>
         </div>
       </div>
     );
   }
   if (kind === 'done') {
+    const newCount = cards.filter((c) => (c.fsrs.state as unknown as State) === State.New).length;
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: isMobile ? '24px 14px' : 40 }}>
         <div style={{ textAlign: 'center', maxWidth: 420, width: '100%' }}>
-          <div style={{ width: 80, height: 80, borderRadius: '50%', background: 'rgba(154,209,85,0.1)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+          <div style={{ width: 80, height: 80, borderRadius: '50%', background: 'color-mix(in srgb, var(--lime-400) 10%, transparent)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
             <NNIcon name="check" size={38} color="var(--lime-400)" strokeWidth={2.2}/>
           </div>
-          <div style={{ fontFamily: 'var(--font-serif)', fontSize: isMobile ? 28 : 34, lineHeight: 1.1, letterSpacing: -0.8 }}>
-            {t('empty.done.title')}
-          </div>
+          <h1 className="nn-h1">{t('empty.done.title')}</h1>
           <div style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 10, lineHeight: 1.6 }}>
-            {t('empty.done.subtitlePrefix')} <span className="mono" style={{ color: 'var(--lime-400)' }}>6h 14m</span>.
-            {' '}{t('empty.done.subtitleSuffix')}
+            {t('empty.done.subtitle')}
           </div>
           <div style={{ display: 'flex', gap: isMobile ? 7 : 10, justifyContent: 'center', marginTop: 24, flexWrap: 'wrap' }}>
-            <Link href="/review"><NNBtn size="lg" variant="soft" icon="bolt">{t('empty.done.learnNew', { n: 12 })}</NNBtn></Link>
+            {newCount > 0 && (
+              <Link href="/review"><NNBtn size="lg" variant="soft" icon="bolt">{t('empty.done.learnNew', { n: newCount })}</NNBtn></Link>
+            )}
             <Link href="/graph"><NNBtn size="lg" variant="ghost" icon="graph">{t('empty.done.exploreGraph')}</NNBtn></Link>
           </div>
         </div>
@@ -83,11 +122,9 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
           <line x1="90" y1="25" x2="140" y2="60" stroke="var(--border-2)" strokeDasharray="2 3"/>
           <line x1="60" y1="90" x2="110" y2="100" stroke="var(--border-2)" strokeDasharray="2 3"/>
         </svg>
-        <div style={{ fontFamily: 'var(--font-serif)', fontSize: isMobile ? 26 : 30, lineHeight: 1.1, letterSpacing: -0.6 }}>
-          {t('empty.graph.title')}
-        </div>
+        <h1 className="nn-h1">{t('empty.graph.title')}</h1>
         <div style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 10, lineHeight: 1.6 }}>
-          {t('empty.graph.subtitlePrefix')} <span style={{ color: 'var(--text)' }} className="mono">6</span>.
+          {t('empty.graph.subtitlePrefix')} <span style={{ color: 'var(--text)' }} className="mono">{cards.length}</span>.
           {' '}{t('empty.graph.subtitleSuffix')}
         </div>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 24 }}>

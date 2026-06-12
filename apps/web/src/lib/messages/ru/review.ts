@@ -1,5 +1,4 @@
 const m = {
-  pageSubtitle: '{due} к повтору · интервальное',
   ratings: {
     again: 'Снова',
     hard: 'Трудно',

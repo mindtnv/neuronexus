@@ -10,7 +10,7 @@ import { useT } from '@/lib/i18n';
 //   }))
 // Mounted once per app shell.
 
-export type ToastKind = 'freeze' | 'dailyGoal' | 'leech' | 'info';
+export type ToastKind = 'freeze' | 'dailyGoal' | 'leech' | 'info' | 'error';
 
 export interface ToastPayload {
   id?: string;
@@ -28,11 +28,14 @@ interface ToastState extends ToastPayload {
   id: string;
 }
 
-const KIND_META: Record<ToastKind, { emoji: string; accent: string; glow: string }> = {
-  freeze: { emoji: '🛡', accent: 'var(--sky-400)', glow: '85,196,214' },
-  dailyGoal: { emoji: '🎯', accent: 'var(--lime-400)', glow: '154,209,85' },
-  leech: { emoji: '🐌', accent: 'var(--rose-400)', glow: '232,120,138' },
-  info: { emoji: '✨', accent: 'var(--violet-400)', glow: '167,136,255' },
+// `accent` is the per-kind token; everything tinted (border, glow, icon halo)
+// derives from it via color-mix so a theme swap stays consistent (P2.5).
+const KIND_META: Record<ToastKind, { emoji: string; accent: string }> = {
+  freeze: { emoji: '🛡', accent: 'var(--sky-400)' },
+  dailyGoal: { emoji: '🎯', accent: 'var(--lime-400)' },
+  leech: { emoji: '🐌', accent: 'var(--rose-400)' },
+  info: { emoji: '✨', accent: 'var(--violet-400)' },
+  error: { emoji: '⚠️', accent: 'var(--rose-400)' },
 };
 
 export function ToastsStack() {
@@ -84,8 +87,8 @@ export function ToastsStack() {
               padding: '12px 14px',
               borderRadius: 12,
               background: 'var(--surface)',
-              border: `1px solid rgba(${meta.glow}, 0.4)`,
-              boxShadow: `0 8px 32px rgba(0,0,0,0.35), 0 0 24px rgba(${meta.glow}, 0.15)`,
+              border: `1px solid color-mix(in srgb, ${meta.accent} 40%, transparent)`,
+              boxShadow: `0 8px 32px rgba(0,0,0,0.35), 0 0 24px color-mix(in srgb, ${meta.accent} 15%, transparent)`,
               color: 'var(--text)',
               display: 'flex',
               alignItems: 'flex-start',
@@ -103,7 +106,7 @@ export function ToastsStack() {
                 borderRadius: 9,
                 display: 'grid',
                 placeItems: 'center',
-                background: `radial-gradient(circle, rgba(${meta.glow}, 0.25), rgba(${meta.glow}, 0.05))`,
+                background: `radial-gradient(circle, color-mix(in srgb, ${meta.accent} 25%, transparent), color-mix(in srgb, ${meta.accent} 5%, transparent))`,
                 flexShrink: 0,
               }}
             >

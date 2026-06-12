@@ -59,5 +59,14 @@ const m = {
   daysAgo: '{n}d ago',
   hoursAgo: '{n}h ago',
   minutesAgo: '{n}m ago',
+  // Knowledge domains on Home (P3.1) — reading / notebooks / ask AI.
+  knowledge: {
+    continueReading: 'Continue reading',
+    readPercent: '{n}% read',
+    notebooks: 'Notebooks',
+    askAi: 'Ask AI',
+    askAiDesc: 'Chat grounded on your cards and sources',
+    sourceCount: '{n} sources',
+  },
 };
 export default m;

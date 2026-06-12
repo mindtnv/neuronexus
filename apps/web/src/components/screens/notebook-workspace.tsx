@@ -31,11 +31,10 @@ import {
   SOURCE_MIME_TO_KIND,
   type IngestErrorCode,
   type NotebookColor,
-  type SourceKind,
   type SourceMime,
 } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
-import { useNN } from '@/lib/store';
+import { isCooldownError, useNN } from '@/lib/store';
 import type {
   Notebook,
   Source,
@@ -44,6 +43,8 @@ import type {
 import type { SourceCitation } from '@neuronexus/shared';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
+import { relativeUpdated } from '@/lib/notebook-format';
+import { sourceKindToneName } from '@/lib/source-kind';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import {
@@ -100,29 +101,6 @@ const NOTEBOOK_COLOR_VAR: Record<NotebookColor, string> = {
   neutral: 'var(--text-muted)',
 };
 
-/** Mini-cover (book spine) tone per source kind. */
-const COVER_KIND_TONE: Record<SourceKind, string> = {
-  pdf: 'rose',
-  epub: 'violet',
-  url: 'sky',
-  text: 'amber',
-};
-
-/** Hand-rolled relative «updated N ago» (no dep) — reuses notebooks.meta.* keys
- *  (mirrors the A3 list helper; kept local — the list one is module-private). */
-function relativeUpdated(iso: string | undefined, t: Tfn): string {
-  if (!iso) return '';
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return '';
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return t('notebooks.meta.relativeNow');
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 60) return t('notebooks.meta.relativeMinutes', { count: mins });
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return t('notebooks.meta.relativeHours', { count: hours });
-  return t('notebooks.meta.relativeDays', { count: Math.floor(hours / 24) });
-}
-
 /** A source-row mini book-spine cover: the real `/m/<uuid>` image when present,
  *  else a kind-toned gradient with the title's first letter in the serif face. */
 const SourceCover = ({
@@ -135,7 +113,7 @@ const SourceCover = ({
   h?: number;
 }) => {
   const [failed, setFailed] = useState(false);
-  const tone = COVER_KIND_TONE[source.kind] ?? 'sky';
+  const tone = sourceKindToneName(source.kind);
   const showImage = Boolean(source.coverMediaId) && !failed;
   const letter = source.title.trim().charAt(0).toUpperCase() || '?';
   return (
@@ -304,7 +282,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           toggleDock();
         }
       } catch {
-        raiseToast({ kind: 'info', title: t('notebooks.notes.createFailed') });
+        raiseToast({ kind: 'error', title: t('notebooks.notes.createFailed') });
       }
     },
     [createNotebookNote, notebookId, t, dockCollapsed, toggleDock, isTablet],
@@ -318,7 +296,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         raiseToast({ kind: 'info', title: t('notebooks.studio.savedToNote') });
         notesRefreshRef.current?.();
       } catch {
-        raiseToast({ kind: 'info', title: t('notebooks.notes.createFailed') });
+        raiseToast({ kind: 'error', title: t('notebooks.notes.createFailed') });
       }
     },
     [createNotebookNote, notebookId, t],
@@ -452,8 +430,13 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         overviewFingerprint: res.fingerprint,
         currentFingerprint: res.fingerprint,
       });
-    } catch {
-      raiseToast({ kind: 'info', title: t('notebooks.overview.failed') });
+    } catch (err) {
+      // 429 cooldown → an info toast («wait a moment»), not an error toast.
+      if (isCooldownError(err)) {
+        raiseToast({ kind: 'info', title: t('notebooks.overview.cooldown') });
+      } else {
+        raiseToast({ kind: 'error', title: t('notebooks.overview.failed') });
+      }
     }
   }, [generateOverview, notebookId, onDetailChange, t]);
 
@@ -683,7 +666,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
                 ? 'application/epub+zip'
                 : null;
         if (!mime) {
-          raiseToast({ kind: 'info', title: t('notebooks.status.unsupported_mime') });
+          raiseToast({ kind: 'error', title: t('notebooks.status.unsupported_mime') });
           return;
         }
         created = await uploadSource(notebookId, addFile, addTitle.trim() || addFile.name, mime);
@@ -691,7 +674,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       setSources((prev) => [created, ...prev]);
       resetAddForm();
     } catch {
-      raiseToast({ kind: 'info', title: t('notebooks.add.failed') });
+      raiseToast({ kind: 'error', title: t('notebooks.add.failed') });
     } finally {
       setAdding(false);
     }
@@ -742,7 +725,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       try {
         await detachSource(notebookId, src.id);
       } catch {
-        raiseToast({ kind: 'info', title: t('library.workspace.detachFailed') });
+        raiseToast({ kind: 'error', title: t('library.workspace.detachFailed') });
         return;
       }
       setSources((prev) => prev.filter((s) => s.id !== src.id));
@@ -760,7 +743,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       try {
         await attachSources(notebookId, sourceIds);
       } catch {
-        raiseToast({ kind: 'info', title: t('library.workspace.detachFailed') });
+        raiseToast({ kind: 'error', title: t('library.workspace.detachFailed') });
         return;
       }
       setAttachOpen(false);

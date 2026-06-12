@@ -24,12 +24,6 @@ const m = {
   subCount: '{n} под',
   totalCards: 'всего карт: {n}',
   gardenHint: 'Повторяй карты — поливаешь сад.',
-  columns: {
-    name: 'Колода',
-    cards: 'Карт',
-    due: 'К повтору',
-    actions: 'Действия',
-  },
   stats: {
     cards: 'Карт',
     due: 'К повтору',

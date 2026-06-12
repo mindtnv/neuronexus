@@ -1,5 +1,4 @@
 const m = {
-  pageSubtitle: 'Level {level} Botanist · {streak}-day streak',
   bannerEyebrow: 'Your garden · Level {level} Botanist',
   bannerTitle: 'Your forest is thriving',
   bannerSub: 'Each deck grows into a plant as you review. Keep your streak alive to unlock new species and seasonal decorations.',
@@ -13,6 +12,8 @@ const m = {
   stage: 'stage {n}/5',
   mastered: '{pct}% mastered',
   plantNewDeck: 'Plant new deck',
+  reviewCards: 'Review cards',
+  changeSpecies: 'Change plant species',
   terrarium: {
     title: 'Your terrarium',
     sub: 'Level {level} Botanist · {streak}-day streak',

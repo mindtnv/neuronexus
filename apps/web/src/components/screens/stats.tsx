@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { State } from 'ts-fsrs';
 import { format, startOfDay, subDays } from 'date-fns';
-import { NNCard, NNIcon } from '@/components/ui';
+import { NNCard, NNIcon, NNSkeleton } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
 import { reviewFromApi } from '@/lib/mappers';
@@ -209,7 +209,7 @@ export const NNStats = () => {
         cards: deckCards.length,
         mature: matureCards,
         ret,
-        ease: avgDiff ? (10 - avgDiff) / 2.5 : 0, // rough proxy; TODO: real ease metric
+        ease: avgDiff ? (10 - avgDiff) / 2.5 : 0, // approximation: FSRS difficulty 0–10 mapped to Anki-style ease; a dedicated ease column is not stored
         time: `${minutes}m`,
         c: d.color as DeckColor,
       };
@@ -276,8 +276,6 @@ export const NNStats = () => {
     return { retentionTrend, reviewedTrend };
   }, [dailyBuckets]);
 
-  const dimStyle = bootstrapped ? undefined : { opacity: 0.45 };
-
   const kpis = [
     {
       l: t('stats.kpis.retention'),
@@ -310,8 +308,10 @@ export const NNStats = () => {
     },
   ];
 
+  if (!bootstrapped) return <StatsSkeleton isMobile={isMobile} />;
+
   return (
-    <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : 24, ...dimStyle }}>
+    <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : 24 }}>
       {/* Streak strip — the gamification entry point now that the sidebar has none. */}
       <div
         style={{
@@ -320,8 +320,8 @@ export const NNStats = () => {
           gap: 12,
           padding: '10px 14px',
           borderRadius: 12,
-          background: 'linear-gradient(135deg, rgba(232,154,43,0.10), rgba(243,182,85,0.04))',
-          border: '1px solid rgba(243,182,85,0.18)',
+          background: 'linear-gradient(135deg, color-mix(in srgb, var(--amber-500) 10%, transparent), color-mix(in srgb, var(--amber-400) 4%, transparent))',
+          border: '1px solid color-mix(in srgb, var(--amber-400) 18%, transparent)',
           marginBottom: isMobile ? 12 : 16,
           flexWrap: 'wrap',
         }}
@@ -362,7 +362,7 @@ export const NNStats = () => {
       <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, 1fr)', gap: isMobile ? 10 : 12, marginBottom: isMobile ? 12 : 16 }}>
         {kpis.map((s) => (
           <NNCard key={s.l} padding={16}>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.6 }}>{s.l}</div>
+            <div className="nn-section-label" style={{ marginBottom: 0 }}>{s.l}</div>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 6 }}>
               <div style={{ fontSize: 28, fontWeight: 600, color: 'var(--text)' }} className="mono">{s.v}</div>
               <div style={{ flex: 1 }} />
@@ -483,8 +483,9 @@ export const NNStats = () => {
             )}
           </div>
           {forecast == null || forecast.total === 0 ? (
-            <div style={{ padding: '24px 0', fontSize: 12.5, color: 'var(--text-dim)' }}>
-              {t('stats.forecast.empty')}
+            <div className="nn-empty-state" style={{ paddingTop: 24, paddingBottom: 24 }}>
+              <span className="nn-empty-state-icon"><NNIcon name="clock" size={24} color="var(--text-dim)" /></span>
+              <p className="nn-empty-state-hint">{t('stats.forecast.empty')}</p>
             </div>
           ) : (
             <svg viewBox="0 0 600 200" style={{ width: '100%', height: 200 }}>
@@ -533,8 +534,9 @@ export const NNStats = () => {
             {t('stats.intervalRetention.subtitle')}
           </div>
           {retentionBars.length === 0 ? (
-            <div style={{ fontSize: 12.5, color: 'var(--text-dim)' }}>
-              {t('stats.intervalRetention.notEnough')}
+            <div className="nn-empty-state" style={{ paddingTop: 16, paddingBottom: 16 }}>
+              <span className="nn-empty-state-icon"><NNIcon name="target" size={24} color="var(--text-dim)" /></span>
+              <p className="nn-empty-state-hint">{t('stats.intervalRetention.notEnough')}</p>
             </div>
           ) : (
             retentionBars.map((b) => {
@@ -566,7 +568,10 @@ export const NNStats = () => {
         </div>
         <div>
           {perDeck.length === 0 ? (
-            <div style={{ padding: '24px 20px', fontSize: 12.5, color: 'var(--text-dim)' }}>{t('stats.noDecks')}</div>
+            <div className="nn-empty-state" style={{ paddingTop: 24, paddingBottom: 24 }}>
+              <span className="nn-empty-state-icon"><NNIcon name="stack" size={24} color="var(--text-dim)" /></span>
+              <p className="nn-empty-state-hint">{t('stats.noDecks')}</p>
+            </div>
           ) : (
             perDeck.map((d, i) => (
               <div
@@ -632,7 +637,7 @@ export const NNStats = () => {
                   key={h}
                   style={{
                     height: 32,
-                    background: `rgba(154,209,85,${0.1 + intensity * 0.7})`,
+                    background: `color-mix(in srgb, var(--lime-400) ${Math.round((0.1 + intensity * 0.7) * 100)}%, transparent)`,
                     borderRadius: 2,
                   }}
                 />
@@ -670,3 +675,70 @@ export const NNStats = () => {
     </div>
   );
 };
+
+// Layout-matching skeleton shown until the store is bootstrapped — replaces the
+// old opacity dimmer (P2.4), mirroring the home.tsx pattern.
+function StatsSkeleton({ isMobile }: { isMobile: boolean }) {
+  const panel = (children: React.ReactNode): React.ReactNode => (
+    <div style={{ padding: 20, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--border)' }}>
+      {children}
+    </div>
+  );
+  return (
+    <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : 24 }}>
+      {/* streak strip */}
+      <NNSkeleton width="100%" height={44} radius={12} style={{ marginBottom: isMobile ? 12 : 16 }} />
+      {/* KPI grid */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, 1fr)',
+          gap: isMobile ? 10 : 12,
+          marginBottom: isMobile ? 12 : 16,
+        }}
+      >
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} style={{ padding: 16, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <NNSkeleton width={80} height={10} />
+            <NNSkeleton width={100} height={28} style={{ marginTop: 8 }} />
+            <NNSkeleton width={60} height={10} style={{ marginTop: 8 }} />
+          </div>
+        ))}
+      </div>
+      {/* two 2fr/1fr panel rows */}
+      {Array.from({ length: 2 }).map((_, row) => (
+        <div
+          key={row}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr',
+            gap: isMobile ? 10 : 12,
+            marginBottom: isMobile ? 12 : 16,
+          }}
+        >
+          {panel(
+            <>
+              <NNSkeleton width={160} height={14} />
+              <NNSkeleton width="100%" height={200} radius={10} style={{ marginTop: 16 }} />
+            </>,
+          )}
+          {panel(
+            <>
+              <NNSkeleton width={120} height={14} />
+              {Array.from({ length: 4 }).map((_, i) => (
+                <NNSkeleton key={i} width="100%" height={12} style={{ marginTop: 14 }} />
+              ))}
+            </>,
+          )}
+        </div>
+      ))}
+      {/* full-width card */}
+      {panel(
+        <>
+          <NNSkeleton width={140} height={14} />
+          <NNSkeleton width="100%" height={120} radius={10} style={{ marginTop: 16 }} />
+        </>,
+      )}
+    </div>
+  );
+}

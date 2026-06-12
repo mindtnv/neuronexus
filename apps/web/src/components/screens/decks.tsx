@@ -9,6 +9,7 @@ import type { DeckColor } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
+import { raiseToast } from '@/components/toasts';
 import { aggregateCounts, buildDeckTree, flattenTree, deckPathLabel, deckRowTarget, DeckNode } from '@/lib/decks';
 
 // ─────────────────────────────────────────────
@@ -138,6 +139,7 @@ export const NNDecks = () => {
       resetForm();
     } catch (err) {
       console.error('addDeck failed', err);
+      raiseToast({ kind: 'error', title: t('common.toasts.error') });
     }
   };
 
@@ -148,6 +150,7 @@ export const NNDecks = () => {
       await deleteDeck(id);
     } catch (err) {
       console.error('deleteDeck failed', err);
+      raiseToast({ kind: 'error', title: t('common.toasts.error') });
     }
   };
 
@@ -182,7 +185,7 @@ export const NNDecks = () => {
           )}
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 220px', minWidth: 200 }}>
-              <div style={labelStyle}>{t('decks.name')}</div>
+              <div className="nn-section-label" style={{ marginBottom: 6 }}>{t('decks.name')}</div>
               <input
                 autoFocus
                 value={newName}
@@ -196,7 +199,7 @@ export const NNDecks = () => {
               />
             </div>
             <div>
-              <div style={labelStyle}>{t('decks.color')}</div>
+              <div className="nn-section-label" style={{ marginBottom: 6 }}>{t('decks.color')}</div>
               <div style={{ display: 'flex', gap: 6 }}>
                 {COLOR_OPTIONS.map((c) => {
                   const selected = c === newColor;
@@ -562,6 +565,7 @@ export const NNDecks = () => {
                               await updateDeck(d.id, { name: next });
                             } catch (err) {
                               console.error('updateDeck failed', err);
+                              raiseToast({ kind: 'error', title: t('common.toasts.error') });
                             }
                           }
                         }}
@@ -588,6 +592,7 @@ export const NNDecks = () => {
                               await updateDeck(d.id, { color: next });
                             } catch (err) {
                               console.error('updateDeck failed', err);
+                              raiseToast({ kind: 'error', title: t('common.toasts.error') });
                             }
                           }
                         }}
@@ -617,6 +622,7 @@ export const NNDecks = () => {
                             await bindDeckPreset(d.id, presetId);
                           } catch (err) {
                             console.error('bindDeckPreset failed', err);
+                            raiseToast({ kind: 'error', title: t('common.toasts.error') });
                           }
                         }}
                         style={menuItemStyle()}
@@ -667,14 +673,6 @@ const iconActionStyle: React.CSSProperties = {
   background: 'var(--surface-3)',
   color: 'var(--text-muted)',
   textDecoration: 'none',
-};
-
-const labelStyle: React.CSSProperties = {
-  fontSize: 11,
-  color: 'var(--text-dim)',
-  textTransform: 'uppercase',
-  letterSpacing: 0.8,
-  marginBottom: 6,
 };
 
 const menuItemStyle = (color?: string): React.CSSProperties => ({

@@ -372,15 +372,6 @@ export const NNCustomStudy = () => {
     [addFilteredDeck, router, t],
   );
 
-  const sectionLabel: React.CSSProperties = {
-    fontSize: 11,
-    fontWeight: 700,
-    letterSpacing: '0.08em',
-    textTransform: 'uppercase',
-    color: 'var(--text-dim)',
-    marginBottom: 8,
-  };
-
   return (
     <div
       style={{
@@ -397,9 +388,9 @@ export const NNCustomStudy = () => {
     >
       {/* Header */}
       <div>
-        <div style={{ fontSize: isMobile ? 22 : 28, fontWeight: 700, fontFamily: 'var(--font-serif)', letterSpacing: -0.5, color: 'var(--text)', marginBottom: 4 }}>
+        <h1 className="nn-h1" style={{ marginBottom: 4 }}>
           {t('review.customStudy.title')}
-        </div>
+        </h1>
         <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>
           {t('review.customStudy.subtitle')}
         </div>
@@ -407,7 +398,7 @@ export const NNCustomStudy = () => {
 
       {/* Quick actions */}
       <section>
-        <div style={sectionLabel}>{t('review.customStudy.quickActions.title')}</div>
+        <div className="nn-section-label">{t('review.customStudy.quickActions.title')}</div>
         {quickActionError && (
           <div style={{ fontSize: 12, color: 'var(--rose-500)', marginBottom: 8 }}>{quickActionError}</div>
         )}
@@ -470,7 +461,7 @@ export const NNCustomStudy = () => {
       {/* Saved sessions */}
       <section>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <div style={sectionLabel}>{t('review.customStudy.sessions')}</div>
+          <div className="nn-section-label">{t('review.customStudy.sessions')}</div>
           <NNBtn size="sm" variant="soft" icon="plus" onClick={openCreate}>
             {t('review.customStudy.createNew')}
           </NNBtn>
@@ -502,17 +493,15 @@ export const NNCustomStudy = () => {
 
         {filteredDecks.length === 0 && !formOpen ? (
           <div
+            className="nn-empty-state"
             style={{
-              padding: '20px 16px',
               borderRadius: 10,
               background: 'var(--surface)',
               border: '1px solid var(--border)',
-              textAlign: 'center',
-              color: 'var(--text-dim)',
-              fontSize: 13,
             }}
           >
-            {t('review.customStudy.noSessions')}
+            <span className="nn-empty-state-icon"><NNIcon name="filter" size={24} color="var(--text-dim)" /></span>
+            <p className="nn-empty-state-hint">{t('review.customStudy.noSessions')}</p>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

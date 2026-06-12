@@ -456,7 +456,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
           await attachSources(nb.id, [sourceId]);
           go(nb.id);
         } catch {
-          raiseToast({ kind: 'info', title: t('library.reader.handoffFailed') });
+          raiseToast({ kind: 'error', title: t('library.reader.handoffFailed') });
         }
       }
     },

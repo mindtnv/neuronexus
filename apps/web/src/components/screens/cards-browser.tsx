@@ -9,7 +9,6 @@ import {
   CardQueryError,
   stateLabel,
   type CardLike,
-  type RenderKind,
 } from '@neuronexus/shared';
 import { NNBtn, NNBadge, NNTag, NNIcon, NNSkeleton } from '@/components/ui';
 import type { BadgeTone } from '@/components/ui';
@@ -17,6 +16,7 @@ import { CardsViewSwitcher } from '@/components/cards-view-switcher';
 import { NNCardForm } from '@/components/card-form';
 import { SimilarCardsPanel } from '@/components/similar-cards';
 import { SourceLinksPanel } from '@/components/source-links';
+import { RENDER_KIND_BADGE_TONE } from '@/lib/source-kind';
 import { useNN } from '@/lib/store';
 import type { Card } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -66,14 +66,6 @@ const STATE_CHIPS: { value: string; labelKey: string }[] = [
   { value: 'is:due', labelKey: 'cards.states.due' },
   { value: 'is:suspended', labelKey: 'cards.states.suspended' },
 ];
-
-// Note-type render-kind → badge tone (the "variant" column now shows the kind).
-const kindTone: Record<RenderKind, BadgeTone> = {
-  basic: 'lime',
-  cloze: 'violet',
-  typein: 'amber',
-  custom: 'sky',
-};
 
 const stateTone: Record<string, BadgeTone> = {
   new: 'sky',
@@ -806,9 +798,10 @@ export const NNCardsBrowser = () => {
                 ))}
               </div>
             ) : rows.length === 0 ? (
-              <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-dim)' }}>
-                <div style={{ fontSize: 14, marginBottom: 8, color: 'var(--text-muted)' }}>{t('cards.empty.title')}</div>
-                <div style={{ fontSize: 12 }}>{t('cards.empty.subtitle')}</div>
+              <div className="nn-empty-state" style={{ paddingTop: 48, paddingBottom: 48 }}>
+                <span className="nn-empty-state-icon"><NNIcon name="stack" size={30} color="var(--text-dim)" /></span>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>{t('cards.empty.title')}</div>
+                <p className="nn-empty-state-hint">{t('cards.empty.subtitle')}</p>
               </div>
             ) : (
               rows.map((card) => {
@@ -895,7 +888,7 @@ export const NNCardsBrowser = () => {
                         {col.id === 'deck' && (
                           <span style={{ color: 'var(--text-muted)' }}>{deckPathLabel(decks, card.deckId) || '—'}</span>
                         )}
-                        {col.id === 'variant' && <NNBadge tone={kindTone[card.renderKind] ?? 'neutral'} size="xs">{card.renderKind}</NNBadge>}
+                        {col.id === 'variant' && <NNBadge tone={RENDER_KIND_BADGE_TONE[card.renderKind] ?? 'neutral'} size="xs">{card.renderKind}</NNBadge>}
                         {col.id === 'state' && (
                           <NNBadge tone={stateTone[sLabel] ?? 'neutral'} size="xs">{t(`cards.states.${sLabel}`)}</NNBadge>
                         )}

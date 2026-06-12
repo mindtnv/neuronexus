@@ -22,6 +22,8 @@ import { NNBtn, NNIcon, NNSkeleton } from '@/components/ui';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { CoverageBars } from '@/components/notebook/coverage-bars';
 import { ConceptMap } from '@/components/notebook/concept-map';
+import { raiseToast } from '@/components/toasts';
+import { isCooldownError } from '@/lib/store';
 import type { ConceptMapResult, Notebook, NotebookCoverage, Source } from '@/lib/types';
 
 type Tfn = (key: string, params?: Record<string, string | number>) => string;
@@ -121,12 +123,17 @@ export const OverviewPanel = ({
         overviewFingerprint: res.fingerprint,
         currentFingerprint: res.fingerprint,
       });
-    } catch {
-      setError(true);
+    } catch (err) {
+      // 429 cooldown → an info toast, not the inline error plaque.
+      if (isCooldownError(err)) {
+        raiseToast({ kind: 'info', title: t('notebooks.overview.cooldown') });
+      } else {
+        setError(true);
+      }
     } finally {
       setGenerating(false);
     }
-  }, [generating, generateOverview, notebookId, onDetailChange]);
+  }, [generating, generateOverview, notebookId, onDetailChange, t]);
 
   // ── Auto-kick ONCE per mount (Р6): overview is null + ready sources + chat on ──
   const autoKickedRef = useRef(false);

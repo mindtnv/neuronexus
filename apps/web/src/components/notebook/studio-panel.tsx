@@ -38,6 +38,7 @@ import { NNBtn, NNCard, NNIcon, NNSkeleton } from '@/components/ui';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { useArtifactStatus, useArtifactTimers } from '@/lib/use-artifact-status';
+import { relativeUpdated } from '@/lib/notebook-format';
 import {
   formatCharCount,
   formatElapsedSeconds,
@@ -499,21 +500,6 @@ const StudioTile = ({
 
 // ── Artifact list row ─────────────────────────────────────────────────────────
 
-/** Hand-rolled relative «N ago» (no dep) — reuses notebooks.meta.* keys (mirrors
- *  the workspace/list helpers). Used for the «Готово · {time}» ready subline. */
-function relativeWhen(iso: string | undefined, t: Tfn): string {
-  if (!iso) return '';
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return '';
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return t('notebooks.meta.relativeNow');
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 60) return t('notebooks.meta.relativeMinutes', { count: mins });
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return t('notebooks.meta.relativeHours', { count: hours });
-  return t('notebooks.meta.relativeDays', { count: Math.floor(hours / 24) });
-}
-
 const ArtifactRow = ({
   artifact,
   onOpen,
@@ -615,7 +601,7 @@ const ArtifactRow = ({
                 pending → queued; error → error-code prose (rose). */}
             {ready ? (
               <span style={{ display: 'block', fontSize: 10.5, color: 'var(--text-dim)' }}>
-                {t('notebooks.studio.readyAt', { time: relativeWhen(artifact.updatedAt, t) })}
+                {t('notebooks.studio.readyAt', { time: relativeUpdated(artifact.updatedAt, t) })}
               </span>
             ) : isError ? (
               <span style={{ display: 'block', fontSize: 10.5, color: 'var(--rose-400)' }}>

@@ -1816,6 +1816,10 @@ export const ChatPanel = ({
                       canEdit={m.role === 'user' && i === messages.length - 1 && !sending}
                       onEdit={(text) => void editAndRegenerate(text)}
                       onOpenCard={(cardId) => router.push(`/cards?focus=${cardId}`)}
+                      // Quotes inside a deck name would break the deck:"…" query syntax.
+                      onOpenDeckCards={(deckName) =>
+                        router.push(`/cards?q=${encodeURIComponent(`deck:"${deckName.replace(/"/g, '')}"`)}`)
+                      }
                       onSourceCitation={onSourceCitation}
                       isNotebook={isNotebook}
                       sourceCount={isNotebook ? sourceIds?.length : undefined}
@@ -2409,6 +2413,8 @@ interface MessageRowProps {
   onEdit?: (text: string) => void;
   /** Open a cited card in /cards (jump-to-card, AC3.6). */
   onOpenCard?: (cardId: string) => void;
+  /** Open a deck's cards in /cards (post-create exit when no card id, P3.7). */
+  onOpenDeckCards?: (deckName: string) => void;
   /** A source citation chip was clicked (workspace scrolls the reader). */
   onSourceCitation?: (c: SourceCitation) => void;
   /** Notebook mode (A2): numbered inline citations + «по N источникам» meta. */
@@ -2448,6 +2454,7 @@ const MessageRow = ({
   canEdit = false,
   onEdit,
   onOpenCard,
+  onOpenDeckCards,
   onSourceCitation,
   isNotebook = false,
   sourceCount,
@@ -2765,6 +2772,7 @@ const MessageRow = ({
             onConfirm(message.id, toolCallId, decision, payload)
           }
           onOpenCard={onOpenCard}
+          onOpenDeckCards={onOpenDeckCards}
           onSourceCitation={onSourceCitation}
           t={t}
         />
@@ -3527,6 +3535,8 @@ interface ToolActivityStepProps {
   onConfirm: (decision: 'apply' | 'reject', payload?: ConfirmPayload) => void;
   /** Jump to a cited card in /cards (AC3.6). */
   onOpenCard?: (cardId: string) => void;
+  /** Open a deck's cards in /cards (post-create exit when no card id, P3.7). */
+  onOpenDeckCards?: (deckName: string) => void;
   /** A source citation chip was clicked (search_source results, M2). */
   onSourceCitation?: (c: SourceCitation) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -3538,6 +3548,7 @@ const ToolActivityStep = ({
   deckNameById,
   onConfirm,
   onOpenCard,
+  onOpenDeckCards,
   onSourceCitation,
   t,
 }: ToolActivityStepProps) => {
@@ -3693,6 +3704,7 @@ const ToolActivityStep = ({
               summary={toolCall.applySummary}
               deckNameById={deckNameById}
               onOpenCard={onOpenCard}
+              onOpenDeckCards={onOpenDeckCards}
               noBottomMargin={summaryIsLast}
               t={t}
             />
@@ -3748,12 +3760,14 @@ interface PostApplySummaryProps {
   summary: NonNullable<ToolCallVM['applySummary']>;
   deckNameById: Map<string, string>;
   onOpenCard?: (cardId: string) => void;
+  /** Open the deck's cards in /cards — the create exit when no card id is known. */
+  onOpenDeckCards?: (deckName: string) => void;
   /** Omit the bottom margin when this is the only element in the step body. */
   noBottomMargin?: boolean;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-const PostApplySummary = ({ summary, deckNameById, onOpenCard, noBottomMargin, t }: PostApplySummaryProps) => {
+const PostApplySummary = ({ summary, deckNameById, onOpenCard, onOpenDeckCards, noBottomMargin, t }: PostApplySummaryProps) => {
   const deckName = summary.deckId ? deckNameById.get(summary.deckId) : undefined;
   // Four create variants: ±deck name (an unresolved deck must NOT leave an
   // «in  · open» hole) × singular/plural (proper phrasing for count=1).
@@ -3770,11 +3784,26 @@ const PostApplySummary = ({ summary, deckNameById, onOpenCard, noBottomMargin, t
     summary.kind === 'create'
       ? t(createKey, { count, deck: deckName ?? '' })
       : t('chat.activity.appliedEdited');
+  // Visible exit to the new/edited cards (P3.7): edit → /cards?focus=<id>; create
+  // has no card id in-frame (the tool result is text-only), so fall back to the
+  // deck filter /cards?q=deck:"<name>" when the deck resolves. No deck / no id ⇒
+  // the line stays informational (no jump), exactly as before.
+  const canOpen =
+    summary.kind === 'edit'
+      ? Boolean(summary.cardId && onOpenCard)
+      : Boolean(deckName && onOpenDeckCards);
+  const open = () => {
+    if (summary.kind === 'edit') {
+      if (summary.cardId) onOpenCard?.(summary.cardId);
+    } else if (deckName) {
+      onOpenDeckCards?.(deckName);
+    }
+  };
   return (
     <button
       type="button"
-      onClick={() => summary.cardId && onOpenCard?.(summary.cardId)}
-      disabled={!summary.cardId || !onOpenCard}
+      onClick={open}
+      disabled={!canOpen}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -3784,7 +3813,7 @@ const PostApplySummary = ({ summary, deckNameById, onOpenCard, noBottomMargin, t
         border: 'none',
         padding: '2px 0',
         marginBottom: noBottomMargin ? 0 : 6,
-        cursor: summary.cardId && onOpenCard ? 'pointer' : 'default',
+        cursor: canOpen ? 'pointer' : 'default',
         color: 'var(--lime-400)',
         fontFamily: 'var(--font-sans)',
         fontSize: 12.5,
@@ -3793,6 +3822,11 @@ const PostApplySummary = ({ summary, deckNameById, onOpenCard, noBottomMargin, t
     >
       <NNIcon name="check" size={13} color="var(--lime-400)" />
       {text}
+      {canOpen && (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, opacity: 0.85 }}>
+          · {t('chat.message.openCard')}
+        </span>
+      )}
     </button>
   );
 };
@@ -3816,6 +3850,7 @@ interface ToolActivityGroupProps {
   deckNameById: Map<string, string>;
   onConfirm: (toolCallId: string, decision: 'apply' | 'reject', payload?: ConfirmPayload) => void;
   onOpenCard?: (cardId: string) => void;
+  onOpenDeckCards?: (deckName: string) => void;
   onSourceCitation?: (c: SourceCitation) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
@@ -3829,6 +3864,7 @@ const ToolActivityGroup = ({
   deckNameById,
   onConfirm,
   onOpenCard,
+  onOpenDeckCards,
   onSourceCitation,
   t,
 }: ToolActivityGroupProps) => {
@@ -3951,6 +3987,7 @@ const ToolActivityGroup = ({
               deckNameById={deckNameById}
               onConfirm={(decision, payload) => onConfirm(tc.id, decision, payload)}
               onOpenCard={onOpenCard}
+              onOpenDeckCards={onOpenDeckCards}
               onSourceCitation={onSourceCitation}
               t={t}
             />
