@@ -21,6 +21,10 @@ RUN bun install --frozen-lockfile
 
 FROM deps AS build
 WORKDIR /repo
+# bun build INLINES process.env.NODE_ENV into the bundle at build time —
+# without this the dev branch of logger.ts (pino-pretty worker transport,
+# unresolvable in the runtime image) gets baked in and crashes on boot.
+ENV NODE_ENV=production
 COPY tsconfig.base.json ./
 COPY packages/ packages/
 COPY apps/api/ apps/api/
