@@ -27,17 +27,23 @@ COPY apps/api/ apps/api/
 # apps/web isn't needed at runtime, but the api workspace's type-only imports
 # from `@neuronexus/api` (eden) don't touch web — safe to skip it.
 RUN cd apps/api && bun build src/index.ts --target bun --outdir ./dist --minify
+# Bundle the programmatic migrator too — the runtime CMD applies committed
+# migrations before starting the server (idempotent: drizzle records applied
+# migrations in __drizzle_migrations).
+RUN cd packages/db && bun build src/migrate.ts --target bun --outdir ./dist --minify
 
 FROM oven/bun:1.3-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV API_PORT=3000
 COPY --from=build /repo/apps/api/dist ./dist
-COPY --from=build /repo/packages/db/src/migrations ./migrations
-# Baked migrations are referenced by our programmatic migrator if we ever run
-# it inside the container (entrypoint script example in docker-compose.prod).
+COPY --from=build /repo/packages/db/dist/migrate.js ./dist/migrate.js
+# migrate.js resolves `<its dir>/migrations` at runtime → bake them next to it.
+COPY --from=build /repo/packages/db/src/migrations ./dist/migrations
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- http://127.0.0.1:${API_PORT}/health || exit 1
 USER bun
-CMD ["bun", "dist/index.js"]
+# Apply pending migrations, then start. First boot runs the full chain
+# (incl. 0010 `CREATE EXTENSION vector` — the DB image must ship pgvector).
+CMD ["sh", "-c", "bun dist/migrate.js && exec bun dist/index.js"]
