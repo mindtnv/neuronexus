@@ -176,6 +176,11 @@ export const env = {
     NOTEBOOK_OVERVIEW_TIMEOUT_MS: Number(process.env.NOTEBOOK_OVERVIEW_TIMEOUT_MS ?? 20_000),
     // Per-notebook artifact cap (Р16) → 409 `too_many_artifacts`.
     MAX_ARTIFACTS_PER_NOTEBOOK: Number(process.env.MAX_ARTIFACTS_PER_NOTEBOOK ?? 50),
+    // ── «Блокноты 2.0» concept-map (N4 / Р10) — OPTIONAL ─────────────────────
+    // Cap on the number of section-nodes the concept-map graph builds before the
+    // ANN k-NN-join (even round-robin sample across sources by first_pos). Bounds
+    // the LATERAL probe's worst case (sections × ~5 probe chunks × k*2 neighbours).
+    CONCEPT_MAP_MAX_SECTIONS: Number(process.env.CONCEPT_MAP_MAX_SECTIONS ?? 60),
   },
 };
 

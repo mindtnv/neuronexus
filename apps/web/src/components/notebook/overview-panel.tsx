@@ -21,7 +21,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NNBtn, NNIcon, NNSkeleton } from '@/components/ui';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { CoverageBars } from '@/components/notebook/coverage-bars';
-import type { Notebook, NotebookCoverage, Source } from '@/lib/types';
+import { ConceptMap } from '@/components/notebook/concept-map';
+import type { ConceptMapResult, Notebook, NotebookCoverage, Source } from '@/lib/types';
 
 type Tfn = (key: string, params?: Record<string, string | number>) => string;
 
@@ -47,6 +48,12 @@ export interface OverviewPanelProps {
   ) => Promise<{ overview: string; questions: string[]; fingerprint: string }>;
   /** Card-coverage of the notebook (N3, Р9). SQL-only — fetched lazily on mount. */
   getCoverage: (id: string) => Promise<NotebookCoverage>;
+  /** Sectional concept-map of the notebook (N4, Р10). Vectors-only — fetched
+   *  lazily by the ConceptMap child when the Overview tab is open. */
+  conceptMap: (id: string) => Promise<ConceptMapResult>;
+  /** A concept-map node was clicked — open the citation viewer on its first
+   *  chunk (the workspace resolves sourceId+chunkId → viewer). */
+  onOpenCitation: (sourceId: string, chunkId: string) => void;
   /** Merge a freshly-generated overview into the workspace's detail state. */
   onDetailChange: (patch: Partial<Notebook>) => void;
   /** A suggested-question pill / coverage-gap arrow was clicked — send it into
@@ -63,6 +70,8 @@ export const OverviewPanel = ({
   chatEnabled,
   generateOverview,
   getCoverage,
+  conceptMap,
+  onOpenCitation,
   onDetailChange,
   onAskQuestion,
   t,
@@ -262,12 +271,16 @@ export const OverviewPanel = ({
           )}
         </section>
 
-        {/* ── Structural placeholder for N4 (concept-map) ── */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {/* ── Concept map (N4, Р10) — vectors-only, renders without a chat key ── */}
+        <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <SectionHeading icon="graph" label={t('notebooks.overview.mapHeading')} />
-          <p style={{ fontSize: 11.5, color: 'var(--text-dim)', margin: 0 }}>
-            {t('notebooks.overview.mapSoon')}
-          </p>
+          <ConceptMap
+            notebookId={notebookId}
+            hasReady={hasReady}
+            conceptMap={conceptMap}
+            onOpenCitation={(chunkId, sourceId) => onOpenCitation(sourceId, chunkId)}
+            t={t}
+          />
         </section>
       </div>
     </div>

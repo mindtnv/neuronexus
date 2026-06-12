@@ -221,6 +221,22 @@ const notebooks = {
     noHeading: 'untitled',
   },
 
+  // «Notebooks 2.0» (N4, Р10) — concept map block in the Overview tab.
+  // Vectors-only (renders without a chat key); degrades to «not indexed».
+  map: {
+    heading: 'Concept map',
+    hint: 'Sections of your sources, linked by similarity. Click a node to open it.',
+    part: 'part {n}',
+    empty: 'Add sources to see the concept map.',
+    notIndexed: 'Your sources aren\'t indexed yet — the map appears once indexing finishes.',
+  },
+
+  // «Notebooks 2.0» (N4, Р11) — recommendations in the «Add from library» picker.
+  attach: {
+    suggestedHeading: 'Recommended',
+    suggestedMatch: '{pct}% match',
+  },
+
   // Source list (inside an open notebook).
   sources: {
     heading: 'Sources',

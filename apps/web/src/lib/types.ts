@@ -245,6 +245,54 @@ export interface NotebookCoverage {
   gaps: NotebookCoverageGap[];
 }
 
+/** «Блокноты 2.0» (N4, Р10) one concept-map node — a (source, section) cluster of
+ *  document chunks. `label` is the section heading, or null for a
+ *  position-bucketed (headingless) section (the client labels it «часть N»).
+ *  `firstChunkId`/`firstPos` are the citation-viewer scroll anchors. */
+export interface ConceptMapNode {
+  id: string;
+  sourceId: string;
+  sourceTitle: string;
+  label: string | null;
+  firstPos: number;
+  firstChunkId: string;
+  chunkCount: number;
+}
+
+/** «Блокноты 2.0» (N4, Р10) one undirected concept-map edge (a < b by id);
+ *  `score` is the cosine similarity of the closest cross-section chunk pair. */
+export interface ConceptMapEdge {
+  a: string;
+  b: string;
+  score: number;
+}
+
+/** «Блокноты 2.0» (N4, Р10) the sectional semantic graph (GET …/concept-map).
+ *  Vectors-only — works without a chat key. `reason='not_indexed'` when the
+ *  notebook has no document vectors yet (honest degrade → empty-state). */
+export interface ConceptMapResult {
+  nodes: ConceptMapNode[];
+  edges: ConceptMapEdge[];
+  reason?: 'not_indexed';
+}
+
+/** «Блокноты 2.0» (N4, Р11) one recommended library source (GET …/suggest-sources)
+ *  — a source near the notebook's centroid, NOT already attached. */
+export interface SuggestedSource {
+  sourceId: string;
+  title: string;
+  kind: SourceKind;
+  /** Cosine similarity to the notebook centroid (1 = identical). */
+  score: number;
+}
+
+/** «Блокноты 2.0» (N4, Р11) source recommendations (GET …/suggest-sources).
+ *  Vectors-only; `reason='not_indexed'` ⇒ no centroid (nothing indexed yet). */
+export interface SuggestSourcesResult {
+  items: SuggestedSource[];
+  reason?: 'not_indexed';
+}
+
 /** A notebook note (Р1/Р7) — user markdown (`manual`) or a saved chat answer
  *  (`answer`). The list view also folds in a light `excerpt`. */
 export interface NotebookNote {

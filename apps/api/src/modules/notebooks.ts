@@ -83,6 +83,8 @@ import {
   scoreQuizAttempt,
 } from '../ai/artifacts.ts';
 import { suggestCard } from '../ai/suggest-card.ts';
+import { conceptMap } from '../ai/concept-map.ts';
+import { suggestSources } from '../ai/suggest-sources.ts';
 import { resolveNoteTypeForCreate, enqueueToolCardsForIndex } from '../ai/tools.ts';
 import { resolveNoteCreate, insertNoteAndCards } from './notes.ts';
 import {
@@ -1560,6 +1562,78 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         },
         gaps,
       };
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+
+  // ── concept-map (Р10, N4 §3) ──────────────────────────────────────────────────
+  // A SECTIONAL semantic graph over the notebook's READY sources (resolved via the
+  // notebook_sources join), built from STORED document vectors — no live embedder
+  // (works exactly like the semantic-graph). All the SQL lives in ai/concept-map.ts
+  // (two-phase: section aggregation, then a document-guarded k-NN-join). user-scoped;
+  // foreign notebook → 404; no sources/vectors → `{nodes:[],edges:[],reason}`.
+  .get(
+    '/:id/concept-map',
+    async ({ user, params, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      // Ready sources attached to this notebook (the document-guard scope).
+      const ready = await db
+        .select({ id: sources.id })
+        .from(notebookSources)
+        .innerJoin(sources, eq(sources.id, notebookSources.sourceId))
+        .where(
+          and(
+            eq(notebookSources.userId, user.id),
+            eq(notebookSources.notebookId, params.id),
+            eq(sources.status, 'ready'),
+          ),
+        );
+
+      return conceptMap({
+        userId: user.id,
+        sourceIds: ready.map((s) => s.id),
+        maxSections: env.ai.CONCEPT_MAP_MAX_SECTIONS,
+      });
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+
+  // ── suggest-sources (Р11, N4 §3) ──────────────────────────────────────────────
+  // Recommend other library sources near the notebook's centroid (AVG of a sample
+  // of its document vectors) — vectors-only, document-guarded. Attached sources are
+  // BOTH the centroid AND the exclusion set; candidates are user-scoped `ready`.
+  // foreign notebook → 404; nothing to suggest / no vectors → `{items:[], reason?}`.
+  .get(
+    '/:id/suggest-sources',
+    async ({ user, params, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      // ALL attached sources (any status) — they form the centroid + exclusion.
+      const attached = await db
+        .select({ id: notebookSources.sourceId })
+        .from(notebookSources)
+        .where(
+          and(
+            eq(notebookSources.userId, user.id),
+            eq(notebookSources.notebookId, params.id),
+          ),
+        );
+
+      return suggestSources({
+        userId: user.id,
+        attachedSourceIds: attached.map((s) => s.id),
+      });
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   );

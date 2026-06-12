@@ -57,7 +57,7 @@ import { StudioPanel } from '@/components/notebook/studio-panel';
 import { useSourceStatus } from '@/lib/use-source-status';
 import { prefillKey } from '@/lib/library-handoff';
 import { api, ok } from '@/lib/api';
-import type { LibraryItem } from '@/lib/types';
+import type { LibraryItem, SuggestedSource, SuggestSourcesResult } from '@/lib/types';
 
 type WorkspaceTab = 'sources' | 'chat' | 'dock';
 
@@ -92,6 +92,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const searchParams = useSearchParams();
   const bp = useBreakpoint();
   const isDesktop = bp === 'desktop';
+  const isTablet = bp === 'tablet';
   const { prompt, confirm } = useDialog();
 
   const listNotebooks = useNN((s) => s.listNotebooks);
@@ -120,6 +121,8 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const submitQuizAttempt = useNN((s) => s.submitQuizAttempt);
   const listQuizAttempts = useNN((s) => s.listQuizAttempts);
   const getCoverage = useNN((s) => s.getCoverage);
+  const conceptMap = useNN((s) => s.conceptMap);
+  const suggestSources = useNN((s) => s.suggestSources);
 
   const [notebook, setNotebook] = useState<Notebook | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
@@ -149,6 +152,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const dockTabKey = `nn:nb:docktab:${notebookId}`;
   const [dockTab, setDockTab] = useState<DockTab>('overview');
   const [dockCollapsed, setDockCollapsed] = useState(false);
+  // Tablet (720–1100): the dock is a right-side sheet over the sources│chat layout
+  // (Р12), toggled from a header button (with a badge-dot when notes are present).
+  const [dockSheetOpen, setDockSheetOpen] = useState(false);
   // Imperative refresh of the notes panel (after «save answer from chat»).
   const notesRefreshRef = useRef<(() => void) | null>(null);
 
@@ -210,12 +216,17 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         });
         raiseToast({ kind: 'info', title: t('notebooks.notes.savedFromChat') });
         notesRefreshRef.current?.();
-        if (dockCollapsed) toggleDock();
+        if (isTablet) {
+          setDockTab('notes');
+          setDockSheetOpen(true);
+        } else if (dockCollapsed) {
+          toggleDock();
+        }
       } catch {
         raiseToast({ kind: 'info', title: t('notebooks.notes.createFailed') });
       }
     },
-    [createNotebookNote, notebookId, t, dockCollapsed, toggleDock],
+    [createNotebookNote, notebookId, t, dockCollapsed, toggleDock, isTablet],
   );
 
   // Studio «В заметку» — copy a ready artifact's markdown into a manual note.
@@ -424,6 +435,8 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     (v: { sourceId: string; chunkId?: string; pos?: number; page?: number }) => {
       setViewer(v);
       if (!isDesktop) setTab('chat');
+      // On tablet, the dock sheet would stack over the viewer — close it.
+      setDockSheetOpen(false);
       // The TextChunkReader mounts fresh per sourceId (key) and scrolls once it has
       // chunks; if it's already mounted for this source, scroll imperatively.
       requestAnimationFrame(() => viewerReaderRef.current?.scrollToChunk(v.chunkId, v.pos));
@@ -727,6 +740,8 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     (question: string) => {
       prefillChat(question);
       if (!isDesktop) setTab('chat');
+      // Tablet: the dock sheet covers the chat — close it so the prefill is seen.
+      setDockSheetOpen(false);
     },
     [prefillChat, isDesktop],
   );
@@ -740,10 +755,23 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       chatEnabled={chatEnabled}
       generateOverview={generateOverview}
       getCoverage={getCoverage}
+      conceptMap={conceptMap}
+      onOpenCitation={(sourceId, chunkId) => openViewer({ sourceId, chunkId })}
       onDetailChange={onDetailChange}
       onAskQuestion={askInChat}
       t={t}
     />
+  );
+
+  // Prefill the chat + reveal it (mobile → chat tab; tablet → close the dock
+  // sheet so the composer is visible). Shared by notes/studio prefill actions.
+  const prefillAndReveal = useCallback(
+    (text: string) => {
+      prefillChat(text);
+      if (!isDesktop) setTab('chat');
+      setDockSheetOpen(false);
+    },
+    [prefillChat, isDesktop],
   );
 
   const notesPanel = (
@@ -753,10 +781,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       createNote={createNotebookNote}
       patchNote={patchNotebookNote}
       deleteNote={deleteNotebookNote}
-      onPrefillChat={(text) => {
-        prefillChat(text);
-        if (!isDesktop) setTab('chat');
-      }}
+      onPrefillChat={prefillAndReveal}
       refreshRef={notesRefreshRef}
       t={t}
     />
@@ -776,10 +801,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       listQuizAttempts={listQuizAttempts}
       onOpenCitation={(chunkId, sids) => void openCitationByChunk(chunkId, sids)}
       onSaveToNote={onSaveArtifactNote}
-      onPrefillChat={(text) => {
-        prefillChat(text);
-        if (!isDesktop) setTab('chat');
-      }}
+      onPrefillChat={prefillAndReveal}
       t={t}
     />
   );
@@ -827,6 +849,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   const dockColumn = (
     <div
+      className="nn-dock-col"
       style={{
         width: 340,
         flexShrink: 0,
@@ -873,11 +896,14 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     />
   ) : null;
 
-  // L1 — "Add from library" picker.
+  // L1 — "Add from library" picker. N4 (Р11): the picker also surfaces a
+  // «Рекомендуем» section fed by GET …/suggest-sources (vectors-only).
   const attachPicker = attachOpen ? (
     <LibraryAttachPicker
+      notebookId={notebookId}
       attachedIds={new Set(sources.map((s) => s.id))}
       listLibrary={listLibrary}
+      suggestSources={suggestSources}
       onConfirm={onAttachSources}
       onClose={() => setAttachOpen(false)}
       t={t}
@@ -918,8 +944,112 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       >
         {notebook?.title ?? t('notebooks.sources.heading')}
       </h2>
+      {/* Tablet (Р12): open the dock as a right-side sheet. A badge-dot signals
+          non-empty notes. */}
+      {isTablet && (
+        <span style={{ position: 'relative', display: 'inline-flex' }}>
+          <NNBtn
+            variant="soft"
+            size="sm"
+            icon="doc"
+            ariaLabel={t('notebooks.workspace.tabDock')}
+            title={t('notebooks.workspace.tabDock')}
+            onClick={() => setDockSheetOpen(true)}
+          >
+            {t('notebooks.workspace.tabDock')}
+          </NNBtn>
+          {(notebook?.noteCount ?? 0) > 0 && (
+            <span
+              aria-hidden
+              style={{
+                position: 'absolute',
+                top: -2,
+                right: -2,
+                width: 7,
+                height: 7,
+                borderRadius: 999,
+                background: 'var(--lime-400)',
+                border: '1.5px solid var(--surface)',
+              }}
+            />
+          )}
+        </span>
+      )}
     </div>
   );
+
+  // Tablet (720–1100, Р12): two columns (sources │ chat) with the dock as a
+  // right-side SHEET over the chat (toggled from the header button) and the
+  // citation viewer as a fullscreen sheet. Distinct from the mobile tab switcher.
+  if (isTablet) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        {attachPicker}
+        {header}
+        <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <div
+            style={{
+              width: 260,
+              flexShrink: 0,
+              borderRight: '1px solid var(--border)',
+              overflowY: 'auto',
+            }}
+            className="nn-scroll"
+          >
+            {sourcesPanel}
+          </div>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            {chatPanel}
+          </div>
+        </div>
+        {/* Dock sheet (right side) — slides over the chat column. */}
+        {dockSheetOpen && (
+          <>
+            <div
+              className="nn-dialog-backdrop"
+              onClick={() => setDockSheetOpen(false)}
+              style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'rgba(0,0,0,0.5)' }}
+            />
+            <div
+              style={{
+                position: 'fixed',
+                top: 0,
+                right: 0,
+                bottom: 0,
+                width: 'min(420px, 90vw)',
+                zIndex: 71,
+                display: 'flex',
+                flexDirection: 'column',
+                background: 'var(--surface)',
+                borderLeft: '1px solid var(--border)',
+                boxShadow: 'var(--shadow-lg)',
+              }}
+            >
+              <div className="nn-chrome" style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '6px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0, minHeight: 40, overflowX: 'auto' }}>
+                {DOCK_TABS.map(({ key, labelKey }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`nn-ws-tab${dockTab === key ? ' active' : ''}`}
+                    onClick={() => selectDockTab(key)}
+                  >
+                    {t(labelKey)}
+                  </button>
+                ))}
+                <span style={{ flex: 1 }} />
+                <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} title={t('library.details.close')} onClick={() => setDockSheetOpen(false)} />
+              </div>
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                {dockBody(dockTab)}
+              </div>
+            </div>
+          </>
+        )}
+        {/* Citation viewer — fullscreen sheet. */}
+        {citationViewer}
+      </div>
+    );
+  }
 
   if (isDesktop) {
     return (
@@ -1485,14 +1615,18 @@ const WorkspaceSourceRow = ({
 // ── L1 — "Add from library" attach picker (modal) ──────────────────────────────
 
 const LibraryAttachPicker = ({
+  notebookId,
   attachedIds,
   listLibrary,
+  suggestSources,
   onConfirm,
   onClose,
   t,
 }: {
+  notebookId: string;
   attachedIds: Set<string>;
   listLibrary: (params?: { q?: string; limit?: number }) => Promise<{ items: LibraryItem[]; nextCursor: string | null }>;
+  suggestSources: (notebookId: string) => Promise<SuggestSourcesResult>;
   onConfirm: (sourceIds: string[]) => Promise<void> | void;
   onClose: () => void;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -1502,6 +1636,8 @@ const LibraryAttachPicker = ({
   const [items, setItems] = useState<LibraryItem[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  // N4 (Р11): recommendations fetched ONCE when the picker opens.
+  const [suggested, setSuggested] = useState<SuggestedSource[]>([]);
 
   useEffect(() => {
     const id = window.setTimeout(() => setDebouncedQ(search.trim()), 300);
@@ -1522,6 +1658,26 @@ const LibraryAttachPicker = ({
       cancelled = true;
     };
   }, [listLibrary, debouncedQ]);
+
+  // Recommendations: fetched once on open. Already-attached items are filtered
+  // out (the server already excludes attached sources, but a race could slip
+  // one through). Empty / not_indexed ⇒ no section.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await suggestSources(notebookId);
+        if (!cancelled) setSuggested(res.items.filter((s) => !attachedIds.has(s.sourceId)));
+      } catch {
+        if (!cancelled) setSuggested([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // attachedIds is a fresh Set each render; the suggest fetch is open-once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestSources, notebookId]);
 
   const toggle = useCallback((id: string) => {
     setPicked((prev) => {
@@ -1569,6 +1725,57 @@ const LibraryAttachPicker = ({
               boxSizing: 'border-box',
             }}
           />
+
+          {/* N4 (Р11): «Рекомендуем» — sources near the notebook's centroid.
+              Hidden while a search query is active (it filters the main list, not
+              the recs) and when there are no recommendations. */}
+          {!debouncedQ && suggested.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span
+                className="nn-chrome"
+                style={{
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.06em',
+                  color: 'var(--text-dim)',
+                  padding: '0 2px',
+                }}
+              >
+                {t('notebooks.attach.suggestedHeading')}
+              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {suggested.map((s) => {
+                  const checked = picked.has(s.sourceId);
+                  return (
+                    <label
+                      key={s.sourceId}
+                      className="nn-lib-nb-link"
+                      style={{
+                        cursor: 'pointer',
+                        background: checked ? 'var(--surface-3)' : 'var(--surface-2)',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggle(s.sourceId)}
+                        style={{ width: 14, height: 14, accentColor: 'var(--lime-500)', flexShrink: 0, cursor: 'pointer' }}
+                      />
+                      <NNIcon name={s.kind === 'url' ? 'link' : s.kind === 'text' ? 'edit' : 'book'} size={13} color="var(--text-muted)" />
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
+                        {s.title}
+                      </span>
+                      <NNBadge tone="lime" size="xs">
+                        {t('notebooks.attach.suggestedMatch', { pct: Math.round(s.score * 100) })}
+                      </NNBadge>
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ height: 1, background: 'var(--border)', margin: '4px 0 0' }} />
+            </div>
+          )}
 
           <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2, minHeight: 80 }}>
             {items === null ? (

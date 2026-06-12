@@ -17,7 +17,7 @@ import {
   reviewFromApi,
 } from './mappers';
 import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookArtifact, NotebookCoverage, NotebookNote, NoteType, Profile, QuizAttempt, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
+import type { Card, ConceptMapResult, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookArtifact, NotebookCoverage, NotebookNote, NoteType, Profile, QuizAttempt, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard, SuggestSourcesResult } from './types';
 import type { NotebookArtifactType, NotebookColor, NotebookNoteKind, QuizAttemptAnswerInput, SourceKind, SourceMime } from '@neuronexus/shared';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
@@ -319,6 +319,12 @@ interface State {
   /** Card-coverage of the notebook's attached sources (GET …/coverage). SQL-only
    *  — works without a chat key. */
   getCoverage: (notebookId: string) => Promise<NotebookCoverage>;
+  /** Sectional concept-map of the notebook (GET …/concept-map). Vectors-only —
+   *  works without a chat key; degrades to `{nodes:[],edges:[],reason}`. */
+  conceptMap: (notebookId: string) => Promise<ConceptMapResult>;
+  /** Recommend other library sources near the notebook's centroid (GET
+   *  …/suggest-sources). Vectors-only; degrades to `{items:[],reason?}`. */
+  suggestSources: (notebookId: string) => Promise<SuggestSourcesResult>;
 
   /** List a notebook's sources with computed indexing progress (GET /notebooks/:id/sources). */
   listSources: (notebookId: string) => Promise<Source[]>;
@@ -1101,6 +1107,28 @@ export const useNN = create<State>()((set, get) => ({
       items: Array.isArray(res.items) ? res.items : [],
       aggregate: res.aggregate ?? { totalChunks: 0, coveredChunks: 0, cardCount: 0, pct: 0 },
       gaps: Array.isArray(res.gaps) ? res.gaps : [],
+    };
+  },
+
+  async conceptMap(notebookId) {
+    // Hyphenated route segment → Eden bracket access.
+    const res = (await ok(
+      await (api as any).notebooks({ id: notebookId })['concept-map'].get(),
+    )) as ConceptMapResult;
+    return {
+      nodes: Array.isArray(res.nodes) ? res.nodes : [],
+      edges: Array.isArray(res.edges) ? res.edges : [],
+      ...(res.reason ? { reason: res.reason } : {}),
+    };
+  },
+
+  async suggestSources(notebookId) {
+    const res = (await ok(
+      await (api as any).notebooks({ id: notebookId })['suggest-sources'].get(),
+    )) as SuggestSourcesResult;
+    return {
+      items: Array.isArray(res.items) ? res.items : [],
+      ...(res.reason ? { reason: res.reason } : {}),
     };
   },
 
