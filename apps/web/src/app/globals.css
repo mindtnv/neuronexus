@@ -2048,3 +2048,17 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
     opacity: 0.5;
   }
 }
+
+/* ── Window Controls Overlay (installed desktop PWA) ──────────────────────────
+   With display_override: window-controls-overlay, the viewport extends into the
+   OS titlebar. Top-of-window chrome strips set data-wco="1" and double as the
+   titlebar: the strip itself is a window drag region; every interactive child
+   opts back out so clicks keep working. Outside WCO mode app-region is inert. */
+[data-wco='1'] {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+[data-wco='1'] :is(button, a, input, textarea, select, [role='button']) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

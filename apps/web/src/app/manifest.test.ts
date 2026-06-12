@@ -12,6 +12,8 @@ describe('manifest route', () => {
     expect(m.start_url).toBe('/');
     expect(m.scope).toBe('/');
     expect(m.display).toBe('standalone');
+    // Desktop PWA titlebar integration — unsupported browsers fall back to `display`.
+    expect(m.display_override).toEqual(['window-controls-overlay']);
   });
 
   test('color fields are the brand dark', () => {

@@ -27,6 +27,7 @@ import type {
   SourceMark,
 } from '@/lib/types';
 import { useT } from '@/lib/i18n';
+import { useWcoTopInsets } from '@/lib/ui-store';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { PdfReader, type PdfOutlineEntry, type PdfReaderHandle } from '@/components/pdf-reader/pdf-reader';
@@ -635,14 +636,19 @@ const ReaderHeader = ({
   onBack: () => void;
   onDetails: () => void;
   t: Tr;
-}) => (
+}) => {
+  // The reader is a full-bleed route (no inline sidebar) — in a WCO window this
+  // header IS the titlebar: drag region + clearance for the window controls.
+  const { wco, left: wcoLeft, right: wcoRight } = useWcoTopInsets(true);
+  return (
   <div
     className="nn-chrome"
+    data-wco={wco ? '1' : undefined}
     style={{
       display: 'flex',
       alignItems: 'center',
       gap: 8,
-      padding: '7px 12px',
+      padding: `7px ${12 + wcoRight}px 7px ${12 + wcoLeft}px`,
       borderBottom: '1px solid var(--border)',
       flexShrink: 0,
       minHeight: 44,
@@ -727,7 +733,8 @@ const ReaderHeader = ({
     )}
     <NNBtn variant="ghost" size="sm" icon="dots" ariaLabel={t('library.reader.details')} title={t('library.reader.details')} onClick={onDetails} />
   </div>
-);
+  );
+};
 
 // ── Text-mode shell (light toolbar + TextChunkReader) ─────────────────────────
 

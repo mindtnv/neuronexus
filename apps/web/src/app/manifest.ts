@@ -8,6 +8,11 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/",
     scope: "/",
     display: "standalone",
+    // Desktop (Chromium) installed PWA: let the app draw into the OS titlebar —
+    // window controls overlay the viewport, the in-app topbar becomes the
+    // draggable titlebar (see [data-wco] in globals.css). Unsupported browsers
+    // (Safari "Add to Dock") ignore this and fall back to `display`.
+    display_override: ["window-controls-overlay"],
     background_color: "#0a0b0d",
     theme_color: "#0a0b0d",
     icons: [

@@ -42,6 +42,7 @@ import type {
 } from '@/lib/types';
 import type { SourceCitation } from '@neuronexus/shared';
 import { useBreakpoint } from '@/lib/use-breakpoint';
+import { useWcoTopInsets } from '@/lib/ui-store';
 import { useT } from '@/lib/i18n';
 import { relativeUpdated } from '@/lib/notebook-format';
 import { sourceKindToneName } from '@/lib/source-kind';
@@ -153,6 +154,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const isDesktop = bp === 'desktop';
   const isTablet = bp === 'tablet';
   const { prompt, confirm } = useDialog();
+  // WCO (installed desktop PWA): the workspace renders its own topbar instead of
+  // NNTopbar, so it carries the same titlebar duties — drag region + insets.
+  const { wco, left: wcoLeft, right: wcoRight } = useWcoTopInsets();
 
   const listNotebooks = useNN((s) => s.listNotebooks);
   const listSources = useNN((s) => s.listSources);
@@ -1047,11 +1051,12 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const header = (
     <div
       className="nn-chrome"
+      data-wco={wco ? '1' : undefined}
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        padding: '7px 12px',
+        padding: `7px ${12 + wcoRight}px 7px ${12 + wcoLeft}px`,
         borderBottom: '1px solid var(--border)',
         flexShrink: 0,
         minHeight: 44,

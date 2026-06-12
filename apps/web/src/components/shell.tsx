@@ -8,7 +8,14 @@ import { APP_NAV, FOOTER_NAV, NAV_SECTIONS, NAV_SECTION_LABEL, getActiveNavId, t
 import { countDueCards } from '@/lib/cards';
 import { signOut } from '@/lib/auth';
 import { useNN } from '@/lib/store';
-import { useUI, useDisplayMode } from '@/lib/ui-store';
+import {
+  useUI,
+  useDisplayMode,
+  useWcoTopInsets,
+  useWindowControlsOverlay,
+  SIDEBAR_WIDTH_COLLAPSED,
+  SIDEBAR_WIDTH_EXPANDED,
+} from '@/lib/ui-store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { LocaleToggle } from './locale-toggle';
@@ -111,6 +118,15 @@ export const NNSidebar = ({
   const dueCount = useNN((s) => countDueCards(s.cards));
   const profile = useNN((s) => s.profile);
 
+  // Window Controls Overlay: the logo plate is the window's top-left corner, so
+  // the macOS traffic lights land ON it — shift the logo right past them and
+  // make the plate a drag region. The collapsed plate (60px) can't clear the
+  // ~80px controls strip, so there the logo hides and the plate stays as a bare
+  // drag surface. Without WCO lightsInset is 0 and nothing changes.
+  const { active: wcoActive, rect: wcoRect } = useWindowControlsOverlay();
+  const lightsInset = wcoActive && wcoRect ? wcoRect.x : 0;
+  const hideLogo = Boolean(collapsed) && lightsInset > 16;
+
   const totalCards = cards.length || 0;
   const workspaceName = t('app.workspace', { name: (profile?.name ?? 'Alex').toLowerCase() });
   const workspaceInitials = (profile?.name ?? 'Alex').slice(0, 2).toUpperCase();
@@ -119,7 +135,7 @@ export const NNSidebar = ({
     <aside
       className="nn-chrome"
       style={{
-        width: fullWidth ? '100%' : collapsed ? 60 : 232,
+        width: fullWidth ? '100%' : collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,
         flexShrink: 0,
         background: 'var(--surface)',
         borderRight: '1px solid var(--border)',
@@ -130,11 +146,13 @@ export const NNSidebar = ({
       }}
     >
       <div
+        data-wco={wcoActive ? '1' : undefined}
         style={{
           // Match the NNTopbar height (44px content + 1px border = 45px total,
           // border-box here) so the sidebar logo plate and the toolbar share one
           // continuous bottom hairline instead of a 16px step at the corner.
           padding: collapsed ? '0 12px' : '0 18px',
+          paddingLeft: collapsed ? 12 : Math.max(18, lightsInset + 6),
           borderBottom: '1px solid var(--border)',
           display: 'flex',
           alignItems: 'center',
@@ -142,7 +160,7 @@ export const NNSidebar = ({
           height: 45,
         }}
       >
-        <NNLogo showText={!collapsed} />
+        {!hideLogo && <NNLogo showText={!collapsed} />}
       </div>
 
       {!collapsed && (
@@ -270,6 +288,11 @@ export const NNTopbar = ({
   const zenMode = useUI((s) => s.zenMode);
   const toggleSidebar = useUI((s) => s.toggleSidebar);
   const displayMode = useDisplayMode();
+  // Window Controls Overlay (installed desktop PWA): the topbar doubles as the
+  // OS titlebar — draggable via data-wco, padded clear of the overlaid window
+  // controls (left inset covers macOS lights minus the sidebar already under
+  // them; right inset covers Windows-style right-side controls).
+  const { wco, left: wcoLeft, right: wcoRight } = useWcoTopInsets();
   const isDesktop = bp === 'desktop';
   const isMobile = bp === 'mobile';
 
@@ -277,12 +300,14 @@ export const NNTopbar = ({
   // Zen is only ever true on /review (guarded in app-shell), so this is safe.
   if (zenMode) return null;
 
+  const basePad = isMobile ? 12 : 24;
   return (
     <header
       className="nn-chrome"
+      data-wco={wco ? '1' : undefined}
       style={{
         height: isMobile ? 48 : 44,
-        padding: isMobile ? '0 12px' : '0 24px',
+        padding: `0 ${basePad + wcoRight}px 0 ${basePad + wcoLeft}px`,
         borderBottom: '1px solid var(--border)',
         display: 'flex',
         alignItems: 'center',
