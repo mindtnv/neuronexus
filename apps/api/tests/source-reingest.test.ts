@@ -273,17 +273,27 @@ describe('reingest — cleanup + re-index to ready', () => {
 
   test('reingest helper wipes SoT chunks + document vectors + resets metadata', async () => {
     // Seed a "ready" source with chunks + document vectors directly (no worker),
-    // so the helper's wipe is observed in isolation. The helper enqueues a worker
-    // for a `url` whose real fetch fails (no reader seam) → it errors out without
-    // re-populating; we assert the post-wipe state + then drain.
+    // so the helper's wipe is observed in isolation. The enqueued worker is
+    // PARKED on a gated reader while we assert — the old "unreachable host
+    // fails fast" trick RACED the worker (on slower CI runners it stamped
+    // errorCode='fetch_failed' before the assertions ran).
+    let releaseReader: () => void = () => {};
+    const readerGate = new Promise<void>((resolve) => {
+      releaseReader = resolve;
+    });
+    __setPageReaderForTests({
+      async read(): Promise<never> {
+        await readerGate;
+        throw new Error('gated reader: deliberate post-assert failure');
+      },
+    });
     const { userId } = await signUpAndCookie(app, uniqueEmail());
     const [src] = await db
       .insert(sourcesTable)
       .values({
         userId,
         kind: 'url',
-        // A blocked/unreachable host so the enqueued worker's parse fails fast
-        // (SSRF guard rejects .localhost) and never re-writes chunks.
+        // Any url — the gated reader above intercepts the worker's fetch.
         url: 'https://nope.localhost/x',
         title: 'Doc',
         status: 'ready',
@@ -323,6 +333,7 @@ describe('reingest — cleanup + re-index to ready', () => {
     expect(st.chunkCount).toBeNull();
     expect(st.charCount).toBeNull();
     expect(st.errorCode).toBeNull();
+    releaseReader();
     await drainSourceIngest({ timeoutMs: 5000 });
   });
 });

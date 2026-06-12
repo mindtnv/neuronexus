@@ -8,9 +8,17 @@
 // IMPORTANT: import test-dom-setup FIRST so happy-dom registers globals
 // (window, localStorage, etc.) before any module under test is evaluated.
 
-import './test-dom-setup.ts';
+import { ensureTestDom } from './test-dom-setup.ts';
 
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, test, beforeAll, beforeEach, afterEach } from 'bun:test';
+
+// In CI file order this suite can run AFTER render-math/sanitize-img, whose
+// teardown unregisters the happy-dom globals — the cached side-effect import
+// alone would leave us without window/localStorage (guards in notify.ts then
+// silently no-op and every assertion reads false).
+beforeAll(() => {
+  ensureTestDom();
+});
 import {
   requestNotificationPermission,
   notifyDue,
