@@ -1,0 +1,20 @@
+# Build-context hygiene: keep docker build uploads small and cache-friendly.
+# Everything the images need is COPYed from sources; build artifacts and local
+# state must never leak into the context.
+.git
+.github
+node_modules
+**/node_modules
+**/.next
+**/dist
+apps/web/public/vendor
+.omc
+.claude
+.env
+.env.*
+!.env.example
+*.log
+.coolify-deploy.json
+docker
+postgres-data
+coverage

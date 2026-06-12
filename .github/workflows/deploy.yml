@@ -1,0 +1,121 @@
+# Build both images in parallel on GitHub runners (buildx + GHA layer cache),
+# push to GHCR with immutable sha tags, then point the Coolify apps at the new
+# tag and trigger a re-pull deploy. Coolify never builds — deploys are pulls.
+#
+# Speed notes:
+#  * cache-from/to type=gha mode=max — warm builds reuse the bun-install and
+#    next-build layers; only changed layers rebuild.
+#  * `concurrency` cancels superseded runs on rapid pushes.
+#  * provenance off — skips attestation manifests Coolify doesn't use.
+#
+# Secrets: COOLIFY_TOKEN (team-8 API token). NEXT_PUBLIC_* are build args here
+# (baked into the web bundle — Coolify never sees them).
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+env:
+  COOLIFY_URL: https://coolify.anvgrptools.ru/api/v1
+  API_APP_UUID: u6kweu7gzzw9kidpuq7i0n7y
+  WEB_APP_UUID: tmc5k98iayyj0g28qr7inbaj
+
+jobs:
+  build-api:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/neuronexus-api:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/neuronexus-api:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+  build-web:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          provenance: false
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://api.neuronexus.mihailantonov.pro
+            NEXT_PUBLIC_MEDIA_BASE_URL=https://s3.1dedic.ru/neuronexus
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/neuronexus-web:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/neuronexus-web:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build-api, build-web]
+    steps:
+      - name: Point Coolify at the new tags and deploy
+        run: |
+          set -euo pipefail
+          auth=(-H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" -H "Content-Type: application/json")
+          declare -A deps=()
+          for uuid in "$API_APP_UUID" "$WEB_APP_UUID"; do
+            curl -fsS "${auth[@]}" -X PATCH "$COOLIFY_URL/applications/$uuid" \
+              -d "{\"docker_registry_image_tag\":\"$GITHUB_SHA\"}" > /dev/null
+            dep=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/deploy?uuid=$uuid" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0]["deployment_uuid"])')
+            deps[$uuid]=$dep
+            echo "queued $uuid → deployment $dep"
+          done
+      - name: Wait for deployments to finish
+        run: |
+          set -euo pipefail
+          auth=(-H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}")
+          for i in $(seq 1 30); do
+            sleep 10
+            left=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/deployments" \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); items=d if isinstance(d,list) else d.get("deployments",[]); print(sum(1 for x in items if "neuronexus" in str(x.get("application_name",""))))')
+            echo "[$i] in-flight: $left"
+            [ "$left" = "0" ] && break
+          done
+          for uuid in "$API_APP_UUID" "$WEB_APP_UUID"; do
+            status=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/applications/$uuid" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
+            echo "$uuid → $status"
+            case "$status" in running:healthy*) ;; *) echo "::error::app $uuid is $status"; exit 1;; esac
+          done

@@ -236,6 +236,10 @@ export async function embed(texts: string[]): Promise<number[][]> {
           authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({ model: env.ai.EMBEDDING_MODEL, input: texts }),
+        // Bun fetch extension: route ONLY embedding calls through an egress
+        // proxy (geo-blocked upstream). http(s):// proxies only — Bun has no
+        // SOCKS support, a socks5 upstream needs a converter sidecar (gost).
+        ...(env.ai.EMBEDDING_PROXY_URL ? { proxy: env.ai.EMBEDDING_PROXY_URL } : {}),
       });
     } catch (err) {
       // Network error — retry with backoff.

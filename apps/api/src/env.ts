@@ -34,6 +34,10 @@ export const env = {
     // a different host/provider than the chat gateway (e.g. OpenAI embeddings +
     // a self-hosted OpenAI-compatible chat gateway). Defaults to OpenAI.
     EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL ?? 'https://api.openai.com/v1',
+    // OPTIONAL egress proxy for embedding calls ONLY (http(s):// — Bun fetch
+    // has no SOCKS support; a socks5 upstream needs a converter sidecar).
+    // Used when the embedding provider is geo-blocked from the server.
+    EMBEDDING_PROXY_URL: process.env.EMBEDDING_PROXY_URL,
     EMBEDDING_MODEL: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small',
     // Baked into the kb_chunk.embedding column dimension via the migration —
     // must match the embedding model. Changing it requires the reindex-on-
