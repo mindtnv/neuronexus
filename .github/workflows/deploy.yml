@@ -113,9 +113,17 @@ jobs:
             echo "[$i] in-flight: $left"
             [ "$left" = "0" ] && break
           done
+          # The pull finishes well before the container clears its healthcheck
+          # start period — poll the app status, treating transitional states
+          # (starting/unhealthy right after boot) as in-progress.
           for uuid in "$API_APP_UUID" "$WEB_APP_UUID"; do
-            status=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/applications/$uuid" \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
-            echo "$uuid → $status"
+            status=""
+            for i in $(seq 1 24); do
+              status=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/applications/$uuid" \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
+              echo "[$i] $uuid → $status"
+              case "$status" in running:healthy*) break;; esac
+              sleep 10
+            done
             case "$status" in running:healthy*) ;; *) echo "::error::app $uuid is $status"; exit 1;; esac
           done
