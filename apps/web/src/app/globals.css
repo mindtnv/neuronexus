@@ -893,6 +893,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   white-space: nowrap;
 }
 .nn-lib-menu-item:hover { background: var(--surface-2); }
+.nn-lib-menu-item:disabled { opacity: 0.45; cursor: default; }
+.nn-lib-menu-item:disabled:hover { background: transparent; }
 
 /* L2 — library reader table-of-contents row hover. */
 .nn-toc-row:hover { background: var(--surface-2); }
@@ -964,6 +966,142 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 
 [data-theme="light"] .nn-nb-card { background: var(--surface); border-color: var(--border); }
+
+/* ── «Блокноты 2.0» N2 — studio + overview dock ─────────────────────────────── */
+
+/* Studio generation tiles — a 2-col grid of compact action cards. */
+.nn-studio-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+@media (max-width: 420px) {
+  .nn-studio-tiles { grid-template-columns: 1fr; }
+}
+.nn-studio-tile {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+.nn-studio-tile:hover:not(:disabled) {
+  border-color: var(--lime-500);
+  background: var(--surface-3);
+  transform: translateY(-1px);
+}
+.nn-studio-tile:disabled { opacity: 0.55; cursor: default; }
+.nn-studio-tile:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-studio-tile-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: var(--r-sm);
+  background: rgba(154, 209, 85, 0.12);
+}
+.nn-studio-tile-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.nn-studio-tile-name {
+  display: flex;
+  align-items: center;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.nn-studio-tile-desc {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+
+/* Artifact viewer footnotes — clickable numbered [src:] chips. */
+.nn-studio-footnotes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.nn-studio-footnote {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  color: var(--sky-400);
+  background: rgba(85, 196, 214, 0.1);
+  border: 1px solid rgba(85, 196, 214, 0.28);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 100ms ease;
+}
+.nn-studio-footnote:hover { background: rgba(85, 196, 214, 0.2); }
+
+/* Suggested-question pill (overview tab). */
+.nn-suggest-pill {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1.3;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 110ms ease, background 110ms ease, color 110ms ease;
+}
+.nn-suggest-pill:hover {
+  border-color: var(--lime-500);
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+/* «Sources changed» staleness plaque (overview). */
+.nn-stale-plaque {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--amber-400);
+  background: rgba(243, 182, 85, 0.1);
+  border: 1px solid rgba(243, 182, 85, 0.25);
+  border-radius: var(--r-md);
+}
+
+/* Pulsing status dot (artifact pending/generating badge). */
+@keyframes nn-pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.nn-pulse-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: nn-pulse-dot 1100ms ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nn-studio-tile:hover:not(:disabled) { transform: none; }
+  .nn-pulse-dot { animation: none; }
+}
+
+[data-theme="light"] .nn-studio-tile { background: var(--surface); }
+[data-theme="light"] .nn-suggest-pill { background: var(--surface); }
 
 /* Continue-reading shelf card. */
 .nn-lib-shelf-card {

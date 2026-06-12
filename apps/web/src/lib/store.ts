@@ -7,6 +7,7 @@ import {
   cardFromApi,
   deckFromApi,
   filteredDeckFromApi,
+  notebookArtifactFromApi,
   notebookFromApi,
   notebookNoteFromApi,
   noteTypeFromApi,
@@ -15,8 +16,8 @@ import {
   reviewFromApi,
 } from './mappers';
 import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookNote, NoteType, Profile, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
-import type { NotebookColor, NotebookNoteKind, SourceKind, SourceMime } from '@neuronexus/shared';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookArtifact, NotebookNote, NoteType, Profile, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
+import type { NotebookArtifactType, NotebookColor, NotebookNoteKind, SourceKind, SourceMime } from '@neuronexus/shared';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
 // and profile — fetched at bootstrap, mutated optimistically-ish on each API
@@ -274,6 +275,32 @@ interface State {
   ) => Promise<NotebookNote>;
   /** Delete a note (DELETE /notebooks/:id/notes/:noteId). */
   deleteNotebookNote: (notebookId: string, noteId: string) => Promise<void>;
+
+  // ── Notebook studio: artifacts + overview (N2) ────────────────────────────────
+  /** List a notebook's artifacts — LIGHT (no content) (GET …/artifacts). */
+  listArtifacts: (notebookId: string) => Promise<NotebookArtifact[]>;
+  /** Create an artifact job (POST …/artifacts). The optional `sourceIds` scope is
+   *  intersected with the notebook's ready sources server-side. Throws on
+   *  400 invalid_type/no_sources or 409 too_many_artifacts/generation_in_progress
+   *  (the caller maps the error code to a toast). */
+  createArtifact: (
+    notebookId: string,
+    type: NotebookArtifactType,
+    sourceIds?: string[],
+  ) => Promise<NotebookArtifact>;
+  /** Fetch one full artifact incl. content (GET …/artifacts/:artifactId). */
+  getArtifact: (notebookId: string, artifactId: string) => Promise<NotebookArtifact>;
+  /** Delete an artifact (DELETE …/artifacts/:artifactId). */
+  deleteArtifact: (notebookId: string, artifactId: string) => Promise<void>;
+  /** Re-run an artifact's generation, keeping its source snapshot (POST
+   *  …/artifacts/:artifactId/regenerate). Throws on 409 not_terminal /
+   *  generation_in_progress. */
+  regenerateArtifact: (notebookId: string, artifactId: string) => Promise<NotebookArtifact>;
+  /** Generate the notebook overview + suggested questions (POST …/overview).
+   *  Throws on 400 no_sources / 503 ai_disabled / 502 overview_failed. */
+  generateOverview: (
+    notebookId: string,
+  ) => Promise<{ overview: string; questions: string[]; fingerprint: string }>;
 
   /** List a notebook's sources with computed indexing progress (GET /notebooks/:id/sources). */
   listSources: (notebookId: string) => Promise<Source[]>;
@@ -983,6 +1010,47 @@ export const useNN = create<State>()((set, get) => ({
 
   async deleteNotebookNote(notebookId, noteId) {
     await ok(await (api as any).notebooks({ id: notebookId }).notes({ noteId }).delete());
+  },
+
+  // ── Notebook studio: artifacts + overview (N2) ────────────────────────────────
+
+  async listArtifacts(notebookId) {
+    const res = (await ok(
+      await (api as any).notebooks({ id: notebookId }).artifacts.get(),
+    )) as { items: any[] };
+    return res.items.map(notebookArtifactFromApi);
+  },
+
+  async createArtifact(notebookId, type, sourceIds) {
+    const body: Record<string, unknown> = { type };
+    if (sourceIds && sourceIds.length > 0) body.sourceIds = sourceIds;
+    return notebookArtifactFromApi(
+      await ok(await (api as any).notebooks({ id: notebookId }).artifacts.post(body)),
+    );
+  },
+
+  async getArtifact(notebookId, artifactId) {
+    return notebookArtifactFromApi(
+      await ok(await (api as any).notebooks({ id: notebookId }).artifacts({ artifactId }).get()),
+    );
+  },
+
+  async deleteArtifact(notebookId, artifactId) {
+    await ok(await (api as any).notebooks({ id: notebookId }).artifacts({ artifactId }).delete());
+  },
+
+  async regenerateArtifact(notebookId, artifactId) {
+    return notebookArtifactFromApi(
+      await ok(
+        await (api as any).notebooks({ id: notebookId }).artifacts({ artifactId }).regenerate.post(),
+      ),
+    );
+  },
+
+  async generateOverview(notebookId) {
+    return (await ok(
+      await (api as any).notebooks({ id: notebookId }).overview.post(),
+    )) as { overview: string; questions: string[]; fingerprint: string };
   },
 
   async listSources(notebookId) {

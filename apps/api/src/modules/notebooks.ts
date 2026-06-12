@@ -30,6 +30,7 @@ import {
   db,
   decks,
   messages,
+  notebookArtifacts,
   notebookNotes,
   notebooks,
   notebookSources,
@@ -53,6 +54,7 @@ import {
   NOTE_CONTENT_MAX,
   NOTE_EXCERPT_MAX,
   NOTE_TITLE_MAX,
+  NOTEBOOK_ARTIFACT_TYPES,
   NOTEBOOK_COLORS,
   NOTEBOOK_DESCRIPTION_MAX,
   NOTEBOOK_EMOJI_MAX,
@@ -61,6 +63,7 @@ import {
   SOURCE_MARK_COLORS,
   type InkStroke,
   type MarkRect,
+  type NotebookArtifactType,
   type NotebookNoteKind,
   type PageAnnotations,
   type SourceMarkKind,
@@ -70,6 +73,11 @@ import { env } from '../env.ts';
 import { rootLogger } from '../logger.ts';
 import { getObjectBytes } from '../storage.ts';
 import { isChatEnabled } from '../ai/openai-client.ts';
+import {
+  ARTIFACT_TYPE_TITLE,
+  generateArtifact,
+  generateNotebookOverview,
+} from '../ai/artifacts.ts';
 import { suggestCard } from '../ai/suggest-card.ts';
 import { resolveNoteTypeForCreate, enqueueToolCardsForIndex } from '../ai/tools.ts';
 import { resolveNoteCreate, insertNoteAndCards } from './notes.ts';
@@ -252,6 +260,69 @@ async function currentOverviewFingerprint(
 /** One-line note excerpt: collapse whitespace, cap to NOTE_EXCERPT_MAX chars. */
 function noteExcerpt(content: string): string {
   return excerptFront(content, NOTE_EXCERPT_MAX);
+}
+
+// ── «Блокноты 2.0» studio (N2) helpers ────────────────────────────────────────
+const ARTIFACT_TYPE_SET = new Set<string>(NOTEBOOK_ARTIFACT_TYPES);
+
+/**
+ * The notebook's READY source ids (the join — sources are user-level), optionally
+ * INTERSECTED with a per-request `sourceIds` snapshot (Р4: absent ⇒ all ready;
+ * foreign/non-ready ids silently dropped). user-scoped. The result is the
+ * artifact's `source_ids` snapshot — empty ⇒ the route returns 400 `no_sources`.
+ */
+async function resolveReadyScope(
+  userId: string,
+  notebookId: string,
+  requested: string[] | undefined,
+): Promise<string[]> {
+  const readyRows = await db
+    .select({ id: sources.id })
+    .from(notebookSources)
+    .innerJoin(sources, eq(sources.id, notebookSources.sourceId))
+    .where(
+      and(
+        eq(notebookSources.userId, userId),
+        eq(notebookSources.notebookId, notebookId),
+        eq(sources.status, 'ready'),
+      ),
+    );
+  const readyIds = readyRows.map((r) => r.id);
+  if (requested === undefined) return readyIds;
+  const want = new Set(requested);
+  return readyIds.filter((id) => want.has(id));
+}
+
+/**
+ * Human title for a new artifact, with dup-numbering («FAQ (2)») when a same-type
+ * title already exists in the notebook. Counts EXISTING artifacts of that type
+ * for this notebook (user-scoped) — N+1 of the same type ⇒ « (N+1)».
+ */
+async function nextArtifactTitle(
+  userId: string,
+  notebookId: string,
+  type: NotebookArtifactType,
+): Promise<string> {
+  const base = ARTIFACT_TYPE_TITLE[type];
+  const [{ n }] = await db
+    .select({ n: count() })
+    .from(notebookArtifacts)
+    .where(
+      and(
+        eq(notebookArtifacts.userId, userId),
+        eq(notebookArtifacts.notebookId, notebookId),
+        eq(notebookArtifacts.type, type),
+      ),
+    );
+  const existing = Number(n);
+  return existing === 0 ? base : `${base} (${existing + 1})`;
+}
+
+/** Fire-and-forget kick of the artifact generator (logs but never rejects). */
+function kickArtifact(artifactId: string): void {
+  void generateArtifact(artifactId).catch((err) => {
+    rootLogger.error({ err, artifactId }, 'ai.artifact.kick_failed');
+  });
 }
 
 /**
@@ -914,6 +985,304 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         noteId: t.String({ format: 'uuid' }),
       }),
     },
+  )
+  // ── studio: generated artifacts (Р2/Р3, N2 §3) ────────────────────────────────
+  // An artifact ROW IS A JOB (pending→generating→ready|error). All routes are
+  // user-scoped (the notebook ownership SELECT is the first guard; foreign → 404).
+
+  // List a notebook's artifacts — LIGHT (no content_md/content_json). Newest-first.
+  .get(
+    '/:id/artifacts',
+    async ({ user, params, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      const rows = await db
+        .select({
+          id: notebookArtifacts.id,
+          type: notebookArtifacts.type,
+          status: notebookArtifacts.status,
+          title: notebookArtifacts.title,
+          sourceIds: notebookArtifacts.sourceIds,
+          errorCode: notebookArtifacts.errorCode,
+          model: notebookArtifacts.model,
+          createdAt: notebookArtifacts.createdAt,
+          updatedAt: notebookArtifacts.updatedAt,
+        })
+        .from(notebookArtifacts)
+        .where(
+          and(eq(notebookArtifacts.userId, user.id), eq(notebookArtifacts.notebookId, params.id)),
+        )
+        .orderBy(desc(notebookArtifacts.createdAt));
+      return { items: rows };
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+  // Create an artifact job. ORDER OF CHECKS IS FIXED (§3): ownership-404 →
+  // 400 invalid_type → 400 no_sources → 409 too_many_artifacts →
+  // 409 generation_in_progress (EXISTS + INSERT in one tx). `quiz` is NOT a valid
+  // type in N2 (N3 adds the player + structured generation) → 400 invalid_type.
+  // The `source_ids` snapshot = the resolved ready scope. Bumps notebook.updated_at.
+  .post(
+    '/:id/artifacts',
+    async ({ user, params, body, status }) => {
+      // 1) ownership.
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      // 2) invalid_type — unknown type OR `quiz` (deferred to N3).
+      if (!ARTIFACT_TYPE_SET.has(body.type) || body.type === 'quiz') {
+        return status(400, { error: 'invalid_type' });
+      }
+      const type = body.type as NotebookArtifactType;
+
+      // 3) no_sources — resolved ready scope (intersect; absent ⇒ all ready).
+      const scope = await resolveReadyScope(user.id, params.id, body.sourceIds);
+      if (scope.length === 0) return status(400, { error: 'no_sources' });
+
+      // 4) too_many_artifacts — per-notebook cap.
+      const [{ n }] = await db
+        .select({ n: count() })
+        .from(notebookArtifacts)
+        .where(
+          and(eq(notebookArtifacts.userId, user.id), eq(notebookArtifacts.notebookId, params.id)),
+        );
+      if (Number(n) >= env.ai.MAX_ARTIFACTS_PER_NOTEBOOK) {
+        return status(409, { error: 'too_many_artifacts' });
+      }
+
+      // 5) generation_in_progress — EXISTS(pending|generating) + INSERT in ONE tx
+      // (one generation per notebook, Р16; the partial active-index serializes the
+      // EXISTS probe against a concurrent POST).
+      const title = await nextArtifactTitle(user.id, params.id, type);
+      const created = await db.transaction(async (tx) => {
+        // Serialize concurrent POSTs for THIS notebook (the non-unique partial
+        // active-index can't enforce one-job-at-a-time on its own — two parallel
+        // EXISTS probes would both see "no active" and both INSERT). A per-notebook
+        // advisory xact lock makes the EXISTS+INSERT atomic; it releases on commit.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${params.id}))`);
+        const active = await tx
+          .select({ id: notebookArtifacts.id })
+          .from(notebookArtifacts)
+          .where(
+            and(
+              eq(notebookArtifacts.notebookId, params.id),
+              inArray(notebookArtifacts.status, ['pending', 'generating']),
+            ),
+          )
+          .limit(1);
+        if (active.length > 0) return null;
+        const [row] = await tx
+          .insert(notebookArtifacts)
+          .values({
+            userId: user.id,
+            notebookId: params.id,
+            type,
+            status: 'pending',
+            title,
+            sourceIds: scope,
+          })
+          .returning();
+        await bumpNotebookUpdatedAt(tx, user.id, params.id);
+        return row!;
+      });
+      if (!created) return status(409, { error: 'generation_in_progress' });
+
+      // 6) async kick (not awaited; .catch-logged).
+      kickArtifact(created.id);
+      return created;
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        type: t.String({ maxLength: 32 }),
+        sourceIds: t.Optional(t.Array(t.String({ format: 'uuid' }), { maxItems: 100 })),
+        // questionCount rides for N3's quiz; accepted + ignored by markdown types.
+        questionCount: t.Optional(t.Integer({ minimum: 1, maximum: 50 })),
+      }),
+    },
+  )
+  // Full artifact (content_md|content_json + status + error). user-scoped 404.
+  .get(
+    '/:id/artifacts/:artifactId',
+    async ({ user, params, status }) => {
+      const [row] = await db
+        .select()
+        .from(notebookArtifacts)
+        .where(
+          and(
+            eq(notebookArtifacts.id, params.artifactId),
+            eq(notebookArtifacts.notebookId, params.id),
+            eq(notebookArtifacts.userId, user.id),
+          ),
+        )
+        .limit(1);
+      if (!row) return status(404, { error: 'not_found' });
+      return row;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        artifactId: t.String({ format: 'uuid' }),
+      }),
+    },
+  )
+  // Delete an artifact (ANY status). A `generating` row can be deleted: the worker
+  // CAS generating→ready then finds 0 rows and discards its result (no orphan).
+  // user-scoped 404. Bumps notebook.updated_at.
+  .delete(
+    '/:id/artifacts/:artifactId',
+    async ({ user, params, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      const ok = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .delete(notebookArtifacts)
+          .where(
+            and(
+              eq(notebookArtifacts.id, params.artifactId),
+              eq(notebookArtifacts.notebookId, params.id),
+              eq(notebookArtifacts.userId, user.id),
+            ),
+          )
+          .returning({ id: notebookArtifacts.id });
+        if (!row) return false;
+        await bumpNotebookUpdatedAt(tx, user.id, params.id);
+        return true;
+      });
+      if (!ok) return status(404, { error: 'not_found' });
+      return { ok: true };
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        artifactId: t.String({ format: 'uuid' }),
+      }),
+    },
+  )
+  // Regenerate: CAS ready|error → pending (KEEPING the same source_ids snapshot) +
+  // kick. A generating/pending artifact → 409 not_terminal. user-scoped 404.
+  // Bumps notebook.updated_at (Р15).
+  .post(
+    '/:id/artifacts/:artifactId/regenerate',
+    async ({ user, params, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      // Distinguish "missing/foreign" (404) from "not terminal" (409): read first.
+      const [existing] = await db
+        .select({ id: notebookArtifacts.id, status: notebookArtifacts.status })
+        .from(notebookArtifacts)
+        .where(
+          and(
+            eq(notebookArtifacts.id, params.artifactId),
+            eq(notebookArtifacts.notebookId, params.id),
+            eq(notebookArtifacts.userId, user.id),
+          ),
+        )
+        .limit(1);
+      if (!existing) return status(404, { error: 'not_found' });
+      // The TARGET artifact itself is mid-flight ⇒ not_terminal (§3). A DIFFERENT
+      // live artifact of the notebook is caught inside the tx as
+      // generation_in_progress.
+      if (existing.status === 'pending' || existing.status === 'generating') {
+        return status(409, { error: 'not_terminal' });
+      }
+
+      // One generation per notebook (Р16): a DIFFERENT artifact mid-flight blocks.
+      // Same per-notebook advisory xact lock as POST — serializes a regenerate
+      // racing a create (or another regenerate) for this notebook.
+      const out = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${params.id}))`);
+        const active = await tx
+          .select({ id: notebookArtifacts.id })
+          .from(notebookArtifacts)
+          .where(
+            and(
+              eq(notebookArtifacts.notebookId, params.id),
+              // A DIFFERENT artifact mid-flight (exclude the regenerate target).
+              sql`${notebookArtifacts.id} <> ${params.artifactId}`,
+              inArray(notebookArtifacts.status, ['pending', 'generating']),
+            ),
+          )
+          .limit(1);
+        if (active.length > 0) return { error: 'generation_in_progress' as const };
+
+        const rows = await tx
+          .update(notebookArtifacts)
+          .set({ status: 'pending', errorCode: null, updatedAt: new Date() })
+          .where(
+            and(
+              eq(notebookArtifacts.id, params.artifactId),
+              eq(notebookArtifacts.userId, user.id),
+              inArray(notebookArtifacts.status, ['ready', 'error']),
+            ),
+          )
+          .returning();
+        if (rows.length === 0) return { error: 'not_terminal' as const };
+        await bumpNotebookUpdatedAt(tx, user.id, params.id);
+        return { row: rows[0]! };
+      });
+      if ('error' in out) {
+        return status(409, { error: out.error });
+      }
+      kickArtifact(out.row.id);
+      return out.row;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        artifactId: t.String({ format: 'uuid' }),
+      }),
+    },
+  )
+  // ── overview (Р6, N2 §3) ──────────────────────────────────────────────────────
+  // SYNC generation of the notebook briefing + suggested questions. Order: 404
+  // (ownership) → 400 no_sources (no ready sources) → 503 ai_disabled (chat off)
+  // → 502 overview_failed (timeout / gateway / unparseable) → 200 {overview,
+  // questions, fingerprint}.
+  .post(
+    '/:id/overview',
+    async ({ user, params, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      // no_sources BEFORE the AI gate (a free-to-answer 400 over a paid 503/502).
+      const scope = await resolveReadyScope(user.id, params.id, undefined);
+      if (scope.length === 0) return status(400, { error: 'no_sources' });
+
+      if (!isChatEnabled()) return status(503, { error: 'ai_disabled' });
+
+      const result = await generateNotebookOverview(user.id, params.id);
+      if (!result) return status(502, { error: 'overview_failed' });
+      return result;
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   );
 
 // Source-level routes (finalize / get / rename / delete) live under their own

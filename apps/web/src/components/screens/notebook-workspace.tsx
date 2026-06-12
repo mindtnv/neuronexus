@@ -52,15 +52,22 @@ import {
 import { ChatPanel, type ComposerPrefillHandle } from '@/components/chat/chat-panel';
 import { TextChunkReader, type TextChunkReaderHandle } from '@/components/screens/text-reader';
 import { NotesPanel } from '@/components/notebook/notes-panel';
+import { OverviewPanel } from '@/components/notebook/overview-panel';
+import { StudioPanel } from '@/components/notebook/studio-panel';
 import { useSourceStatus } from '@/lib/use-source-status';
 import { prefillKey } from '@/lib/library-handoff';
+import { api, ok } from '@/lib/api';
 import type { LibraryItem } from '@/lib/types';
 
 type WorkspaceTab = 'sources' | 'chat' | 'dock';
 
-// Right-dock tabs (Р12). N1 ships a single «Заметки» tab; the array is the
-// extension seam for N2's «Обзор» / «Студия».
-type DockTab = 'notes';
+// Right-dock tabs (Р12): «Обзор» (default) / «Заметки» / «Студия» (N2).
+type DockTab = 'overview' | 'notes' | 'studio';
+const DOCK_TABS: { key: DockTab; labelKey: string }[] = [
+  { key: 'overview', labelKey: 'notebooks.overview.tab' },
+  { key: 'notes', labelKey: 'notebooks.notes.tab' },
+  { key: 'studio', labelKey: 'notebooks.studio.tab' },
+];
 
 /**
  * Derive a saved-answer note title (Р7): the first ~60 chars of the content with
@@ -103,10 +110,24 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const createNotebookNote = useNN((s) => s.createNotebookNote);
   const patchNotebookNote = useNN((s) => s.patchNotebookNote);
   const deleteNotebookNote = useNN((s) => s.deleteNotebookNote);
+  const getNotebook = useNN((s) => s.getNotebook);
+  const generateOverview = useNN((s) => s.generateOverview);
+  const listArtifacts = useNN((s) => s.listArtifacts);
+  const createArtifact = useNN((s) => s.createArtifact);
+  const getArtifact = useNN((s) => s.getArtifact);
+  const deleteArtifact = useNN((s) => s.deleteArtifact);
+  const regenerateArtifact = useNN((s) => s.regenerateArtifact);
 
   const [notebook, setNotebook] = useState<Notebook | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [sourcesLoaded, setSourcesLoaded] = useState(false);
+
+  // ── /ai/status.chatEnabled — gates the studio/overview generation (degrade) ──
+  const [chatEnabled, setChatEnabled] = useState(false);
+
+  // ── Notebook detail (overview cache + fingerprints + suggestedQuestions, N2) ──
+  const [notebookDetail, setNotebookDetail] = useState<Notebook | null>(null);
+  const [detailLoaded, setDetailLoaded] = useState(false);
 
   // Per-turn chat source scope: ids checked into the chat. Default = all ready
   // sources; persisted per-notebook in localStorage.
@@ -120,24 +141,41 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   // M5 — composer prefill ref (chat ← library «Спросить» handoff + viewer).
   const composerPrefillRef = useRef<ComposerPrefillHandle | null>(null);
 
-  // ── Right dock (Р12): tabs + collapse (N1 = «Заметки» only) ────────────────────
+  // ── Right dock (Р12): tabs (Обзор/Заметки/Студия) + collapse ───────────────────
   const dockKey = `nn:nb:dock:${notebookId}`;
-  const [dockTab] = useState<DockTab>('notes');
+  const dockTabKey = `nn:nb:docktab:${notebookId}`;
+  const [dockTab, setDockTab] = useState<DockTab>('overview');
   const [dockCollapsed, setDockCollapsed] = useState(false);
   // Imperative refresh of the notes panel (after «save answer from chat»).
   const notesRefreshRef = useRef<(() => void) | null>(null);
 
-  // Hydrate the dock-collapsed state from localStorage once.
+  const selectDockTab = useCallback(
+    (next: DockTab) => {
+      setDockTab(next);
+      try {
+        localStorage.setItem(dockTabKey, next);
+      } catch {
+        /* best-effort */
+      }
+    },
+    [dockTabKey],
+  );
+
+  // Hydrate the dock-collapsed + active-tab state from localStorage once.
   const dockHydratedRef = useRef(false);
   useEffect(() => {
     if (dockHydratedRef.current) return;
     dockHydratedRef.current = true;
     try {
       setDockCollapsed(localStorage.getItem(dockKey) === 'collapsed');
+      const storedTab = localStorage.getItem(dockTabKey);
+      if (storedTab === 'overview' || storedTab === 'notes' || storedTab === 'studio') {
+        setDockTab(storedTab);
+      }
     } catch {
       /* best-effort */
     }
-  }, [dockKey]);
+  }, [dockKey, dockTabKey]);
 
   const toggleDock = useCallback(() => {
     setDockCollapsed((prev) => {
@@ -175,6 +213,20 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       }
     },
     [createNotebookNote, notebookId, t, dockCollapsed, toggleDock],
+  );
+
+  // Studio «В заметку» — copy a ready artifact's markdown into a manual note.
+  const onSaveArtifactNote = useCallback(
+    async (title: string, contentMd: string) => {
+      try {
+        await createNotebookNote(notebookId, { title, content: contentMd });
+        raiseToast({ kind: 'info', title: t('notebooks.studio.savedToNote') });
+        notesRefreshRef.current?.();
+      } catch {
+        raiseToast({ kind: 'info', title: t('notebooks.notes.createFailed') });
+      }
+    },
+    [createNotebookNote, notebookId, t],
   );
 
   // ── Citation viewer (text-mode chunk reader over a cited source) ───────────────
@@ -250,6 +302,47 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notebookId]);
+
+  // ── /ai/status.chatEnabled (degrade — gates studio/overview generation) ───────
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = (await ok(await (api as any).ai.status.get())) as { chatEnabled: boolean };
+        if (!cancelled) setChatEnabled(Boolean(s.chatEnabled));
+      } catch {
+        if (!cancelled) setChatEnabled(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ── Notebook detail (overview cache + fingerprints + suggestedQuestions, N2) ──
+  // Owned here so the dock's OverviewPanel AND the ChatPanel empty-state share one
+  // copy of `suggestedQuestions`. Refetched only on notebook switch.
+  useEffect(() => {
+    let cancelled = false;
+    setDetailLoaded(false);
+    (async () => {
+      try {
+        const nb = await getNotebook(notebookId);
+        if (!cancelled) setNotebookDetail(nb);
+      } catch {
+        /* keep null */
+      } finally {
+        if (!cancelled) setDetailLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [notebookId, getNotebook]);
+
+  const onDetailChange = useCallback((patch: Partial<Notebook>) => {
+    setNotebookDetail((prev) => (prev ? { ...prev, ...patch } : prev));
+  }, []);
 
   // ── Consume the library handoff prefill on mount ───────────────────────────────
   const consumedPrefillRef = useRef(false);
@@ -333,6 +426,56 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       requestAnimationFrame(() => viewerReaderRef.current?.scrollToChunk(v.chunkId, v.pos));
     },
     [isDesktop],
+  );
+
+  // ── Resolve a `[src:]` chunk to its source, then open the citation viewer ──────
+  // The studio artifact viewer's footnote chips carry only a `chunkId` (the
+  // artifact stores no chunk→source map); resolve it by scanning the artifact's
+  // source snapshot's chunk pages. Bounded (MAX pages/source); if unresolved we
+  // fall back to opening the first candidate source keyed on the chunkId (the
+  // reader will page-forward to it).
+  const CITATION_PROBE_MAX_PAGES = 20;
+  const CITATION_PROBE_PAGE = 200;
+  const resolvingCitationRef = useRef(false);
+  const openCitationByChunk = useCallback(
+    async (chunkId: string, candidateSourceIds: string[]) => {
+      if (resolvingCitationRef.current) return;
+      const candidates =
+        candidateSourceIds.length > 0
+          ? candidateSourceIds
+          : sources.filter((s) => s.status === 'ready').map((s) => s.id);
+      if (candidates.length === 0) return;
+      // Single candidate — open directly (the reader pages forward to the chunk).
+      if (candidates.length === 1) {
+        openViewer({ sourceId: candidates[0]!, chunkId });
+        return;
+      }
+      resolvingCitationRef.current = true;
+      try {
+        for (const sid of candidates) {
+          let from = 0;
+          for (let page = 0; page < CITATION_PROBE_MAX_PAGES; page++) {
+            let res;
+            try {
+              res = await getSourceChunks(sid, from, CITATION_PROBE_PAGE);
+            } catch {
+              break; // this source errored — try the next candidate
+            }
+            if (res.items.some((c) => c.id === chunkId)) {
+              openViewer({ sourceId: sid, chunkId });
+              return;
+            }
+            if (res.nextFrom == null) break;
+            from = res.nextFrom;
+          }
+        }
+        // Unresolved — open the first candidate keyed on the chunk (reader pages on).
+        openViewer({ sourceId: candidates[0]!, chunkId });
+      } finally {
+        resolvingCitationRef.current = false;
+      }
+    },
+    [sources, getSourceChunks, openViewer],
   );
 
   // Consume ?source=&chunk=&pos=&page= once sources have loaded → citation viewer.
@@ -550,6 +693,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     />
   );
 
+  // Suggested questions for the empty notebook thread (Р6) — from the detail cache.
+  const suggestedQuestions = notebookDetail?.suggestedQuestions ?? undefined;
+
   const chatPanel = (
     <ChatPanel
       mode="notebook"
@@ -559,6 +705,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       composerPrefillRef={composerPrefillRef}
       onThreadChange={onThreadChange}
       onSaveAnswer={onSaveAnswer}
+      suggestedQuestions={suggestedQuestions}
       onSourceCitation={(c) => {
         if (!c.sourceId) return;
         openViewer({
@@ -571,7 +718,30 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     />
   );
 
-  // ── Right dock (Р12): «Заметки» tab (N1) ───────────────────────────────────────
+  // ── Right dock (Р12): Обзор / Заметки / Студия (N2) ────────────────────────────
+  // A suggested-question pill → prefill the composer (same handoff as «Спросить»).
+  const askInChat = useCallback(
+    (question: string) => {
+      prefillChat(question);
+      if (!isDesktop) setTab('chat');
+    },
+    [prefillChat, isDesktop],
+  );
+
+  const overviewPanel = (
+    <OverviewPanel
+      notebookId={notebookId}
+      detail={notebookDetail}
+      detailLoaded={detailLoaded}
+      sources={sources}
+      chatEnabled={chatEnabled}
+      generateOverview={generateOverview}
+      onDetailChange={onDetailChange}
+      onAskQuestion={askInChat}
+      t={t}
+    />
+  );
+
   const notesPanel = (
     <NotesPanel
       notebookId={notebookId}
@@ -588,27 +758,47 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     />
   );
 
-  // Dock header: tab pills (N1 = one) + a collapse toggle (desktop). The collapse
-  // toggle lives in the dock header so the chat column reclaims the width.
+  const studioPanel = (
+    <StudioPanel
+      notebookId={notebookId}
+      scopeIds={scopeIds}
+      chatEnabled={chatEnabled}
+      listArtifacts={listArtifacts}
+      createArtifact={createArtifact}
+      getArtifact={getArtifact}
+      deleteArtifact={deleteArtifact}
+      regenerateArtifact={regenerateArtifact}
+      onOpenCitation={(chunkId, sids) => void openCitationByChunk(chunkId, sids)}
+      onSaveToNote={onSaveArtifactNote}
+      t={t}
+    />
+  );
+
+  const dockBody = (active: DockTab) =>
+    active === 'overview' ? overviewPanel : active === 'studio' ? studioPanel : notesPanel;
+
+  // Dock header: tab pills (Обзор/Заметки/Студия) + a collapse toggle (desktop).
+  // The collapse toggle lives in the dock header so the chat column reclaims width.
   const dockHeader = (
     <div
       className="nn-chrome"
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 4,
+        gap: 2,
         padding: '6px 8px',
         borderBottom: '1px solid var(--border)',
         flexShrink: 0,
         minHeight: 40,
+        overflowX: 'auto',
       }}
     >
-      {([{ key: 'notes' as DockTab, labelKey: 'notebooks.notes.tab' }]).map(({ key, labelKey }) => (
+      {DOCK_TABS.map(({ key, labelKey }) => (
         <button
           key={key}
           type="button"
           className={`nn-ws-tab${dockTab === key ? ' active' : ''}`}
-          onClick={() => undefined}
+          onClick={() => selectDockTab(key)}
         >
           {t(labelKey)}
         </button>
@@ -638,7 +828,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       }}
     >
       {dockHeader}
-      <div style={{ flex: 1, minHeight: 0 }}>{notesPanel}</div>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {dockBody(dockTab)}
+      </div>
     </div>
   );
 
@@ -771,7 +963,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         {([
           { key: 'sources', labelKey: 'notebooks.workspace.tabSources' },
           { key: 'chat', labelKey: 'notebooks.workspace.tabChat' },
-          { key: 'dock', labelKey: 'notebooks.notes.tab' },
+          { key: 'dock', labelKey: 'notebooks.workspace.tabDock' },
         ] as { key: WorkspaceTab; labelKey: string }[]).map(({ key: tk, labelKey }) => (
           <button
             key={tk}
@@ -790,7 +982,36 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           </div>
         )}
         {tab === 'chat' && chatPanel}
-        {tab === 'dock' && <div style={{ flex: 1, minHeight: 0 }}>{notesPanel}</div>}
+        {tab === 'dock' && (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            {/* Internal segment tabs (Обзор/Заметки/Студия) — usable on a phone. */}
+            <div
+              className="nn-chrome"
+              style={{
+                display: 'flex',
+                gap: 2,
+                padding: '6px 10px',
+                borderBottom: '1px solid var(--border)',
+                flexShrink: 0,
+                overflowX: 'auto',
+              }}
+            >
+              {DOCK_TABS.map(({ key, labelKey }) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`nn-ws-tab${dockTab === key ? ' active' : ''}`}
+                  onClick={() => selectDockTab(key)}
+                >
+                  {t(labelKey)}
+                </button>
+              ))}
+            </div>
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              {dockBody(dockTab)}
+            </div>
+          </div>
+        )}
       </div>
       {/* Citation viewer — fullscreen sheet (mobile). */}
       {citationViewer}

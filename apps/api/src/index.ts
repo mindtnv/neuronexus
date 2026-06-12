@@ -8,6 +8,7 @@ import {
   reconcileDocumentsOnStartup,
   resumeSourceIngestOnStartup,
 } from './ai/source-ingest.ts';
+import { reconcileArtifactsOnStartup } from './ai/artifacts.ts';
 
 const app = buildApp().listen(env.PORT, () => {
   rootLogger.info(
@@ -23,6 +24,10 @@ const app = buildApp().listen(env.PORT, () => {
   // (status pending/parsing/indexing → re-parse/re-embed idempotently). Never
   // throws into here (mirrors reconcileOnStartup).
   void resumeSourceIngestOnStartup();
+  // «Блокноты 2.0» N2: an artifact job is NOT resumable (single cheap
+  // complete()) — mark any pending/generating row left by a crashed run as
+  // error('interrupted') so the studio shows a «Повторить» affordance.
+  void reconcileArtifactsOnStartup();
 });
 
 let shuttingDown = false;

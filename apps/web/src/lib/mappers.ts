@@ -4,8 +4,8 @@
 
 import { State, type Card as FsrsCard } from 'ts-fsrs';
 import type { RenderKind } from '@neuronexus/shared';
-import type { NotebookColor, NotebookNoteKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Note, Notebook, NotebookNote, NoteType, Profile, Review } from './types';
+import type { ArtifactStatus, NotebookArtifactType, NotebookColor, NotebookNoteKind } from '@neuronexus/shared';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Note, Notebook, NotebookArtifact, NotebookNote, NoteType, Profile, Review } from './types';
 
 type IsoOrDate = string | Date | null | undefined;
 
@@ -190,6 +190,31 @@ export function notebookFromApi(row: any): Notebook {
     sourceCount: typeof row.sourceCount === 'number' ? row.sourceCount : undefined,
     noteCount: typeof row.noteCount === 'number' ? row.noteCount : undefined,
     cardCount: typeof row.cardCount === 'number' ? row.cardCount : undefined,
+    // Overview cache (N2) — present on the GET /notebooks/:id detail row.
+    overview: row.overview ?? null,
+    suggestedQuestions: Array.isArray(row.suggestedQuestions)
+      ? (row.suggestedQuestions as string[])
+      : null,
+    overviewFingerprint: row.overviewFingerprint ?? null,
+    currentFingerprint: row.currentFingerprint ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function notebookArtifactFromApi(row: any): NotebookArtifact {
+  return {
+    id: row.id,
+    notebookId: row.notebookId,
+    type: row.type as NotebookArtifactType,
+    status: row.status as ArtifactStatus,
+    title: row.title,
+    sourceIds: Array.isArray(row.sourceIds) ? (row.sourceIds as string[]) : [],
+    errorCode: row.errorCode ?? null,
+    model: row.model ?? null,
+    // contentMd / contentJson only ride the FULL artifact GET.
+    contentMd: typeof row.contentMd === 'string' ? row.contentMd : undefined,
+    contentJson: row.contentJson ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

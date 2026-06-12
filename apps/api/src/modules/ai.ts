@@ -37,11 +37,9 @@ import {
 } from '@neuronexus/db';
 import {
   buildAgentSystemPrompt,
-  CARD_TOKEN_RE,
   isAllowedModel,
   isSourceCitation,
   parseChatModels,
-  SRC_TOKEN_RE,
   type ChatResumeRequest,
   type ChatStreamEvent,
   type ConfirmImpact,
@@ -66,6 +64,7 @@ import {
   isChatEnabled,
   type AgentChatMessage,
 } from '../ai/openai-client.ts';
+import { intersectSourceTokens } from '../ai/citations.ts';
 import {
   buildToolRegistry,
   enqueueToolCardsForIndex,
@@ -861,28 +860,19 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
   }
 
   // Citations = union-dedup across ALL search_cards / search_source / read_source
-  // calls, intersected PER VARIANT with the tokens the model actually emitted:
-  // card citations against the [card:<id>] tokens, source citations against the
-  // [src:<sourceChunkId>] tokens. Fallback to the capped union when nothing was
-  // emitted (same as today).
-  const emittedCardIds = new Set<string>();
-  for (const m of finalText.matchAll(new RegExp(CARD_TOKEN_RE))) {
-    if (m[1]) emittedCardIds.add(m[1]);
-  }
-  const emittedSrcIds = new Set<string>();
-  for (const m of finalText.matchAll(new RegExp(SRC_TOKEN_RE))) {
-    if (m[1]) emittedSrcIds.add(m[1]);
-  }
+  // calls, intersected PER VARIANT with the tokens the model actually emitted
+  // (`intersectSourceTokens` — extracted to ai/citations.ts so the studio
+  // artifact generator shares it, Р5): card citations against the [card:<id>]
+  // tokens, source citations against the [src:<sourceChunkId>] tokens. Fallback
+  // to the capped union when nothing intersected (same as today — the fallback
+  // stays HERE so the chat loop is behaviorally identical to its prior inline
+  // form, pinned by the notebook-chat tests).
   const unionCitations = [...citationAcc.values()];
-  let citations: Citation[];
-  if (emittedCardIds.size > 0 || emittedSrcIds.size > 0) {
-    const intersected = unionCitations.filter((c) =>
-      isSourceCitation(c) ? emittedSrcIds.has(c.sourceChunkId) : emittedCardIds.has(c.cardId),
-    );
-    citations = (intersected.length > 0 ? intersected : unionCitations).slice(0, RETRIEVE_K);
-  } else {
-    citations = unionCitations.slice(0, RETRIEVE_K);
-  }
+  const intersected = intersectSourceTokens(finalText, unionCitations);
+  const citations: Citation[] = (intersected.length > 0 ? intersected : unionCitations).slice(
+    0,
+    RETRIEVE_K,
+  );
 
   if (finalText.trim().length === 0) {
     finalText = "I couldn't complete the request within the step limit.";

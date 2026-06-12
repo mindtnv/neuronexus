@@ -16,7 +16,7 @@ import enLibrary from './messages/en/library';
 import ruLibrary from './messages/ru/library';
 import enCommon from './messages/en/common';
 import ruCommon from './messages/ru/common';
-import { INGEST_ERROR_CODES } from '@neuronexus/shared';
+import { ARTIFACT_ERROR_CODES, INGEST_ERROR_CODES } from '@neuronexus/shared';
 
 // ── Recursive key extractor ──────────────────────────────────────────────────
 
@@ -346,6 +346,70 @@ describe('i18n parity — en/notebooks.ts vs ru/notebooks.ts (NotebookLM M1, T8)
       expect(enKeys.has(key)).toBe(true);
     });
     test(`ingest error-code key "${key}" exists in ru/notebooks`, () => {
+      expect(ruKeys.has(key)).toBe(true);
+    });
+  }
+
+  // «Блокноты 2.0» N2 — studio + overview keys. A key absent from BOTH locales
+  // slips the symmetric diff (mirrors REQUIRED_NOTIFICATION_KEYS).
+  const REQUIRED_STUDIO_OVERVIEW_KEYS = [
+    // Overview tab.
+    'overview.tab',
+    'overview.heading',
+    'overview.generate',
+    'overview.generating',
+    'overview.retry',
+    'overview.failed',
+    'overview.stale',
+    'overview.refresh',
+    'overview.suggestedHeading',
+    'overview.empty',
+    'overview.setupHint',
+    // Studio tab + tiles + statuses + actions + error codes.
+    'studio.tab',
+    'studio.heading',
+    'studio.generateHeading',
+    'studio.listHeading',
+    'studio.empty',
+    'studio.setupHint',
+    'studio.type_summary',
+    'studio.type_study_guide',
+    'studio.type_faq',
+    'studio.type_timeline',
+    'studio.type_glossary',
+    'studio.type_quiz',
+    'studio.quizSoon',
+    'studio.statusPending',
+    'studio.statusGenerating',
+    'studio.regenerate',
+    'studio.delete',
+    'studio.back',
+    'studio.copy',
+    'studio.toNote',
+    'studio.createFailed',
+    'studio.err_no_sources',
+    'studio.err_generation_in_progress',
+    'studio.error_interrupted',
+    // Mobile «Блокнот» tab label.
+    'workspace.tabDock',
+  ];
+  for (const key of REQUIRED_STUDIO_OVERVIEW_KEYS) {
+    test(`studio/overview key "${key}" exists in en/notebooks`, () => {
+      expect(enKeys.has(key)).toBe(true);
+    });
+    test(`studio/overview key "${key}" exists in ru/notebooks`, () => {
+      expect(ruKeys.has(key)).toBe(true);
+    });
+  }
+
+  // Every artifact error code must map to a `studio.error_<code>` key in BOTH
+  // locales (sourced from ARTIFACT_ERROR_CODES so a new code forces an entry).
+  for (const code of ARTIFACT_ERROR_CODES) {
+    const key = `studio.error_${code}`;
+    test(`artifact error-code key "${key}" exists in en/notebooks`, () => {
+      expect(enKeys.has(key)).toBe(true);
+    });
+    test(`artifact error-code key "${key}" exists in ru/notebooks`, () => {
       expect(ruKeys.has(key)).toBe(true);
     });
   }

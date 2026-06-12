@@ -95,6 +95,78 @@ const notebooks = {
     saveAnswer: 'To notes',
   },
 
+  // «Notebooks 2.0» (N2) — the Overview tab (right dock, default).
+  overview: {
+    tab: 'Overview',
+    heading: 'Overview',
+    generate: 'Generate overview',
+    generating: 'Reading your sources…',
+    retry: 'Retry',
+    failed: 'Could not generate the overview.',
+    stale: 'Sources changed since this overview was generated.',
+    refresh: 'Refresh overview',
+    suggestedHeading: 'Suggested questions',
+    empty: 'Add sources to generate an overview.',
+    setupHint: 'Connect a chat model to generate overviews.',
+    // Structural placeholders for N3/N4 (coverage / concept-map land here).
+    coverageHeading: 'Card coverage',
+    coverageSoon: 'Coverage lands in a later update.',
+    mapHeading: 'Concept map',
+    mapSoon: 'The concept map lands in a later update.',
+  },
+
+  // «Notebooks 2.0» (N2) — the Studio tab (generated artifacts).
+  studio: {
+    tab: 'Studio',
+    heading: 'Studio',
+    generateHeading: 'Generate',
+    listHeading: 'Documents',
+    empty: 'No documents yet. Generate one from your sources.',
+    setupHint: 'Connect a chat model to generate study documents.',
+    // Generation tiles (icon + name + one-line description).
+    type_summary: 'Summary',
+    type_summaryDesc: 'A structured briefing of the material.',
+    type_study_guide: 'Study guide',
+    type_study_guideDesc: 'Key concepts, themes, and self-check questions.',
+    type_faq: 'FAQ',
+    type_faqDesc: 'The most useful questions, answered.',
+    type_timeline: 'Timeline',
+    type_timelineDesc: 'Events and stages in order.',
+    type_glossary: 'Glossary',
+    type_glossaryDesc: 'Key terms with concise definitions.',
+    type_quiz: 'Quiz',
+    type_quizDesc: 'Self-check questions with grading.',
+    quizSoon: 'soon',
+    // Artifact status badges.
+    statusPending: 'Queued',
+    statusGenerating: 'Generating…',
+    statusError: 'Failed',
+    // Row actions + viewer.
+    regenerate: 'Regenerate',
+    delete: 'Delete',
+    deleteConfirm: 'Delete this document?',
+    back: 'Back',
+    copy: 'Copy',
+    copied: 'Copied',
+    toNote: 'To a note',
+    savedToNote: 'Saved to notes',
+    // Toasts keyed by the machine error code (ARTIFACT_ERROR_CODES) + route codes.
+    createFailed: 'Could not generate. Please try again.',
+    err_no_sources: 'Select at least one ready source.',
+    err_invalid_type: 'That document type is unavailable.',
+    err_too_many_artifacts: 'You\'ve reached the document limit.',
+    err_generation_in_progress: 'Wait for the current generation to finish.',
+    err_not_terminal: 'This document is still generating.',
+    err_ai_disabled: 'Connect a chat model first.',
+    // Per-artifact error-code prose (notebook_artifacts.error_code).
+    error_ai_disabled: 'Chat is not configured.',
+    error_timeout: 'Generation timed out.',
+    error_generation_failed: 'Generation failed.',
+    error_invalid_quiz: 'The generated quiz was malformed.',
+    error_no_sources: 'No ready sources to generate from.',
+    error_interrupted: 'Generation was interrupted — regenerate it.',
+  },
+
   // Source list (inside an open notebook).
   sources: {
     heading: 'Sources',
@@ -135,6 +207,7 @@ const notebooks = {
     tabSources: 'Sources',
     tabReader: 'Reading',
     tabChat: 'Chat',
+    tabDock: 'Notebook',
     // Per-source "include in chat" checkbox + the generated-cards count button.
     inChat: 'In chat',
     cardsButton: 'Cards',

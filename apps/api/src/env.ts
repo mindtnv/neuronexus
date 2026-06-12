@@ -165,6 +165,17 @@ export const env = {
     SOURCE_ANNOTATION_MAX_BYTES: Number(
       process.env.SOURCE_ANNOTATION_MAX_BYTES ?? 512 * 1024,
     ),
+    // ── «Блокноты 2.0» studio (N2) — all OPTIONAL ────────────────────────────
+    // Even, round-robin sample of source chunks fed to ONE artifact-generation
+    // `complete()` call (Р4). ~50-60k tokens max at 800-token chunks (Р16).
+    ARTIFACT_CONTEXT_CHUNKS: Number(process.env.ARTIFACT_CONTEXT_CHUNKS ?? 60),
+    // Per-artifact generation timeout (Promise.race like ai/title.ts). A slow
+    // self-hosted gateway summarizing 60 chunks routinely takes tens of seconds.
+    ARTIFACT_TIMEOUT_MS: Number(process.env.ARTIFACT_TIMEOUT_MS ?? 60_000),
+    // Notebook overview (Р6) — a smaller, sync single-`complete()` call.
+    NOTEBOOK_OVERVIEW_TIMEOUT_MS: Number(process.env.NOTEBOOK_OVERVIEW_TIMEOUT_MS ?? 20_000),
+    // Per-notebook artifact cap (Р16) → 409 `too_many_artifacts`.
+    MAX_ARTIFACTS_PER_NOTEBOOK: Number(process.env.MAX_ARTIFACTS_PER_NOTEBOOK ?? 50),
   },
 };
 

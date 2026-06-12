@@ -283,6 +283,10 @@ export interface ChatPanelProps {
     citations: unknown[];
     messageId?: string;
   }) => void;
+  /** Suggested-question pills for the empty state of a NEW notebook thread (N2,
+   *  Р6). ADDITIVE — rendered ONLY in notebook mode (the global /chat builds its
+   *  own deck/due suggestions). A click sends the question directly. */
+  suggestedQuestions?: string[];
 }
 
 export const ChatPanel = ({
@@ -294,6 +298,7 @@ export const ChatPanel = ({
   onSourceCitation,
   composerPrefillRef,
   onSaveAnswer,
+  suggestedQuestions,
 }: ChatPanelProps = {}) => {
   const t = useT();
   const { locale } = useLocale();
@@ -1659,6 +1664,40 @@ export const ChatPanel = ({
                     }}
                   >
                     {suggestions.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        disabled={sending}
+                        onClick={() => void sendContent(s)}
+                        style={{
+                          border: '1px solid var(--border)',
+                          background: 'var(--surface-2)',
+                          color: 'var(--text-muted)',
+                          borderRadius: 999,
+                          padding: '7px 14px',
+                          fontSize: 12.5,
+                          fontFamily: 'var(--font-sans)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {/* Notebook mode: the workspace's suggested questions (Р6) — sent
+                    directly, same affordance, distinct source. */}
+                {isNotebook && !activeId && (suggestedQuestions?.length ?? 0) > 0 && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      justifyContent: 'center',
+                      gap: 8,
+                      marginTop: 6,
+                    }}
+                  >
+                    {suggestedQuestions!.map((s) => (
                       <button
                         key={s}
                         type="button"

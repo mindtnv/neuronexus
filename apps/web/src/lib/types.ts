@@ -1,12 +1,15 @@
 import type { Card as FsrsCard } from 'ts-fsrs';
 import type {
+  ArtifactStatus,
   CardTemplate,
   FieldValues,
   IngestErrorCode,
   MarkRect,
+  NotebookArtifactType,
   NotebookColor,
   NotebookNoteKind,
   NoteField,
+  QuizContent,
   RenderKind,
   SourceKind,
   SourceMarkColor,
@@ -166,6 +169,37 @@ export interface Notebook {
   sourceCount?: number;
   noteCount?: number;
   cardCount?: number;
+  /** «Блокноты 2.0» (N2, Р6) overview cache — present on the GET /notebooks/:id
+   *  detail row (and after a generate). `overview`/`suggestedQuestions` are null
+   *  until the first generation; `overviewFingerprint` is the scope hash at that
+   *  time, `currentFingerprint` is the server's live recompute (a mismatch ⇒ the
+   *  cache is stale and the client offers «Обновить обзор»). */
+  overview?: string | null;
+  suggestedQuestions?: string[] | null;
+  overviewFingerprint?: string | null;
+  currentFingerprint?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** «Блокноты 2.0» (N2) studio artifact. The LIST variant (GET /notebooks/:id/
+ *  artifacts) omits `contentMd`/`contentJson` (light); the FULL variant (GET
+ *  …/artifacts/:artifactId) carries them. Status is a job lifecycle
+ *  (pending→generating→ready|error); `errorCode` maps to an i18n string. */
+export interface NotebookArtifact {
+  id: string;
+  notebookId: string;
+  type: NotebookArtifactType;
+  status: ArtifactStatus;
+  title: string;
+  /** Snapshot of the source ids the artifact was generated over. */
+  sourceIds: string[];
+  errorCode: string | null;
+  model: string | null;
+  /** Markdown body (full variant, markdown types). Absent on the list row. */
+  contentMd?: string | null;
+  /** Structured quiz payload (full variant, type='quiz'). Absent on the list row. */
+  contentJson?: QuizContent | null;
   createdAt: string;
   updatedAt: string;
 }
