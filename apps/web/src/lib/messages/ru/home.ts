@@ -15,6 +15,7 @@ const m = {
   streakDays: '{days} дн.',
   dailyGoal: 'Цель на день',
   minOfGoal: '/ {n} мин',
+  openGarden: 'Открыть сад',
   stats: {
     cards: 'карт',
     retention: 'retention',

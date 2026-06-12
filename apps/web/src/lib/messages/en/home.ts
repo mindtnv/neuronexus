@@ -15,6 +15,7 @@ const m = {
   streakDays: '{days} days',
   dailyGoal: 'Daily goal',
   minOfGoal: '/ {n} min',
+  openGarden: 'Open garden',
   stats: {
     cards: 'cards',
     retention: 'retention',

@@ -1,10 +1,10 @@
 'use client';
 
-import React, { CSSProperties, ReactNode, useMemo } from 'react';
+import React, { CSSProperties, ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { NNBtn, NNIcon, NNLogo } from './ui';
-import { APP_NAV, NAV_SECTIONS, NAV_SECTION_LABEL, SETTINGS_NAV, getActiveNavId, type AppNavItem } from './nav-config';
+import { APP_NAV, FOOTER_NAV, NAV_SECTIONS, NAV_SECTION_LABEL, getActiveNavId, type AppNavItem } from './nav-config';
 import { countDueCards } from '@/lib/cards';
 import { signOut } from '@/lib/auth';
 import { useNN } from '@/lib/store';
@@ -12,7 +12,6 @@ import { useUI, useDisplayMode } from '@/lib/ui-store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { LocaleToggle } from './locale-toggle';
-import { aggregateCounts } from '@/lib/decks';
 
 // Single nav-item row. Shared across grouped sections + the pinned Settings item.
 const renderNavItem = ({
@@ -96,7 +95,7 @@ export const NNSidebar = ({
   const pathname = usePathname();
   const router = useRouter();
   const t = useT();
-  const currentId = active ?? getActiveNavId(pathname, APP_NAV);
+  const currentId = active ?? getActiveNavId(pathname, [...APP_NAV, ...FOOTER_NAV]);
   const resetStore = useNN((s) => s.reset);
 
   const handleSignOut = async () => {
@@ -108,38 +107,13 @@ export const NNSidebar = ({
     }
   };
 
-  const bootstrapped = useNN((s) => s.bootstrapped);
-  const decks = useNN((s) => s.decks);
   const cards = useNN((s) => s.cards);
   const dueCount = useNN((s) => countDueCards(s.cards));
   const profile = useNN((s) => s.profile);
 
-  const recentDecks = useMemo(() => {
-    if (!bootstrapped || decks.length === 0) return [];
-    // Show root decks (those without a parent) with their aggregate card counts.
-    const roots = decks.filter((d) => !d.parentId);
-    const source = roots.length > 0 ? roots : decks;
-    return source
-      .slice()
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, 4)
-      .map((d) => ({
-        id: d.id,
-        name: d.name,
-        color: (d.color === 'lime' || d.color === 'neutral' ? 'violet' : d.color) as
-          | 'amber'
-          | 'violet'
-          | 'sky'
-          | 'rose',
-        count: aggregateCounts(decks, cards, d.id).total,
-      }));
-  }, [bootstrapped, decks, cards]);
-
   const totalCards = cards.length || 0;
   const workspaceName = t('app.workspace', { name: (profile?.name ?? 'Alex').toLowerCase() });
   const workspaceInitials = (profile?.name ?? 'Alex').slice(0, 2).toUpperCase();
-  const streakDays = profile?.streakDays ?? 0;
-  const nextLevel = (profile?.level ?? 1) + 1;
 
   return (
     <aside
@@ -214,9 +188,10 @@ export const NNSidebar = ({
         {NAV_SECTIONS.map((section) => {
           const items = APP_NAV.filter((item) => item.section === section);
           if (items.length === 0) return null;
+          const labelKey = NAV_SECTION_LABEL[section];
           return (
             <React.Fragment key={section}>
-              {!collapsed && (
+              {!collapsed && labelKey && (
                 <div
                   style={{
                     fontSize: 10.5,
@@ -224,11 +199,14 @@ export const NNSidebar = ({
                     color: 'var(--text-dim)',
                     textTransform: 'uppercase',
                     letterSpacing: 0.8,
-                    padding: '10px 8px 6px',
+                    padding: '14px 8px 6px',
                   }}
                 >
-                  {t(NAV_SECTION_LABEL[section])}
+                  {t(labelKey)}
                 </div>
+              )}
+              {collapsed && labelKey && (
+                <div style={{ height: 1, background: 'var(--border)', margin: '8px 6px' }} />
               )}
               {items.map((item) =>
                 renderNavItem({ item, isActive: currentId === item.id, badge: item.id === 'review' && dueCount > 0 ? dueCount : undefined, collapsed, label: t(item.labelKey) }),
@@ -237,96 +215,15 @@ export const NNSidebar = ({
           );
         })}
 
-        {/* Settings — pinned below the sections behind a thin divider. */}
-        <div style={{ height: 1, background: 'var(--border)', margin: collapsed ? '10px 6px' : '10px 4px' }} />
-        {renderNavItem({ item: SETTINGS_NAV, isActive: currentId === SETTINGS_NAV.id, collapsed, label: t(SETTINGS_NAV.labelKey) })}
-
-        {!collapsed && (
-          <>
-            <div
-              style={{
-                fontSize: 10.5,
-                fontWeight: 500,
-                color: 'var(--text-dim)',
-                textTransform: 'uppercase',
-                letterSpacing: 0.8,
-                padding: '20px 8px 6px',
-              }}
-            >
-              {t('nav.recentDecks')}
-            </div>
-            {recentDecks.length > 0 ? (
-              recentDecks.map((d) => (
-                <Link
-                  key={d.id}
-                  href={`/cards?q=${encodeURIComponent(`deck:${JSON.stringify(d.name)}`)}`}
-                  onClick={() => window.dispatchEvent(new CustomEvent('nn:close-drawer'))}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    padding: '7px 10px',
-                    borderRadius: 8,
-                    marginBottom: 1,
-                    color: 'var(--text-muted)',
-                    fontSize: 12.5,
-                    textDecoration: 'none',
-                  }}
-                >
-                  <div style={{ width: 7, height: 7, borderRadius: 2, background: `var(--${d.color}-500)` }} />
-                  <span style={{ flex: 1 }}>{d.name}</span>
-                  <span style={{ color: 'var(--text-dim)', fontSize: 11 }} className="mono">
-                    {d.count}
-                  </span>
-                </Link>
-              ))
-            ) : (
-              <Link
-                href="/decks"
-                onClick={() => window.dispatchEvent(new CustomEvent('nn:close-drawer'))}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  padding: '8px 10px',
-                  borderRadius: 8,
-                  color: 'var(--text-dim)',
-                  fontSize: 12,
-                  textDecoration: 'none',
-                  border: '1px dashed var(--border-2)',
-                }}
-              >
-                <NNIcon name="plus" size={12} color="var(--text-dim)" />
-                <span>Создать первую колоду</span>
-              </Link>
-            )}
-          </>
+        {/* Stats + Settings — pinned below the sections behind a thin divider. */}
+        <div style={{ height: 1, background: 'var(--border)', margin: collapsed ? '10px 6px' : '12px 4px' }} />
+        {FOOTER_NAV.map((item) =>
+          renderNavItem({ item, isActive: currentId === item.id, collapsed, label: t(item.labelKey) }),
         )}
       </nav>
 
       {!collapsed && (
-        <div style={{ padding: 10, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div
-            style={{
-              padding: '12px 14px',
-              borderRadius: 10,
-              background: 'linear-gradient(135deg, rgba(232,154,43,0.12), rgba(243,182,85,0.06))',
-              border: '1px solid rgba(243,182,85,0.2)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-            }}
-          >
-            <div style={{ fontSize: 22 }}>
-              <NNIcon name="flame" size={22} color="var(--amber-500)" />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
-                {t('streak.dayStreak', { days: streakDays })}
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('streak.nextLevel', { n: nextLevel })}</div>
-            </div>
-          </div>
+        <div style={{ padding: 10, borderTop: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 2px 0' }}>
             <LocaleToggle size="sm" />
             <button

@@ -17,11 +17,9 @@ const common = {
     editor: 'Редактор',
     stats: 'Статистика',
     settings: 'Настройки',
-    recentDecks: 'Недавние колоды',
     sections: {
-      overview: 'Обзор',
-      learning: 'Изучение',
-      progress: 'Прогресс',
+      memory: 'Память',
+      knowledge: 'Знания',
     },
   },
   topbar: {
@@ -75,10 +73,6 @@ const common = {
     ago: '{n}{unit} назад',
     noSessions: 'сессий ещё не было',
     justNow: 'только что',
-  },
-  streak: {
-    dayStreak: 'стрик {days} дн.',
-    nextLevel: 'дальше: уровень {n}',
   },
   auth: {
     signOut: 'Выйти',

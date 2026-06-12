@@ -17,11 +17,9 @@ const common = {
     editor: 'Editor',
     stats: 'Stats',
     settings: 'Settings',
-    recentDecks: 'Recent decks',
     sections: {
-      overview: 'Overview',
-      learning: 'Learning',
-      progress: 'Progress',
+      memory: 'Memory',
+      knowledge: 'Knowledge',
     },
   },
   topbar: {
@@ -75,10 +73,6 @@ const common = {
     ago: '{n}{unit} ago',
     noSessions: 'no sessions yet',
     justNow: 'just now',
-  },
-  streak: {
-    dayStreak: '{days}-day streak',
-    nextLevel: 'next: level {n}',
   },
   auth: {
     signOut: 'Sign out',

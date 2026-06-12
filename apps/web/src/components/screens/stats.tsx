@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { State } from 'ts-fsrs';
 import { format, startOfDay, subDays } from 'date-fns';
-import { NNCard } from '@/components/ui';
+import { NNCard, NNIcon } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
 import { reviewFromApi } from '@/lib/mappers';
@@ -311,6 +312,52 @@ export const NNStats = () => {
 
   return (
     <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : 24, ...dimStyle }}>
+      {/* Streak strip — the gamification entry point now that the sidebar has none. */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '10px 14px',
+          borderRadius: 12,
+          background: 'linear-gradient(135deg, rgba(232,154,43,0.10), rgba(243,182,85,0.04))',
+          border: '1px solid rgba(243,182,85,0.18)',
+          marginBottom: isMobile ? 12 : 16,
+          flexWrap: 'wrap',
+        }}
+      >
+        <NNIcon name="flame" size={18} color="var(--amber-500)" />
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
+          {t('stats.streak.days', { days: profile?.streakDays ?? 0 })}
+        </span>
+        {(profile?.streakFreezes ?? 0) > 0 && (
+          <span style={{ fontSize: 12, color: 'var(--sky-400)' }}>🛡 × {profile?.streakFreezes}</span>
+        )}
+        <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+          {t('stats.streak.level', { n: profile?.level ?? 1 })}
+        </span>
+        <div style={{ flex: 1 }} />
+        <Link
+          href="/garden"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '6px 12px',
+            borderRadius: 8,
+            border: '1px solid var(--border)',
+            color: 'var(--text)',
+            fontSize: 12,
+            fontWeight: 500,
+            textDecoration: 'none',
+            background: 'var(--surface)',
+          }}
+        >
+          <NNIcon name="garden" size={14} />
+          {t('stats.streak.openGarden')}
+        </Link>
+      </div>
+
       {/* Top stats */}
       <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, 1fr)', gap: isMobile ? 10 : 12, marginBottom: isMobile ? 12 : 16 }}>
         {kpis.map((s) => (

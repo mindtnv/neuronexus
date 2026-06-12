@@ -1,5 +1,10 @@
 const m = {
   pageSubtitle: 'Последние 30 дней · {count} {unit}',
+  streak: {
+    days: 'стрик {days} дн.',
+    level: 'уровень {n}',
+    openGarden: 'Открыть сад',
+  },
   kpis: {
     retention: 'Retention',
     retentionSub: 'за 30 дней',

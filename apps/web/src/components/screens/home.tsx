@@ -298,7 +298,15 @@ export const NNHome = () => {
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '4px 0' }}>
-            <NNPlant stage={profile?.plantStage ?? 0} size={80} species={profile?.plantSpecies} />
+            <button
+              type="button"
+              onClick={() => router.push('/garden')}
+              title={t('home.openGarden')}
+              aria-label={t('home.openGarden')}
+              style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 0 }}
+            >
+              <NNPlant stage={profile?.plantStage ?? 0} size={80} species={profile?.plantSpecies} />
+            </button>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 3 }}>{t('home.dailyGoal')}</div>
               <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--text)', letterSpacing: -0.5 }}>
