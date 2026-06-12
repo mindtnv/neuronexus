@@ -383,13 +383,16 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   // Persist the chat scope (best-effort).
   const setScopePersisted = useCallback(
-    (next: Set<string>) => {
-      setScope(next);
-      try {
-        localStorage.setItem(scopeKey, JSON.stringify([...next]));
-      } catch {
-        /* best-effort */
-      }
+    (next: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+      setScope((prev) => {
+        const resolved = typeof next === 'function' ? next(prev) : next;
+        try {
+          localStorage.setItem(scopeKey, JSON.stringify([...resolved]));
+        } catch {
+          /* best-effort */
+        }
+        return resolved;
+      });
     },
     [scopeKey],
   );
@@ -417,16 +420,23 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     fetchOne: (id) => getSource(id).catch(() => null),
     onUpdate: (fresh) => {
       const byId = new Map(fresh.map((s) => [s.id, s]));
+      // Collect ids that just flipped to ready (pure pass — no side effects in
+      // the setSources updater), then auto-add them to the chat scope in ONE
+      // functional update outside the sources updater.
+      const newlyReadyIds: string[] = [];
       setSources((prev) =>
         prev.map((s) => {
           const updated = byId.get(s.id);
           if (!updated) return s;
           if (s.status !== 'ready' && updated.status === 'ready') {
-            setScopePersisted(new Set([...scope, updated.id]));
+            newlyReadyIds.push(updated.id);
           }
           return updated;
         }),
       );
+      if (newlyReadyIds.length > 0) {
+        setScopePersisted((prev) => new Set([...prev, ...newlyReadyIds]));
+      }
     },
   });
 

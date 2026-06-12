@@ -15,7 +15,7 @@
 //    chat composer via `onAskQuestion` (the workspace routes it to the chat
 //    panel, same mechanism as the «Спросить» handoff).
 //  • No ready sources ⇒ an empty state. Chat off ⇒ a setup hint.
-//  • Structural placeholders for coverage (N3) + concept-map (N4) sit below.
+//  • Card-coverage bars (N3) + the concept map (N4) render below the overview.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NNBtn, NNIcon, NNSkeleton } from '@/components/ui';

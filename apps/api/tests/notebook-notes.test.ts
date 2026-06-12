@@ -158,6 +158,46 @@ describe('notebook notes CRUD', () => {
     expect(found[0]!.title).toBe('Mitochondria');
   });
 
+  test('q= escapes ILIKE wildcards: literal % matches itself; _ is not a wildcard', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await createNotebook(cookie);
+    // One note carries a LITERAL percent sign in its title; two plain ones.
+    await callApp(app, 'POST', `/notebooks/${nb.id}/notes`, {
+      cookie,
+      body: { title: '100% effort', content: 'a' },
+    });
+    await callApp(app, 'POST', `/notebooks/${nb.id}/notes`, {
+      cookie,
+      body: { title: 'Alpha', content: 'b' },
+    });
+    await callApp(app, 'POST', `/notebooks/${nb.id}/notes`, {
+      cookie,
+      body: { title: 'Beta', content: 'c' },
+    });
+
+    // q='%' must match ONLY the note with a literal '%' (not every row).
+    const pct = await callApp(
+      app,
+      'GET',
+      `/notebooks/${nb.id}/notes?q=${encodeURIComponent('%')}`,
+      { cookie },
+    );
+    const pctItems = (await pct.json<{ items: NoteRow[] }>()).items;
+    expect(pctItems).toHaveLength(1);
+    expect(pctItems[0]!.title).toBe('100% effort');
+
+    // q='_' must match NOTHING (no note contains a literal underscore) — it must
+    // NOT behave like the single-char ILIKE wildcard and match every row.
+    const underscore = await callApp(
+      app,
+      'GET',
+      `/notebooks/${nb.id}/notes?q=${encodeURIComponent('_')}`,
+      { cookie },
+    );
+    const usItems = (await underscore.json<{ items: NoteRow[] }>()).items;
+    expect(usItems).toHaveLength(0);
+  });
+
   test('messageId validation (Р7): foreign / global-chat → 400; valid notebook message → ok; delete conv → SET NULL survives', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const nb = await createNotebook(cookie);

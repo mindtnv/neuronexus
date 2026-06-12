@@ -108,11 +108,9 @@ const notebooks = {
     suggestedHeading: 'Suggested questions',
     empty: 'Add sources to generate an overview.',
     setupHint: 'Connect a chat model to generate overviews.',
-    // Structural placeholders for N3/N4 (coverage / concept-map land here).
+    // Section headings for the overview tab's coverage + concept-map blocks.
     coverageHeading: 'Card coverage',
-    coverageSoon: 'Coverage lands in a later update.',
     mapHeading: 'Concept map',
-    mapSoon: 'The concept map lands in a later update.',
   },
 
   // «Notebooks 2.0» (N2) — the Studio tab (generated artifacts).
@@ -136,7 +134,6 @@ const notebooks = {
     type_glossaryDesc: 'Key terms with concise definitions.',
     type_quiz: 'Quiz',
     type_quizDesc: 'Self-check questions with grading.',
-    quizSoon: 'soon',
     // Artifact status badges.
     statusPending: 'Queued',
     statusGenerating: 'Generating…',

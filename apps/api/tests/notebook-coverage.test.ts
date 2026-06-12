@@ -159,8 +159,8 @@ describe('coverage — tombstone filtering', () => {
     expect(cov.body.items[0]!.coveredChunks).toBe(2);
     expect(cov.body.items[0]!.pct).toBe(100);
 
-    // Delete card2's NOTE row → the card cascades, its card_sources edge SET NULLs
-    // its card_id (or cascades). Either way the cards JOIN drops it → coverage 1.
+    // Delete card2's NOTE row → the card cascades; its card_sources edge cascades
+    // too (card_id is NOT NULL → ON DELETE CASCADE). The cards JOIN drops it → coverage 1.
     await db.delete(cardsTable).where(eq(cardsTable.id, card2.id));
 
     cov = await getCoverage(cookie, nb);

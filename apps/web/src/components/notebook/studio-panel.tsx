@@ -426,14 +426,12 @@ export const StudioPanel = ({
 const StudioTile = ({
   type,
   busy = false,
-  soon = false,
   disabled = false,
   onClick,
   t,
 }: {
   type: NotebookArtifactType;
   busy?: boolean;
-  soon?: boolean;
   disabled?: boolean;
   onClick?: () => void;
   t: Tfn;
@@ -441,7 +439,7 @@ const StudioTile = ({
   <button
     type="button"
     className="nn-studio-tile"
-    disabled={disabled || soon}
+    disabled={disabled}
     onClick={onClick}
     title={t(`notebooks.studio.type_${type}Desc`)}
   >
@@ -455,14 +453,7 @@ const StudioTile = ({
       )}
     </span>
     <span className="nn-studio-tile-body">
-      <span className="nn-studio-tile-name">
-        {t(`notebooks.studio.type_${type}`)}
-        {soon && (
-          <NNBadge tone="neutral" size="xs" style={{ marginLeft: 6 }}>
-            {t('notebooks.studio.quizSoon')}
-          </NNBadge>
-        )}
-      </span>
+      <span className="nn-studio-tile-name">{t(`notebooks.studio.type_${type}`)}</span>
       <span className="nn-studio-tile-desc">{t(`notebooks.studio.type_${type}Desc`)}</span>
     </span>
   </button>

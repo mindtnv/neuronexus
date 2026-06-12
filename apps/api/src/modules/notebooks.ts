@@ -687,13 +687,20 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       }
 
       try {
-        const inserted = await db
-          .insert(notebookSources)
-          .values(newIds.map((sourceId) => ({ userId: user.id, notebookId: params.id, sourceId })))
-          .onConflictDoNothing({
-            target: [notebookSources.notebookId, notebookSources.sourceId],
-          })
-          .returning({ id: notebookSources.id });
+        const inserted = await db.transaction(async (tx) => {
+          const rows = await tx
+            .insert(notebookSources)
+            .values(newIds.map((sourceId) => ({ userId: user.id, notebookId: params.id, sourceId })))
+            .onConflictDoNothing({
+              target: [notebookSources.notebookId, notebookSources.sourceId],
+            })
+            .returning({ id: notebookSources.id });
+          // Bump only when the attach actually inserted a new edge (Р15) — a
+          // fully-idempotent re-attach (every id already present) leaves the
+          // notebook's activity timestamp untouched.
+          if (rows.length > 0) await bumpNotebookUpdatedAt(tx, user.id, params.id);
+          return rows;
+        });
         return { ok: true, attached: inserted.length };
       } catch (err) {
         // A source physically deleted between the ownership SELECT and this
@@ -723,16 +730,22 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         .limit(1);
       if (!nb) return status(404, { error: 'not_found' });
 
-      const [row] = await db
-        .delete(notebookSources)
-        .where(
-          and(
-            eq(notebookSources.userId, user.id),
-            eq(notebookSources.notebookId, params.id),
-            eq(notebookSources.sourceId, params.sourceId),
-          ),
-        )
-        .returning({ id: notebookSources.id });
+      const row = await db.transaction(async (tx) => {
+        const [deleted] = await tx
+          .delete(notebookSources)
+          .where(
+            and(
+              eq(notebookSources.userId, user.id),
+              eq(notebookSources.notebookId, params.id),
+              eq(notebookSources.sourceId, params.sourceId),
+            ),
+          )
+          .returning({ id: notebookSources.id });
+        // Bump only when a real edge was removed (Р15) — detaching a
+        // non-attached source touches zero rows → no activity bump.
+        if (deleted) await bumpNotebookUpdatedAt(tx, user.id, params.id);
+        return deleted ?? null;
+      });
       if (!row) return status(404, { error: 'not_found' });
       return { ok: true };
     },
@@ -765,10 +778,13 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       if (!nb) return status(404, { error: 'not_found' });
 
       const q = query.q?.trim();
-      const search =
-        q && q.length > 0
-          ? or(ilike(notebookNotes.title, `%${q}%`), ilike(notebookNotes.content, `%${q}%`))
-          : undefined;
+      // Escape LIKE/ILIKE metacharacters so a literal '%' / '_' / '\' in the
+      // query matches itself instead of acting as a wildcard (a bare '_' must
+      // NOT match everything). The default ILIKE escape char is backslash.
+      const like = q && q.length > 0 ? `%${q.replace(/[\\%_]/g, '\\$&')}%` : undefined;
+      const search = like
+        ? or(ilike(notebookNotes.title, like), ilike(notebookNotes.content, like))
+        : undefined;
 
       const rows = await db
         .select()

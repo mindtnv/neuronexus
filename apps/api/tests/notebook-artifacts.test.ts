@@ -199,8 +199,8 @@ describe('generateArtifact — status machine', () => {
   test('a hanging complete ⇒ error timeout (ARTIFACT_TIMEOUT_MS via env override)', async () => {
     const { env } = await import('../src/env.ts');
     const saved = env.ai.ARTIFACT_TIMEOUT_MS;
-    env.ai.ARTIFACT_TIMEOUT_MS = 50;
     try {
+      env.ai.ARTIFACT_TIMEOUT_MS = 50;
       const { userId } = await signUpAndCookie(app, uniqueEmail());
       const nb = await freshNotebook(userId);
       const { sourceId } = await seedSource(userId, nb, 'Doc', ['alpha']);
@@ -392,8 +392,8 @@ describe('POST /notebooks/:id/artifacts — checks + concurrency', () => {
   test('too_many_artifacts at the cap', async () => {
     const { env } = await import('../src/env.ts');
     const saved = env.ai.MAX_ARTIFACTS_PER_NOTEBOOK;
-    env.ai.MAX_ARTIFACTS_PER_NOTEBOOK = 2;
     try {
+      env.ai.MAX_ARTIFACTS_PER_NOTEBOOK = 2;
       const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
       const nb = await freshNotebook(userId);
       const { sourceId } = await seedSource(userId, nb, 'Doc', ['alpha']);

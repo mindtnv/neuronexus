@@ -162,6 +162,55 @@ describe('notebook metadata PATCH (Р13)', () => {
     });
     expect(res.status).toBe(404);
   });
+
+  test('attach bumps updatedAt; idempotent re-attach does NOT; detach bumps (Р15)', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await createNotebook(cookie);
+    const [src] = await db
+      .insert(sourcesTable)
+      .values({ userId, kind: 'text' as const, title: 's1', status: 'ready' as const, verified: true })
+      .returning({ id: sourcesTable.id });
+
+    const readUpdatedAt = async () =>
+      (
+        await db.select({ u: notebooks.updatedAt }).from(notebooks).where(eq(notebooks.id, nb.id))
+      )[0]!.u;
+
+    const before = await readUpdatedAt();
+    await new Promise((r) => setTimeout(r, 10));
+
+    // First attach inserts a new edge → bump.
+    const attach1 = await callApp(app, 'POST', `/notebooks/${nb.id}/sources/attach`, {
+      cookie,
+      body: { sourceIds: [src!.id] },
+    });
+    expect(attach1.status).toBe(200);
+    expect((await attach1.json<{ attached: number }>()).attached).toBe(1);
+    const afterAttach = await readUpdatedAt();
+    expect(afterAttach.getTime()).toBeGreaterThan(before.getTime());
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Idempotent re-attach of the SAME source inserts nothing → NO bump.
+    const attach2 = await callApp(app, 'POST', `/notebooks/${nb.id}/sources/attach`, {
+      cookie,
+      body: { sourceIds: [src!.id] },
+    });
+    expect(attach2.status).toBe(200);
+    expect((await attach2.json<{ attached: number }>()).attached).toBe(0);
+    const afterReattach = await readUpdatedAt();
+    expect(afterReattach.getTime()).toBe(afterAttach.getTime());
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Detach removes a real edge → bump.
+    const detach = await callApp(app, 'DELETE', `/notebooks/${nb.id}/sources/${src!.id}`, {
+      cookie,
+    });
+    expect(detach.status).toBe(200);
+    const afterDetach = await readUpdatedAt();
+    expect(afterDetach.getTime()).toBeGreaterThan(afterReattach.getTime());
+  });
 });
 
 describe('notebook grid list (Р13)', () => {

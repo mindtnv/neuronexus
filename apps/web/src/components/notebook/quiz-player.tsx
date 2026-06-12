@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { QuizContent, QuizQuestion } from '@neuronexus/shared';
 import { NNBtn, NNIcon, NNSkeleton } from '@/components/ui';
 import { raiseToast } from '@/components/toasts';
+import { useLocale } from '@/lib/i18n';
 import {
   allAnswered,
   buildAttemptAnswers,
@@ -66,6 +67,7 @@ export const QuizPlayer = ({
   onBack,
   t,
 }: QuizPlayerProps) => {
+  const { locale } = useLocale();
   const questions = useMemo<QuizQuestion[]>(
     () => artifact.contentJson?.questions ?? [],
     [artifact.contentJson],
@@ -220,6 +222,7 @@ export const QuizPlayer = ({
 
         {phase === 'playing' && (
           <QuizQuestionView
+            key={questions[step]!.id}
             questions={questions}
             step={step}
             response={responses.get(questions[step]!.id)}
@@ -255,6 +258,7 @@ export const QuizPlayer = ({
           <QuizHistory
             attempts={history}
             loading={historyLoading}
+            locale={locale}
             onBack={() => setPhase(attempt ? 'result' : 'intro')}
             t={t}
           />
@@ -508,7 +512,7 @@ const QuizResult = ({
   t: Tfn;
 }) => {
   const questions = artifact.contentJson?.questions ?? [];
-  const pct = attempt.total > 0 ? Math.round((attempt.correct / attempt.total) * 100) : 0;
+  const pct = scorePct(attempt.correct, attempt.total);
   const tone = pct >= 80 ? 'lime' : pct >= 50 ? 'amber' : 'rose';
 
   return (
@@ -548,7 +552,7 @@ const QuizResult = ({
         {questions.map((q, i) => {
           const wrong = wrongIds.has(q.id);
           return (
-            <div key={q.id} className={`nn-quiz-review-row ${wrong ? 'wrong' : 'right'}`}>
+            <div key={`${q.id}-${i}`} className={`nn-quiz-review-row ${wrong ? 'wrong' : 'right'}`}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <span className={`nn-quiz-verdict ${wrong ? 'wrong' : 'right'}`}>
                   <NNIcon name={wrong ? 'x' : 'check'} size={13} color={wrong ? 'var(--rose-400)' : 'var(--lime-400)'} />
@@ -591,11 +595,13 @@ const QuizResult = ({
 const QuizHistory = ({
   attempts,
   loading,
+  locale,
   onBack,
   t,
 }: {
   attempts: QuizAttempt[] | null;
   loading: boolean;
+  locale: string;
   onBack: () => void;
   t: Tfn;
 }) => (
@@ -623,7 +629,7 @@ const QuizHistory = ({
     ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {attempts.map((a) => {
-          const pct = a.total > 0 ? Math.round((a.correct / a.total) * 100) : 0;
+          const pct = scorePct(a.correct, a.total);
           const tone = pct >= 80 ? 'lime' : pct >= 50 ? 'amber' : 'rose';
           return (
             <div key={a.id} className="nn-quiz-history-row">
@@ -634,7 +640,7 @@ const QuizHistory = ({
                 {t('notebooks.quiz.scorePct', { pct })}
               </span>
               <span style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>
-                {formatAttemptDate(a.createdAt)}
+                {formatAttemptDate(a.createdAt, locale)}
               </span>
             </div>
           );
@@ -644,11 +650,19 @@ const QuizHistory = ({
   </div>
 );
 
-/** Compact locale-agnostic date for an attempt row (no i18n dep — short ISO). */
-function formatAttemptDate(iso: string): string {
+/** Score as a 0..100 percentage; a zero/garbage total maps to 0 (no NaN render). */
+function scorePct(correct: number, total: number): number {
+  if (!Number.isFinite(correct) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((correct / total) * 100)));
+}
+
+/** Compact locale-formatted date for an attempt row (Intl, app locale; matches the
+ *  chat-panel timestamp pattern). Falls back to '' if the ISO can't be parsed. */
+function formatAttemptDate(iso: string, locale: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
   try {
-    const d = new Date(iso);
-    return d.toLocaleString(undefined, {
+    return d.toLocaleString(locale, {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',

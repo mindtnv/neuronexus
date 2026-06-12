@@ -382,7 +382,6 @@ describe('i18n parity — en/notebooks.ts vs ru/notebooks.ts (NotebookLM M1, T8)
     'studio.type_timeline',
     'studio.type_glossary',
     'studio.type_quiz',
-    'studio.quizSoon',
     'studio.statusPending',
     'studio.statusGenerating',
     'studio.regenerate',

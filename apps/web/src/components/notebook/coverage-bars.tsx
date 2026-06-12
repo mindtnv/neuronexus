@@ -44,7 +44,7 @@ export const CoverageBars = ({ coverage, chatEnabled, onAskGap, t }: CoverageBar
       <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
           <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--text)', fontFamily: 'var(--font-sans)' }}>
-            {aggregate.pct}%
+            {safePct(aggregate.pct)}%
           </span>
           <span style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>
             {t('notebooks.coverage.aggregate', {
@@ -83,7 +83,7 @@ export const CoverageBars = ({ coverage, chatEnabled, onAskGap, t }: CoverageBar
                     {s.title}
                   </span>
                   <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>
-                    {s.pct}%
+                    {safePct(s.pct)}%
                   </span>
                 </div>
                 <CoverageBar pct={s.pct} />
@@ -137,11 +137,15 @@ export const CoverageBars = ({ coverage, chatEnabled, onAskGap, t }: CoverageBar
   );
 };
 
+/** Clamp a percentage into 0..100, mapping a non-finite value (NaN/∞) to 0. */
+const safePct = (pct: number): number =>
+  Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0;
+
 const CoverageBar = ({ pct, large = false }: { pct: number; large?: boolean }) => (
   <div className="nn-coverage-bar" style={{ height: large ? 8 : 5 }}>
     <div
       className="nn-coverage-bar-fill"
-      style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
+      style={{ width: `${Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0}%` }}
     />
   </div>
 );

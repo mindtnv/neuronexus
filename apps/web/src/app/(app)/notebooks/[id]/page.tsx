@@ -17,7 +17,7 @@ export default function Page() {
   return (
     <NNAppPage title={t('nav.notebooks')}>
       <Suspense fallback={null}>
-        {id ? <NotebookWorkspace notebookId={id} /> : null}
+        {id ? <NotebookWorkspace key={id} notebookId={id} /> : null}
       </Suspense>
     </NNAppPage>
   );
