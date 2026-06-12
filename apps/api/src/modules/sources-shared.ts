@@ -24,6 +24,8 @@ import { env } from '../env.ts';
 import { rootLogger } from '../logger.ts';
 import { deleteObject, getObjectBytes, headSize, presignUpload } from '../storage.ts';
 import { enqueueSource, stashInlineText } from '../ai/source-ingest.ts';
+import { embeddingDegraded } from '../ai/index-queue.ts';
+import { isEmbeddingEnabled } from '../ai/openai-client.ts';
 
 /** A Drizzle transaction handle (the arg passed to `db.transaction`). */
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -333,7 +335,7 @@ export async function deleteSourceCompletely(userId: string, sourceId: string): 
 // ── reingest ─────────────────────────────────────────────────────────────────
 
 export type ReingestResult =
-  | { ok: true }
+  | { ok: true; parked: boolean }
   | { ok: false; status: 400 | 404 | 409; error: string };
 
 /**
@@ -348,7 +350,9 @@ export type ReingestResult =
  * concurrent reingest (or a source that raced into `pending`) updates 0 rows →
  * 409. After commit the standard worker is kicked. Grounding-safety is
  * by-construction: the chat scope intersects `status='ready'`, so the source
- * drops out of every notebook's chat while it re-ingests.
+ * drops out of every notebook's chat while it re-ingests. The success result
+ * carries `parked` — true when embeddings are off/dim-degraded, so the source
+ * re-parses but defers (re)embedding (mirrors the worker's park decision).
  */
 export async function reingestSource(userId: string, sourceId: string): Promise<ReingestResult> {
   const [source] = await db
@@ -401,5 +405,11 @@ export async function reingestSource(userId: string, sourceId: string): Promise<
 
   if (!reset) return { ok: false, status: 409, error: 'not_terminal' };
   enqueueSource(sourceId);
-  return { ok: true };
+  // `parked` mirrors the worker's parse-and-park decision (source-ingest.ts:
+  // `!isEmbeddingEnabled() || embeddingDegraded()`): the source will re-parse +
+  // re-write its SoT chunks but skip (re)embedding until embeddings come back —
+  // so the UI can surface the existing setup-notice. The worker's behavior is
+  // unchanged; this only reports it.
+  const parked = !isEmbeddingEnabled() || embeddingDegraded();
+  return { ok: true, parked };
 }

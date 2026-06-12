@@ -298,7 +298,15 @@ export const libraryModule = new Elysia({ prefix: '/library' })
         return { groups: [], reason: 'no_sources' as const };
       }
 
-      const [queryEmbedding] = await embed([q]);
+      // The paid embed call can throw (gateway 5xx, network, dim assertion). Per
+      // the search-degrade contract (200, never 5xx), fall back to an empty
+      // result with a machine reason instead of a 500.
+      let queryEmbedding: number[] | undefined;
+      try {
+        [queryEmbedding] = await embed([q]);
+      } catch {
+        return { groups: [], reason: 'embedding_failed' as const };
+      }
       if (!queryEmbedding || queryEmbedding.length === 0) {
         return { groups: [], reason: 'embedding_disabled' as const };
       }
@@ -707,7 +715,9 @@ export const libraryModule = new Elysia({ prefix: '/library' })
     async ({ user, params, status }) => {
       const res = await reingestSource(user.id, params.id);
       if (!res.ok) return status(res.status, { error: res.error });
-      return { ok: true };
+      // `parked` ⇒ embeddings off/degraded: the source re-parses but defers
+      // (re)embedding — the client surfaces the existing setup-notice.
+      return { ok: true, parked: res.parked };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   )

@@ -24,6 +24,7 @@ import {
   __setAiClientForTests,
 } from '../src/ai/openai-client.ts';
 import { drainIndexQueue } from '../src/ai/index-queue.ts';
+import { cooldownReset } from '../src/ai-cooldown.ts';
 import { callApp, resetTestDb, seedBasicCard, signUpAndCookie, uniqueEmail } from './helpers.ts';
 
 const app = buildApp();
@@ -266,5 +267,32 @@ describe('rag indexing (Slice 3)', () => {
 
     expect(await chunkForCard(cardA.id)).not.toBeNull();
     expect(await chunkForCard(cardB.id)).toBeNull();
+  });
+
+  // The per-user reindex cooldown short-circuits under NODE_ENV=test; force it on
+  // (mirrors rate-limit.test.ts) to prove a rapid second reindex gets 429.
+  test('POST /ai/reindex rapid second call ⇒ 429 cooldown (forced-on)', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+    await seedBasicCard(app, cookie, { deckId, front: 'Card one', back: 'a' });
+    await drainIndexQueue({ timeoutMs: 5000 });
+
+    cooldownReset();
+    const savedEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const first = await callApp(app, 'POST', '/ai/reindex', { cookie });
+      expect(first.status).toBe(200);
+
+      const second = await callApp(app, 'POST', '/ai/reindex', { cookie });
+      expect(second.status).toBe(429);
+      const body = await second.json<{ error: string; retryAfterMs: number }>();
+      expect(body.error).toBe('cooldown');
+      expect(body.retryAfterMs).toBeGreaterThan(0);
+    } finally {
+      process.env.NODE_ENV = savedEnv;
+      cooldownReset();
+    }
+    await drainIndexQueue({ timeoutMs: 5000 });
   });
 });

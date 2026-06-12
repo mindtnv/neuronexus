@@ -273,6 +273,23 @@ describe('library — semantic search (§8.3)', () => {
     for (let i = 1; i < scores.length; i++) expect(scores[i]!).toBeLessThanOrEqual(scores[i - 1]!);
   });
 
+  test('embed throws → 200 { groups: [], reason: embedding_failed } (degrade, never 5xx)', async () => {
+    // A fake whose embed() rejects (gateway 5xx / network) flips embeddings ON
+    // (isEmbeddingEnabled) but the paid call fails — the route must degrade to a
+    // 200 with a machine reason, not surface a 500.
+    __setAiClientForTests({
+      embed: () => Promise.reject(new Error('embed_failed:503')),
+    });
+    const a = await signUpAndCookie(app, uniqueEmail());
+    await seedSource(a.userId, { chunks: [{ text: 'photosynthesis converts light' }] });
+
+    const res = await callApp(app, 'GET', '/library/search?q=light', { cookie: a.cookie });
+    expect(res.status).toBe(200);
+    const body = await res.json<{ groups: unknown[]; reason?: string }>();
+    expect(body.groups).toEqual([]);
+    expect(body.reason).toBe('embedding_failed');
+  });
+
   test('does NOT see another user\'s sources nor non-ready ones', async () => {
     __setAiClientForTests({ embed: fakeEmbed });
     const a = await signUpAndCookie(app, uniqueEmail());

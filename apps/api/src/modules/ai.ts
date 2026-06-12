@@ -57,6 +57,7 @@ import {
 import { env, embeddingEnabled, chatEnabled, notebooksEnabled } from '../env.ts';
 import { descendantIds } from './cards.ts';
 import { authPlugin } from '../auth-plugin.ts';
+import { AI_COOLDOWN_MS, cooldownCheck } from '../ai-cooldown.ts';
 import { embeddingDegraded, reindexUser } from '../ai/index-queue.ts';
 import { reconcileDocumentsOnStartup } from '../ai/source-ingest.ts';
 import {
@@ -1470,7 +1471,13 @@ export const aiModule = new Elysia({ prefix: '/ai' })
   // `queued` is 0 when embeddings are unconfigured/degraded (no-op).
   .post(
     '/reindex',
-    async ({ user }) => {
+    async ({ user, status }) => {
+      // Cooldown the paid full-corpus reindex per-user (a rapid re-trigger just
+      // re-walks the same chunks). The authed user IS the only owner here, so
+      // there's no foreign-id concern — arm before the (fire-and-forget) calls.
+      const cd = cooldownCheck(`reindex:${user.id}`, AI_COOLDOWN_MS.reindex);
+      if (!cd.ok) return status(429, { error: 'cooldown', retryAfterMs: cd.retryAfterMs });
+
       const queued = await reindexUser(user.id);
       // Also re-embed any stale library document vectors (L4 §5 — a model swap
       // leaves document chunks stale; the card queue above only walks cards).

@@ -73,6 +73,7 @@ import {
   type SourceMarkKind,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
+import { AI_COOLDOWN_MS, cooldownCheck } from '../ai-cooldown.ts';
 import { env } from '../env.ts';
 import { rootLogger } from '../logger.ts';
 import { getObjectBytes } from '../storage.ts';
@@ -1311,7 +1312,14 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
 
         const rows = await tx
           .update(notebookArtifacts)
-          .set({ status: 'pending', errorCode: null, updatedAt: new Date() })
+          .set({
+            status: 'pending',
+            errorCode: null,
+            // Monotonic on the Postgres clock (same skew bumpNotebookUpdatedAt
+            // guards against): GREATEST(now(), prev + 1ms) never lands behind a
+            // DB-DEFAULT-stamped neighbour when host/VM clocks drift.
+            updatedAt: sql`GREATEST(now(), ${notebookArtifacts.updatedAt} + interval '1 millisecond')`,
+          })
           .where(
             and(
               eq(notebookArtifacts.id, params.artifactId),
@@ -1358,6 +1366,12 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       if (scope.length === 0) return status(400, { error: 'no_sources' });
 
       if (!isChatEnabled()) return status(503, { error: 'ai_disabled' });
+
+      // Cooldown the paid generation AFTER ownership/no_sources/AI gates (a
+      // foreign id never arms it) and only before the call itself. A failed call
+      // keeps the cooldown armed (anti retry-storm).
+      const cd = cooldownCheck(`overview:${params.id}`, AI_COOLDOWN_MS.overview);
+      if (!cd.ok) return status(429, { error: 'cooldown', retryAfterMs: cd.retryAfterMs });
 
       const result = await generateNotebookOverview(user.id, params.id);
       if (!result) return status(502, { error: 'overview_failed' });
@@ -2357,6 +2371,11 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
         .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
         .limit(1);
       if (!source) return status(404, { error: 'not_found' });
+
+      // Cooldown the paid formulate AFTER ownership (foreign id never arms it),
+      // before the call. A failed call keeps the cooldown armed (anti retry-storm).
+      const cd = cooldownCheck(`suggest:${params.id}`, AI_COOLDOWN_MS.suggestCard);
+      if (!cd.ok) return status(429, { error: 'cooldown', retryAfterMs: cd.retryAfterMs });
 
       const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
       // Cards are written in the USER'S language (S2 / M5.1), not the source's —

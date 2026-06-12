@@ -28,6 +28,7 @@ import {
 } from '../src/ai/openai-client.ts';
 import { parseOverview } from '../src/ai/artifacts.ts';
 import { computeOverviewFingerprint } from '../src/modules/notebooks.ts';
+import { cooldownReset } from '../src/ai-cooldown.ts';
 import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
 
 const app = buildApp();
@@ -200,5 +201,33 @@ describe('POST /notebooks/:id/overview', () => {
     await seedSource(a.userId, nb, 'Doc', ['alpha']);
     const res = await callApp(app, 'POST', `/notebooks/${nb}/overview`, { cookie: b.cookie });
     expect(res.status).toBe(404);
+  });
+
+  // The cooldown short-circuits under NODE_ENV=test; this integration forces it
+  // on (mirrors rate-limit.test.ts flipping NODE_ENV) to prove a rapid second
+  // call gets 429 cooldown while the first succeeds. Sign-up runs under test env
+  // BEFORE the flip so the auth rate-limiter doesn't interfere.
+  test('rapid second overview ⇒ 429 cooldown (forced-on)', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await freshNotebook(userId);
+    await seedSource(userId, nb, 'Doc', ['alpha', 'beta']);
+    installComplete('{"overview":"o","questions":["q"]}');
+
+    cooldownReset();
+    const savedEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const first = await callApp(app, 'POST', `/notebooks/${nb}/overview`, { cookie });
+      expect(first.status).toBe(200);
+
+      const second = await callApp(app, 'POST', `/notebooks/${nb}/overview`, { cookie });
+      expect(second.status).toBe(429);
+      const body = await second.json<{ error: string; retryAfterMs: number }>();
+      expect(body.error).toBe('cooldown');
+      expect(body.retryAfterMs).toBeGreaterThan(0);
+    } finally {
+      process.env.NODE_ENV = savedEnv;
+      cooldownReset();
+    }
   });
 });

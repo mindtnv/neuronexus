@@ -176,6 +176,43 @@ describe('reingest — guards', () => {
     expect((res as { error: string }).error).toBe('not_terminal');
   });
 
+  test('embeddings ON → reingest response carries parked: false', async () => {
+    const { userId, cookie } = await signUpAndCookie(app, uniqueEmail());
+    installFakeReader(longText);
+    installFakeEmbedder(); // isEmbeddingEnabled() → true under test
+    const srcId = await seedUrlSource(userId);
+    await ingestSource(srcId);
+    expect((await getStatus(srcId)).status).toBe('ready');
+
+    const res = await callApp(app, 'POST', `/library/items/${srcId}/reingest`, { cookie });
+    expect(res.status).toBe(200);
+    const body = await res.json<{ ok: boolean; parked: boolean }>();
+    expect(body.ok).toBe(true);
+    expect(body.parked).toBe(false);
+    await drainSourceIngest({ timeoutMs: 5000 });
+  });
+
+  test('embeddings OFF → reingest response carries parked: true (re-parses, defers embed)', async () => {
+    // Seed a ready url source WITH the embedder on (so ingest can populate it),
+    // then turn the embedder OFF before reingesting. The worker re-parses + parks
+    // (no embed); the route reports parked: true.
+    const { userId, cookie } = await signUpAndCookie(app, uniqueEmail());
+    installFakeReader(longText);
+    installFakeEmbedder();
+    const srcId = await seedUrlSource(userId);
+    await ingestSource(srcId);
+    expect((await getStatus(srcId)).status).toBe('ready');
+
+    __resetAiClientForTests(); // isEmbeddingEnabled() → false under test
+
+    const res = await callApp(app, 'POST', `/library/items/${srcId}/reingest`, { cookie });
+    expect(res.status).toBe(200);
+    const body = await res.json<{ ok: boolean; parked: boolean }>();
+    expect(body.ok).toBe(true);
+    expect(body.parked).toBe(true);
+    await drainSourceIngest({ timeoutMs: 5000 });
+  });
+
   test('two concurrent reingests of a ready source → exactly one wins (CAS)', async () => {
     const { userId } = await signUpAndCookie(app, uniqueEmail());
     installFakeReader(longText);
