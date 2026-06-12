@@ -26,8 +26,12 @@ Prereqs: `bun >=1.3`, Docker, a root `.env` (copy from `.env.example`). CI gates
 
 - **Versioned migrations**: edit schema → `bun run db:generate` → commit the `packages/db/src/migrations/*.sql` files. Apply via `bun run db:migrate:apply` (calls the programmatic `packages/db/src/migrate.ts`). CI runs `db:migrate:apply:test` before `bun run test`. Dev loop still uses `db:push --force` for speed.
 - **Rate limiting**: `apps/api/src/rate-limit.ts` — IP-based, in-memory. Sign-in = 5/min, sign-up = 5/hour, forgot-password = 3/hour. Disabled under `NODE_ENV=test`. For multi-instance prod, swap the `Map` for Redis — the `rateLimitCheck` interface is the same.
+- **AI cooldown** (`apps/api/src/ai-cooldown.ts`): per-key in-memory cooldown for expensive AI endpoints — overview generation 30 s (per notebook), full reindex 60 s (per user), suggest-card 5 s (per source). Exceeding → 429 `{ error: 'cooldown', retryAfterMs }`. Disabled entirely under `NODE_ENV=test`; the pure `cooldownCheck(key, ms, now?)` (third arg = epoch-ms number, default `Date.now()`) is unit-testable with an injected clock. Web maps 429 cooldown to an info toast (not error).
+- **Theme** (`apps/web/src/lib/theme.ts`): dark/light/system persisted in `localStorage('nn:theme')`. An inline `<script>` in `apps/web/src/app/layout.tsx` reads and applies `data-theme` on `<html>` before hydration to prevent flash-of-wrong-theme (FOUC guard). The inline script is allow-listed in the render-math single-sink test.
+- **Toast `kind:'error'`**: `apps/web/src/components/toasts.tsx` now has a `kind:'error'` variant (rose accent, warning icon) in addition to `info`/`success`. Destructive operations (library/notebook CRUD failures, SRS grade errors) use `error` toasts; informational 429 cooldowns use `info`.
+- **Reingest `parked` response**: `POST /library/items/:id/reingest` returns `{ ok: true, parked: true }` when embeddings are disabled/degraded — the source re-parses and parks without embedding. The web shows the existing setup-notice pattern in that case.
 - **Email / password reset**: `packages/auth/src/email.ts` picks `ConsoleEmailProvider` (dev, logs to stdout) or `ResendEmailProvider` (set `RESEND_API_KEY` + `EMAIL_FROM`). BetterAuth's `emailAndPassword.sendResetPassword` calls `sendEmail`; the web side has `/auth/forgot-password` → token email → `/auth/reset-password?token=…`. All calls go via bare `fetch` on the client (not the BetterAuth SDK) so version bumps don't rename methods under us.
-- **GDPR**: `GET /profile/export` returns a full JSON dump of the user (profile, decks, cards, reviews, achievements). `DELETE /profile` (body: `{ confirmEmail }`) removes the user — FK cascades clean everything else. Covered by 5 integration tests.
+- **GDPR**: `GET /profile/export` returns a full JSON dump of the user (profile, decks, cards, reviews). `DELETE /profile` (body: `{ confirmEmail }`) removes the user — FK cascades clean everything else. Covered by 5 integration tests.
 - **Health**: `GET /health` runs `SELECT 1` via `dbPing()` and returns `{ ok, db: { ok, latencyMs } }` or 503. Docker healthcheck calls this every 30 s.
 - **Graceful shutdown**: SIGTERM/SIGINT → `app.stop()` → `closeDb()`. The api logs `[api] bye.` before exit; Docker `stop_grace_period` should be ≥ 5 s.
 - **Prod builds**:
@@ -240,23 +244,21 @@ Breakpoints in `lib/use-breakpoint.ts` — mobile <720, tablet 720–1100, deskt
 ### Empty-state redirects
 `lib/use-empty-redirect.ts` — `useEmptyRedirect('first-run' | 'done' | 'graph')`. Waits for `bootstrapped` before redirecting so initial fetches don't flash the empty screen.
 
-## Gamification (shared + reviews handler + /achievements)
+## Gamification (shared + reviews handler)
 
 The grade handler is the single place where gamification state advances. It calls `applyGradeRollup` from `@neuronexus/shared` inside the same transaction that writes the FSRS card + review row. Rollup semantics:
 
-1. **Streak + freeze:** `applyStreakWithFreeze` bumps `streak_days` when yesterday=last-review, consumes a freeze when there's a **one-day** gap (multi-day gaps always reset), and resets otherwise. Capped at `MAX_STREAK_FREEZES` (5).
+1. **Streak + freeze:** `applyStreakWithFreeze` bumps `streak_days` when yesterday=last-review, consumes a freeze when there's a **one-day** gap (multi-day gaps always reset), and resets otherwise. Capped at `MAX_STREAK_FREEZES` (5). Freezes are **never replenished** (the achievement-reward path that used to top them up was removed).
 2. **Today minutes ledger:** `today_minutes` + `today_minutes_date` accumulate `durationMs` across grades within the same calendar day; reset when a new day arrives.
 3. **Daily goal stamp:** once today's minutes cross `daily_goal_minutes`, `daily_goal_met_count` increments **once** per day.
-4. **Achievement evaluator:** `evaluateAchievements(stats, alreadyUnlocked)` returns `{ code, def }[]`. Stats snapshot is a live DB read inside the transaction (`totalReviews` via `COUNT(*)`, `deckCount` via `COUNT(*)`), so "polyglot" (3 decks) fires on the first grade after the user creates the 3rd deck.
-5. **Rewards:** achievement definitions can carry `{ streakFreezes, species[], xp }`. Rewards are summed via `sumRewards`, species are added to `profile.unlocked_species` (dedup'd), freezes and xp added onto the running totals.
+4. **XP + level:** `ratingXp = xpForRating(rating)` (`Again=0, Hard=5, Good=10, Easy=15`); `level = floor(xp / 500) + 1`. No achievement bonuses — the only XP source is grading.
+5. **Plant stage:** `plantStageFromStreak(streak)` in `packages/shared/src/fsrs.ts` maps the current streak to a 0–5 stage displayed in the garden.
 
-The catalog lives in `packages/shared/src/gamification.ts` → `ACHIEVEMENTS` (16 codes today: streak 7/30/100/365, reviews 100/1000/10000, decks 3/10, level 5/10/20, garden 3/5, dailyGoal 7/30). Keep the catalog monotonic within each `kind` — the unit tests enforce that.
+**Plant species:** all six species (`fern`, `cactus`, `succulent`, `bonsai`, `sakura`, `mushroom`) are available to every user by default — the achievement-gated unlock flow was removed. `profile.plant_species` stores the current selection; `profile.unlocked_species` is kept in the schema for forward-compat but is no longer enforced.
 
-**Plant species unlock:** five species beyond the default `fern` (`cactus`, `succulent`, `bonsai`, `sakura`, `mushroom`). Each is gated by an achievement's `reward.species`. `profile.plant_species` still stores the *current* selection; `profile.unlocked_species` lists everything the user can choose.
+`POST /reviews` response carries `{ card, review, profile, leeched, freezeUsed, dailyGoalJustMet }`.
 
-`POST /reviews` response now carries `{ card, review, profile, leeched, newAchievements, freezeUsed, dailyGoalJustMet }` — the web layer uses these to trigger toasts / confetti / freeze indicators.
-
-The read API is `GET /achievements` (per-user list with unlockedAt + progress + pct), `GET /achievements/summary` (home-banner count + 3 most recent), and `GET /achievements/catalog` (static catalog, client-cacheable).
+**Achievements module removed (2026-06-06).** `evaluateAchievements`, `ACHIEVEMENTS`, `sumRewards`, `GET /achievements`, `GET /achievements/summary`, `GET /achievements/catalog` no longer exist. Do not try to call or import them.
 
 ## Shared FSRS (packages/shared)
 
