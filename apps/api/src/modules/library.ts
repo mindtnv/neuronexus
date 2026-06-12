@@ -38,6 +38,7 @@ import {
   createInlineSource,
   deleteSourceCompletely,
   finalizeUploadSource,
+  MAX_INLINE_TEXT,
   presignUploadSource,
   reingestSource,
 } from './sources-shared.ts';
@@ -171,10 +172,25 @@ export const libraryModule = new Elysia({ prefix: '/library' })
       } else if (query.shelf === 'unattached') {
         conditions.push(sql`${notebookSq.notebookCount} IS NULL`);
       }
-      // Cursor (added-sort keyset by created_at).
+      // Cursor (added-sort keyset by (created_at, id) — id is the tiebreaker so a
+      // batch of rows sharing a created_at can't drop/duplicate items across
+      // pages). Composite format `<iso>_<id>`; a legacy bare-iso cursor still
+      // works (id defaults to a max sentinel → created_at-only comparison).
       if (query.cursor) {
-        const parsed = new Date(query.cursor);
-        if (!Number.isNaN(parsed.getTime())) conditions.push(lt(sources.createdAt, parsed));
+        const us = query.cursor.lastIndexOf('_');
+        const isoPart = us === -1 ? query.cursor : query.cursor.slice(0, us);
+        const idPart = us === -1 ? null : query.cursor.slice(us + 1);
+        const parsed = new Date(isoPart);
+        if (!Number.isNaN(parsed.getTime())) {
+          conditions.push(
+            idPart
+              ? or(
+                  lt(sources.createdAt, parsed),
+                  and(eq(sources.createdAt, parsed), lt(sources.id, idPart)),
+                )!
+              : lt(sources.createdAt, parsed),
+          );
+        }
       }
 
       const orderBy =
@@ -182,7 +198,7 @@ export const libraryModule = new Elysia({ prefix: '/library' })
           ? [asc(sources.title)]
           : query.sort === 'lastRead'
             ? [sql`${sourceReadingState.updatedAt} DESC NULLS LAST`, desc(sources.createdAt)]
-            : [desc(sources.createdAt)];
+            : [desc(sources.createdAt), desc(sources.id)];
 
       const rows = await db
         .select({
@@ -218,11 +234,13 @@ export const libraryModule = new Elysia({ prefix: '/library' })
         }),
       );
 
-      // nextCursor only for the default added-sort keyset (a full page implies more).
+      // nextCursor only for the default added-sort keyset (a full page implies
+      // more). Composite `<iso>_<id>` so the next page's tiebreaker resumes
+      // exactly after the last row even when created_at ties.
       const nextCursor =
         query.sort === undefined || query.sort === 'added'
           ? rows.length === limit
-            ? rows[rows.length - 1]!.source.createdAt.toISOString()
+            ? `${rows[rows.length - 1]!.source.createdAt.toISOString()}_${rows[rows.length - 1]!.source.id}`
             : null
           : null;
 
@@ -408,7 +426,7 @@ export const libraryModule = new Elysia({ prefix: '/library' })
         t.Object({
           kind: t.Literal('text'),
           title: t.String({ minLength: 1, maxLength: TITLE_MAX }),
-          text: t.String({ minLength: 1 }),
+          text: t.String({ minLength: 1, maxLength: MAX_INLINE_TEXT }),
           notebookId: t.Optional(t.String({ format: 'uuid' })),
         }),
       ]),

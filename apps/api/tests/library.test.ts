@@ -491,6 +491,36 @@ describe('library — GET /library list, filters, aggregates, cursor', () => {
     void untouched;
   });
 
+  test('filter tag selects sources whose tags array contains the tag', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const tagged = await seedLibrarySource(userId, { title: 'Tagged' });
+    await seedLibrarySource(userId, { title: 'Untagged' });
+    // Stamp tags directly on the row (PATCH would also work; this keeps it terse).
+    await db
+      .update(sourcesTable)
+      .set({ tags: ['ml', 'algorithms'] })
+      .where(eq(sourcesTable.id, tagged.sourceId));
+
+    const res = await callApp(app, 'GET', '/library?tag=ml', { cookie });
+    expect(res.status).toBe(200);
+    const titles = (await res.json<{ items: { title: string }[] }>()).items.map((i) => i.title);
+    expect(titles).toEqual(['Tagged']);
+  });
+
+  test('filter shelf=unattached selects sources with no notebook edge', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const nb = await freshNotebook(userId, 'NB');
+    const attached = await seedLibrarySource(userId, { title: 'Attached' });
+    await seedLibrarySource(userId, { title: 'Loose' });
+    await attach(cookie, nb, [attached.sourceId]);
+
+    const res = await callApp(app, 'GET', '/library?shelf=unattached', { cookie });
+    expect(res.status).toBe(200);
+    const titles = (await res.json<{ items: { title: string }[] }>()).items.map((i) => i.title);
+    expect(titles).toContain('Loose');
+    expect(titles).not.toContain('Attached');
+  });
+
   test('aggregates: notebookCount + cardCount are correct (no N+1 surprises)', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const nb1 = await freshNotebook(userId, 'NB1');
@@ -725,6 +755,50 @@ describe('library — PUT reading-state', () => {
       .from(readingStateTable)
       .where(eq(readingStateTable.userId, a.userId));
     expect(rs!.n).toBe(0);
+  });
+});
+
+// ── GET /library/items/:id (detail) ───────────────────────────────────────────
+
+describe('library — GET /library/items/:id detail', () => {
+  beforeEach(async () => {
+    await resetTestDb();
+  });
+  afterEach(() => {
+    __resetAiClientForTests();
+  });
+
+  test('detail returns readingState with page/chunkPos/percent after a reading-state PUT', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const { sourceId } = await seedLibrarySource(userId, { title: 'Tracked' });
+
+    // Before any PUT, readingState is null (never opened).
+    const before = await callApp(app, 'GET', `/library/items/${sourceId}`, { cookie });
+    expect((await before.json<{ readingState: unknown }>()).readingState).toBeNull();
+
+    await callApp(app, 'PUT', `/library/items/${sourceId}/reading-state`, {
+      cookie,
+      body: { page: 7, chunkPos: 3, percent: 0.42 },
+    });
+
+    const res = await callApp(app, 'GET', `/library/items/${sourceId}`, { cookie });
+    expect(res.status).toBe(200);
+    const body = await res.json<{
+      readingState: { status: string; page: number | null; chunkPos: number | null; percent: number | null } | null;
+    }>();
+    expect(body.readingState).not.toBeNull();
+    expect(body.readingState!.status).toBe('reading');
+    expect(body.readingState!.page).toBe(7);
+    expect(body.readingState!.chunkPos).toBe(3);
+    expect(body.readingState!.percent).toBeCloseTo(0.42, 5);
+  });
+
+  test('a foreign source → 404', async () => {
+    const a = await signUpAndCookie(app, uniqueEmail('a'));
+    const b = await signUpAndCookie(app, uniqueEmail('b'));
+    const { sourceId } = await seedLibrarySource(b.userId);
+    const res = await callApp(app, 'GET', `/library/items/${sourceId}`, { cookie: a.cookie });
+    expect(res.status).toBe(404);
   });
 });
 

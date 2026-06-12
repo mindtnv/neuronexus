@@ -301,7 +301,10 @@ async function indexPhase(sourceId: string): Promise<void> {
     return; // status stays at 'indexing'; resume finishes it later
   }
 
-  await embedUnembeddedChunks(sourceId);
+  // The ingest path runs with the source in `indexing` (this CAS will move it to
+  // `ready`); a per-batch re-check that the source is STILL in an allowed status
+  // bails cleanly on a concurrent reingest (which flips it back to `pending`).
+  await embedUnembeddedChunks(sourceId, ['indexing']);
 
   // All chunks embedded → CAS indexing → ready (a delete-race loses → skip).
   await casStatus(sourceId, ['indexing'], 'ready');
@@ -313,22 +316,30 @@ async function indexPhase(sourceId: string): Promise<void> {
  * target `(source_id, position) WHERE source_type='document'`, `parentId =
  * sourceId` per §3.4) AND flip the matching source_chunks.embedded=true, so
  * progress = COUNT(embedded=true) is crash-safe. A vanished/`deleting` source
- * is a clean TerminalSkip. Shared by the ingest index-phase AND the
- * document-reconcile pass (which re-stamps stale chunks `embedded=false` first
- * so they flow back through here) — NOT copy-pasted (L4 §5).
+ * is a clean TerminalSkip. Shared by the ingest index-phase (`allowedStatuses =
+ * ['indexing']`) AND the document-reconcile pass (`['ready']` — re-stamps stale
+ * chunks `embedded=false` first so they flow back through here) — NOT
+ * copy-pasted (L4 §5). The per-batch re-check requires the source to STILL be in
+ * one of `allowedStatuses` (a source that left it — e.g. a concurrent reingest
+ * moved `ready`→`pending`, or a delete moved it to `deleting` — is a clean
+ * TerminalSkip).
  */
-async function embedUnembeddedChunks(sourceId: string): Promise<void> {
+async function embedUnembeddedChunks(
+  sourceId: string,
+  allowedStatuses: readonly string[],
+): Promise<void> {
   const model = env.ai.EMBEDDING_MODEL;
 
   for (;;) {
-    // Re-check the source still exists and is not `deleting` BEFORE each batch
-    // (delete-race: a vanished/deleting source is a clean terminal, not a crash).
+    // Re-check the source still exists and is in an allowed status BEFORE each
+    // batch (delete-race / concurrent-reingest: a vanished source or one that
+    // left `allowedStatuses` is a clean terminal, not a crash).
     const [source] = await db
       .select({ id: sources.id, status: sources.status, userId: sources.userId })
       .from(sources)
       .where(eq(sources.id, sourceId))
       .limit(1);
-    if (!source || source.status === 'deleting') throw new TerminalSkip();
+    if (!source || !allowedStatuses.includes(source.status)) throw new TerminalSkip();
 
     // Pull the next batch of unembedded chunks (resume-safe: only embedded=false).
     const batch = await db
@@ -346,6 +357,18 @@ async function embedUnembeddedChunks(sourceId: string): Promise<void> {
 
     const vectors = await embed(batch.map((c) => c.text));
 
+    // A non-conformant OpenAI-compatible gateway can return FEWER vectors than
+    // inputs (or extras). If we silently proceed, the missing chunks never flip
+    // `embedded=true` and the loop re-pulls + re-bills them forever. Fail the
+    // ingest with a machine code instead (CAS → error) so it's a terminal, not a
+    // paid infinite loop. `parse_failed` is the catch-all ingest error code.
+    if (vectors.length !== batch.length) {
+      throw new SourceParseError(
+        'parse_failed',
+        `embedder returned ${vectors.length} vectors for ${batch.length} chunks`,
+      );
+    }
+
     let deletedDuringEmbed = false;
     await db.transaction(async (tx) => {
       // Re-validate the source still exists and is not being deleted.
@@ -360,7 +383,6 @@ async function embedUnembeddedChunks(sourceId: string): Promise<void> {
         deletedDuringEmbed = true;
         return;
       }
-      const embeddedIds: string[] = [];
       for (let i = 0; i < batch.length; i++) {
         const c = batch[i]!;
         const vector = vectors[i];
@@ -403,7 +425,6 @@ async function embedUnembeddedChunks(sourceId: string): Promise<void> {
           .update(sourceChunks)
           .set({ embedded: true, sourceHash: freshHash })
           .where(eq(sourceChunks.id, c.id));
-        embeddedIds.push(c.id);
       }
     });
     if (deletedDuringEmbed) throw new TerminalSkip();
@@ -565,7 +586,9 @@ export async function reconcileDocumentsOnStartup(
           .where(inArray(sourceChunks.id, staleIds.slice(i, i + EMBED_BATCH)));
       }
       try {
-        await embedUnembeddedChunks(sourceId);
+        // Reconcile runs over `ready` sources; a per-batch re-check bails
+        // cleanly if a concurrent reingest pulled the source out of `ready`.
+        await embedUnembeddedChunks(sourceId, ['ready']);
         reembedded += 1;
       } catch (err) {
         if (err instanceof TerminalSkip) continue; // vanished/deleting — clean

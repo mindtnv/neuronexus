@@ -42,6 +42,15 @@ export function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
 }
 
+/**
+ * Map a Postgres foreign-key-violation (23503) — e.g. a source physically
+ * deleted between an ownership SELECT and a join INSERT — to a clean 404
+ * (defense in depth against a TOCTOU between the ownership check and the write).
+ */
+export function isFkViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23503';
+}
+
 // ── caps ───────────────────────────────────────────────────────────────────
 
 /**

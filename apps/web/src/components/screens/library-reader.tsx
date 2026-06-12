@@ -231,11 +231,14 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
     },
     [putReadingState, sourceId],
   );
+  // Cancel any pending progress write when the source changes (in-place route
+  // swap) OR on unmount — `[sourceId]` so a stale write never lands on the next
+  // source. (`[]` only fired on unmount, leaking the timer across a route swap.)
   useEffect(
     () => () => {
       if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
     },
-    [],
+    [sourceId],
   );
 
   const onPdfPageChange = useCallback(

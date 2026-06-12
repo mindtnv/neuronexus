@@ -147,6 +147,42 @@ export function __setCoverFetchForTests(fn: FetchFn | null): void {
 }
 
 /**
+ * Read a response body STREAMING into raw bytes, up to `cap`. Returns null the
+ * moment the stream exceeds `cap` (the cover is too large — reject rather than
+ * buffer an unbounded image). Mirrors page-reader's `readBodyCapped` but keeps
+ * BYTES (not decoded text), since a cover is binary. Cancels the reader on
+ * overflow so a streaming server isn't left dangling.
+ */
+async function readBytesCapped(res: Response, cap: number): Promise<Uint8Array | null> {
+  if (!res.body) {
+    const buf = new Uint8Array(await res.arrayBuffer());
+    return buf.byteLength > cap ? null : buf;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.byteLength;
+      if (total > cap) {
+        await reader.cancel().catch(() => {});
+        return null; // exceeded the cap mid-stream → oversize, reject
+      }
+      chunks.push(value);
+    }
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out;
+}
+
+/**
  * Download an og:image URL into a CoverImage, SSRF-guarded (same static + DNS/IP
  * checks as DirectPageReader). Returns null on ANY failure (blocked host,
  * non-image content, oversize, network error) — never throws. The Exa path's
@@ -176,8 +212,14 @@ export async function downloadUrlCover(imageUrl: string): Promise<CoverImage | n
     if (!res.ok) return null;
     const ct = (res.headers.get('content-type') ?? '').toLowerCase();
     if (ct && !ct.startsWith('image/')) return null;
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.byteLength === 0 || buf.byteLength > COVER_MAX_BYTES) return null;
+    // Pre-check the advertised size (an honest oversize server saves the download)
+    // then read the body STREAMING with a hard byte cap (a lying/chunked server
+    // can't make us buffer an unbounded image into memory).
+    const declared = Number(res.headers.get('content-length') ?? '');
+    if (Number.isFinite(declared) && declared > COVER_MAX_BYTES) return null;
+    const buf = await readBytesCapped(res, COVER_MAX_BYTES);
+    if (buf === null) return null; // streamed past the cap → reject (oversize)
+    if (buf.byteLength === 0) return null;
     const mime = sniffImageMime(buf);
     if (!mime) return null;
     return { bytes: buf, mime };

@@ -64,6 +64,8 @@ import {
   createInlineSource,
   deleteSourceCompletely,
   finalizeUploadSource,
+  isFkViolation,
+  MAX_INLINE_TEXT,
   presignUploadSource,
 } from './sources-shared.ts';
 
@@ -357,7 +359,7 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         t.Object({
           kind: t.Literal('text'),
           title: t.String({ minLength: 1, maxLength: 300 }),
-          text: t.String({ minLength: 1 }),
+          text: t.String({ minLength: 1, maxLength: MAX_INLINE_TEXT }),
         }),
       ]),
     },
@@ -396,19 +398,43 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         );
       if (owned.length !== ids.length) return status(404, { error: 'not_found' });
 
-      // Cap on the resulting attached set (current + new, dedup'd).
+      // Subtract the ids ALREADY attached — re-attaching an existing source is a
+      // no-op (onConflictDoNothing) and must not consume the per-notebook cap.
+      const already = await db
+        .select({ sourceId: notebookSources.sourceId })
+        .from(notebookSources)
+        .where(
+          and(
+            eq(notebookSources.userId, user.id),
+            eq(notebookSources.notebookId, params.id),
+            inArray(notebookSources.sourceId, ids),
+          ),
+        );
+      const attachedSet = new Set(already.map((r) => r.sourceId));
+      const newIds = ids.filter((id) => !attachedSet.has(id));
+      if (newIds.length === 0) return { ok: true, attached: 0 };
+
+      // Cap on the resulting attached set (current + actually-new).
       const current = await countNotebookSources(user.id, params.id);
-      if (current + ids.length > env.ai.MAX_SOURCES_PER_NOTEBOOK) {
+      if (current + newIds.length > env.ai.MAX_SOURCES_PER_NOTEBOOK) {
         return status(409, { error: 'notebook_full' });
       }
 
-      await db
-        .insert(notebookSources)
-        .values(ids.map((sourceId) => ({ userId: user.id, notebookId: params.id, sourceId })))
-        .onConflictDoNothing({
-          target: [notebookSources.notebookId, notebookSources.sourceId],
-        });
-      return { ok: true, attached: ids.length };
+      try {
+        const inserted = await db
+          .insert(notebookSources)
+          .values(newIds.map((sourceId) => ({ userId: user.id, notebookId: params.id, sourceId })))
+          .onConflictDoNothing({
+            target: [notebookSources.notebookId, notebookSources.sourceId],
+          })
+          .returning({ id: notebookSources.id });
+        return { ok: true, attached: inserted.length };
+      } catch (err) {
+        // A source physically deleted between the ownership SELECT and this
+        // INSERT trips the notebook_sources.source_id FK (23503) → clean 404.
+        if (isFkViolation(err)) return status(404, { error: 'not_found' });
+        throw err;
+      }
     },
     {
       auth: true,
