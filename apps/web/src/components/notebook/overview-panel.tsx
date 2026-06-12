@@ -20,7 +20,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NNBtn, NNIcon, NNSkeleton } from '@/components/ui';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
-import type { Notebook, Source } from '@/lib/types';
+import { CoverageBars } from '@/components/notebook/coverage-bars';
+import type { Notebook, NotebookCoverage, Source } from '@/lib/types';
 
 type Tfn = (key: string, params?: Record<string, string | number>) => string;
 
@@ -44,9 +45,12 @@ export interface OverviewPanelProps {
   generateOverview: (
     id: string,
   ) => Promise<{ overview: string; questions: string[]; fingerprint: string }>;
+  /** Card-coverage of the notebook (N3, Р9). SQL-only — fetched lazily on mount. */
+  getCoverage: (id: string) => Promise<NotebookCoverage>;
   /** Merge a freshly-generated overview into the workspace's detail state. */
   onDetailChange: (patch: Partial<Notebook>) => void;
-  /** A suggested-question pill was clicked — send it into the chat. */
+  /** A suggested-question pill / coverage-gap arrow was clicked — send it into
+   *  the chat (prefill). */
   onAskQuestion: (question: string) => void;
   t: Tfn;
 }
@@ -58,6 +62,7 @@ export const OverviewPanel = ({
   sources,
   chatEnabled,
   generateOverview,
+  getCoverage,
   onDetailChange,
   onAskQuestion,
   t,
@@ -68,6 +73,31 @@ export const OverviewPanel = ({
   const loaded = detailLoaded;
   const readyCount = useMemo(() => sources.filter((s) => s.status === 'ready').length, [sources]);
   const hasReady = readyCount > 0;
+
+  // ── Coverage (N3, Р9): lazy fetch ONCE per mount; SQL-only (no chat key) ──────
+  const [coverage, setCoverage] = useState<NotebookCoverage | null>(null);
+  const [coverageLoading, setCoverageLoading] = useState(false);
+  const coverageFetchedRef = useRef(false);
+  useEffect(() => {
+    if (coverageFetchedRef.current) return;
+    if (!hasReady) return; // nothing to cover yet
+    coverageFetchedRef.current = true;
+    setCoverageLoading(true);
+    let cancelled = false;
+    (async () => {
+      try {
+        const cov = await getCoverage(notebookId);
+        if (!cancelled) setCoverage(cov);
+      } catch {
+        if (!cancelled) setCoverage(null);
+      } finally {
+        if (!cancelled) setCoverageLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hasReady, getCoverage, notebookId]);
 
   // ── Generate (manual + the auto-kick share this) ────────────────────────────────
   const generate = useCallback(async () => {
@@ -213,13 +243,26 @@ export const OverviewPanel = ({
           </section>
         )}
 
-        {/* ── Structural placeholders for N3 (coverage) + N4 (concept-map) ── */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {/* ── Coverage (N3, Р9) — SQL-only, renders without a chat key ── */}
+        <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <SectionHeading icon="target" label={t('notebooks.overview.coverageHeading')} />
-          <p style={{ fontSize: 11.5, color: 'var(--text-dim)', margin: 0 }}>
-            {t('notebooks.overview.coverageSoon')}
-          </p>
+          {!hasReady ? (
+            <p style={{ fontSize: 11.5, color: 'var(--text-dim)', margin: 0 }}>
+              {t('notebooks.coverage.noSources')}
+            </p>
+          ) : coverageLoading || coverage === null ? (
+            <NNSkeleton style={{ height: 70 }} />
+          ) : (
+            <CoverageBars
+              coverage={coverage}
+              chatEnabled={chatEnabled}
+              onAskGap={onAskQuestion}
+              t={t}
+            />
+          )}
         </section>
+
+        {/* ── Structural placeholder for N4 (concept-map) ── */}
         <section style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <SectionHeading icon="graph" label={t('notebooks.overview.mapHeading')} />
           <p style={{ fontSize: 11.5, color: 'var(--text-dim)', margin: 0 }}>

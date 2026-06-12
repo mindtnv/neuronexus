@@ -11,11 +11,13 @@
 // (the `text` field, capped) + a streamed `tool_result` event.
 
 import type { Logger } from 'pino';
-import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   cards,
   db,
   decks,
+  notebookNotes,
+  notebooks,
   notes,
   noteTypes,
   sourceAnnotations,
@@ -25,7 +27,14 @@ import {
   type Citation,
   type Db,
 } from '@neuronexus/db';
-import { type ConfirmImpact, type FieldValues, type SourceCitation } from '@neuronexus/shared';
+import {
+  MAX_NOTES_PER_NOTEBOOK,
+  NOTE_CONTENT_MAX,
+  NOTE_TITLE_MAX,
+  type ConfirmImpact,
+  type FieldValues,
+  type SourceCitation,
+} from '@neuronexus/shared';
 import { embed } from './openai-client.ts';
 import { retrieve } from './retrieve.ts';
 import { retrieveDocuments } from './retrieve-documents.ts';
@@ -1490,6 +1499,243 @@ const listMarkedPassages: Tool = {
   },
 };
 
+// ── list_notes (read, NOTEBOOK mode) ─────────────────────────────────────────
+//
+// List the notebook's notes (the user's manual notes + saved chat answers) so
+// «сделай карточки по моим заметкам» works out of the box. id + title + kind +
+// pinned + a short content excerpt; pinned-first, recency-second, cap 50. Note
+// CONTENT does NOT go into the grounding accumulator (notes are not sources — they
+// carry no chunk id, so they can't be cited with [src:]); the agent just reads the
+// text. Registered ONLY in notebook mode (after read_source markup tools).
+
+/** Chars of a note's content excerpt in the list view (the whole result is capped). */
+const NOTE_TOOL_EXCERPT = 280;
+/** Max notes returned by list_notes. */
+const LIST_NOTES_CAP = 50;
+
+/** One-line excerpt: collapse whitespace, cap. */
+function noteExcerptCapped(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length === 0) return '';
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+const listNotes: Tool = {
+  name: 'list_notes',
+  kind: 'read',
+  description:
+    "List the user's NOTES in this notebook — their own written notes and saved " +
+    'chat answers. Use this when the user refers to their notes («мои заметки», ' +
+    '"my notes", "make cards from my notes"): it returns each note\'s id, title, ' +
+    'kind, and a short excerpt (pinned notes first). To read a note in full, call ' +
+    'read_note with its id. If there are no notes, say so honestly.',
+  parameters: { type: 'object', properties: {} },
+  async execute(ctx): Promise<ToolResult> {
+    const nb = ctx.notebook;
+    if (!nb) return { ok: false, error: 'list_notes: not in a notebook' };
+    try {
+      const rows = await db
+        .select({
+          id: notebookNotes.id,
+          title: notebookNotes.title,
+          kind: notebookNotes.kind,
+          pinned: notebookNotes.pinned,
+          content: notebookNotes.content,
+        })
+        .from(notebookNotes)
+        .where(
+          and(
+            eq(notebookNotes.userId, ctx.userId),
+            eq(notebookNotes.notebookId, nb.notebookId),
+          ),
+        )
+        .orderBy(desc(notebookNotes.pinned), desc(notebookNotes.updatedAt))
+        .limit(LIST_NOTES_CAP);
+
+      if (rows.length === 0) {
+        return { ok: true, text: 'No notes yet in this notebook.' };
+      }
+      const lines = rows.map((r) => {
+        const pin = r.pinned ? '📌 ' : '';
+        const excerpt = noteExcerptCapped(r.content, NOTE_TOOL_EXCERPT);
+        return `- ${pin}${r.title} [note:${r.id}] (${r.kind})\n  ${excerpt}`;
+      });
+      return { ok: true, text: capText(lines.join('\n')) };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.list_notes.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'list_notes_failed' };
+    }
+  },
+};
+
+// ── read_note (read, NOTEBOOK mode) ──────────────────────────────────────────
+//
+// Read ONE note's full markdown (title + content), ownership through the notebook
+// scope (the note must belong to THIS notebook). A foreign/missing id is a
+// self-correcting error so the model can re-list. Note content does NOT ground.
+
+interface ReadNoteArgs {
+  noteId?: unknown;
+}
+
+const readNote: Tool = {
+  name: 'read_note',
+  kind: 'read',
+  description:
+    "Read ONE of the notebook's notes in full (title + markdown content) by its " +
+    '`noteId` (from list_notes). Use this to read a note the user references so ' +
+    'you can answer about it or turn it into cards. A missing/foreign id returns ' +
+    'an error so you can re-list with list_notes.',
+  parameters: {
+    type: 'object',
+    properties: {
+      noteId: { type: 'string', description: 'UUID of the note to read (from list_notes).' },
+    },
+    required: ['noteId'],
+  },
+  async execute(ctx, rawArgs): Promise<ToolResult> {
+    const nb = ctx.notebook;
+    if (!nb) return { ok: false, error: 'read_note: not in a notebook' };
+    const args = (rawArgs ?? {}) as ReadNoteArgs;
+    const noteId = typeof args.noteId === 'string' ? args.noteId.trim() : '';
+    if (!noteId) return { ok: false, error: 'read_note: missing "noteId" argument' };
+    if (!isUuidArg(noteId)) {
+      return { ok: false, error: `read_note: "${noteId}" is not a note UUID — call list_notes` };
+    }
+
+    try {
+      // Ownership through the notebook scope: the note must be the user's AND in
+      // THIS notebook (the conversation's notebook is the authority).
+      const [note] = await db
+        .select({ title: notebookNotes.title, content: notebookNotes.content, kind: notebookNotes.kind })
+        .from(notebookNotes)
+        .where(
+          and(
+            eq(notebookNotes.id, noteId),
+            eq(notebookNotes.userId, ctx.userId),
+            eq(notebookNotes.notebookId, nb.notebookId),
+          ),
+        )
+        .limit(1);
+      if (!note) {
+        return {
+          ok: false,
+          error: `read_note: note "${noteId}" not found in this notebook — call list_notes for the available ids`,
+        };
+      }
+      return { ok: true, text: capText(`# ${note.title}\n\n${note.content}`) };
+    } catch (err) {
+      ctx.log.warn({ err }, 'ai.tool.read_note.failed');
+      return { ok: false, error: err instanceof Error ? err.message : 'read_note_failed' };
+    }
+  },
+};
+
+// ── save_note (write, NOTEBOOK mode) ─────────────────────────────────────────
+//
+// Save a note into the notebook («сохрани это в заметки»). A WRITE: it pauses
+// for confirmation (validate-before-pause checks caps + the per-notebook note
+// count first — an over-cap proposal goes straight back to the model, no pause).
+// dryRun → ConfirmImpact.proposedNote (a FLAT confirm card, NOT the create_card
+// wizard). execute INSERTs kind='manual' + bumps notebooks.updated_at. Resume-apply
+// flows the GENERIC ai.ts path — none of the create_card-specific branches
+// (provenance/cardSelections) touch it (they gate on pending.name==='create_card').
+
+interface SaveNoteArgs {
+  title?: unknown;
+  content?: unknown;
+}
+
+/** Parse + cap-check save_note args (read-only). */
+function parseSaveNoteArgs(
+  rawArgs: unknown,
+): { ok: true; title: string; content: string } | { ok: false; error: string } {
+  const args = (rawArgs ?? {}) as SaveNoteArgs;
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  const content = typeof args.content === 'string' ? args.content : '';
+  if (title.length === 0) return { ok: false, error: 'save_note: missing "title"' };
+  if (content.trim().length === 0) return { ok: false, error: 'save_note: missing "content"' };
+  if (title.length > NOTE_TITLE_MAX) {
+    return { ok: false, error: `save_note: "title" exceeds ${NOTE_TITLE_MAX} characters` };
+  }
+  if (content.length > NOTE_CONTENT_MAX) {
+    return { ok: false, error: `save_note: "content" exceeds ${NOTE_CONTENT_MAX} characters` };
+  }
+  return { ok: true, title, content };
+}
+
+const saveNote: Tool = {
+  name: 'save_note',
+  kind: 'write',
+  description:
+    'Save a NOTE into this notebook — the user\'s knowledge base of written notes. ' +
+    'Pass `title` and `content` (markdown). Use this when the user asks to save ' +
+    'something to their notes («сохрани это в заметки», "save this as a note"). ' +
+    'This is a WRITE: it pauses for the user to confirm before the note is saved.',
+  parameters: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Short note title.' },
+      content: { type: 'string', description: 'Note body in Markdown.' },
+    },
+    required: ['title', 'content'],
+  },
+  async validate(ctx, rawArgs): Promise<{ ok: true } | { ok: false; error: string }> {
+    const nb = ctx.notebook;
+    if (!nb) return { ok: false, error: 'save_note: not in a notebook' };
+    const parsed = parseSaveNoteArgs(rawArgs);
+    if (!parsed.ok) return parsed;
+    // Per-notebook note cap (best-effort, same bound as the route).
+    const [{ n }] = await db
+      .select({ n: count() })
+      .from(notebookNotes)
+      .where(
+        and(eq(notebookNotes.userId, ctx.userId), eq(notebookNotes.notebookId, nb.notebookId)),
+      );
+    if (Number(n) >= MAX_NOTES_PER_NOTEBOOK) {
+      return { ok: false, error: 'save_note: this notebook already has the maximum number of notes' };
+    }
+    return { ok: true };
+  },
+  async dryRun(_ctx, rawArgs): Promise<ToolImpact> {
+    const parsed = parseSaveNoteArgs(rawArgs);
+    if (!parsed.ok) return {};
+    return {
+      proposedNote: {
+        title: parsed.title,
+        contentExcerpt: noteExcerptCapped(parsed.content, 300),
+      },
+    };
+  },
+  async execute(ctx, rawArgs): Promise<ToolResult> {
+    const nb = ctx.notebook;
+    if (!nb) return { ok: false, error: 'save_note: not in a notebook' };
+    const parsed = parseSaveNoteArgs(rawArgs);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+
+    const run = async (tx: Tx) => {
+      const [row] = await tx
+        .insert(notebookNotes)
+        .values({
+          userId: ctx.userId,
+          notebookId: nb.notebookId,
+          title: parsed.title,
+          content: parsed.content,
+          kind: 'manual',
+        })
+        .returning({ id: notebookNotes.id });
+      // Bump notebooks.updated_at (Р15 — a note save marks the notebook active).
+      await tx
+        .update(notebooks)
+        .set({ updatedAt: new Date() })
+        .where(and(eq(notebooks.id, nb.notebookId), eq(notebooks.userId, ctx.userId)));
+      return row!;
+    };
+    const created = ctx.tx ? await run(ctx.tx) : await db.transaction(run);
+    return { ok: true, text: `Saved note "${parsed.title}" (id ${created.id}).` };
+  },
+};
+
 // ── create_card (write) ──────────────────────────────────────────────────────
 //
 // Wraps the POST /notes create path (grounding correction #3 — cards are
@@ -2218,15 +2464,25 @@ export function buildToolRegistry(
   const webOn = opts.webSearchEnabled ?? isWebSearchEnabled();
   const fetchOn = opts.fetchPageEnabled ?? isFetchPageEnabled();
 
-  // NOTEBOOK mode (M2/M4): a DELIBERATELY narrow registry — grounded reading over
-  // the notebook's sources (`search_source` by meaning, `read_source`
-  // sequentially, `list_marked_passages` over the user's PDF-reader ink markup) +
-  // the create-card workflow (`list_decks` then `create_card`). `web_search` is
-  // offered only when enabled (and the prompt gates it to explicit user
-  // requests). No card-search/browse/progress/fetch_page/edit/SRS here in V1 —
-  // notebook chat is about the sources, not the user's whole collection.
+  // NOTEBOOK mode (M2/M4/N3): a DELIBERATELY narrow registry — grounded reading
+  // over the notebook's sources (`search_source` by meaning, `read_source`
+  // sequentially, `list_marked_passages` over the user's PDF-reader markup) +
+  // the user's NOTES (`list_notes`/`read_note` read, `save_note` write) + the
+  // create-card workflow (`list_decks` then `create_card`/`save_note`).
+  // `web_search` is offered only when enabled (and the prompt gates it to explicit
+  // user requests). No card-search/browse/progress/fetch_page/edit/SRS here in V1
+  // — notebook chat is about the sources + notes, not the whole collection.
   if (opts.notebook) {
-    const registry: Tool[] = [searchSource, readSource, listMarkedPassages, listDecks, createCard];
+    const registry: Tool[] = [
+      searchSource,
+      readSource,
+      listMarkedPassages,
+      listNotes,
+      readNote,
+      listDecks,
+      createCard,
+      saveNote,
+    ];
     if (webOn) registry.push(webSearch);
     return registry;
   }

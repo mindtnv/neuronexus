@@ -5,7 +5,8 @@
 import { State, type Card as FsrsCard } from 'ts-fsrs';
 import type { RenderKind } from '@neuronexus/shared';
 import type { ArtifactStatus, NotebookArtifactType, NotebookColor, NotebookNoteKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Note, Notebook, NotebookArtifact, NotebookNote, NoteType, Profile, Review } from './types';
+import type { QuizAttemptAnswer } from '@neuronexus/shared';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, Note, Notebook, NotebookArtifact, NotebookNote, NoteType, Profile, QuizAttempt, Review } from './types';
 
 type IsoOrDate = string | Date | null | undefined;
 
@@ -217,6 +218,16 @@ export function notebookArtifactFromApi(row: any): NotebookArtifact {
     contentJson: row.contentJson ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+export function quizAttemptFromApi(row: any): QuizAttempt {
+  return {
+    id: row.id,
+    correct: typeof row.correct === 'number' ? row.correct : 0,
+    total: typeof row.total === 'number' ? row.total : 0,
+    answers: Array.isArray(row.answers) ? (row.answers as QuizAttemptAnswer[]) : [],
+    createdAt: row.createdAt,
   };
 }
 

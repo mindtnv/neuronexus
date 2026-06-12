@@ -3611,6 +3611,55 @@ const ConfirmControls = ({ toolCall, onConfirm, t }: ConfirmControlsProps) => {
           payload is absent (old persisted rows, reload mid-pause). */}
       <ConfirmDiff rows={diffRows} proposalOnly={toolCall.name === 'create_card'} t={t} />
 
+      {/* save_note proposal (Р14 / N3): a flat preview — title + a capped content
+          excerpt. NOT the create_card wizard (notes aren't cards), no −/+ diff
+          (it's a creation). Present only for a notebook save_note. */}
+      {impact?.proposedNote && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span
+            style={{
+              fontSize: 10.5,
+              fontWeight: 700,
+              letterSpacing: 1,
+              textTransform: 'uppercase',
+              color: 'var(--text-dim)',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
+            {t('chat.confirm.noteTitle')}
+          </span>
+          <span
+            style={{
+              fontSize: 13,
+              fontWeight: 700,
+              color: 'var(--text)',
+              fontFamily: 'var(--font-sans)',
+              wordBreak: 'break-word',
+            }}
+          >
+            {impact.proposedNote.title}
+          </span>
+          {impact.proposedNote.contentExcerpt.length > 0 && (
+            <div
+              style={{
+                fontSize: 12,
+                lineHeight: 1.5,
+                color: 'var(--text-muted)',
+                fontFamily: 'var(--font-sans)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                padding: '6px 8px',
+                background: 'var(--surface-2)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--r-xs)',
+              }}
+            >
+              {impact.proposedNote.contentExcerpt}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Source provenance (NotebookLM M3 / AC3.2): the passages the new card(s)
           will be LINKED to — «Источник: <title>, стр. N». Present only for a
           notebook create_card; absent everywhere else. */}

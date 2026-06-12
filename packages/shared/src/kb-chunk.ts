@@ -360,6 +360,13 @@ export interface ConfirmImpact {
    * accumulator (capped CARD_SOURCE_LINK_CAP), NOT by the tool's dryRun.
    */
   provenance?: { sourceTitle: string; page?: number; chunkId: string }[];
+  /**
+   * Notebook save_note (Р14 / N3): the note the agent proposes to save — title +
+   * a capped content excerpt — previewed on a FLAT confirm card (NOT the create_card
+   * wizard). Set by the save_note tool's dryRun; the web `confirm-diff` renders it
+   * as its own branch.
+   */
+  proposedNote?: { title: string; contentExcerpt: string };
 }
 
 /**

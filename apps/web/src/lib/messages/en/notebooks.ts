@@ -167,6 +167,60 @@ const notebooks = {
     error_interrupted: 'Generation was interrupted — regenerate it.',
   },
 
+  // «Notebooks 2.0» (N3) — the quiz player.
+  quiz: {
+    // Question-count dialog (studio tile click).
+    dialogTitle: 'How many questions?',
+    dialogHint: 'Pick how many questions the quiz should have.',
+    dialogGenerate: 'Generate quiz',
+    // Intro screen.
+    introTitle: 'Test yourself',
+    questionCount: '{count} questions',
+    start: 'Start',
+    // In-progress.
+    questionOf: 'Question {n} of {total}',
+    prev: 'Back',
+    next: 'Next',
+    finish: 'Finish',
+    submitting: 'Scoring…',
+    submitFailed: 'Could not submit the attempt.',
+    openPlaceholder: 'Type your answer…',
+    showAnswer: 'Show answer',
+    modelAnswer: 'Model answer',
+    selfCorrect: 'I was right',
+    selfIncorrect: 'I was wrong',
+    tfTrue: 'True',
+    tfFalse: 'False',
+    empty: 'This quiz has no questions.',
+    // Result screen.
+    scorePct: '{pct}% correct',
+    retry: 'Try again',
+    weakSpots: 'Weak spots → cards',
+    weakSpotsPrompt: 'Make flashcards for the topics I got wrong:',
+    weakSpotsAnswer: 'Answer:',
+    breakdownHeading: 'Review',
+    inSource: 'Show in source',
+    // History.
+    history: 'Attempt history',
+    historyHeading: 'Attempt history',
+    historyEmpty: 'No attempts yet.',
+    back: 'Back',
+  },
+
+  // «Notebooks 2.0» (N3, Р9) — card-coverage block in the Overview tab. SQL-only
+  // (renders without a chat key); only the gap prefill buttons are gated.
+  coverage: {
+    noSources: 'Add sources to see card coverage.',
+    emptyHint: 'No cards from these sources yet — ask the agent to make some.',
+    aggregate: '{covered}/{total} chunks · {cards} cards',
+    sourceMeta: '{covered}/{total} chunks · {cards} cards',
+    gapsHeading: 'Uncovered topics',
+    gapMeta: '{count} uncovered chunks · {source}',
+    gapAction: 'Make cards for this section',
+    gapPrompt: 'Make flashcards for the section "{heading}" of the source "{source}".',
+    noHeading: 'untitled',
+  },
+
   // Source list (inside an open notebook).
   sources: {
     heading: 'Sources',

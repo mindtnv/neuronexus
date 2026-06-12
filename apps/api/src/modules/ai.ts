@@ -1922,8 +1922,16 @@ export const chatModule = new Elysia({ prefix: '/chat' })
         // Execute (apply) or record a rejection for the pending tool call, then
         // continue the loop. The role:tool insert runs in the SAME transaction
         // as the mutation (apply) so a concurrent double-apply hits the unique
-        // index and rolls back the mutation too.
-        const toolCtx: ToolContext = { userId: user.id, log };
+        // index and rolls back the mutation too. In notebook mode the ctx carries
+        // the notebook scope so a confirmed `save_note` knows which notebook to
+        // write to (create_card derives its notebookId from conv.notebookId).
+        const toolCtx: ToolContext = {
+          userId: user.id,
+          log,
+          notebook: notebook
+            ? { notebookId: notebook.notebookId, sourceIds: notebook.sourceIds }
+            : undefined,
+        };
         let toolCardIds: string[] | undefined;
 
         if (effectiveDecision === 'apply') {

@@ -117,6 +117,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const getArtifact = useNN((s) => s.getArtifact);
   const deleteArtifact = useNN((s) => s.deleteArtifact);
   const regenerateArtifact = useNN((s) => s.regenerateArtifact);
+  const submitQuizAttempt = useNN((s) => s.submitQuizAttempt);
+  const listQuizAttempts = useNN((s) => s.listQuizAttempts);
+  const getCoverage = useNN((s) => s.getCoverage);
 
   const [notebook, setNotebook] = useState<Notebook | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
@@ -736,6 +739,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       sources={sources}
       chatEnabled={chatEnabled}
       generateOverview={generateOverview}
+      getCoverage={getCoverage}
       onDetailChange={onDetailChange}
       onAskQuestion={askInChat}
       t={t}
@@ -768,8 +772,14 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       getArtifact={getArtifact}
       deleteArtifact={deleteArtifact}
       regenerateArtifact={regenerateArtifact}
+      submitQuizAttempt={submitQuizAttempt}
+      listQuizAttempts={listQuizAttempts}
       onOpenCitation={(chunkId, sids) => void openCitationByChunk(chunkId, sids)}
       onSaveToNote={onSaveArtifactNote}
+      onPrefillChat={(text) => {
+        prefillChat(text);
+        if (!isDesktop) setTab('chat');
+      }}
       t={t}
     />
   );

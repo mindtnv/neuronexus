@@ -6,11 +6,14 @@
 // overlay viewer that renders a ready artifact's markdown with clickable
 // `[src:]` footnote chips.
 //
-//  • Tiles: 5 markdown types (summary/study_guide/faq/timeline/glossary) +
-//    a disabled `quiz` tile («скоро» — N3 ships the player). A tile click POSTs
-//    createArtifact(type) over the workspace's checked source scope, then
-//    optimistically refreshes the list. 4xx/409 errors map to an i18n toast by
-//    the machine error code (generation_in_progress → «Дождитесь…»).
+//  • Tiles: 5 markdown types (summary/study_guide/faq/timeline/glossary) + a
+//    `quiz` tile (N3) that opens a question-count dialog before generating. A
+//    markdown tile click POSTs createArtifact(type) over the workspace's checked
+//    source scope, then optimistically refreshes the list. 4xx/409 errors map to
+//    an i18n toast by the machine error code (generation_in_progress → «Дождитесь…»).
+//  • A ready `quiz` artifact opens the QuizPlayer (instead of the markdown
+//    viewer): question-by-question runner → server-scored result → «слабые места
+//    → карточки» chat-prefill + attempt history.
 //  • List rows: type icon + title + status badge (spinner/pulse for pending/
 //    generating, rose for error with the errorCode prose, plain for ready) +
 //    updatedAt + a ⋯ menu (regenerate / delete with confirm). A ready row opens
@@ -29,17 +32,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   NOTEBOOK_ARTIFACT_TYPES,
+  QUIZ_QUESTIONS_DEFAULT,
+  QUIZ_QUESTIONS_MAX,
   type ArtifactErrorCode,
   type ArtifactStatus,
   type NotebookArtifactType,
 } from '@neuronexus/shared';
-import { NNBtn, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
+import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { useArtifactStatus } from '@/lib/use-artifact-status';
 import { parseArtifactCitations, stripSrcTokens } from '@/lib/notebook-artifacts';
-import type { NotebookArtifact } from '@/lib/types';
+import { QuizPlayer } from '@/components/notebook/quiz-player';
+import type { buildAttemptAnswers } from '@/lib/quiz-player';
+import type { NotebookArtifact, QuizAttempt } from '@/lib/types';
 
 type Tfn = (key: string, params?: Record<string, string | number>) => string;
 
@@ -61,8 +68,8 @@ const TYPE_ICON: Record<NotebookArtifactType, string> = {
   quiz: 'target',
 };
 
-// The non-quiz markdown types, in generation-tile order (quiz is appended last,
-// rendered disabled in N2).
+// The non-quiz markdown types, in generation-tile order (quiz is appended last
+// and opens a question-count dialog before generating — N3).
 const MARKDOWN_TYPES = NOTEBOOK_ARTIFACT_TYPES.filter((tp) => tp !== 'quiz');
 
 const ARTIFACT_ERROR_CODE_SET = new Set<string>([
@@ -86,15 +93,25 @@ export interface StudioPanelProps {
     notebookId: string,
     type: NotebookArtifactType,
     sourceIds?: string[],
+    questionCount?: number,
   ) => Promise<NotebookArtifact>;
   getArtifact: (notebookId: string, artifactId: string) => Promise<NotebookArtifact>;
   deleteArtifact: (notebookId: string, artifactId: string) => Promise<void>;
   regenerateArtifact: (notebookId: string, artifactId: string) => Promise<NotebookArtifact>;
+  /** Quiz attempt submit + history (N3) — threaded into the quiz player. */
+  submitQuizAttempt: (
+    notebookId: string,
+    artifactId: string,
+    answers: ReturnType<typeof buildAttemptAnswers>,
+  ) => Promise<QuizAttempt>;
+  listQuizAttempts: (notebookId: string, artifactId: string) => Promise<QuizAttempt[]>;
   /** A `[src:]` footnote chip was clicked — the workspace resolves the chunk's
    *  source + opens its citation-viewer. */
   onOpenCitation: (chunkId: string, sourceIds: string[]) => void;
   /** «В заметку» — save a ready artifact's markdown into the notebook's notes. */
   onSaveToNote: (title: string, contentMd: string) => void | Promise<void>;
+  /** «Слабые места → карточки» — prefill the chat composer (quiz result, N3). */
+  onPrefillChat: (text: string) => void;
   t: Tfn;
 }
 
@@ -107,11 +124,18 @@ export const StudioPanel = ({
   getArtifact,
   deleteArtifact,
   regenerateArtifact,
+  submitQuizAttempt,
+  listQuizAttempts,
   onOpenCitation,
   onSaveToNote,
+  onPrefillChat,
   t,
 }: StudioPanelProps) => {
   const { confirm } = useDialog();
+
+  // Quiz question-count picker (N3): when the quiz tile is clicked we open a small
+  // inline dialog (presets + slider) before POSTing the artifact job.
+  const [quizDialogOpen, setQuizDialogOpen] = useState(false);
 
   const [artifacts, setArtifacts] = useState<NotebookArtifact[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -184,12 +208,12 @@ export const StudioPanel = ({
 
   // ── Generate ──────────────────────────────────────────────────────────────────
   const onGenerate = useCallback(
-    async (type: NotebookArtifactType) => {
+    async (type: NotebookArtifactType, questionCount?: number) => {
       if (creating) return;
       setCreating(type);
       try {
         const scope = scopeIds.length > 0 ? scopeIds : undefined;
-        const created = await createArtifact(notebookId, type, scope);
+        const created = await createArtifact(notebookId, type, scope, questionCount);
         setArtifacts((prev) => [created, ...prev]);
       } catch (err) {
         raiseToast({ kind: 'info', title: artifactErrorToast(err, t) });
@@ -198,6 +222,16 @@ export const StudioPanel = ({
       }
     },
     [creating, scopeIds, createArtifact, notebookId, t],
+  );
+
+  // Quiz tile → open the question-count dialog; the dialog's «Generate» calls
+  // onGenerate('quiz', count).
+  const onQuizConfirm = useCallback(
+    (count: number) => {
+      setQuizDialogOpen(false);
+      void onGenerate('quiz', count);
+    },
+    [onGenerate],
   );
 
   // ── Row actions ─────────────────────────────────────────────────────────────────
@@ -239,15 +273,32 @@ export const StudioPanel = ({
 
   // ── Render: viewer ──────────────────────────────────────────────────────────────
   if (openId) {
+    const closeViewer = () => {
+      setOpenId(null);
+      setOpenFull(null);
+    };
+    // A ready quiz opens the PLAYER, not the markdown viewer.
+    if (openFull && openFull.type === 'quiz' && openFull.status === 'ready') {
+      return (
+        <QuizPlayer
+          notebookId={notebookId}
+          artifact={openFull}
+          sourceIds={openFull.sourceIds ?? openListRow?.sourceIds ?? []}
+          submitQuizAttempt={submitQuizAttempt}
+          listQuizAttempts={listQuizAttempts}
+          onOpenCitation={onOpenCitation}
+          onPrefillChat={onPrefillChat}
+          onBack={closeViewer}
+          t={t}
+        />
+      );
+    }
     return (
       <ArtifactViewer
         artifact={openFull}
         loading={openLoading}
         sourceIds={openFull?.sourceIds ?? openListRow?.sourceIds ?? []}
-        onBack={() => {
-          setOpenId(null);
-          setOpenFull(null);
-        }}
+        onBack={closeViewer}
         onOpenCitation={onOpenCitation}
         onSaveToNote={onSaveToNote}
         onRegenerate={() => {
@@ -268,6 +319,13 @@ export const StudioPanel = ({
   // ── Render: list + tiles ─────────────────────────────────────────────────────────
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      {quizDialogOpen && (
+        <QuizCountDialog
+          onConfirm={onQuizConfirm}
+          onClose={() => setQuizDialogOpen(false)}
+          t={t}
+        />
+      )}
       <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '10px 10px 14px' }}>
         {/* Generation tiles (or a setup notice when chat is off). */}
         {!chatEnabled ? (
@@ -304,8 +362,15 @@ export const StudioPanel = ({
                   t={t}
                 />
               ))}
-              {/* Quiz — disabled in N2 («скоро»). */}
-              <StudioTile key="quiz" type="quiz" soon disabled t={t} />
+              {/* Quiz (N3) — opens a question-count dialog before generating. */}
+              <StudioTile
+                key="quiz"
+                type="quiz"
+                busy={creating === 'quiz'}
+                disabled={creating !== null}
+                onClick={() => setQuizDialogOpen(true)}
+                t={t}
+              />
             </div>
           </>
         )}
@@ -680,6 +745,111 @@ const ArtifactViewer = ({
         )}
       </div>
     </div>
+  );
+};
+
+// ── Quiz question-count dialog (N3) ─────────────────────────────────────────────
+// A small modal: presets (5/10/15/20) + a slider, default QUIZ_QUESTIONS_DEFAULT.
+// «Сгенерировать» POSTs a quiz job with the chosen count (server clamps to the cap).
+
+const QUIZ_PRESETS = [5, 10, 15, 20] as const;
+
+const QuizCountDialog = ({
+  onConfirm,
+  onClose,
+  t,
+}: {
+  onConfirm: (count: number) => void;
+  onClose: () => void;
+  t: Tfn;
+}) => {
+  const [count, setCount] = useState<number>(QUIZ_QUESTIONS_DEFAULT);
+  return (
+    <>
+      <div
+        className="nn-dialog-backdrop"
+        onClick={onClose}
+        style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }}
+      />
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 91,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 16,
+          pointerEvents: 'none',
+        }}
+      >
+        <NNCard
+          padding={18}
+          style={{
+            width: 360,
+            maxWidth: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 14,
+            pointerEvents: 'auto',
+            boxShadow: 'var(--shadow-lg)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <NNIcon name="target" size={16} color="var(--lime-400)" />
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0, flex: 1, fontFamily: 'var(--font-sans)' }}>
+              {t('notebooks.quiz.dialogTitle')}
+            </h3>
+            <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('actions.cancel')} onClick={onClose} />
+          </div>
+
+          <p style={{ fontSize: 12.5, color: 'var(--text-dim)', margin: 0 }}>
+            {t('notebooks.quiz.dialogHint')}
+          </p>
+
+          {/* Presets */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            {QUIZ_PRESETS.map((p) => (
+              <button
+                key={p}
+                type="button"
+                className={`nn-quiz-preset${count === p ? ' selected' : ''}`}
+                onClick={() => setCount(p)}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+
+          {/* Slider + live value */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              type="range"
+              min={3}
+              max={QUIZ_QUESTIONS_MAX}
+              step={1}
+              value={count}
+              onChange={(e) => setCount(Number(e.target.value))}
+              className="nn-quiz-slider"
+              style={{ flex: 1, accentColor: 'var(--lime-500)' }}
+              aria-label={t('notebooks.quiz.dialogTitle')}
+            />
+            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', minWidth: 24, textAlign: 'right' }}>
+              {count}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <NNBtn variant="ghost" size="sm" onClick={onClose}>
+              {t('actions.cancel')}
+            </NNBtn>
+            <NNBtn variant="primary" size="sm" icon="target" onClick={() => onConfirm(count)}>
+              {t('notebooks.quiz.dialogGenerate')}
+            </NNBtn>
+          </div>
+        </NNCard>
+      </div>
+    </>
   );
 };
 

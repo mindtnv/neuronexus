@@ -9,6 +9,7 @@ import type {
   NotebookColor,
   NotebookNoteKind,
   NoteField,
+  QuizAttemptAnswer,
   QuizContent,
   RenderKind,
   SourceKind,
@@ -202,6 +203,46 @@ export interface NotebookArtifact {
   contentJson?: QuizContent | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** «Блокноты 2.0» (N3) one quiz attempt (POST/GET …/attempts). `answers` is the
+ *  server-scored snapshot (the submitted answer + the server's verdict per
+ *  question); `correct`/`total` are the score. Newest-first in the history. */
+export interface QuizAttempt {
+  id: string;
+  correct: number;
+  total: number;
+  answers: QuizAttemptAnswer[];
+  createdAt: string;
+}
+
+/** «Блокноты 2.0» (N3) one per-source coverage row (GET …/coverage). */
+export interface NotebookCoverageItem {
+  sourceId: string;
+  title: string;
+  totalChunks: number;
+  coveredChunks: number;
+  cardCount: number;
+  /** 0..100 — coveredChunks/totalChunks. */
+  pct: number;
+}
+
+/** «Блокноты 2.0» (N3) one coverage gap (GET …/coverage `gaps`): a heading with
+ *  the most UNcovered chunks. `heading` is null for the unstructured-text bucket
+ *  (the client labels it «без заголовка»). */
+export interface NotebookCoverageGap {
+  sourceId: string;
+  sourceTitle: string;
+  heading: string | null;
+  uncovered: number;
+}
+
+/** «Блокноты 2.0» (N3) card-coverage of a notebook (GET …/coverage). SQL-only —
+ *  works without a chat key (only the gap prefill buttons are gated). */
+export interface NotebookCoverage {
+  items: NotebookCoverageItem[];
+  aggregate: { totalChunks: number; coveredChunks: number; cardCount: number; pct: number };
+  gaps: NotebookCoverageGap[];
 }
 
 /** A notebook note (Р1/Р7) — user markdown (`manual`) or a saved chat answer

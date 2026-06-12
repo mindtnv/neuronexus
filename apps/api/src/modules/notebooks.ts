@@ -34,6 +34,7 @@ import {
   notebookNotes,
   notebooks,
   notebookSources,
+  quizAttempts,
   sourceAnnotations,
   sourceChunks,
   sourceMarks,
@@ -60,12 +61,14 @@ import {
   NOTEBOOK_EMOJI_MAX,
   NOTEBOOK_NOTE_KINDS,
   NOTEBOOK_TITLE_MAX,
+  QUIZ_QUESTIONS_MAX,
   SOURCE_MARK_COLORS,
   type InkStroke,
   type MarkRect,
   type NotebookArtifactType,
   type NotebookNoteKind,
   type PageAnnotations,
+  type QuizContent,
   type SourceMarkKind,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
@@ -77,6 +80,7 @@ import {
   ARTIFACT_TYPE_TITLE,
   generateArtifact,
   generateNotebookOverview,
+  scoreQuizAttempt,
 } from '../ai/artifacts.ts';
 import { suggestCard } from '../ai/suggest-card.ts';
 import { resolveNoteTypeForCreate, enqueueToolCardsForIndex } from '../ai/tools.ts';
@@ -318,9 +322,10 @@ async function nextArtifactTitle(
   return existing === 0 ? base : `${base} (${existing + 1})`;
 }
 
-/** Fire-and-forget kick of the artifact generator (logs but never rejects). */
-function kickArtifact(artifactId: string): void {
-  void generateArtifact(artifactId).catch((err) => {
+/** Fire-and-forget kick of the artifact generator (logs but never rejects).
+ *  `questionCount` is forwarded for quiz generation (ignored by markdown types). */
+function kickArtifact(artifactId: string, questionCount?: number): void {
+  void generateArtifact(artifactId, { questionCount }).catch((err) => {
     rootLogger.error({ err, artifactId }, 'ai.artifact.kick_failed');
   });
 }
@@ -1024,8 +1029,8 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   )
   // Create an artifact job. ORDER OF CHECKS IS FIXED (§3): ownership-404 →
   // 400 invalid_type → 400 no_sources → 409 too_many_artifacts →
-  // 409 generation_in_progress (EXISTS + INSERT in one tx). `quiz` is NOT a valid
-  // type in N2 (N3 adds the player + structured generation) → 400 invalid_type.
+  // 409 generation_in_progress (EXISTS + INSERT in one tx). `quiz` is a valid
+  // type now (N3) — its `questionCount?` rides the kick; markdown types ignore it.
   // The `source_ids` snapshot = the resolved ready scope. Bumps notebook.updated_at.
   .post(
     '/:id/artifacts',
@@ -1038,8 +1043,8 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
         .limit(1);
       if (!nb) return status(404, { error: 'not_found' });
 
-      // 2) invalid_type — unknown type OR `quiz` (deferred to N3).
-      if (!ARTIFACT_TYPE_SET.has(body.type) || body.type === 'quiz') {
+      // 2) invalid_type — unknown type.
+      if (!ARTIFACT_TYPE_SET.has(body.type)) {
         return status(400, { error: 'invalid_type' });
       }
       const type = body.type as NotebookArtifactType;
@@ -1096,8 +1101,8 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       });
       if (!created) return status(409, { error: 'generation_in_progress' });
 
-      // 6) async kick (not awaited; .catch-logged).
-      kickArtifact(created.id);
+      // 6) async kick (not awaited; .catch-logged). questionCount rides for quiz.
+      kickArtifact(created.id, type === 'quiz' ? body.questionCount : undefined);
       return created;
     },
     {
@@ -1106,8 +1111,9 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       body: t.Object({
         type: t.String({ maxLength: 32 }),
         sourceIds: t.Optional(t.Array(t.String({ format: 'uuid' }), { maxItems: 100 })),
-        // questionCount rides for N3's quiz; accepted + ignored by markdown types.
-        questionCount: t.Optional(t.Integer({ minimum: 1, maximum: 50 })),
+        // questionCount rides for quiz generation (default QUIZ_QUESTIONS_DEFAULT,
+        // capped QUIZ_QUESTIONS_MAX server-side); accepted + ignored by markdown types.
+        questionCount: t.Optional(t.Integer({ minimum: 1, maximum: QUIZ_QUESTIONS_MAX })),
       }),
     },
   )
@@ -1281,6 +1287,279 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       const result = await generateNotebookOverview(user.id, params.id);
       if (!result) return status(502, { error: 'overview_failed' });
       return result;
+    },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+  )
+  // ── quiz attempts (Р8 / §3, N3) ───────────────────────────────────────────────
+  // Submit answers to a quiz artifact. The artifact MUST be type='quiz' AND
+  // status='ready' (else 400 invalid_attempt). Each submitted questionId must
+  // exist in the stored content_json (unknown → 400 invalid_attempt). Scoring is
+  // SERVER-RECOMPUTED for mcq/tf (a forged `correct` in the body is ignored);
+  // `open` trusts ONLY the client's `{ selfCorrect }` boolean. Unanswered
+  // questions count as incorrect. Persists the normalized snapshot + correct/total.
+  .post(
+    '/:id/artifacts/:artifactId/attempts',
+    async ({ user, params, body, status }) => {
+      // ownership + the quiz artifact (user-scoped 404 on a foreign/missing one).
+      const [artifact] = await db
+        .select({
+          id: notebookArtifacts.id,
+          type: notebookArtifacts.type,
+          status: notebookArtifacts.status,
+          contentJson: notebookArtifacts.contentJson,
+        })
+        .from(notebookArtifacts)
+        .where(
+          and(
+            eq(notebookArtifacts.id, params.artifactId),
+            eq(notebookArtifacts.notebookId, params.id),
+            eq(notebookArtifacts.userId, user.id),
+          ),
+        )
+        .limit(1);
+      if (!artifact) return status(404, { error: 'not_found' });
+
+      // Must be a READY quiz with parsed questions.
+      const quiz = artifact.contentJson as QuizContent | null;
+      if (
+        artifact.type !== 'quiz' ||
+        artifact.status !== 'ready' ||
+        !quiz ||
+        !Array.isArray(quiz.questions) ||
+        quiz.questions.length === 0
+      ) {
+        return status(400, { error: 'invalid_attempt' });
+      }
+
+      // Extract the submitted answers (last write wins on a dup questionId).
+      const submitted = new Map<string, number | boolean | { selfCorrect: boolean }>();
+      for (const a of body.answers) {
+        submitted.set(a.questionId, a.answer as number | boolean | { selfCorrect: boolean });
+      }
+
+      const scored = scoreQuizAttempt(quiz.questions, submitted);
+      if (!scored.ok) return status(400, { error: 'invalid_attempt' });
+
+      const [row] = await db
+        .insert(quizAttempts)
+        .values({
+          userId: user.id,
+          artifactId: params.artifactId,
+          answers: scored.answers,
+          correct: scored.correct,
+          total: scored.total,
+        })
+        .returning({
+          id: quizAttempts.id,
+          correct: quizAttempts.correct,
+          total: quizAttempts.total,
+          answers: quizAttempts.answers,
+          createdAt: quizAttempts.createdAt,
+        });
+      return row!;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        artifactId: t.String({ format: 'uuid' }),
+      }),
+      body: t.Object({
+        // Per-question answers. `answer` is permissive (number | boolean |
+        // { selfCorrect }) — the scorer enforces the per-kind shape; a forged
+        // shape simply scores incorrect. Empty array is valid (all unanswered).
+        answers: t.Array(
+          t.Object({
+            questionId: t.String({ format: 'uuid' }),
+            answer: t.Union([
+              t.Number(),
+              t.Boolean(),
+              t.Object({ selfCorrect: t.Boolean() }),
+            ]),
+          }),
+          { maxItems: QUIZ_QUESTIONS_MAX },
+        ),
+      }),
+    },
+  )
+  // List a quiz artifact's recent attempts (last 10, newest-first). user-scoped
+  // 404 on a foreign/missing artifact (the artifact ownership chain guards it).
+  .get(
+    '/:id/artifacts/:artifactId/attempts',
+    async ({ user, params, status }) => {
+      const [artifact] = await db
+        .select({ id: notebookArtifacts.id })
+        .from(notebookArtifacts)
+        .where(
+          and(
+            eq(notebookArtifacts.id, params.artifactId),
+            eq(notebookArtifacts.notebookId, params.id),
+            eq(notebookArtifacts.userId, user.id),
+          ),
+        )
+        .limit(1);
+      if (!artifact) return status(404, { error: 'not_found' });
+
+      const items = await db
+        .select({
+          id: quizAttempts.id,
+          correct: quizAttempts.correct,
+          total: quizAttempts.total,
+          answers: quizAttempts.answers,
+          createdAt: quizAttempts.createdAt,
+        })
+        .from(quizAttempts)
+        .where(
+          and(
+            eq(quizAttempts.userId, user.id),
+            eq(quizAttempts.artifactId, params.artifactId),
+          ),
+        )
+        .orderBy(desc(quizAttempts.createdAt))
+        .limit(10);
+      return { items };
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String({ format: 'uuid' }),
+        artifactId: t.String({ format: 'uuid' }),
+      }),
+    },
+  )
+  // ── coverage (Р9, N3 §3) ──────────────────────────────────────────────────────
+  // Card-coverage of the notebook's ATTACHED sources: for each source how many of
+  // its chunks have at least one LIVE card provenance edge. SQL-only (no AI). The
+  // tombstone guard is the JOIN on `cards` (a card_sources edge whose card was
+  // deleted is excluded — coverage by DEAD cards is never counted). Plus a
+  // notebook aggregate + the top-5 heading gaps (most UNcovered chunks). All
+  // user-scoped; foreign notebook → 404.
+  .get(
+    '/:id/coverage',
+    async ({ user, params, status }) => {
+      const [nb] = await db
+        .select({ id: notebooks.id })
+        .from(notebooks)
+        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
+        .limit(1);
+      if (!nb) return status(404, { error: 'not_found' });
+
+      // Attached sources (any status — chunks exist only for indexed/ready ones).
+      const attached = await db
+        .select({ id: sources.id, title: sources.title })
+        .from(notebookSources)
+        .innerJoin(sources, eq(sources.id, notebookSources.sourceId))
+        .where(
+          and(
+            eq(notebookSources.userId, user.id),
+            eq(notebookSources.notebookId, params.id),
+          ),
+        )
+        .orderBy(desc(notebookSources.addedAt));
+
+      const sourceIds = attached.map((s) => s.id);
+      if (sourceIds.length === 0) {
+        return {
+          items: [],
+          aggregate: { totalChunks: 0, coveredChunks: 0, cardCount: 0, pct: 0 },
+          gaps: [],
+        };
+      }
+
+      // Per-source: total chunks, covered chunks (DISTINCT chunk with a LIVE card
+      // edge), and the count of DISTINCT live cards born on this source's chunks.
+      // The LEFT JOIN to `cards` is the TOMBSTONE guard: a card_sources edge whose
+      // card was deleted survives (SET NULL keeps sourceChunkId) but `cards.id` is
+      // NULL — so `covered`/`cardCount` count ONLY rows where cards.id IS NOT NULL
+      // (a CASE inside DISTINCT). ONE query, GROUP BY source.
+      const stats = await db
+        .select({
+          sourceId: sourceChunks.sourceId,
+          totalChunks: sql<number>`count(DISTINCT ${sourceChunks.id})::int`,
+          coveredChunks: sql<number>`count(DISTINCT CASE WHEN ${cards.id} IS NOT NULL THEN ${cardSources.sourceChunkId} END)::int`,
+          cardCount: sql<number>`count(DISTINCT ${cards.id})::int`,
+        })
+        .from(sourceChunks)
+        .leftJoin(
+          cardSources,
+          and(
+            eq(cardSources.sourceChunkId, sourceChunks.id),
+            eq(cardSources.userId, user.id),
+          ),
+        )
+        .leftJoin(cards, eq(cards.id, cardSources.cardId))
+        .where(
+          and(
+            eq(sourceChunks.userId, user.id),
+            inArray(sourceChunks.sourceId, sourceIds),
+          ),
+        )
+        .groupBy(sourceChunks.sourceId);
+      const statBySource = new Map(stats.map((s) => [s.sourceId, s]));
+
+      const titleById = new Map(attached.map((s) => [s.id, s.title]));
+      let aggTotal = 0;
+      let aggCovered = 0;
+      let aggCards = 0;
+      const items = sourceIds.map((sourceId) => {
+        const s = statBySource.get(sourceId);
+        const totalChunks = s ? Number(s.totalChunks) : 0;
+        const coveredChunks = s ? Number(s.coveredChunks) : 0;
+        const cardCount = s ? Number(s.cardCount) : 0;
+        aggTotal += totalChunks;
+        aggCovered += coveredChunks;
+        aggCards += cardCount;
+        return {
+          sourceId,
+          title: titleById.get(sourceId) ?? '',
+          totalChunks,
+          coveredChunks,
+          cardCount,
+          pct: totalChunks > 0 ? Math.round((coveredChunks / totalChunks) * 100) : 0,
+        };
+      });
+
+      // Gaps: top-5 headings with the most UNCOVERED chunks. A chunk is covered
+      // when it has any LIVE card edge (the same EXISTS-of-a-live-card test). NULL
+      // heading → bucketed under '' and returned as null (the client labels it).
+      const gapRows = await db
+        .select({
+          sourceId: sourceChunks.sourceId,
+          heading: sql<string>`coalesce(${sourceChunks.heading}, '')`,
+          uncovered: sql<number>`count(*)::int`,
+        })
+        .from(sourceChunks)
+        .where(
+          and(
+            eq(sourceChunks.userId, user.id),
+            inArray(sourceChunks.sourceId, sourceIds),
+            sql`NOT EXISTS (
+              SELECT 1 FROM card_sources cs
+              JOIN cards c ON c.id = cs.card_id
+              WHERE cs.source_chunk_id = ${sourceChunks.id} AND cs.user_id = ${user.id}
+            )`,
+          ),
+        )
+        .groupBy(sourceChunks.sourceId, sql`coalesce(${sourceChunks.heading}, '')`)
+        .orderBy(desc(sql`count(*)`))
+        .limit(5);
+      const gaps = gapRows.map((g) => ({
+        sourceId: g.sourceId,
+        sourceTitle: titleById.get(g.sourceId) ?? '',
+        heading: g.heading.length > 0 ? g.heading : null,
+        uncovered: Number(g.uncovered),
+      }));
+
+      return {
+        items,
+        aggregate: {
+          totalChunks: aggTotal,
+          coveredChunks: aggCovered,
+          cardCount: aggCards,
+          pct: aggTotal > 0 ? Math.round((aggCovered / aggTotal) * 100) : 0,
+        },
+        gaps,
+      };
     },
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   );

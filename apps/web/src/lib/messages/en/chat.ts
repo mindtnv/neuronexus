@@ -148,6 +148,9 @@ const m = {
     suspend: 'Suspended «{front}»',
     set_due: 'Rescheduled «{front}»',
     forget: 'Reset «{front}»',
+    // Notebook write tool (Р14 / N3) — `{title}` = the note's title.
+    save_note: 'Saved a note: «{title}»',
+    save_note_untitled: 'Saved a note',
     // Pluralized labels for a contiguous run of the same tool (AC2.2 collapse).
     get_card_n: 'Reviewed {count} cards',
     card_progress_n: 'Checked progress on {count} cards',
@@ -212,6 +215,8 @@ const m = {
     provenanceTitle: 'Linked sources',
     provenanceRow: 'Source: {title}',
     provenanceRowPage: 'Source: {title}, p. {n}',
+    // save_note proposal (Р14 / N3) — the note the agent proposes to save.
+    noteTitle: 'Note',
   },
   // Source-passage citations (NotebookLM M2) — chips under a grounded answer.
   source: {

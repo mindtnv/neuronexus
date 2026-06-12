@@ -291,6 +291,10 @@ describe('i18n parity — en/chat.ts vs ru/chat.ts (Slice 5)', () => {
     'slash.statsTemplate',
     'slash.reviewLabel',
     'slash.reviewTemplate',
+    // Notebook write tool (Р14 / N3) — save_note activity label + confirm preview.
+    'tool.save_note',
+    'tool.save_note_untitled',
+    'confirm.noteTitle',
   ];
 
   for (const key of REQUIRED_CHAT_AGENT_KEYS) {
@@ -398,6 +402,61 @@ describe('i18n parity — en/notebooks.ts vs ru/notebooks.ts (NotebookLM M1, T8)
       expect(enKeys.has(key)).toBe(true);
     });
     test(`studio/overview key "${key}" exists in ru/notebooks`, () => {
+      expect(ruKeys.has(key)).toBe(true);
+    });
+  }
+
+  // «Блокноты 2.0» N3 — quiz + coverage keys. A key absent from BOTH locales
+  // slips the symmetric diff (mirrors REQUIRED_NOTIFICATION_KEYS).
+  const REQUIRED_QUIZ_COVERAGE_KEYS = [
+    // Quiz player.
+    'quiz.dialogTitle',
+    'quiz.dialogHint',
+    'quiz.dialogGenerate',
+    'quiz.introTitle',
+    'quiz.questionCount',
+    'quiz.start',
+    'quiz.questionOf',
+    'quiz.prev',
+    'quiz.next',
+    'quiz.finish',
+    'quiz.submitting',
+    'quiz.submitFailed',
+    'quiz.openPlaceholder',
+    'quiz.showAnswer',
+    'quiz.modelAnswer',
+    'quiz.selfCorrect',
+    'quiz.selfIncorrect',
+    'quiz.tfTrue',
+    'quiz.tfFalse',
+    'quiz.empty',
+    'quiz.scorePct',
+    'quiz.retry',
+    'quiz.weakSpots',
+    'quiz.weakSpotsPrompt',
+    'quiz.weakSpotsAnswer',
+    'quiz.breakdownHeading',
+    'quiz.inSource',
+    'quiz.history',
+    'quiz.historyHeading',
+    'quiz.historyEmpty',
+    'quiz.back',
+    // Coverage block.
+    'coverage.noSources',
+    'coverage.emptyHint',
+    'coverage.aggregate',
+    'coverage.sourceMeta',
+    'coverage.gapsHeading',
+    'coverage.gapMeta',
+    'coverage.gapAction',
+    'coverage.gapPrompt',
+    'coverage.noHeading',
+  ];
+  for (const key of REQUIRED_QUIZ_COVERAGE_KEYS) {
+    test(`quiz/coverage key "${key}" exists in en/notebooks`, () => {
+      expect(enKeys.has(key)).toBe(true);
+    });
+    test(`quiz/coverage key "${key}" exists in ru/notebooks`, () => {
       expect(ruKeys.has(key)).toBe(true);
     });
   }

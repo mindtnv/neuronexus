@@ -132,6 +132,8 @@ export const TOOL_LABEL_KEY: Record<string, string> = {
   suspend: 'chat.tool.suspend',
   set_due: 'chat.tool.set_due',
   forget: 'chat.tool.forget',
+  // Notebook write tool (Р14 / N3) — saves a note into the notebook.
+  save_note: 'chat.tool.save_note',
 };
 
 // Tool names that have a `chat.tool.<name>_n` plural key for contiguous-run header
@@ -162,6 +164,7 @@ export const TOOL_ICON_KEY: Record<string, IconName> = {
   suspend: 'pause',
   set_due: 'clock',
   forget: 'sync',
+  save_note: 'doc',
 };
 
 /** Resolve a tool's icon, falling back to `bolt` for unknown tool names. */
@@ -205,12 +208,15 @@ export function parseToolArgs(raw: string): unknown {
 }
 
 // Write/SRS tool names — these PAUSE the loop for human approval (Phase B).
+// `save_note` (notebook mode, Р14) joins them: it confirms before writing a note,
+// and reload must re-render its Apply/Reject affordance (not spin forever).
 export const WRITE_SRS_TOOL_NAMES = new Set([
   'create_card',
   'edit_card',
   'suspend',
   'set_due',
   'forget',
+  'save_note',
 ]);
 
 // ── Persisted-row → view-model reconstruction (reload) ───────────────────────
@@ -448,6 +454,19 @@ export function toolLabel(name: string, args: unknown, ctx: ToolLabelCtx = {}): 
       // Unresolvable deck → the deck-less phrasing, never an empty «» hole.
       if (!deck) return { labelKey: 'chat.tool.create_card_nodeck', params: {} };
       return { labelKey, params: { deck } };
+    }
+    case 'save_note': {
+      // Show the note's title in the activity line (NEVER raw JSON). Falls back to
+      // a generic label key when the title is empty/missing.
+      const title = nonEmptyString(a.title);
+      const display = title
+        ? title.length > 60
+          ? `${title.slice(0, 60)}…`
+          : title
+        : '';
+      return display
+        ? { labelKey, params: { title: display }, argMono: display }
+        : { labelKey: 'chat.tool.save_note_untitled', params: {} };
     }
     default: {
       // Unknown tool — bare label key + a COMPACT readable arg line (B5: never

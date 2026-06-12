@@ -13,11 +13,12 @@ import {
   noteTypeFromApi,
   presetFromApi,
   profileFromApi,
+  quizAttemptFromApi,
   reviewFromApi,
 } from './mappers';
 import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
-import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookArtifact, NotebookNote, NoteType, Profile, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
-import type { NotebookArtifactType, NotebookColor, NotebookNoteKind, SourceKind, SourceMime } from '@neuronexus/shared';
+import type { Card, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookArtifact, NotebookCoverage, NotebookNote, NoteType, Profile, QuizAttempt, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard } from './types';
+import type { NotebookArtifactType, NotebookColor, NotebookNoteKind, QuizAttemptAnswerInput, SourceKind, SourceMime } from '@neuronexus/shared';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
 // and profile — fetched at bootstrap, mutated optimistically-ish on each API
@@ -287,6 +288,9 @@ interface State {
     notebookId: string,
     type: NotebookArtifactType,
     sourceIds?: string[],
+    /** quiz only (N3): how many questions to generate (server clamps to the
+     *  QUIZ_QUESTIONS_MAX cap). Ignored for markdown types. */
+    questionCount?: number,
   ) => Promise<NotebookArtifact>;
   /** Fetch one full artifact incl. content (GET …/artifacts/:artifactId). */
   getArtifact: (notebookId: string, artifactId: string) => Promise<NotebookArtifact>;
@@ -301,6 +305,20 @@ interface State {
   generateOverview: (
     notebookId: string,
   ) => Promise<{ overview: string; questions: string[]; fingerprint: string }>;
+  /** Submit a quiz attempt (POST …/artifacts/:artifactId/attempts). The server
+   *  re-scores mcq/tf from `content_json`; `open` trusts the `{ selfCorrect }`
+   *  self-grade. Throws on 400 invalid_attempt / 404. */
+  submitQuizAttempt: (
+    notebookId: string,
+    artifactId: string,
+    answers: QuizAttemptAnswerInput[],
+  ) => Promise<QuizAttempt>;
+  /** List a quiz artifact's recent attempts — last 10, newest-first (GET
+   *  …/artifacts/:artifactId/attempts). */
+  listQuizAttempts: (notebookId: string, artifactId: string) => Promise<QuizAttempt[]>;
+  /** Card-coverage of the notebook's attached sources (GET …/coverage). SQL-only
+   *  — works without a chat key. */
+  getCoverage: (notebookId: string) => Promise<NotebookCoverage>;
 
   /** List a notebook's sources with computed indexing progress (GET /notebooks/:id/sources). */
   listSources: (notebookId: string) => Promise<Source[]>;
@@ -1021,9 +1039,10 @@ export const useNN = create<State>()((set, get) => ({
     return res.items.map(notebookArtifactFromApi);
   },
 
-  async createArtifact(notebookId, type, sourceIds) {
+  async createArtifact(notebookId, type, sourceIds, questionCount) {
     const body: Record<string, unknown> = { type };
     if (sourceIds && sourceIds.length > 0) body.sourceIds = sourceIds;
+    if (type === 'quiz' && typeof questionCount === 'number') body.questionCount = questionCount;
     return notebookArtifactFromApi(
       await ok(await (api as any).notebooks({ id: notebookId }).artifacts.post(body)),
     );
@@ -1051,6 +1070,38 @@ export const useNN = create<State>()((set, get) => ({
     return (await ok(
       await (api as any).notebooks({ id: notebookId }).overview.post(),
     )) as { overview: string; questions: string[]; fingerprint: string };
+  },
+
+  // ── Notebook quiz: attempts (N3) ──────────────────────────────────────────────
+
+  async submitQuizAttempt(notebookId, artifactId, answers) {
+    return quizAttemptFromApi(
+      await ok(
+        await (api as any)
+          .notebooks({ id: notebookId })
+          .artifacts({ artifactId })
+          .attempts.post({ answers }),
+      ),
+    );
+  },
+
+  async listQuizAttempts(notebookId, artifactId) {
+    const res = (await ok(
+      await (api as any).notebooks({ id: notebookId }).artifacts({ artifactId }).attempts.get(),
+    )) as { items: any[] };
+    return res.items.map(quizAttemptFromApi);
+  },
+
+  async getCoverage(notebookId) {
+    const res = (await ok(
+      await (api as any).notebooks({ id: notebookId }).coverage.get(),
+    )) as NotebookCoverage;
+    // The route already returns the exact shape; normalize defensively.
+    return {
+      items: Array.isArray(res.items) ? res.items : [],
+      aggregate: res.aggregate ?? { totalChunks: 0, coveredChunks: 0, cardCount: 0, pct: 0 },
+      gaps: Array.isArray(res.gaps) ? res.gaps : [],
+    };
   },
 
   async listSources(notebookId) {

@@ -72,13 +72,27 @@ export type ArtifactErrorCode = (typeof ARTIFACT_ERROR_CODES)[number];
 /** Per-notebook artifact cap (Р16) → 409 `too_many_artifacts`. */
 export const MAX_ARTIFACTS_PER_NOTEBOOK = 50;
 
-/** One quiz question (Р8). MCQ/TF auto-checked; `open` is human self-graded. */
+/** One quiz question kind (Р8). */
+export const QUIZ_QUESTION_KINDS = ['mcq', 'tf', 'open'] as const;
+export type QuizQuestionKind = (typeof QUIZ_QUESTION_KINDS)[number];
+
+/**
+ * One quiz question (Р8). MCQ/TF are auto-checked server-side; `open` is the
+ * human's self-grade (the player shows the model answer and the user marks it
+ * correct/incorrect). Per kind:
+ *  - `mcq`: `options` (3..5) + `answerIndex` (the correct option index).
+ *  - `tf`:  `answer` (the correct boolean).
+ *  - `open`: `answerText` (the model answer the user compares against).
+ * `explanation` + `sourceChunkId` are optional on every kind.
+ */
 export interface QuizQuestion {
   id: string;
-  kind: 'mcq' | 'tf' | 'open';
+  kind: QuizQuestionKind;
   prompt: string;
   options?: string[];
   answerIndex?: number;
+  /** tf only — the correct boolean. */
+  answer?: boolean;
   answerText?: string;
   explanation?: string;
   sourceChunkId?: string;
@@ -92,3 +106,27 @@ export interface QuizContent {
 /** Default + max questions a generated quiz carries (Р16). */
 export const QUIZ_QUESTIONS_DEFAULT = 10;
 export const QUIZ_QUESTIONS_MAX = 20;
+
+// ── Quiz attempts (Р8 / §3, N3) ───────────────────────────────────────────────
+
+/**
+ * One answer a user submitted for a quiz attempt (client → server). For `mcq`
+ * the answer is the chosen option index (number); for `tf` the chosen boolean;
+ * for `open` a `{ selfCorrect }` self-grade (the ONLY field the server trusts
+ * from the client — open questions cannot be auto-scored). An unanswered
+ * question is simply omitted (counts as incorrect).
+ */
+export interface QuizAttemptAnswerInput {
+  questionId: string;
+  answer: number | boolean | { selfCorrect: boolean };
+}
+
+/**
+ * The normalized, server-scored snapshot persisted on a `quiz_attempts` row (and
+ * echoed back to the client): the submitted answer + the server's verdict.
+ */
+export interface QuizAttemptAnswer {
+  questionId: string;
+  answer: number | boolean | { selfCorrect: boolean } | null;
+  correct: boolean;
+}

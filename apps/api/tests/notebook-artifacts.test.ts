@@ -329,16 +329,17 @@ describe('POST /notebooks/:id/artifacts — checks + concurrency', () => {
     expect((await res.json<{ error: string }>()).error).toBe('invalid_type');
   });
 
-  test('quiz is invalid_type in N2', async () => {
+  test('quiz is a valid type in N3 (creates a pending job)', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const nb = await freshNotebook(userId);
     await seedSource(userId, nb, 'Doc', ['alpha']);
+    installComplete('{"questions":[]}'); // worker kicks; content irrelevant here
     const res = await callApp(app, 'POST', `/notebooks/${nb}/artifacts`, {
       cookie,
       body: { type: 'quiz' },
     });
-    expect(res.status).toBe(400);
-    expect((await res.json<{ error: string }>()).error).toBe('invalid_type');
+    expect(res.status).toBe(200);
+    expect((await res.json<{ type: string; status: string }>()).type).toBe('quiz');
   });
 
   test('no ready sources ⇒ 400 no_sources', async () => {
