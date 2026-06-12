@@ -1,15 +1,20 @@
-# Build both images in parallel on GitHub runners (buildx + GHA layer cache),
-# push to GHCR with immutable sha tags, then point the Coolify apps at the new
-# tag and trigger a re-pull deploy. Coolify never builds — deploys are pulls.
+# Push to main → ONE run: tests + both image builds in parallel, then a gated
+# deploy. Coolify never builds — deploys are pulls of prebuilt GHCR images.
 #
 # Speed notes:
-#  * cache-from/to type=gha mode=max — warm builds reuse the bun-install and
-#    next-build layers; only changed layers rebuild.
-#  * `concurrency` cancels superseded runs on rapid pushes.
+#  * build jobs use buildx + GHA layer cache (mode=max) — warm builds reuse the
+#    bun-install and next-build layers; only changed layers rebuild.
+#  * the test job runs in PARALLEL with the builds; deploy waits for all three,
+#    so wall-clock = max(tests, slowest build) + ~40s of deploy.
 #  * provenance off — skips attestation manifests Coolify doesn't use.
+#  * concurrency serializes runs WITHOUT cancelling an in-flight deploy
+#    (cancel-in-progress would be able to kill a half-applied deploy job);
+#    superseded QUEUED runs are auto-cancelled by GitHub.
 #
 # Secrets: COOLIFY_TOKEN (team-8 API token). NEXT_PUBLIC_* are build args here
 # (baked into the web bundle — Coolify never sees them).
+# Rollback: point docker_registry_image_tag at a previous sha via the Coolify
+# API/UI and redeploy.
 
 name: deploy
 
@@ -20,7 +25,7 @@ on:
 
 concurrency:
   group: deploy-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   COOLIFY_URL: https://coolify.anvgrptools.ru/api/v1
@@ -28,8 +33,63 @@ env:
   WEB_APP_UUID: tmc5k98iayyj0g28qr7inbaj
 
 jobs:
+  test:
+    name: Typecheck · Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: neuronexus
+          POSTGRES_PASSWORD: neuronexus
+          POSTGRES_DB: neuronexus_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U neuronexus -d neuronexus_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://neuronexus:neuronexus@localhost:5432/neuronexus
+      TEST_DATABASE_URL: postgres://neuronexus:neuronexus@localhost:5432/neuronexus_test
+      BETTER_AUTH_SECRET: ci-secret-32chars-ci-secret-32chars
+      BETTER_AUTH_URL: http://localhost:3000
+      WEB_ORIGIN: http://localhost:3001
+      NEXT_PUBLIC_API_URL: http://localhost:3000
+      API_PORT: '3000'
+      # required() by apps/api/src/env.ts — tests never hit a real S3 (seams).
+      S3_ENDPOINT: http://localhost:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: neuronexus-test
+      S3_ACCESS_KEY_ID: ci-test
+      S3_SECRET_ACCESS_KEY: ci-test
+      S3_PUBLIC_BASE_URL: http://localhost:9000/neuronexus-test
+      NEXT_PUBLIC_MEDIA_BASE_URL: http://localhost:9000/neuronexus-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+      - name: Cache bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - name: Install deps
+        run: bun install --frozen-lockfile
+      - name: Apply migrations against test DB
+        run: bun run db:migrate:apply:test
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun run test
+
   build-api:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
@@ -57,6 +117,7 @@ jobs:
 
   build-web:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
@@ -87,19 +148,18 @@ jobs:
 
   deploy:
     runs-on: ubuntu-latest
-    needs: [build-api, build-web]
+    timeout-minutes: 15
+    needs: [test, build-api, build-web]
     steps:
       - name: Point Coolify at the new tags and deploy
         run: |
           set -euo pipefail
           auth=(-H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" -H "Content-Type: application/json")
-          declare -A deps=()
           for uuid in "$API_APP_UUID" "$WEB_APP_UUID"; do
             curl -fsS "${auth[@]}" -X PATCH "$COOLIFY_URL/applications/$uuid" \
               -d "{\"docker_registry_image_tag\":\"$GITHUB_SHA\"}" > /dev/null
             dep=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/deploy?uuid=$uuid" \
               | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0]["deployment_uuid"])')
-            deps[$uuid]=$dep
             echo "queued $uuid → deployment $dep"
           done
       - name: Wait for deployments to finish
