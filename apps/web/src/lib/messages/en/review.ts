@@ -18,6 +18,18 @@ const m = {
     title: 'Similar cards',
     close: 'Close similar cards',
   },
+  // Feature #1 — «failure → source»: a quiet chip after the answer is revealed +
+  // an inline expansion of the cited passage right in the reviewer on a lapse (Again).
+  peek: {
+    from: 'from: “{title}”',
+    fromPage: 'from: “{title}”, p. {n}',
+    fromUntitled: 'from a source',
+    title: 'Where this card came from',
+    expand: 'Show full passage',
+    loading: 'Loading the passage…',
+    openInLibrary: 'Open in the library',
+    dismiss: 'Got it, next',
+  },
   loading: {
     subtitle: 'Opening your library.',
   },

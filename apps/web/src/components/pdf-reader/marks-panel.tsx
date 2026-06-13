@@ -37,6 +37,10 @@ export interface MarksPanelProps {
   onOpenCard?: (cardId: string) => void;
   /** L4 §8.4: «Экспорт в Markdown» — present only when there is markup to export. */
   onExport?: () => void;
+  /** Feature #2: «Собрать карточки из разметки» — open the harvest wizard. Present
+   *  only when AI is enabled (the parent gates it on chatEnabled, mirroring the
+   *  quick-card «✨ Сформулировать» gate). */
+  onHarvest?: () => void;
   t: T;
 }
 
@@ -67,10 +71,16 @@ export function MarksPanel({
   onMarkToCard,
   onOpenCard,
   onExport,
+  onHarvest,
   t,
 }: MarksPanelProps) {
   const groups = groupByPage(marks, inkPages);
   const hasMarkup = marks.length > 0 || inkPages.length > 0;
+  // Feature #2 — harvest is offered only when there's un-harvested markup to
+  // collect (a highlight/note not yet stamped, or any ink page).
+  const harvestable =
+    marks.some((m) => (m.kind === 'highlight' || m.kind === 'note') && !m.harvestedAt) ||
+    inkPages.length > 0;
 
   if (!open) return null;
 
@@ -87,7 +97,7 @@ export function MarksPanel({
         display: 'flex',
         flexDirection: 'column',
         zIndex: 50,
-        boxShadow: '-2px 0 12px rgba(0,0,0,0.25)',
+        boxShadow: '-2px 0 12px var(--inset-shadow)',
       }}
     >
       {/* Header */}
@@ -175,6 +185,34 @@ export function MarksPanel({
           overflowY: 'auto',
         }}
       >
+        {/* Feature #2 — «Собрать карточки из разметки» (AI-gated by the parent). */}
+        {onHarvest && harvestable && (
+          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
+            <button
+              type="button"
+              onClick={onHarvest}
+              style={{
+                width: '100%',
+                height: 34,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 7,
+                borderRadius: 'var(--r-md)',
+                border: '1px solid var(--lime-500)',
+                background: 'color-mix(in srgb, var(--lime-500) 12%, var(--surface))',
+                color: 'var(--lime-400)',
+                cursor: 'pointer',
+                fontSize: 12.5,
+                fontWeight: 600,
+                fontFamily: 'var(--font-sans)',
+              }}
+            >
+              <NNIcon name="sparkle" size={14} color="var(--lime-400)" />
+              {t('notebooks.harvest.button')}
+            </button>
+          </div>
+        )}
         {groups.length === 0 ? (
           <div className="nn-empty-state" style={{ paddingTop: 32 }}>
             <span className="nn-empty-state-icon"><NNIcon name="edit" size={28} color="var(--text-dim)" /></span>
@@ -296,6 +334,9 @@ function MarkRow({
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const [noteEdit, setNoteEdit] = React.useState(mark.note ?? '');
+  // Feature #2 — a harvested highlight/note is dimmed + badged so a re-run reads
+  // as "already turned into a card". Card-kind markers are never harvest targets.
+  const harvested = Boolean(mark.harvestedAt) && mark.kind !== 'card';
 
   const handleClick = useCallback(() => {
     onClick();
@@ -310,6 +351,7 @@ function MarkRow({
         borderBottom: '1px solid var(--border)',
         cursor: 'pointer',
         transition: 'background 80ms',
+        opacity: harvested ? 0.6 : 1,
       }}
       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
       onMouseLeave={(e) => (e.currentTarget.style.background = '')}
@@ -385,6 +427,25 @@ function MarkRow({
             >
               {mark.note}
             </p>
+          )}
+          {harvested && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                marginTop: 4,
+                padding: '1px 6px',
+                borderRadius: 'var(--r-pill)',
+                background: 'color-mix(in srgb, var(--lime-500) 14%, transparent)',
+                color: 'var(--lime-400)',
+                fontSize: 10,
+                fontWeight: 600,
+                fontFamily: 'var(--font-sans)',
+                lineHeight: 1.4,
+              }}
+            >
+              {t('notebooks.harvest.badge')}
+            </span>
           )}
         </div>
         {/* Hover-revealed delete */}
@@ -464,7 +525,7 @@ function MarkRow({
                         : '2px solid transparent',
                       boxShadow: mark.color === c
                         ? '0 0 0 1px var(--surface-2)'
-                        : 'inset 0 0 0 1px rgba(0,0,0,0.15)',
+                        : 'var(--mark-swatch-shadow)',
                       cursor: 'pointer',
                       padding: 0,
                       transition: 'box-shadow 100ms',

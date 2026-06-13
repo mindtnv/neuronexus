@@ -43,6 +43,7 @@ import { useLocale } from '@/lib/i18n';
 import { InkLayer } from './ink-layer';
 import { MarksPanel } from './marks-panel';
 import { QuickCardDialog } from './quick-card';
+import { HarvestWizard } from './harvest-wizard';
 import { ReaderToolbar } from './toolbar';
 import { SelectionPopover, type SelectionInfo } from './selection-popover';
 import {
@@ -159,6 +160,8 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     // M5 — marks state.
     const [marks, setMarks] = useState<SourceMark[]>([]);
     const [marksPanelOpen, setMarksPanelOpen] = useState(false);
+    // Feature #2 — harvest wizard open flag.
+    const [harvestOpen, setHarvestOpen] = useState(false);
     // M5 — QuickCardDialog state. Opened from a text selection (the popover),
     // from an existing mark («В карточку» in the Разметка panel), or from the
     // W3 smart-card marquee tool. rects are for the card marker (W4).
@@ -1321,7 +1324,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
                               bottom: 8,
                               right: 10,
                               fontSize: 10,
-                              color: 'rgba(100,100,100,0.5)',
+                              color: 'color-mix(in srgb, var(--text-muted) 50%, transparent)',
                               fontFamily: 'var(--font-mono)',
                               userSelect: 'none',
                             }}
@@ -1349,6 +1352,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
               onMarkToCard={handleMarkToCard}
               onOpenCard={handleOpenCard}
               onExport={onExportMarkup ? () => void handleExportMarkup() : undefined}
+              onHarvest={chatEnabled ? () => setHarvestOpen(true) : undefined}
               t={t}
             />
 
@@ -1388,6 +1392,19 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             t={t}
           />
         )}
+
+        {/* Feature #2 — «Урожай выделений → карточки» wizard. Refresh marks on a
+            successful apply so the «✓ в карточке» badges + dimming appear. */}
+        <HarvestWizard
+          open={harvestOpen}
+          onClose={() => setHarvestOpen(false)}
+          sourceId={sourceId}
+          locale={locale as 'en' | 'ru'}
+          onApplied={() => {
+            fetchMarks(sourceId).then((items) => setMarks(items)).catch(() => {});
+          }}
+          t={t}
+        />
       </div>
     );
   },

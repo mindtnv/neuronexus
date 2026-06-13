@@ -85,6 +85,7 @@ import {
   scoreQuizAttempt,
 } from '../ai/artifacts.ts';
 import { suggestCard } from '../ai/suggest-card.ts';
+import { harvestCards, HARVEST_CARDS_MAX, type HarvestPassage } from '../ai/harvest-cards.ts';
 import { conceptMap } from '../ai/concept-map.ts';
 import { suggestSources } from '../ai/suggest-sources.ts';
 import { resolveNoteTypeForCreate, enqueueToolCardsForIndex } from '../ai/tools.ts';
@@ -2396,6 +2397,307 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
         quote: t.String({ minLength: 1, maxLength: MARK_QUOTE_MAX + 1 }),
         page: t.Optional(t.Integer({ minimum: 1, maximum: 10000 })),
         locale: t.Optional(t.Union([t.Literal('en'), t.Literal('ru')])),
+      }),
+    },
+  )
+  // ── «Урожай выделений → карточки» (feature #2): harvest marks → card candidates ──
+  // Gather the source's UNHARVESTED markup (text highlights/notes + ink
+  // marked_text, all `harvested_at IS NULL`), run them through the cheap
+  // non-streaming complete() surface → SEVERAL atomic card candidates the client
+  // shows in a wizard. NO persistence here (the apply route writes). Each
+  // candidate carries its `origin` (the mark/ink row to stamp on apply) + the
+  // source passage `quote` for wizard context. 503 `ai_disabled` pre-flush;
+  // user-scoped 404; cooldown AFTER ownership; a generation failure → 502
+  // `harvest_failed` (never a 500). Nothing to harvest → `{ candidates: [] }`.
+  .post(
+    '/:id/harvest-cards',
+    async ({ user, params, body, status, store }) => {
+      if (!isChatEnabled()) return status(503, { error: 'ai_disabled' });
+
+      const [source] = await db
+        .select({ title: sources.title })
+        .from(sources)
+        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
+        .limit(1);
+      if (!source) return status(404, { error: 'not_found' });
+
+      // Cooldown the paid generation AFTER ownership (a foreign id never arms it),
+      // before the call. A failed call keeps the window armed (anti retry-storm).
+      const cd = cooldownCheck(`harvest:${params.id}`, AI_COOLDOWN_MS.harvest);
+      if (!cd.ok) return status(429, { error: 'cooldown', retryAfterMs: cd.retryAfterMs });
+
+      // (1) Text highlights + notes (source_marks), unharvested, user-scoped +
+      // source_id. EXCLUDE kind 'card' markers (outputs). Ordered by page.
+      const markRows = await db
+        .select({
+          id: sourceMarks.id,
+          page: sourceMarks.page,
+          kind: sourceMarks.kind,
+          quote: sourceMarks.quote,
+          note: sourceMarks.note,
+        })
+        .from(sourceMarks)
+        .where(
+          and(
+            eq(sourceMarks.userId, user.id),
+            eq(sourceMarks.sourceId, params.id),
+            isNull(sourceMarks.harvestedAt),
+            inArray(sourceMarks.kind, ['highlight', 'note']),
+            sql`length(trim(${sourceMarks.quote})) > 0`,
+          ),
+        )
+        .orderBy(asc(sourceMarks.page), asc(sourceMarks.createdAt));
+
+      // (2) Ink marked_text (source_annotations), unharvested + non-empty.
+      const inkRows = await db
+        .select({
+          page: sourceAnnotations.page,
+          markedText: sourceAnnotations.markedText,
+        })
+        .from(sourceAnnotations)
+        .where(
+          and(
+            eq(sourceAnnotations.userId, user.id),
+            eq(sourceAnnotations.sourceId, params.id),
+            isNull(sourceAnnotations.harvestedAt),
+            sql`${sourceAnnotations.markedText} is not null and length(trim(${sourceAnnotations.markedText})) > 0`,
+          ),
+        )
+        .orderBy(asc(sourceAnnotations.page));
+
+      // Build the passage list with a stable `ref` per row that the model echoes
+      // back as `originRef`; the route maps each candidate's ref → its origin
+      // (mark id or ink page) so apply can stamp `harvested_at` on exactly the
+      // included sources. mark refs are "m<id>"; ink refs are "i<page>".
+      type Origin = { kind: 'mark'; markId: string } | { kind: 'ink'; page: number };
+      const refToOrigin = new Map<string, { origin: Origin; page: number | null; quote: string }>();
+      const passages: HarvestPassage[] = [];
+      for (const m of markRows) {
+        const ref = `m${m.id}`;
+        const text =
+          m.kind === 'note' && m.note?.trim()
+            ? `${m.quote} — ${m.note.trim()}`
+            : m.quote;
+        refToOrigin.set(ref, { origin: { kind: 'mark', markId: m.id }, page: m.page, quote: m.quote });
+        passages.push({ ref, page: m.page, text });
+      }
+      for (const a of inkRows) {
+        const ref = `i${a.page}`;
+        // Multiple annotation rows can never share a page (unique (source,page)),
+        // so the ink ref is unique per source.
+        const text = (a.markedText ?? '').trim();
+        refToOrigin.set(ref, { origin: { kind: 'ink', page: a.page }, page: a.page, quote: text });
+        passages.push({ ref, page: a.page, text });
+      }
+
+      if (passages.length === 0) return { candidates: [] };
+
+      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+      const cards = await harvestCards(passages, {
+        sourceTitle: source.title,
+        // Cards are written in the USER'S language (the body carries the active
+        // app locale; absent defaults to 'ru', the RU-primary app default).
+        locale: body.locale ?? 'ru',
+        log,
+      });
+      if (cards === null) return status(502, { error: 'harvest_failed' });
+
+      // Map each parsed card back to its origin. The parser already dropped
+      // unknown refs, so every entry resolves; guard anyway.
+      const candidates = cards.flatMap((c) => {
+        const meta = refToOrigin.get(c.originRef);
+        if (!meta) return [];
+        return [
+          { origin: meta.origin, page: meta.page, front: c.front, back: c.back, quote: meta.quote },
+        ];
+      });
+      return { candidates };
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        locale: t.Optional(t.Union([t.Literal('en'), t.Literal('ru')])),
+      }),
+    },
+  )
+  // ── «Урожай выделений → карточки» apply: candidate cards → real cards ─────────
+  // Persist the user's wizard selection: ONE transaction creating up to
+  // HARVEST_CARDS_MAX Basic cards (resolve the note type ONCE), each with
+  // page-matched provenance (reuse the quick-card chain), THEN stamp
+  // `harvested_at=now()` on the origin mark/ink rows of the INCLUDED candidates
+  // (user-scoped) so a re-harvest skips them. Any entry error rolls back the
+  // whole batch (batch-create_card discipline). RAG enqueue AFTER commit.
+  // user-scoped 404 source / clean 400 foreign deck; empty array → 400; over the
+  // cap → 400 too_many. Returns `{ created, cardIds }`.
+  .post(
+    '/:id/harvest-cards/apply',
+    async ({ user, params, body, status }) => {
+      const [source] = await db
+        .select({ id: sources.id })
+        .from(sources)
+        .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
+        .limit(1);
+      if (!source) return status(404, { error: 'not_found' });
+
+      if (body.cards.length === 0) return status(400, { error: 'empty' });
+      if (body.cards.length > HARVEST_CARDS_MAX) return status(400, { error: 'too_many' });
+
+      // Resolve the builtin Basic note type ONCE (legacy-id-safe, M-hardening).
+      const noteType = await resolveNoteTypeForCreate(user.id, null);
+      if (!noteType.ok) return status(400, { error: 'note_type_not_found' });
+      const byLower = new Map(noteType.fields.map((f) => [f.name.toLowerCase(), f.name]));
+      const frontKey = byLower.get('front');
+      const backKey = byLower.get('back');
+      if (!frontKey || !backKey) return status(400, { error: 'note_type_not_found' });
+
+      // Pre-resolve every entry (deck ownership + sanitize + gen) BEFORE the tx so
+      // a foreign deck / empty card is a clean 400, never a mid-tx 500.
+      const resolvedEntries: {
+        resolved: Extract<Awaited<ReturnType<typeof resolveNoteCreate>>, { ok: true }>;
+        page?: number;
+        origin: { kind: 'mark'; markId: string } | { kind: 'ink'; page: number };
+      }[] = [];
+      for (const c of body.cards) {
+        const resolved = await resolveNoteCreate(user.id, {
+          deckId: body.deckId,
+          noteTypeId: noteType.id,
+          fieldValues: { [frontKey]: c.front, [backKey]: c.back },
+        });
+        if (!resolved.ok) return status(400, { error: resolved.error });
+        if (resolved.generated.length === 0) return status(400, { error: 'empty_card' });
+        resolvedEntries.push({ resolved, page: c.page, origin: c.origin });
+      }
+
+      const now = new Date();
+      const result = await db.transaction(async (tx) => {
+        const cardIds: string[] = [];
+
+        // Distinct origins of the INCLUDED candidates.
+        const reqMarkIds = new Set<string>();
+        const reqInkPages = new Set<number>();
+        for (const e of resolvedEntries) {
+          if (e.origin.kind === 'mark') reqMarkIds.add(e.origin.markId);
+          else reqInkPages.add(e.origin.page);
+        }
+
+        // CAS-CLAIM the origins FIRST: stamp harvested_at only on rows still
+        // UNHARVESTED (user+source scoped), and learn which rows we actually
+        // claimed via RETURNING. A replayed apply body — or a forged / already-
+        // harvested origin — claims nothing, so its cards are skipped below.
+        // This makes /apply idempotent (no duplicate cards on a double-submit /
+        // retry, M1) and ties the harvested stamp to a real claim (L3). now() is
+        // fixed for the tx, so all claimed rows share one timestamp.
+        const claimedMarkIds = new Set<string>();
+        if (reqMarkIds.size > 0) {
+          const rows = await tx
+            .update(sourceMarks)
+            .set({ harvestedAt: now })
+            .where(
+              and(
+                eq(sourceMarks.userId, user.id),
+                eq(sourceMarks.sourceId, params.id),
+                inArray(sourceMarks.id, [...reqMarkIds]),
+                isNull(sourceMarks.harvestedAt),
+              ),
+            )
+            .returning({ id: sourceMarks.id });
+          for (const r of rows) claimedMarkIds.add(r.id);
+        }
+        const claimedInkPages = new Set<number>();
+        if (reqInkPages.size > 0) {
+          const rows = await tx
+            .update(sourceAnnotations)
+            .set({ harvestedAt: now })
+            .where(
+              and(
+                eq(sourceAnnotations.userId, user.id),
+                eq(sourceAnnotations.sourceId, params.id),
+                inArray(sourceAnnotations.page, [...reqInkPages]),
+                isNull(sourceAnnotations.harvestedAt),
+              ),
+            )
+            .returning({ page: sourceAnnotations.page });
+          for (const r of rows) claimedInkPages.add(r.page);
+        }
+
+        for (const entry of resolvedEntries) {
+          // Only create the card if its origin was freshly claimed above — a
+          // replayed / stale / foreign origin is skipped (idempotency, M1/L3).
+          const claimed =
+            entry.origin.kind === 'mark'
+              ? claimedMarkIds.has(entry.origin.markId)
+              : claimedInkPages.has(entry.origin.page);
+          if (!claimed) continue;
+
+          const created = await insertNoteAndCards(tx, {
+            userId: user.id,
+            deckId: body.deckId,
+            noteTypeId: noteType.id,
+            sanitized: entry.resolved.sanitized,
+            tags: [],
+            generated: entry.resolved.generated,
+            now,
+          });
+          const entryCardIds = created.cards.map((cc) => cc.id);
+
+          // Page-matched provenance (reuse the quick-card chain): only when the
+          // candidate carries a page. No page / no page-match ⇒ ONE fallback
+          // edge per card (NULL chunk). notebookId NULL — reading-born.
+          const chunkRows =
+            entry.page !== undefined
+              ? await tx
+                  .select({ id: sourceChunks.id })
+                  .from(sourceChunks)
+                  .where(
+                    and(
+                      eq(sourceChunks.userId, user.id),
+                      eq(sourceChunks.sourceId, params.id),
+                      eq(sourceChunks.page, entry.page),
+                    ),
+                  )
+                  .orderBy(asc(sourceChunks.position))
+                  .limit(env.ai.CARD_SOURCE_LINK_CAP)
+              : [];
+          await writeQuickCardProvenance(tx, {
+            userId: user.id,
+            cardIds: entryCardIds,
+            chunkIds: chunkRows.map((r) => r.id),
+            sourceId: params.id,
+            notebookId: null,
+          });
+
+          cardIds.push(...entryCardIds);
+        }
+
+        return { cardIds };
+      });
+
+      // RAG index enqueue AFTER commit (same discipline as quick-card/notes).
+      enqueueToolCardsForIndex(result.cardIds);
+      rootLogger.info(
+        { sourceId: params.id, created: result.cardIds.length },
+        'source.harvest_cards.apply',
+      );
+      return { created: result.cardIds.length, cardIds: result.cardIds };
+    },
+    {
+      auth: true,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Object({
+        deckId: t.String({ format: 'uuid' }),
+        cards: t.Array(
+          t.Object({
+            front: t.String({ minLength: 1, maxLength: 65536 }),
+            back: t.String({ maxLength: 65536 }),
+            page: t.Optional(t.Integer({ minimum: 1, maximum: 10000 })),
+            origin: t.Union([
+              t.Object({ kind: t.Literal('mark'), markId: t.String({ format: 'uuid' }) }),
+              t.Object({ kind: t.Literal('ink'), page: t.Integer({ minimum: 1, maximum: 10000 }) }),
+            ]),
+          }),
+          { maxItems: HARVEST_CARDS_MAX + 1 },
+        ),
       }),
     },
   );

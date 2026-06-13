@@ -10,7 +10,7 @@ import { api, ok } from '@/lib/api';
 import { cardFromApi } from '@/lib/mappers';
 import { RichCard } from '@/components/rich-card';
 import { SimilarCardsPanel } from '@/components/similar-cards';
-import { SourceLinksPanel } from '@/components/source-links';
+import { SourcePeekChip, SourcePeekPanel, useFirstCardSource } from '@/components/source-peek';
 import { raiseToast } from '@/components/toasts';
 import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
@@ -18,7 +18,7 @@ import { useUI } from '@/lib/ui-store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { resolveDeckConfigClient } from '@/lib/deck-config';
-import type { Card, Rating } from '@/lib/types';
+import type { Card, CardSourceLink, Rating } from '@/lib/types';
 
 type RatingMeta = {
   k: Rating;
@@ -140,6 +140,11 @@ export const NNReviewClassic = () => {
   // Semantic "similar cards" drawer — only offered AFTER reveal (similar cards
   // would spoil the answer before the flip).
   const [similarOpen, setSimilarOpen] = useState(false);
+  // Feature #1 — «провал → источник». On a lapse (Again) for a card WITH
+  // provenance we HOLD the queue advance and surface the cited passage right in
+  // the reviewer (an overlay popover). The grade already committed server-side;
+  // only the visual advance waits for «понятно, дальше» / Esc. null = no peek.
+  const [pendingPeek, setPendingPeek] = useState<CardSourceLink | null>(null);
   const [completed, setCompleted] = useState(0);
   const [xpGained, setXpGained] = useState(0);
   const [startedAt, setStartedAt] = useState<number>(() => Date.now());
@@ -198,6 +203,11 @@ export const NNReviewClassic = () => {
   const current = queue[index];
   const deck = useMemo(() => (current ? decks.find((d) => d.id === current.deckId) : undefined), [current, decks]);
 
+  // Feature #1 — the current card's first cited source (null when hand-authored).
+  // Drives the post-reveal provenance chip AND the lapse peek. The hook is a
+  // no-op without provenance, so manual cards stay clean.
+  const firstSource = useFirstCardSource(current?.id ?? null);
+
   // Resolve per-deck FSRS config so preview intervals match what the server
   // will actually schedule (mirrors server deck-config.ts resolveDeckConfig).
   const currentDeckConfig = useMemo(
@@ -241,6 +251,18 @@ export const NNReviewClassic = () => {
     }
   }, [current?.id, current?.renderKind, submitted]);
 
+  // Advance to the next card + reset per-card state. Split out of handleGrade so
+  // a held lapse-peek (Feature #1) can defer it to «понятно, дальше» without
+  // duplicating the reset logic.
+  const advanceQueue = useCallback(() => {
+    setPendingPeek(null);
+    setIndex((i) => i + 1);
+    setRevealed(false);
+    setSubmitted(false);
+    setTypedAnswer('');
+    setStartedAt(Date.now());
+  }, []);
+
   const handleGrade = useCallback(
     async (rating: Rating) => {
       if (!current || lockRef.current) return;
@@ -257,11 +279,15 @@ export const NNReviewClassic = () => {
         setCompleted((c) => c + 1);
         setXpGained((x) => x + xpForRating(rating));
         setGradeCounts((g) => ({ ...g, [rating]: g[rating] + 1 }));
-        setIndex((i) => i + 1);
-        setRevealed(false);
-        setSubmitted(false);
-        setTypedAnswer('');
-        setStartedAt(Date.now());
+        // Feature #1 — on a lapse (Again) for a card WITH a usable cited source,
+        // HOLD the advance and surface the passage. The grade is already
+        // committed; the peek is a non-blocking post-grade affordance dismissed
+        // via «понятно, дальше» / Esc, which then advances the queue.
+        if (rating === 1 && firstSource && firstSource.sourceId) {
+          setPendingPeek(firstSource);
+        } else {
+          advanceQueue();
+        }
       } catch (err) {
         console.error('grade failed', err);
         raiseToast({ kind: 'error', title: t('common.toasts.error') });
@@ -269,7 +295,7 @@ export const NNReviewClassic = () => {
         lockRef.current = false;
       }
     },
-    [current, grade, sessionMode, startedAt, submitted, t],
+    [current, grade, sessionMode, startedAt, submitted, t, firstSource, advanceQueue],
   );
 
   // Undo the most recent grade. Restores the card + profile server-side (and in
@@ -297,7 +323,14 @@ export const NNReviewClassic = () => {
         return { ...g, [last]: Math.max(0, g[last] - 1) };
       });
       lastGradeRef.current = null;
-      setIndex((i) => Math.max(0, i - 1));
+      // A held lapse-peek (Feature #1) means the grade committed but the queue
+      // did NOT advance — the index still points at the un-graded card, so we
+      // re-reveal it in place rather than stepping back (which would skip a card).
+      if (pendingPeek) {
+        setPendingPeek(null);
+      } else {
+        setIndex((i) => Math.max(0, i - 1));
+      }
       setRevealed(false);
       setSubmitted(false);
       setTypedAnswer('');
@@ -314,7 +347,7 @@ export const NNReviewClassic = () => {
     } finally {
       lockRef.current = false;
     }
-  }, [undoLastReview, t]);
+  }, [undoLastReview, t, pendingPeek]);
 
   const handleTypeSubmit = useCallback(() => {
     if (!current || current.renderKind !== 'typein' || submitted) return;
@@ -328,9 +361,15 @@ export const NNReviewClassic = () => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       const inInput = tag === 'INPUT' || tag === 'TEXTAREA';
 
-      // Escape: an open similar-cards drawer closes FIRST (doesn't exit zen or
-      // navigate); then zen exits focus; otherwise exit the reviewer to home.
+      // Escape: a held lapse-peek closes FIRST and advances (the grade already
+      // committed); then an open similar-cards drawer closes; then zen exits
+      // focus; otherwise exit the reviewer to home.
       if (e.key === 'Escape') {
+        if (pendingPeek) {
+          e.preventDefault();
+          advanceQueue();
+          return;
+        }
         if (similarOpen) {
           e.preventDefault();
           setSimilarOpen(false);
@@ -364,6 +403,11 @@ export const NNReviewClassic = () => {
       }
 
       if (!current) return;
+
+      // While a lapse-peek is held, the card is already graded — swallow
+      // navigation/flip/grade keys (Esc above is the way out). Edit/undo still
+      // worked above; everything below is queue-movement that the peek defers.
+      if (pendingPeek) return;
 
       // Edit shortcut — only outside inputs
       if ((e.key === 'e' || e.key === 'E') && !inInput) {
@@ -419,7 +463,7 @@ export const NNReviewClassic = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [revealed, current, handleGrade, handleUndo, router, queue.length, submitted, handleTypeSubmit, zenMode, toggleZen, setZen, similarOpen]);
+  }, [revealed, current, handleGrade, handleUndo, router, queue.length, submitted, handleTypeSubmit, zenMode, toggleZen, setZen, similarOpen, pendingPeek, advanceQueue]);
 
   // Moving to another card closes the similar drawer (it belongs to the card).
   useEffect(() => {
@@ -728,10 +772,9 @@ export const NNReviewClassic = () => {
             cardId={current.id}
             onOpen={(id) => router.push(`/cards?focus=${id}`)}
           />
-          {/* Source backlinks (NotebookLM M3) — renders nothing without provenance. */}
-          <div style={{ marginTop: 12 }}>
-            <SourceLinksPanel cardId={current.id} />
-          </div>
+          {/* Source backlinks moved OUT of the similar drawer (Feature #1): the
+              card's provenance now lives in the post-reveal SourcePeekChip + the
+              lapse SourcePeekPanel below, in the review flow itself. */}
         </aside>
       )}
 
@@ -1002,6 +1045,24 @@ export const NNReviewClassic = () => {
 
       </div>
 
+      {/* Feature #1 — post-reveal provenance chip. Shown after the answer is
+          revealed for ANY grade, ONLY when the card has a usable cited source.
+          Non-intrusive; an explicit click opens the library reader at the chunk. */}
+      {showAnswerSection && firstSource && (
+        <div
+          style={{
+            width: '100%',
+            maxWidth: 760,
+            marginTop: 12,
+            display: 'flex',
+            justifyContent: 'flex-start',
+            flexShrink: 0,
+          }}
+        >
+          <SourcePeekChip item={firstSource} onOpen={(href) => router.push(href)} />
+        </div>
+      )}
+
       {/* Quiet meta + hotkey strip — moved OUT of the card so the card holds only
           the question/answer. FSRS stats left, navigation hints right, edit at
           the far end. Mono + dim, never competes with the content. */}
@@ -1039,6 +1100,47 @@ export const NNReviewClassic = () => {
         </Link>
       </div>
 
+      {/* Feature #1 — held lapse-peek overlay. On Again for a provenance card we
+          pause the queue and float the cited passage here (replacing the rating
+          bar, which is moot — the grade already committed). «Понятно, дальше» /
+          Esc advances. Non-blocking: the card stays visible above. */}
+      {pendingPeek && (
+        <div
+          role="dialog"
+          aria-label={t('review.peek.title')}
+          style={{
+            position: 'fixed',
+            left: 0,
+            right: 0,
+            bottom: isMobile ? 68 : 0,
+            padding: isMobile ? '10px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 24px 18px',
+            display: 'flex',
+            justifyContent: 'center',
+            zIndex: 25,
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: 760,
+              pointerEvents: 'auto',
+              background: 'var(--surface)',
+              border: '1px solid var(--rose-400)',
+              borderRadius: 'var(--r-xl)',
+              boxShadow: 'var(--shadow-lg)',
+              padding: isMobile ? '12px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 16px',
+            }}
+          >
+            <SourcePeekPanel
+              item={pendingPeek}
+              onOpenLibrary={(href) => router.push(href)}
+              onDismiss={advanceQueue}
+            />
+          </div>
+        </div>
+      )}
+
       <div
         style={{
           position: 'fixed',
@@ -1046,8 +1148,8 @@ export const NNReviewClassic = () => {
           right: 0,
           bottom: isMobile ? 68 : 0,
           padding: isMobile ? '10px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 24px 18px',
-          background: 'linear-gradient(180deg, rgba(10,11,13,0) 0%, var(--bg) 40%)',
-          display: 'flex',
+          background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg) 0%, transparent) 0%, var(--bg) 40%)',
+          display: pendingPeek ? 'none' : 'flex',
           justifyContent: 'center',
           zIndex: 20,
           pointerEvents: 'none',

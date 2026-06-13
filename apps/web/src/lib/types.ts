@@ -454,6 +454,26 @@ export interface SourceChunkPage {
   nextFrom: number | null;
 }
 
+// ── «Урожай выделений → карточки» (feature #2) ─────────────────────────────────
+
+/** Which marking a harvested card came from — a text highlight/note (addressed
+ *  by its mark id) or an ink-underlined page (addressed by its 1-based page).
+ *  Echoed back unchanged on apply so the server stamps the right origin row. */
+export type HarvestOrigin =
+  | { kind: 'mark'; markId: string }
+  | { kind: 'ink'; page: number };
+
+/** One AI-proposed card from the source's unharvested markup (POST
+ *  /sources/:id/harvest-cards). `quote` is the source passage it came from
+ *  (wizard context); `page` is its 1-based page or null. */
+export interface HarvestCandidate {
+  origin: HarvestOrigin;
+  page: number | null;
+  front: string;
+  back: string;
+  quote: string;
+}
+
 /** One provenance backlink on a card (GET /cards/:id/sources). All ref fields go
  *  NULL after the source/notebook is deleted — a tombstone row («источник удалён»). */
 export interface CardSourceLink {
@@ -501,6 +521,10 @@ export interface SourceMark {
   note: string | null;
   /** W4: present for kind 'card' — the id of the linked card. */
   cardId?: string | null;
+  /** Feature #2: ISO timestamp when this highlight/note was harvested into cards
+   *  (null = not yet harvested). Drives the «✓ в карточке» badge + dimming so a
+   *  re-run won't re-offer it. */
+  harvestedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

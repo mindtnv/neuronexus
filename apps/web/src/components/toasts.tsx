@@ -10,7 +10,7 @@ import { useT } from '@/lib/i18n';
 //   }))
 // Mounted once per app shell.
 
-export type ToastKind = 'freeze' | 'dailyGoal' | 'leech' | 'info' | 'error';
+export type ToastKind = 'freeze' | 'dailyGoal' | 'leech' | 'info' | 'success' | 'error';
 
 export interface ToastPayload {
   id?: string;
@@ -35,6 +35,7 @@ const KIND_META: Record<ToastKind, { emoji: string; accent: string }> = {
   dailyGoal: { emoji: '🎯', accent: 'var(--lime-400)' },
   leech: { emoji: '🐌', accent: 'var(--rose-400)' },
   info: { emoji: '✨', accent: 'var(--violet-400)' },
+  success: { emoji: '✅', accent: 'var(--lime-400)' },
   error: { emoji: '⚠️', accent: 'var(--rose-400)' },
 };
 
@@ -88,7 +89,7 @@ export function ToastsStack() {
               borderRadius: 12,
               background: 'var(--surface)',
               border: `1px solid color-mix(in srgb, ${meta.accent} 40%, transparent)`,
-              boxShadow: `0 8px 32px rgba(0,0,0,0.35), 0 0 24px color-mix(in srgb, ${meta.accent} 15%, transparent)`,
+              boxShadow: `0 8px 32px var(--ambient-shadow), 0 0 24px color-mix(in srgb, ${meta.accent} 15%, transparent)`,
               color: 'var(--text)',
               display: 'flex',
               alignItems: 'flex-start',

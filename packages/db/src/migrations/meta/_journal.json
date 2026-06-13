@@ -155,6 +155,13 @@
       "when": 1781252569669,
       "tag": "0021_skinny_bushwacker",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1781343373984,
+      "tag": "0022_sloppy_sue_storm",
+      "breakpoints": true
     }
   ]
 }

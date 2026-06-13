@@ -393,6 +393,40 @@ const notebooks = {
     page: 'p. {n}',
   },
 
+  // Feature #2 — «Harvest markup → cards»: collect all un-harvested markup of a
+  // source into cards in one AI pass, then an accept/exclude/edit wizard.
+  harvest: {
+    button: 'Harvest cards from markup',
+    loading: 'Reading the markup…',
+    nothing: 'Nothing to harvest — highlight some text or mark pages first.',
+    cooldown: 'Just harvested — give it a moment.',
+    failed: 'Could not harvest cards. Try again later.',
+    badge: '✓ in a card',
+    title: 'Cards from markup',
+    cardOf: 'Card {n} of {m}',
+    deckLabel: 'Deck',
+    deckPlaceholder: 'Choose a deck',
+    frontLabel: 'Front',
+    backLabel: 'Back',
+    quoteLabel: 'From the passage',
+    frontPlaceholder: 'Question…',
+    backPlaceholder: 'Answer…',
+    include: 'Include',
+    exclude: 'Exclude',
+    excluded: 'Excluded',
+    back: 'Back',
+    next: 'Next',
+    review: 'Review',
+    reviewHint: 'Check the cards before creating them.',
+    apply: 'Create ({n})',
+    applying: 'Creating…',
+    created: '{n} cards created',
+    cancel: 'Cancel',
+    page: 'p. {n}',
+    originMark: 'highlight',
+    originInk: 'drawing',
+  },
+
   // M5 — selection marks (highlights + notes) in the PDF reader.
   marks: {
     panelTitle: 'Markup',

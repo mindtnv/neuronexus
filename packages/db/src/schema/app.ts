@@ -936,6 +936,11 @@ export const sourceAnnotations = pgTable(
     page: integer('page').notNull(),
     strokes: jsonb('strokes').notNull().$type<PageAnnotations>(),
     markedText: text('marked_text'),
+    // «Урожай выделений → карточки» (feature #2): when this page's ink markup has
+    // been turned into flashcards, stamp the harvest time so a re-run skips it.
+    // Nullable — never harvested rows stay NULL. NOT a CASCADE on the card: a
+    // harvested marking outlives any card it produced.
+    harvestedAt: timestamp('harvested_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -984,6 +989,11 @@ export const sourceMarks = pgTable(
     // CASCADE — a marker without its card is meaningless, so the marker dies with
     // the card. NULL for highlight/note marks.
     cardId: uuid('card_id').references(() => cards.id, { onDelete: 'cascade' }),
+    // «Урожай выделений → карточки» (feature #2): set when this highlight/note has
+    // been harvested into flashcards so a re-run won't re-offer it. SEPARATE from
+    // `cardId` ON DELETE CASCADE — deleting a card must NOT erase the user's
+    // highlight, so the harvest record lives on its own nullable column.
+    harvestedAt: timestamp('harvested_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

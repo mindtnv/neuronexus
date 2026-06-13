@@ -71,4 +71,6 @@ export const AI_COOLDOWN_MS = {
   reindex: 60_000,
   /** POST /sources/:id/suggest-card — per-source. */
   suggestCard: 5_000,
+  /** POST /sources/:id/harvest-cards — per-source (a batch generation). */
+  harvest: 15_000,
 } as const;

@@ -17,7 +17,7 @@ import {
   reviewFromApi,
 } from './mappers';
 import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
-import type { Card, ConceptMapResult, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookArtifact, NotebookCoverage, NotebookNote, NoteType, Profile, QuizAttempt, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard, SuggestSourcesResult } from './types';
+import type { Card, ConceptMapResult, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, HarvestCandidate, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookArtifact, NotebookCoverage, NotebookNote, NoteType, Profile, QuizAttempt, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard, SuggestSourcesResult } from './types';
 import type { NotebookArtifactType, NotebookColor, NotebookNoteKind, QuizAttemptAnswerInput, SourceKind, SourceMime } from '@neuronexus/shared';
 
 // Server-first store. Zustand holds a cached mirror of the user's decks, cards,
@@ -353,6 +353,20 @@ interface State {
   getSourceChunks: (id: string, from?: number, limit?: number) => Promise<SourceChunkPage>;
   /** List the cards generated from a source (GET /sources/:id/cards). */
   listSourceCards: (id: string) => Promise<SourceLinkedCard[]>;
+
+  // ── «Урожай выделений → карточки» (feature #2) ───────────────────────────────
+  /** Generate card candidates from the source's UNHARVESTED markup (POST
+   *  /sources/:id/harvest-cards). `locale` rides into the prompt (cards in the
+   *  user's language). 503 ai_disabled / 429 cooldown / 502 harvest_failed map
+   *  to a toast; an empty result means nothing left to harvest. */
+  harvestCards: (sourceId: string, locale?: 'en' | 'ru') => Promise<HarvestCandidate[]>;
+  /** Apply the wizard's selection (POST /sources/:id/harvest-cards/apply) — one
+   *  tx creating the chosen cards + provenance + stamping harvested_at on their
+   *  origin markings. Returns the created card ids. */
+  applyHarvest: (
+    sourceId: string,
+    body: { deckId: string; cards: HarvestCandidate[] },
+  ) => Promise<{ created: number; cardIds: string[] }>;
 
   // ── Library (L1) — the user-level material store (GET/POST/PATCH/DELETE /library) ──
   /** Paginated material list + filters (GET /library). */
@@ -1224,6 +1238,23 @@ export const useNN = create<State>()((set, get) => ({
       items: SourceLinkedCard[];
     };
     return res.items ?? [];
+  },
+
+  // ── «Урожай выделений → карточки» (feature #2) ───────────────────────────────
+
+  async harvestCards(sourceId, locale) {
+    const body: Record<string, string> = {};
+    if (locale) body.locale = locale;
+    const res = (await ok(
+      await (api as any).sources({ id: sourceId })['harvest-cards'].post(body),
+    )) as { candidates: HarvestCandidate[] };
+    return res.candidates ?? [];
+  },
+
+  async applyHarvest(sourceId, body) {
+    return (await ok(
+      await (api as any).sources({ id: sourceId })['harvest-cards'].apply.post(body),
+    )) as { created: number; cardIds: string[] };
   },
 
   // ── Library (L1) ──────────────────────────────────────────────────────────────
