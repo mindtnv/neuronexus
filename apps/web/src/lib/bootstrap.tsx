@@ -24,10 +24,13 @@ export function Bootstrap() {
 
   // ── Theme: live OS-scheme subscription (P3.3a) ──────────────────────────
   // The inline anti-FOUC script already painted the correct scheme before
-  // hydration; this only keeps a 'system'-preference user in sync when the OS
-  // flips light/dark while the app is open. Re-reads the persisted preference at
+  // hydration; re-apply on mount so Next's static theme-color meta is normalized
+  // for installed PWA window chrome after the head is fully assembled. The
+  // subscription keeps a 'system'-preference user in sync when the OS flips
+  // light/dark while the app is open. Re-reads the persisted preference at
   // change time so an explicit choice silently stops following the OS.
   useEffect(() => {
+    applyTheme(getTheme());
     return subscribeSystemTheme(() => {
       const pref = getTheme();
       if (pref === 'system') applyTheme('system');

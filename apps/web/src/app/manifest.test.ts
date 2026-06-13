@@ -16,9 +16,9 @@ describe('manifest route', () => {
     expect(m.display_override).toEqual(['window-controls-overlay']);
   });
 
-  test('color fields are the brand dark', () => {
+  test('color fields match launch bg + default topbar chrome', () => {
     expect(m.background_color).toBe('#0a0b0d');
-    expect(m.theme_color).toBe('#0a0b0d');
+    expect(m.theme_color).toBe('#111317');
   });
 
   test('ships 192, 512, and a 512 maskable PNG icon', () => {

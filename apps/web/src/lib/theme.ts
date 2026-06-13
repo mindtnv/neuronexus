@@ -96,6 +96,29 @@ export const THEME_SWATCHES: Record<ThemePref, readonly [string, string, string]
   synthwave: ['#241b2f', '#33264a', '#ff7edb'],
 };
 
+// Installed desktop PWAs use theme-color for the OS/window-controls chrome.
+// Keep this aligned with each theme's --surface token, not its accent color.
+export const THEME_CHROME_COLORS: Record<ThemeId, string> = {
+  dark: '#111317',
+  light: '#ffffff',
+  aurora: '#0b1714',
+  bloom: '#ffffff',
+  dracula: '#343746',
+  nord: '#343b49',
+  solarized: '#fffaf0',
+  gruvbox: '#32302f',
+  catppuccin: '#242438',
+  monokai: '#303126',
+  rosepine: '#211f30',
+  tokyonight: '#1f2335',
+  onedark: '#2f343f',
+  everforest: '#303a40',
+  kanagawa: '#252532',
+  ayu: '#171d26',
+  material: '#2d3b42',
+  synthwave: '#2a2040',
+};
+
 export const THEME_LS_KEY = 'nn:theme';
 
 function isThemePref(raw: string | null): raw is ThemePref {
@@ -125,6 +148,22 @@ export function resolveTheme(pref: ThemePref): ThemeId {
   return pref;
 }
 
+function updateThemeColorMeta(color: string): void {
+  if (typeof document === 'undefined') return;
+  const metas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
+  if (metas.length === 0) {
+    const meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    meta.content = color;
+    document.head.appendChild(meta);
+    return;
+  }
+  for (const meta of metas) {
+    meta.content = color;
+    meta.removeAttribute('media');
+  }
+}
+
 /** Apply a preference to <html>: set the concrete theme + its light/dark family. */
 export function applyTheme(pref: ThemePref): void {
   if (typeof document === 'undefined') return;
@@ -132,6 +171,7 @@ export function applyTheme(pref: ThemePref): void {
   const root = document.documentElement;
   root.setAttribute('data-theme', theme);
   root.setAttribute('data-theme-mode', THEME_MODES[theme]);
+  updateThemeColorMeta(THEME_CHROME_COLORS[theme]);
 }
 
 /** Persist + apply a new preference in one call. */
