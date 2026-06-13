@@ -12,7 +12,7 @@ import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { LocaleToggle } from '@/components/locale-toggle';
-import { getTheme, setTheme, type ThemePref } from '@/lib/theme';
+import { getTheme, setTheme, THEME_PREFS, THEME_SWATCHES, type ThemePref } from '@/lib/theme';
 import {
   isNotificationsEnabled,
   requestNotificationPermission,
@@ -287,11 +287,10 @@ export const NNSettings = () => {
     return () => { cancelled = true; };
   }, []);
 
-  const themeOptions: { key: ThemePref; label: string }[] = [
-    { key: 'dark', label: t('settings.appearance.themeDark') },
-    { key: 'light', label: t('settings.appearance.themeLight') },
-    { key: 'system', label: t('settings.appearance.themeSystem') },
-  ];
+  const themeOptions: { key: ThemePref; label: string }[] = THEME_PREFS.map((key) => ({
+    key,
+    label: t(`settings.appearance.theme.${key}`),
+  }));
 
   return (
     <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : '28px 40px', maxWidth: 880, width: '100%', margin: '0 auto' }}>
@@ -328,7 +327,7 @@ export const NNSettings = () => {
                       borderRadius: 8,
                       cursor: 'pointer',
                       background: active ? 'var(--lime-500)' : 'var(--surface-2)',
-                      color: active ? '#0a0b0d' : 'var(--text)',
+                      color: active ? 'var(--text-on-accent)' : 'var(--text)',
                       border: active ? '1px solid var(--lime-500)' : '1px solid var(--border)',
                       fontSize: 13,
                       fontWeight: 500,
@@ -346,10 +345,11 @@ export const NNSettings = () => {
       {/* ── Appearance (P3.3) — theme + language ── */}
       <Section title={t('settings.appearance.title')} subtitle={t('settings.appearance.subtitle')}>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 14 : 18 }}>
-          <Field label={t('settings.appearance.theme')}>
-            <div style={{ display: 'flex', gap: 6 }}>
+          <Field label={t('settings.appearance.themeLabel')}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
               {themeOptions.map((o) => {
                 const active = theme === o.key;
+                const swatches = THEME_SWATCHES[o.key];
                 return (
                   <button
                     key={o.key}
@@ -357,19 +357,35 @@ export const NNSettings = () => {
                     onClick={() => { if (!active) pickTheme(o.key); }}
                     aria-pressed={active}
                     style={{
-                      flex: 1,
-                      padding: '10px 6px',
+                      minHeight: 58,
+                      padding: '9px 10px',
                       borderRadius: 8,
                       cursor: 'pointer',
-                      background: active ? 'var(--lime-500)' : 'var(--surface-2)',
-                      color: active ? '#0a0b0d' : 'var(--text)',
+                      background: active ? 'color-mix(in srgb, var(--lime-500) 16%, var(--surface))' : 'var(--surface-2)',
+                      color: 'var(--text)',
                       border: active ? '1px solid var(--lime-500)' : '1px solid var(--border)',
                       fontSize: 13,
-                      fontWeight: 500,
+                      fontWeight: 600,
                       fontFamily: 'inherit',
+                      boxShadow: active ? 'var(--glow-lime)' : 'none',
+                      textAlign: 'left',
                     }}
                   >
-                    {o.label}
+                    <span style={{ display: 'flex', gap: 4, marginBottom: 7 }} aria-hidden="true">
+                      {swatches.map((color, idx) => (
+                        <span
+                          key={`${o.key}-${idx}`}
+                          style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: 999,
+                            background: color,
+                            border: '1px solid color-mix(in srgb, var(--text) 16%, transparent)',
+                          }}
+                        />
+                      ))}
+                    </span>
+                    <span>{o.label}</span>
                   </button>
                 );
               })}
@@ -639,7 +655,7 @@ export const NNSettings = () => {
                   width: 18,
                   height: 18,
                   borderRadius: '50%',
-                  background: '#fff',
+                  background: 'var(--text-on-violet)',
                   transition: 'left 150ms',
                   pointerEvents: 'none',
                 }}

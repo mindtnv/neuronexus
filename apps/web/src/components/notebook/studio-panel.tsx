@@ -741,7 +741,7 @@ const QuizCountDialog = ({
       <div
         className="nn-dialog-backdrop"
         onClick={onClose}
-        style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }}
+        style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--scrim)' }}
       />
       <div
         style={{

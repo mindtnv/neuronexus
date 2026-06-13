@@ -759,7 +759,7 @@ export const NNCardForm = ({
         {error && (
           <div style={{
             marginTop: 14, padding: '10px 12px',
-            background: 'rgba(232,120,138,0.08)', border: '1px solid rgba(232,120,138,0.28)',
+            background: 'var(--tone-rose-bg)', border: '1px solid var(--tone-rose-border)',
             borderRadius: 10, color: 'var(--rose-400)', fontSize: 12.5,
           }}>
             {error}

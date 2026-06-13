@@ -406,8 +406,8 @@ export const NNStats = () => {
             )}
             <defs>
               <linearGradient id="areaG" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="#9ad155" />
-                <stop offset="1" stopColor="#9ad155" stopOpacity="0" />
+                <stop offset="0" stopColor="var(--chart-area-stop)" />
+                <stop offset="1" stopColor="var(--chart-area-stop)" stopOpacity="0" />
               </linearGradient>
             </defs>
             {/* labels */}

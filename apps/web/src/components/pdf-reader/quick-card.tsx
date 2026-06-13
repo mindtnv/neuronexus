@@ -185,7 +185,7 @@ export function QuickCardDialog({
         alignItems: 'center',
         justifyContent: 'center',
         padding: 16,
-        background: 'rgba(0,0,0,0.45)',
+        background: 'var(--scrim)',
       }}
     >
       {/* Dialog box */}
@@ -437,7 +437,7 @@ export function QuickCardDialog({
               borderRadius: 'var(--r-md)',
               border: 'none',
               background: canSubmit ? 'var(--lime-500)' : 'var(--surface-3)',
-              color: canSubmit ? '#0d1608' : 'var(--text-dim)',
+              color: canSubmit ? 'var(--text-on-accent)' : 'var(--text-dim)',
               cursor: canSubmit ? 'pointer' : 'default',
               fontSize: 13,
               fontWeight: 700,

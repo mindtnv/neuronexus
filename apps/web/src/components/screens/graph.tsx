@@ -858,8 +858,8 @@ export const NNGraphForce = () => {
         >
           <defs>
             <radialGradient id="nn-graph-glow" cx="50%" cy="50%" r="50%">
-              <stop offset="0" stopColor="#9ad155" stopOpacity="0.35" />
-              <stop offset="1" stopColor="#9ad155" stopOpacity="0" />
+              <stop offset="0" stopColor="var(--chart-area-stop)" stopOpacity="0.35" />
+              <stop offset="1" stopColor="var(--chart-area-stop)" stopOpacity="0" />
             </radialGradient>
           </defs>
 
@@ -971,7 +971,7 @@ export const NNGraphForce = () => {
             borderTop: '1px solid var(--border)',
             borderTopLeftRadius: 16,
             borderTopRightRadius: 16,
-            boxShadow: '0 -10px 40px rgba(0,0,0,0.55)',
+            boxShadow: '0 -10px 40px var(--scrim)',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',

@@ -189,14 +189,14 @@ export const NNGardenTerrarium = () => {
       <div style={{
         width: '100%', maxWidth: 720, height: isMobile ? 300 : 360, position: 'relative',
         borderRadius: 24, overflow: 'hidden',
-        background: 'linear-gradient(180deg, #12171f 0%, #1b2418 70%, #2a2916 100%)',
+        background: 'var(--garden-terrarium-bg)',
         border: '1px solid var(--border-2)',
         boxShadow: 'var(--shadow-lg), inset 0 0 80px color-mix(in srgb, var(--lime-400) 8%, transparent)',
       }}>
         {/* ground */}
         <div style={{
           position: 'absolute', bottom: 0, left: 0, right: 0, height: isMobile ? 44 : 60,
-          background: 'linear-gradient(180deg, #3a2817 0%, #1a0f07 100%)',
+          background: 'var(--garden-ground-bg)',
         }}/>
         {/* sun */}
         <div style={{

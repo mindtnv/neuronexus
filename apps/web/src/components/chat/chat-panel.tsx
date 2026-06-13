@@ -2325,10 +2325,10 @@ export const ChatPanel = ({
                       cursor: 'pointer',
                       background: 'var(--rose-500)',
                       border: '1px solid var(--rose-500)',
-                      color: '#fff',
+                      color: 'var(--text-on-violet)',
                     }}
                   >
-                    <NNIcon name="pause" size={14} color="#fff" />
+                    <NNIcon name="pause" size={14} color="var(--text-on-violet)" />
                   </button>
                 ) : (
                   <button
@@ -2351,10 +2351,10 @@ export const ChatPanel = ({
                       justifyContent: 'center',
                       background: 'var(--lime-500)',
                       border: '1px solid var(--lime-500)',
-                      color: '#0d1608',
+                      color: 'var(--text-on-accent)',
                     }}
                   >
-                    <NNIcon name="send" size={15} color="#0d1608" strokeWidth={2} />
+                    <NNIcon name="send" size={15} color="var(--text-on-accent)" strokeWidth={2} />
                   </button>
                 )}
               </div>
@@ -2714,8 +2714,8 @@ const MessageRow = ({
             height: 28,
             borderRadius: 9,
             flexShrink: 0,
-            background: 'rgba(167,136,255,0.12)',
-            border: '1px solid rgba(167,136,255,0.25)',
+            background: 'var(--tone-violet-bg)',
+            border: '1px solid var(--tone-violet-border)',
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -2994,7 +2994,7 @@ const NotebookChatEmpty = ({
         height: 380,
         maxWidth: '100%',
         pointerEvents: 'none',
-        background: 'radial-gradient(closest-side, rgba(132,87,232,0.10), transparent 72%)',
+        background: 'radial-gradient(closest-side, var(--tone-violet-bg), transparent 72%)',
       }}
     />
     <span
@@ -3224,7 +3224,7 @@ const NumberedSourceChip = ({
           flexShrink: 0,
           position: 'relative',
           background: `linear-gradient(150deg, var(--${tone}-500), var(--${tone}-600))`,
-          boxShadow: 'inset 2px 0 0 rgba(0,0,0,0.25), 0 1px 3px rgba(0,0,0,0.35)',
+          boxShadow: 'inset 2px 0 0 var(--inset-shadow), 0 1px 3px var(--ambient-shadow)',
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -3234,7 +3234,7 @@ const NumberedSourceChip = ({
           style={{
             fontFamily: 'var(--font-serif)',
             fontSize: 9,
-            color: 'rgba(255,255,255,0.92)',
+            color: 'color-mix(in srgb, var(--text-on-violet) 92%, transparent)',
             lineHeight: 1,
           }}
         >

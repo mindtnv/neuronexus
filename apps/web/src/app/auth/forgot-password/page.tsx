@@ -54,11 +54,11 @@ export default function ForgotPasswordPage() {
       onSubmit={submit}
       style={{
         width: 'min(420px, 100%)',
-        background: 'var(--surface-1, #111517)',
-        border: '1px solid var(--border, rgba(255,255,255,0.08))',
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
         borderRadius: 20,
         padding: 28,
-        boxShadow: 'var(--shadow-lg, 0 30px 80px rgba(0,0,0,0.5))',
+        boxShadow: 'var(--shadow-lg)',
         display: 'flex',
         flexDirection: 'column',
         gap: 16,
@@ -95,10 +95,10 @@ export default function ForgotPasswordPage() {
       {error && (
         <div
           style={{
-            color: '#ff8080',
+            color: 'var(--rose-400)',
             fontSize: 13,
-            background: 'rgba(255, 128, 128, 0.08)',
-            border: '1px solid rgba(255, 128, 128, 0.2)',
+            background: 'var(--tone-rose-bg)',
+            border: '1px solid var(--tone-rose-border)',
             borderRadius: 8,
             padding: '8px 12px',
           }}
@@ -123,11 +123,11 @@ export default function ForgotPasswordPage() {
 }
 
 const inputStyle: React.CSSProperties = {
-  background: 'var(--surface-2, #0b0f10)',
-  border: '1px solid var(--border, rgba(255,255,255,0.08))',
+  background: 'var(--surface-2)',
+  border: '1px solid var(--border)',
   borderRadius: 10,
   padding: '10px 12px',
-  color: 'var(--text, #fff)',
+  color: 'var(--text)',
   fontSize: 14,
   fontFamily: 'inherit',
   outline: 'none',

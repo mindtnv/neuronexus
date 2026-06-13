@@ -1227,7 +1227,7 @@ const AddInlineDialog = ({
 
   return (
     <>
-      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.5)' }} />
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'var(--scrim)' }} />
       <div style={{ position: 'fixed', inset: 0, zIndex: 81, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, pointerEvents: 'none' }}>
         <NNCard padding={18} style={{ width: 420, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 12, pointerEvents: 'auto', boxShadow: 'var(--shadow-lg)' }}>
           <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', margin: 0, fontFamily: 'var(--font-sans)' }}>
@@ -1431,7 +1431,7 @@ const DetailsPanel = ({
 
   return (
     <>
-      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'rgba(0,0,0,0.5)' }} />
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'var(--scrim)' }} />
       <div
         className="nn-scroll"
         style={{
@@ -1669,7 +1669,7 @@ const NotebookAttachPicker = ({
 
   return (
     <>
-      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }} />
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--scrim)' }} />
       <div style={{ position: 'fixed', inset: 0, zIndex: 91, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, pointerEvents: 'none' }}>
         <NNCard padding={16} style={{ width: 380, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'auto', maxHeight: '70vh', boxShadow: 'var(--shadow-lg)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

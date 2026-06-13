@@ -137,7 +137,7 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.68)',
+            background: 'var(--scrim-strong)',
             zIndex: 80,
             display: 'flex',
             animation: 'nn-fade-in 140ms ease',
@@ -149,7 +149,7 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
               width: 260,
               maxWidth: '86vw',
               height: '100%',
-              boxShadow: '4px 0 32px rgba(0,0,0,0.6)',
+              boxShadow: '4px 0 32px var(--scrim-strong)',
               animation: 'nn-slide-in 200ms ease',
               display: 'flex',
             }}

@@ -212,9 +212,9 @@ export const NNBtn = ({
     xl: { h: 52, px: 24, fs: 16, gap: 10, r: 14 },
   };
   const variants: Record<BtnVariant, { bg: string; color: string; border: string }> = {
-    primary: { bg: 'var(--lime-500)', color: '#0d1608', border: 'var(--lime-500)' },
-    violet: { bg: 'var(--violet-500)', color: '#fff', border: 'var(--violet-500)' },
-    amber: { bg: 'var(--amber-500)', color: '#2a1c08', border: 'var(--amber-500)' },
+    primary: { bg: 'var(--lime-500)', color: 'var(--text-on-accent)', border: 'var(--lime-500)' },
+    violet: { bg: 'var(--violet-500)', color: 'var(--text-on-violet)', border: 'var(--violet-500)' },
+    amber: { bg: 'var(--amber-500)', color: 'var(--text-on-amber)', border: 'var(--amber-500)' },
     ghost: { bg: 'transparent', color: 'var(--text)', border: 'transparent' },
     soft: { bg: 'var(--surface-3)', color: 'var(--text)', border: 'var(--border)' },
     outline: { bg: 'transparent', color: 'var(--text)', border: 'var(--border-2)' },
@@ -286,12 +286,12 @@ export const NNBadge = ({
 }) => {
   const tones: Record<string, { bg: string; color: string; border: string }> = {
     neutral: { bg: 'var(--surface-3)', color: 'var(--text-muted)', border: 'var(--border)' },
-    lime: { bg: 'rgba(154,209,85,0.12)', color: 'var(--lime-400)', border: 'rgba(154,209,85,0.25)' },
-    amber: { bg: 'rgba(243,182,85,0.12)', color: 'var(--amber-400)', border: 'rgba(243,182,85,0.25)' },
-    violet: { bg: 'rgba(167,136,255,0.12)', color: 'var(--violet-400)', border: 'rgba(167,136,255,0.28)' },
-    sky: { bg: 'rgba(85,196,214,0.12)', color: 'var(--sky-400)', border: 'rgba(85,196,214,0.28)' },
-    rose: { bg: 'rgba(232,120,138,0.12)', color: 'var(--rose-400)', border: 'rgba(232,120,138,0.28)' },
-    solid: { bg: 'var(--lime-500)', color: '#0d1608', border: 'var(--lime-500)' },
+    lime: { bg: 'var(--tone-lime-bg)', color: 'var(--lime-400)', border: 'var(--tone-lime-border)' },
+    amber: { bg: 'var(--tone-amber-bg)', color: 'var(--amber-400)', border: 'var(--tone-amber-border)' },
+    violet: { bg: 'var(--tone-violet-bg)', color: 'var(--violet-400)', border: 'var(--tone-violet-border)' },
+    sky: { bg: 'var(--tone-sky-bg)', color: 'var(--sky-400)', border: 'var(--tone-sky-border)' },
+    rose: { bg: 'var(--tone-rose-bg)', color: 'var(--rose-400)', border: 'var(--tone-rose-border)' },
+    solid: { bg: 'var(--lime-500)', color: 'var(--text-on-accent)', border: 'var(--lime-500)' },
   };
   const sizes: Record<BadgeSize, { h: number; px: number; fs: number; gap: number }> = {
     xs: { h: 18, px: 6, fs: 10.5, gap: 3 },
@@ -414,15 +414,15 @@ export const NNLogo = ({ size = 28, showText = true }: { size?: number; showText
     <svg width={size} height={size} viewBox="0 0 32 32">
       <defs>
         <linearGradient id="nn-logo-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#9ad155" />
-          <stop offset="1" stopColor="#8457e8" />
+          <stop offset="0" stopColor="var(--lime-400)" />
+          <stop offset="1" stopColor="var(--violet-500)" />
         </linearGradient>
       </defs>
       <circle cx="8" cy="9" r="3" fill="url(#nn-logo-g)" />
-      <circle cx="24" cy="9" r="2.2" fill="#e89a2b" />
-      <circle cx="16" cy="22" r="2.8" fill="#a788ff" />
-      <circle cx="6" cy="22" r="1.8" fill="#55c4d6" />
-      <path d="M8 9 L16 22 M24 9 L16 22 M8 9 L6 22" stroke="#5a6070" strokeWidth="1.1" fill="none" strokeLinecap="round" />
+      <circle cx="24" cy="9" r="2.2" fill="var(--amber-500)" />
+      <circle cx="16" cy="22" r="2.8" fill="var(--violet-400)" />
+      <circle cx="6" cy="22" r="1.8" fill="var(--sky-400)" />
+      <path d="M8 9 L16 22 M24 9 L16 22 M8 9 L6 22" stroke="var(--text-dim)" strokeWidth="1.1" fill="none" strokeLinecap="round" />
     </svg>
     {showText && (
       <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, letterSpacing: -0.3, color: 'var(--text)' }}>
@@ -452,11 +452,11 @@ export const NNPlant = ({
   return (
     <svg width={size} height={size} viewBox="0 0 100 100">
       {/* shadow */}
-      <ellipse cx="50" cy="85" rx="22" ry="4" fill="rgba(0,0,0,0.3)" />
+      <ellipse cx="50" cy="85" rx="22" ry="4" fill="var(--plant-shadow)" />
       {/* pot */}
-      <path d="M32 72 L35 85 L65 85 L68 72 Z" fill="#5a4027" stroke="#3a2817" strokeWidth="0.8" />
-      <ellipse cx="50" cy="72" rx="18" ry="3" fill="#3a2817" />
-      <ellipse cx="50" cy="72" rx="16" ry="2.5" fill="#2a1d10" />
+      <path d="M32 72 L35 85 L65 85 L68 72 Z" fill="var(--plant-pot)" stroke="var(--plant-pot-dark)" strokeWidth="0.8" />
+      <ellipse cx="50" cy="72" rx="18" ry="3" fill="var(--plant-pot-dark)" />
+      <ellipse cx="50" cy="72" rx="16" ry="2.5" fill="color-mix(in srgb, var(--plant-pot-dark) 70%, var(--bg))" />
 
       {stage > 0 && (
         <g opacity={Math.min(1, grow * 1.5)}>
@@ -464,21 +464,21 @@ export const NNPlant = ({
           {/* ── FERN — arching fronds, bright green ── */}
           {species === 'fern' && (
             <>
-              <path d={`M50 72 Q48 ${72 - 25 * grow} 44 ${72 - 40 * grow}`} stroke="#7bb53a" strokeWidth={2} fill="none" strokeLinecap="round" />
-              <path d={`M50 72 Q52 ${72 - 22 * grow} 56 ${72 - 38 * grow}`} stroke="#9ad155" strokeWidth={2} fill="none" strokeLinecap="round" />
-              <path d={`M50 72 Q50 ${72 - 30 * grow} 50 ${72 - 45 * grow}`} stroke="#5a8f2a" strokeWidth={2.2} fill="none" strokeLinecap="round" />
+              <path d={`M50 72 Q48 ${72 - 25 * grow} 44 ${72 - 40 * grow}`} stroke="var(--plant-green-2)" strokeWidth={2} fill="none" strokeLinecap="round" />
+              <path d={`M50 72 Q52 ${72 - 22 * grow} 56 ${72 - 38 * grow}`} stroke="var(--plant-green-3)" strokeWidth={2} fill="none" strokeLinecap="round" />
+              <path d={`M50 72 Q50 ${72 - 30 * grow} 50 ${72 - 45 * grow}`} stroke="var(--plant-green-1)" strokeWidth={2.2} fill="none" strokeLinecap="round" />
               {stage > 2 && (
                 <>
-                  <ellipse cx="44" cy={72 - 38 * grow} rx="4" ry="2.5" fill="#9ad155" transform={`rotate(-40 44 ${72 - 38 * grow})`} />
-                  <ellipse cx="56" cy={72 - 36 * grow} rx="4" ry="2.5" fill="#c4e78a" transform={`rotate(40 56 ${72 - 36 * grow})`} />
-                  <ellipse cx="50" cy={72 - 45 * grow} rx="3" ry="2" fill="#7bb53a" />
+                  <ellipse cx="44" cy={72 - 38 * grow} rx="4" ry="2.5" fill="var(--plant-green-3)" transform={`rotate(-40 44 ${72 - 38 * grow})`} />
+                  <ellipse cx="56" cy={72 - 36 * grow} rx="4" ry="2.5" fill="var(--plant-green-4)" transform={`rotate(40 56 ${72 - 36 * grow})`} />
+                  <ellipse cx="50" cy={72 - 45 * grow} rx="3" ry="2" fill="var(--plant-green-2)" />
                 </>
               )}
-              {stage >= 4 && <circle cx="50" cy={72 - 48 * grow} r="3" fill="#e89a2b" />}
+              {stage >= 4 && <circle cx="50" cy={72 - 48 * grow} r="3" fill="var(--amber-500)" />}
               {stage >= 5 && (
                 <>
-                  <circle cx="44" cy={72 - 40 * grow} r="2" fill="#f3b655" />
-                  <circle cx="56" cy={72 - 38 * grow} r="2" fill="#f3b655" />
+                  <circle cx="44" cy={72 - 40 * grow} r="2" fill="var(--amber-400)" />
+                  <circle cx="56" cy={72 - 38 * grow} r="2" fill="var(--amber-400)" />
                 </>
               )}
             </>
@@ -493,31 +493,31 @@ export const NNPlant = ({
             return (
               <>
                 {/* main trunk segments */}
-                <rect x={x - 5} y={base - h} width={10} height={h} rx={3} fill="#4a8c3f" />
-                {stage > 1 && <rect x={x - 4} y={base - h * 0.9} width={8} height={segH * 0.9} rx={2} fill="#5aab4a" />}
+                <rect x={x - 5} y={base - h} width={10} height={h} rx={3} fill="var(--plant-green-1)" />
+                {stage > 1 && <rect x={x - 4} y={base - h * 0.9} width={8} height={segH * 0.9} rx={2} fill="var(--plant-green-2)" />}
                 {/* arm left */}
                 {stage > 2 && (
                   <>
-                    <rect x={x - 14} y={base - h * 0.6} width={8} height={segH} rx={3} fill="#4a8c3f" />
-                    <rect x={x - 12} y={base - h * 0.6 - segH * 0.4} width={6} height={segH * 0.6} rx={2} fill="#5aab4a" />
+                    <rect x={x - 14} y={base - h * 0.6} width={8} height={segH} rx={3} fill="var(--plant-green-1)" />
+                    <rect x={x - 12} y={base - h * 0.6 - segH * 0.4} width={6} height={segH * 0.6} rx={2} fill="var(--plant-green-2)" />
                   </>
                 )}
                 {/* arm right */}
                 {stage > 3 && (
                   <>
-                    <rect x={x + 6} y={base - h * 0.55} width={8} height={segH * 0.9} rx={3} fill="#4a8c3f" />
-                    <rect x={x + 8} y={base - h * 0.55 - segH * 0.35} width={6} height={segH * 0.55} rx={2} fill="#5aab4a" />
+                    <rect x={x + 6} y={base - h * 0.55} width={8} height={segH * 0.9} rx={3} fill="var(--plant-green-1)" />
+                    <rect x={x + 8} y={base - h * 0.55 - segH * 0.35} width={6} height={segH * 0.55} rx={2} fill="var(--plant-green-2)" />
                   </>
                 )}
                 {/* spines */}
                 {stage > 1 && [42, 50, 58].map((lx) => (
                   <React.Fragment key={lx}>
-                    <line x1={lx} y1={base - h * 0.5} x2={lx - 3} y2={base - h * 0.5 - 3} stroke="#c8e87a" strokeWidth={0.8} />
-                    <line x1={lx} y1={base - h * 0.5} x2={lx + 3} y2={base - h * 0.5 - 3} stroke="#c8e87a" strokeWidth={0.8} />
+                    <line x1={lx} y1={base - h * 0.5} x2={lx - 3} y2={base - h * 0.5 - 3} stroke="var(--plant-green-4)" strokeWidth={0.8} />
+                    <line x1={lx} y1={base - h * 0.5} x2={lx + 3} y2={base - h * 0.5 - 3} stroke="var(--plant-green-4)" strokeWidth={0.8} />
                   </React.Fragment>
                 ))}
                 {/* bloom on top */}
-                {stage >= 5 && <circle cx={x} cy={base - h - 4} r={4} fill="#f050a0" />}
+                {stage >= 5 && <circle cx={x} cy={base - h - 4} r={4} fill="var(--plant-flower)" />}
               </>
             );
           })()}
@@ -530,7 +530,7 @@ export const NNPlant = ({
             return (
               <>
                 {/* stem */}
-                <line x1={cx} y1={72} x2={cx} y2={cy + r * 0.3} stroke="#5aafaa" strokeWidth={2.5} strokeLinecap="round" />
+                <line x1={cx} y1={72} x2={cx} y2={cy + r * 0.3} stroke="var(--plant-water-1)" strokeWidth={2.5} strokeLinecap="round" />
                 {/* outer leaves */}
                 {leafAngles.map((angle) => {
                   const rad = (angle * Math.PI) / 180;
@@ -543,7 +543,7 @@ export const NNPlant = ({
                       cy={ly}
                       rx={r * 0.35}
                       ry={r * 0.55}
-                      fill="#52c7c0"
+                      fill="var(--plant-water-2)"
                       transform={`rotate(${angle} ${lx} ${ly})`}
                       opacity={0.85}
                     />
@@ -556,12 +556,12 @@ export const NNPlant = ({
                   const lx = cx + Math.cos(rad) * ir;
                   const ly = cy + Math.sin(rad) * ir * 0.7;
                   return (
-                    <ellipse key={`i${angle}`} cx={lx} cy={ly} rx={r * 0.25} ry={r * 0.38} fill="#7ae5de" transform={`rotate(${angle} ${lx} ${ly})`} />
+                    <ellipse key={`i${angle}`} cx={lx} cy={ly} rx={r * 0.25} ry={r * 0.38} fill="var(--plant-water-3)" transform={`rotate(${angle} ${lx} ${ly})`} />
                   );
                 })}
                 {/* center */}
-                <circle cx={cx} cy={cy} r={r * 0.22} fill="#aff3ef" />
-                {stage >= 5 && <circle cx={cx} cy={cy} r={r * 0.1} fill="#fff" />}
+                <circle cx={cx} cy={cy} r={r * 0.22} fill="color-mix(in srgb, var(--plant-water-3) 70%, var(--surface))" />
+                {stage >= 5 && <circle cx={cx} cy={cy} r={r * 0.1} fill="var(--text-on-violet)" />}
               </>
             );
           })()}
@@ -576,29 +576,29 @@ export const NNPlant = ({
                 {/* trunk */}
                 <path
                   d={`M48 72 Q46 ${72 - trunkH * 0.5} 50 ${crownCy + 4}`}
-                  stroke="#6b4226"
+                  stroke="var(--plant-pot)"
                   strokeWidth={4}
                   fill="none"
                   strokeLinecap="round"
                 />
                 {/* branch left */}
                 {stage > 1 && (
-                  <path d={`M50 ${crownCy + 4} Q42 ${crownCy - 4} 38 ${crownCy - 8}`} stroke="#6b4226" strokeWidth={2.5} fill="none" strokeLinecap="round" />
+                  <path d={`M50 ${crownCy + 4} Q42 ${crownCy - 4} 38 ${crownCy - 8}`} stroke="var(--plant-pot)" strokeWidth={2.5} fill="none" strokeLinecap="round" />
                 )}
                 {/* branch right */}
                 {stage > 2 && (
-                  <path d={`M50 ${crownCy + 4} Q58 ${crownCy - 3} 62 ${crownCy - 6}`} stroke="#6b4226" strokeWidth={2} fill="none" strokeLinecap="round" />
+                  <path d={`M50 ${crownCy + 4} Q58 ${crownCy - 3} 62 ${crownCy - 6}`} stroke="var(--plant-pot)" strokeWidth={2} fill="none" strokeLinecap="round" />
                 )}
                 {/* crown foliage blobs */}
-                <ellipse cx={50} cy={crownCy - 2} rx={crownR} ry={crownR * 0.65} fill="#3d7a2e" opacity={0.9} />
-                {stage > 1 && <ellipse cx={38} cy={crownCy - 7} rx={crownR * 0.55} ry={crownR * 0.42} fill="#4a9438" opacity={0.85} />}
-                {stage > 2 && <ellipse cx={62} cy={crownCy - 5} rx={crownR * 0.48} ry={crownR * 0.38} fill="#5aab48" opacity={0.8} />}
-                {stage > 3 && <ellipse cx={50} cy={crownCy - 10} rx={crownR * 0.4} ry={crownR * 0.3} fill="#6ec058" opacity={0.85} />}
+                <ellipse cx={50} cy={crownCy - 2} rx={crownR} ry={crownR * 0.65} fill="var(--plant-green-1)" opacity={0.9} />
+                {stage > 1 && <ellipse cx={38} cy={crownCy - 7} rx={crownR * 0.55} ry={crownR * 0.42} fill="var(--plant-green-1)" opacity={0.85} />}
+                {stage > 2 && <ellipse cx={62} cy={crownCy - 5} rx={crownR * 0.48} ry={crownR * 0.38} fill="var(--plant-green-2)" opacity={0.8} />}
+                {stage > 3 && <ellipse cx={50} cy={crownCy - 10} rx={crownR * 0.4} ry={crownR * 0.3} fill="var(--plant-green-2)" opacity={0.85} />}
                 {/* highlight */}
-                <ellipse cx={46} cy={crownCy - 4} rx={crownR * 0.3} ry={crownR * 0.2} fill="#8ad468" opacity={0.35} />
+                <ellipse cx={46} cy={crownCy - 4} rx={crownR * 0.3} ry={crownR * 0.2} fill="var(--plant-green-3)" opacity={0.35} />
                 {/* berries at stage 5 */}
                 {stage >= 5 && [42, 52, 60].map((bx) => (
-                  <circle key={bx} cx={bx} cy={crownCy - 8} r={2} fill="#cc3333" />
+                  <circle key={bx} cx={bx} cy={crownCy - 8} r={2} fill="var(--rose-500)" />
                 ))}
               </>
             );
@@ -618,21 +618,21 @@ export const NNPlant = ({
                 {/* trunk */}
                 <path
                   d={`M50 72 Q49 ${72 - trunkH * 0.6} 50 ${crownCy + 4}`}
-                  stroke="#8b5e3c"
+                  stroke="var(--plant-pot)"
                   strokeWidth={3}
                   fill="none"
                   strokeLinecap="round"
                 />
                 {/* crown base */}
-                <ellipse cx={50} cy={crownCy} rx={crownR} ry={crownR * 0.7} fill="#e8a0c0" opacity={0.4} />
+                <ellipse cx={50} cy={crownCy} rx={crownR} ry={crownR * 0.7} fill="var(--plant-flower-soft)" opacity={0.4} />
                 {/* petals / blossoms */}
                 {petalPositions.slice(0, Math.ceil(petalPositions.length * grow)).map(({ dx, dy }, i) => {
                   const px = 50 + dx * grow;
                   const py = crownCy + dy * grow;
                   return (
                     <g key={i}>
-                      <circle cx={px} cy={py} r={3.5 * grow} fill="#f4b8d4" opacity={0.9} />
-                      {stage >= 4 && <circle cx={px} cy={py} r={1} fill="#e8679a" />}
+                      <circle cx={px} cy={py} r={3.5 * grow} fill="var(--plant-flower-soft)" opacity={0.9} />
+                      {stage >= 4 && <circle cx={px} cy={py} r={1} fill="var(--plant-flower)" />}
                     </g>
                   );
                 })}
@@ -640,7 +640,7 @@ export const NNPlant = ({
                 {stage >= 5 && [
                   { x: 34, y: crownCy + 10 }, { x: 65, y: crownCy + 8 }, { x: 40, y: crownCy + 14 },
                 ].map(({ x, y }, i) => (
-                  <circle key={`fp${i}`} cx={x} cy={y} r={2} fill="#f4b8d4" opacity={0.6} />
+                  <circle key={`fp${i}`} cx={x} cy={y} r={2} fill="var(--plant-flower-soft)" opacity={0.6} />
                 ))}
               </>
             );
@@ -657,34 +657,34 @@ export const NNPlant = ({
                 {/* stem */}
                 <path
                   d={`M44 ${stemBase} Q43 ${stemTop + stemH * 0.5} 44 ${stemTop}`}
-                  stroke="#d4b896"
+                  stroke="var(--plant-stem)"
                   strokeWidth={10}
                   fill="none"
                   strokeLinecap="round"
                 />
                 <path
                   d={`M56 ${stemBase} Q57 ${stemTop + stemH * 0.5} 56 ${stemTop}`}
-                  stroke="#d4b896"
+                  stroke="var(--plant-stem)"
                   strokeWidth={10}
                   fill="none"
                   strokeLinecap="round"
                 />
-                <rect x={43} y={stemTop} width={14} height={stemH} rx={5} fill="#c9a87c" />
+                <rect x={43} y={stemTop} width={14} height={stemH} rx={5} fill="var(--plant-stem)" />
                 {/* gills underside */}
-                <ellipse cx={50} cy={stemTop} rx={capR * 0.85} ry={3 * grow} fill="#e8cfa8" />
+                <ellipse cx={50} cy={stemTop} rx={capR * 0.85} ry={3 * grow} fill="color-mix(in srgb, var(--plant-stem) 70%, var(--surface))" />
                 {/* cap */}
-                <ellipse cx={50} cy={stemTop - capR * 0.35} rx={capR} ry={capR * 0.72} fill="#c0392b" />
+                <ellipse cx={50} cy={stemTop - capR * 0.35} rx={capR} ry={capR * 0.72} fill="var(--rose-500)" />
                 {/* cap highlight */}
-                <ellipse cx={45} cy={stemTop - capR * 0.5} rx={capR * 0.35} ry={capR * 0.22} fill="#e05040" opacity={0.5} />
+                <ellipse cx={45} cy={stemTop - capR * 0.5} rx={capR * 0.35} ry={capR * 0.22} fill="var(--rose-400)" opacity={0.5} />
                 {/* spots */}
                 {stage > 1 && [
                   { cx: 50, cy: stemTop - capR * 0.55, r: 3 },
                   { cx: 40, cy: stemTop - capR * 0.3, r: 2 },
                   { cx: 60, cy: stemTop - capR * 0.28, r: 2.5 },
                 ].map((s, i) => (
-                  <circle key={i} cx={s.cx * grow + 50 * (1 - grow)} cy={s.cy} r={s.r * grow} fill="rgba(255,255,255,0.8)" />
+                  <circle key={i} cx={s.cx * grow + 50 * (1 - grow)} cy={s.cy} r={s.r * grow} fill="color-mix(in srgb, var(--selection-text) 80%, transparent)" />
                 ))}
-                {stage >= 4 && <circle cx={44} cy={stemTop - capR * 0.45} r={1.5 * grow} fill="rgba(255,255,255,0.8)" />}
+                {stage >= 4 && <circle cx={44} cy={stemTop - capR * 0.45} r={1.5 * grow} fill="color-mix(in srgb, var(--selection-text) 80%, transparent)" />}
               </>
             );
           })()}
@@ -726,12 +726,10 @@ export const NNSkeleton = ({
       width,
       height,
       borderRadius: radius,
-      background:
-        'linear-gradient(90deg, var(--surface-2, #14191d) 0%, var(--surface-3, #1c2328) 50%, var(--surface-2, #14191d) 100%)',
+      background: 'var(--skeleton-bg)',
       backgroundSize: '200% 100%',
       animation: 'nn-shimmer 1400ms ease-in-out infinite',
       ...style,
     }}
   />
 );
-

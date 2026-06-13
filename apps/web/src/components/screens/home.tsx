@@ -233,7 +233,7 @@ export const NNHome = () => {
               width: 200,
               height: 200,
               borderRadius: '50%',
-              background: 'radial-gradient(circle, rgba(154,209,85,0.18), transparent 70%)',
+              background: 'radial-gradient(circle, var(--tone-lime-bg-strong), transparent 70%)',
             }}
           />
           <div
@@ -321,9 +321,9 @@ export const NNHome = () => {
                     borderRadius: 999,
                     fontSize: 11,
                     fontWeight: 500,
-                    background: 'rgba(85,196,214,0.12)',
+                    background: 'var(--tone-sky-bg)',
                     color: 'var(--sky-400)',
-                    border: '1px solid rgba(85,196,214,0.3)',
+                    border: '1px solid var(--tone-sky-border)',
                   }}
                 >
                   🛡 × {streakFreezes}

@@ -196,7 +196,7 @@ export const NNSessionComplete = () => {
         flexDirection: isMobile ? 'column' : 'row',
         overflow: isMobile ? 'auto' : 'hidden',
         background:
-          'radial-gradient(ellipse at 50% 0%, rgba(154,209,85,0.08), transparent 60%)',
+          'radial-gradient(ellipse at 50% 0%, var(--tone-lime-bg), transparent 60%)',
       }}
     >
       {/* Main */}

@@ -49,10 +49,10 @@ const buildStaticCmdData: StaticBuilder = (t) => {
 };
 
 const TAG_COLORS: Record<string, { bg: string; color: string }> = {
-  amber:  { bg: 'rgba(243,182,85,0.15)',  color: 'var(--amber-400)' },
-  violet: { bg: 'rgba(167,136,255,0.15)', color: 'var(--violet-400)' },
-  sky:    { bg: 'rgba(85,196,214,0.15)',  color: 'var(--sky-400)' },
-  rose:   { bg: 'rgba(232,120,138,0.15)', color: 'var(--rose-400)' },
+  amber:  { bg: 'var(--tone-amber-bg)',  color: 'var(--amber-400)' },
+  violet: { bg: 'var(--tone-violet-bg)', color: 'var(--violet-400)' },
+  sky:    { bg: 'var(--tone-sky-bg)',  color: 'var(--sky-400)' },
+  rose:   { bg: 'var(--tone-rose-bg)', color: 'var(--rose-400)' },
 };
 
 const DECK_TAG: Record<DeckColor, string> = {
@@ -261,7 +261,7 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 100,
-      background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+      background: 'var(--scrim)', backdropFilter: 'blur(4px)',
       display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
       paddingTop: isMobile ? 40 : 100,
       paddingLeft: isMobile ? '2vw' : 0,
@@ -274,7 +274,7 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
         background: 'var(--surface)',
         border: '1px solid var(--border-2)',
         borderRadius: 18,
-        boxShadow: '0 32px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04)',
+        boxShadow: '0 32px 80px var(--scrim-strong), 0 0 0 1px var(--hairline-contrast)',
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}>

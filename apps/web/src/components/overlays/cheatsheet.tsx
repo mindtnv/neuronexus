@@ -77,7 +77,7 @@ export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 100,
-      background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+      background: 'var(--scrim-strong)', backdropFilter: 'blur(4px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       padding: isMobile ? '2vw' : 0,
     }} onClick={onClose}>
@@ -88,7 +88,7 @@ export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
         background: 'var(--surface)',
         border: '1px solid var(--border-2)',
         borderRadius: 20,
-        boxShadow: '0 32px 80px rgba(0,0,0,0.6)',
+        boxShadow: '0 32px 80px var(--scrim-strong)',
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
         animation: 'kbd-pop 180ms cubic-bezier(.34,1.56,.64,1)',

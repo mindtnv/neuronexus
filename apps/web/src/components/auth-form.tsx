@@ -45,11 +45,11 @@ export function AuthForm({ mode }: { mode: Mode }) {
       onSubmit={submit}
       style={{
         width: 'min(420px, 100%)',
-        background: 'var(--surface-1, #111517)',
-        border: '1px solid var(--border, rgba(255,255,255,0.08))',
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
         borderRadius: 'var(--r-lg, 20px)',
         padding: 28,
-        boxShadow: 'var(--shadow-lg, 0 30px 80px rgba(0,0,0,0.5))',
+        boxShadow: 'var(--shadow-lg)',
         display: 'flex',
         flexDirection: 'column',
         gap: 16,
@@ -103,10 +103,10 @@ export function AuthForm({ mode }: { mode: Mode }) {
       {error && (
         <div
           style={{
-            color: '#ff8080',
+            color: 'var(--rose-400)',
             fontSize: 13,
-            background: 'rgba(255, 128, 128, 0.08)',
-            border: '1px solid rgba(255, 128, 128, 0.2)',
+            background: 'var(--tone-rose-bg)',
+            border: '1px solid var(--tone-rose-border)',
             borderRadius: 8,
             padding: '8px 12px',
           }}
@@ -188,18 +188,18 @@ function Field({
         required={required}
         minLength={minLength}
         style={{
-          background: 'var(--surface-2, #0b0f10)',
-          border: '1px solid var(--border, rgba(255,255,255,0.08))',
+          background: 'var(--surface-2)',
+          border: '1px solid var(--border)',
           borderRadius: 10,
           padding: '10px 12px',
-          color: 'var(--text, #fff)',
+          color: 'var(--text)',
           fontSize: 14,
           fontFamily: 'inherit',
           outline: 'none',
           transition: 'border-color 120ms ease',
         }}
-        onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--lime-400, #a3e635)')}
-        onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--border, rgba(255,255,255,0.08))')}
+        onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--lime-400)')}
+        onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
       />
     </label>
   );

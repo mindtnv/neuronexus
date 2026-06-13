@@ -108,7 +108,7 @@ const NotebookMiniCover = ({
         transformOrigin: 'bottom center',
         zIndex: index,
         position: 'relative',
-        filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.3))',
+        filter: 'drop-shadow(0 2px 3px var(--ambient-shadow))',
       }}
       aria-hidden
     >
@@ -851,7 +851,7 @@ const CreateNotebookDialog = ({
       <div
         className="nn-dialog-backdrop"
         onClick={onClose}
-        style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }}
+        style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--scrim)' }}
       />
       <div
         style={{

@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  NeuroNexus maskable PWA icon source (512x512 target).
-  Same NNLogo geometry as source-logo.svg, but the art is inset into the inner
-  80% safe-zone (scale 0.8 about center) on a fully-filled #0a0b0d square, so
-  Android adaptive-icon masks never clip the logo. Rasterize:
+  Legacy NeuroNexus maskable icon reference.
 
-    rsvg-convert -w 512 -h 512 source-logo-maskable.svg -o icon-512-maskable.png
+  The current maskable PWA icon is raster artwork generated from:
+    apps/web/public/icons/generated/neuronexus-icon-source.png
+
+  Do not regenerate icon-512-maskable.png from this SVG unless intentionally
+  reverting to the old inline NNLogo geometry.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
   <defs>

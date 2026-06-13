@@ -618,7 +618,7 @@ export const NNCardsBrowser = () => {
       {isMobile && sidebarOpen && (
         <div
           onClick={() => setSidebarOpen(false)}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 40 }}
+          style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 40 }}
         >
           <aside
             onClick={(e) => e.stopPropagation()}

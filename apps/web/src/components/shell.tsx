@@ -64,7 +64,7 @@ const renderNavItem = ({
           fontSize: 10.5,
           fontWeight: 600,
           background: 'var(--lime-500)',
-          color: '#0d1608',
+          color: 'var(--text-on-accent)',
           padding: '2px 6px',
           borderRadius: 999,
           minWidth: 20,
@@ -177,13 +177,13 @@ export const NNSidebar = ({
                 width: 22,
                 height: 22,
                 borderRadius: 6,
-                background: 'linear-gradient(135deg, #9ad155, #55c4d6)',
+                background: 'var(--workspace-avatar-bg)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 fontSize: 11,
                 fontWeight: 700,
-                color: '#0a0b0d',
+                color: 'var(--text-on-accent)',
               }}
             >
               {workspaceInitials}
@@ -423,7 +423,7 @@ export const NNTopbar = ({
               height: wco ? 32 : 36,
               borderRadius: wco ? 8 : 9,
               background: 'var(--lime-500)',
-              color: '#0d1608',
+              color: 'var(--text-on-accent)',
               border: '1px solid var(--lime-500)',
               display: 'inline-flex',
               alignItems: 'center',
@@ -432,7 +432,7 @@ export const NNTopbar = ({
               flexShrink: 0,
             }}
           >
-            <NNIcon name="plus" size={16} color="#0d1608" />
+            <NNIcon name="plus" size={16} color="var(--text-on-accent)" />
           </button>
         </Link>
       )}

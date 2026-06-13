@@ -953,7 +953,7 @@ const HandoffPicker = ({
 
   return (
     <>
-      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }} />
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--scrim)' }} />
       <div style={{ position: 'fixed', inset: 0, zIndex: 91, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, pointerEvents: 'none' }}>
         <div
           style={{
@@ -1037,7 +1037,7 @@ const CardsDrawer = ({
       <div
         className="nn-dialog-backdrop"
         onClick={onClose}
-        style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }}
+        style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--scrim)' }}
       />
       <div
         className="nn-scroll"

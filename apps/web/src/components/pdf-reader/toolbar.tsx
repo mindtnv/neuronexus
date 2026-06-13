@@ -257,7 +257,7 @@ export const ReaderToolbar = ({
                   : '2px solid transparent',
                 boxShadow: color === c.hex
                   ? '0 0 0 2px var(--surface-2), 0 0 0 3px var(--text)'
-                  : 'inset 0 0 0 1px rgba(0,0,0,0.15)',
+                  : 'var(--mark-swatch-shadow)',
                 padding: 0,
                 flexShrink: 0,
                 transition: 'box-shadow 100ms',
@@ -318,7 +318,7 @@ export const ReaderToolbar = ({
                   height: 14,
                   borderRadius: 7,
                   background: marksPanelOpen ? 'var(--lime-500)' : 'var(--ink-600)',
-                  color: marksPanelOpen ? '#0d1608' : 'var(--text)',
+                  color: marksPanelOpen ? 'var(--text-on-accent)' : 'var(--text)',
                   fontSize: 9,
                   fontWeight: 700,
                   fontFamily: 'var(--font-sans)',
@@ -427,7 +427,7 @@ const SaveDot = ({ saveState, onRetry, t }: { saveState: SaveState; onRetry: () 
           padding: '0 8px',
           borderRadius: 'var(--r-sm)',
           border: '1px solid var(--rose-400)',
-          background: 'rgba(232,120,138,0.10)',
+          background: 'var(--tone-rose-bg)',
           color: 'var(--rose-400)',
           cursor: 'pointer',
           fontSize: 11.5,

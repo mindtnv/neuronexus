@@ -1,5 +1,7 @@
 /* NeuroNexus — Design tokens */
 :root {
+  color-scheme: dark;
+
   /* Neutrals — warm ink */
   --ink-950: #0a0b0d;
   --ink-900: #111317;
@@ -71,9 +73,71 @@
   --shadow-lg: 0 12px 40px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.4);
   --glow-lime: 0 0 0 1px rgba(154,209,85,0.2), 0 0 20px rgba(154,209,85,0.15);
   --glow-violet: 0 0 0 1px rgba(167,136,255,0.22), 0 0 24px rgba(132,87,232,0.18);
+
+  /* Semantic color roles */
+  --text-on-accent: #0d1608;
+  --text-on-violet: #ffffff;
+  --text-on-amber: #2a1c08;
+  --selection-text: #ffffff;
+  --scrim: rgba(0, 0, 0, 0.5);
+  --scrim-soft: rgba(0, 0, 0, 0.4);
+  --scrim-strong: rgba(0, 0, 0, 0.6);
+  --hairline-contrast: rgba(255, 255, 255, 0.04);
+  --inset-shadow: rgba(0, 0, 0, 0.25);
+  --ambient-shadow: rgba(0, 0, 0, 0.35);
+  --drop-overlay-bg: color-mix(in srgb, var(--lime-500) 8%, var(--scrim));
+  --shimmer-stop-1: color-mix(in srgb, var(--text) 10%, transparent);
+  --shimmer-stop-2: color-mix(in srgb, var(--text) 22%, transparent);
+  --input-fill: var(--surface-2);
+  --bottom-nav-bg: color-mix(in srgb, var(--bg) 92%, transparent);
+  --tone-lime-bg: color-mix(in srgb, var(--lime-500) 12%, transparent);
+  --tone-lime-bg-strong: color-mix(in srgb, var(--lime-500) 18%, transparent);
+  --tone-lime-border: color-mix(in srgb, var(--lime-500) 28%, transparent);
+  --tone-amber-bg: color-mix(in srgb, var(--amber-500) 12%, transparent);
+  --tone-amber-bg-strong: color-mix(in srgb, var(--amber-500) 18%, transparent);
+  --tone-amber-border: color-mix(in srgb, var(--amber-500) 28%, transparent);
+  --tone-violet-bg: color-mix(in srgb, var(--violet-500) 12%, transparent);
+  --tone-violet-bg-strong: color-mix(in srgb, var(--violet-500) 20%, transparent);
+  --tone-violet-border: color-mix(in srgb, var(--violet-500) 30%, transparent);
+  --tone-sky-bg: color-mix(in srgb, var(--sky-500) 12%, transparent);
+  --tone-sky-bg-strong: color-mix(in srgb, var(--sky-500) 20%, transparent);
+  --tone-sky-border: color-mix(in srgb, var(--sky-500) 30%, transparent);
+  --tone-rose-bg: color-mix(in srgb, var(--rose-500) 12%, transparent);
+  --tone-rose-bg-strong: color-mix(in srgb, var(--rose-500) 18%, transparent);
+  --tone-rose-border: color-mix(in srgb, var(--rose-500) 30%, transparent);
+  --code-link: var(--sky-400);
+  --code-selector: var(--amber-400);
+  --code-deletion: var(--rose-400);
+  --pdf-page-bg: #ffffff;
+  --pdf-page-border: rgba(0, 0, 0, 0.08);
+  --pdf-page-border-light: rgba(0, 0, 0, 0.1);
+  --pdf-page-shadow: 0 2px 8px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(0,0,0,0.06);
+  --pdf-page-shadow-light: 0 1px 4px rgba(0,0,0,0.12), 0 4px 16px rgba(0,0,0,0.08);
+  --skeleton-bg: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%);
+  --plant-shadow: color-mix(in srgb, var(--bg) 70%, transparent);
+  --plant-pot: color-mix(in srgb, var(--amber-600) 44%, var(--surface-3));
+  --plant-pot-dark: color-mix(in srgb, var(--amber-600) 25%, var(--bg));
+  --plant-stem: color-mix(in srgb, var(--amber-500) 50%, var(--surface-2));
+  --plant-green-1: var(--lime-600);
+  --plant-green-2: var(--lime-500);
+  --plant-green-3: var(--lime-400);
+  --plant-green-4: var(--lime-300);
+  --plant-flower: var(--rose-500);
+  --plant-flower-soft: var(--rose-400);
+  --plant-water-1: var(--sky-600);
+  --plant-water-2: var(--sky-500);
+  --plant-water-3: var(--sky-200);
+  --auth-bg: radial-gradient(1200px 600px at 50% -10%, var(--tone-lime-bg) 0%, transparent 60%), var(--surface);
+  --workspace-avatar-bg: linear-gradient(135deg, var(--lime-400), var(--sky-400));
+  --garden-terrarium-bg: linear-gradient(180deg, color-mix(in srgb, var(--sky-600) 10%, var(--bg)) 0%, color-mix(in srgb, var(--lime-600) 10%, var(--surface)) 70%, color-mix(in srgb, var(--amber-600) 12%, var(--surface-2)) 100%);
+  --garden-ground-bg: linear-gradient(180deg, var(--plant-pot-dark) 0%, color-mix(in srgb, var(--plant-pot-dark) 70%, var(--bg)) 100%);
+  --chart-area-stop: var(--lime-400);
+  --mark-swatch-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 15%, transparent);
+  --mark-arrow-shadow: 1px 1px 2px color-mix(in srgb, var(--bg) 35%, transparent);
 }
 
-[data-theme="light"] {
+[data-theme-mode="light"] {
+  color-scheme: light;
   --bg: var(--bone);
   --surface: #ffffff;
   --surface-2: #f4f2ec;
@@ -85,6 +149,323 @@
   --text-dim: #878d9b;
   --shadow-md: 0 1px 2px rgba(20,20,10,0.05), 0 8px 24px rgba(20,20,10,0.06);
   --shadow-lg: 0 2px 6px rgba(20,20,10,0.06), 0 16px 40px rgba(20,20,10,0.08);
+}
+
+[data-theme="aurora"] {
+  color-scheme: dark;
+  --bg: #06110f;
+  --surface: #0b1714;
+  --surface-2: #10211d;
+  --surface-3: #18302a;
+  --border: #203831;
+  --border-2: #31564b;
+  --text: #eff8f2;
+  --text-muted: #9ab0a6;
+  --text-dim: #61766e;
+  --lime-600: #4da760;
+  --lime-500: #77d38e;
+  --lime-400: #a4ebb5;
+  --lime-300: #c9f4d1;
+  --lime-100: #e5f9e9;
+  --amber-600: #b7752d;
+  --amber-500: #df9a45;
+  --amber-400: #f0bd72;
+  --amber-200: #f6d8a8;
+  --violet-600: #7761d8;
+  --violet-500: #9a84ff;
+  --violet-400: #bcaeff;
+  --violet-200: #ded7ff;
+  --sky-600: #208a89;
+  --sky-500: #42c6c0;
+  --sky-400: #76ddd8;
+  --sky-200: #bcefeb;
+  --rose-500: #e16f88;
+  --rose-400: #f096a8;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-md: 0 4px 18px rgba(0,0,0,0.32), 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-lg: 0 16px 44px rgba(0,0,0,0.38), 0 2px 8px rgba(0,0,0,0.45);
+  --glow-lime: 0 0 0 1px rgba(119,211,142,0.22), 0 0 22px rgba(66,198,192,0.18);
+  --glow-violet: 0 0 0 1px rgba(154,132,255,0.22), 0 0 24px rgba(154,132,255,0.18);
+}
+
+[data-theme="bloom"] {
+  color-scheme: light;
+  --bg: #f7faf7;
+  --surface: #ffffff;
+  --surface-2: #eef5f0;
+  --surface-3: #e2ece6;
+  --border: #d3dfd7;
+  --border-2: #b8c9bf;
+  --text: #14191b;
+  --text-muted: #596a63;
+  --text-dim: #82908a;
+  --lime-600: #2d8d62;
+  --lime-500: #45b779;
+  --lime-400: #70d99b;
+  --lime-300: #a8ecc0;
+  --lime-100: #def6e7;
+  --amber-600: #ba721e;
+  --amber-500: #d99531;
+  --amber-400: #eeb862;
+  --amber-200: #f6dca3;
+  --violet-600: #6550c8;
+  --violet-500: #846be4;
+  --violet-400: #a995f2;
+  --violet-200: #d7cef8;
+  --sky-600: #147c96;
+  --sky-500: #22a6bd;
+  --sky-400: #55c7d6;
+  --sky-200: #bde7ed;
+  --rose-500: #d85a82;
+  --rose-400: #e984a3;
+  --shadow-sm: 0 1px 2px rgba(20,45,35,0.08);
+  --shadow-md: 0 1px 2px rgba(20,45,35,0.06), 0 8px 24px rgba(20,45,35,0.08);
+  --shadow-lg: 0 2px 6px rgba(20,45,35,0.07), 0 16px 40px rgba(20,45,35,0.10);
+  --glow-lime: 0 0 0 1px rgba(69,183,121,0.22), 0 0 20px rgba(69,183,121,0.16);
+  --glow-violet: 0 0 0 1px rgba(132,107,228,0.22), 0 0 24px rgba(132,107,228,0.15);
+}
+
+[data-theme="dracula"] {
+  color-scheme: dark;
+  --bg: #282a36;
+  --surface: #343746;
+  --surface-2: #3f4254;
+  --surface-3: #4b5064;
+  --border: #4f5267;
+  --border-2: #62677f;
+  --text: #f8f8f2;
+  --text-muted: #c5c8d6;
+  --text-dim: #858aa5;
+  --lime-600: #3ca36c;
+  --lime-500: #50fa7b;
+  --lime-400: #78ff96;
+  --lime-300: #a8ffb8;
+  --lime-100: #dcffe3;
+  --amber-600: #c77d1d;
+  --amber-500: #ffb86c;
+  --amber-400: #ffd08f;
+  --amber-200: #ffe2ba;
+  --violet-600: #8e6be8;
+  --violet-500: #bd93f9;
+  --violet-400: #d6bcff;
+  --violet-200: #eadfff;
+  --sky-600: #45a3c5;
+  --sky-500: #8be9fd;
+  --sky-400: #a7f0ff;
+  --sky-200: #d8f9ff;
+  --rose-500: #ff79c6;
+  --rose-400: #ff9bd5;
+  --text-on-accent: #14161d;
+  --text-on-violet: #1f1830;
+  --text-on-amber: #261807;
+}
+
+[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: #2e3440;
+  --surface: #343b49;
+  --surface-2: #3b4252;
+  --surface-3: #434c5e;
+  --border: #4c566a;
+  --border-2: #5e6a80;
+  --text: #eceff4;
+  --text-muted: #c8d0dc;
+  --text-dim: #8f9aac;
+  --lime-600: #8aa25c;
+  --lime-500: #a3be8c;
+  --lime-400: #b9d4a3;
+  --lime-300: #d5e8c7;
+  --lime-100: #edf6e7;
+  --amber-600: #c58d4a;
+  --amber-500: #d8a657;
+  --amber-400: #ebcb8b;
+  --amber-200: #f3ddb3;
+  --violet-600: #8d7192;
+  --violet-500: #b48ead;
+  --violet-400: #c9a7c2;
+  --violet-200: #ead8e6;
+  --sky-600: #5b93aa;
+  --sky-500: #88c0d0;
+  --sky-400: #9bd4e2;
+  --sky-200: #d8edf2;
+  --rose-500: #bf616a;
+  --rose-400: #d08770;
+  --text-on-accent: #202630;
+  --text-on-violet: #241d26;
+}
+
+[data-theme="solarized"] {
+  color-scheme: light;
+  --bg: #fdf6e3;
+  --surface: #fffaf0;
+  --surface-2: #eee8d5;
+  --surface-3: #e5ddc8;
+  --border: #d9d0bb;
+  --border-2: #c4bba5;
+  --text: #073642;
+  --text-muted: #586e75;
+  --text-dim: #93a1a1;
+  --lime-600: #6c7f00;
+  --lime-500: #859900;
+  --lime-400: #9fb31d;
+  --lime-300: #c3d36a;
+  --lime-100: #ecf0c5;
+  --amber-600: #b66b00;
+  --amber-500: #cb8b00;
+  --amber-400: #dca82f;
+  --amber-200: #efd58e;
+  --violet-600: #5a4c9d;
+  --violet-500: #6c71c4;
+  --violet-400: #8589d2;
+  --violet-200: #d3d5ef;
+  --sky-600: #1f78b7;
+  --sky-500: #268bd2;
+  --sky-400: #55a6df;
+  --sky-200: #c7e1f2;
+  --rose-500: #d33682;
+  --rose-400: #dc647f;
+  --text-on-accent: #fdf6e3;
+  --text-on-amber: #2f2100;
+  --hairline-contrast: rgba(7, 54, 66, 0.08);
+}
+
+[data-theme="gruvbox"] {
+  color-scheme: dark;
+  --bg: #282828;
+  --surface: #32302f;
+  --surface-2: #3c3836;
+  --surface-3: #504945;
+  --border: #5b534d;
+  --border-2: #665c54;
+  --text: #fbf1c7;
+  --text-muted: #d5c4a1;
+  --text-dim: #928374;
+  --lime-600: #7c8f24;
+  --lime-500: #b8bb26;
+  --lime-400: #d5d84a;
+  --lime-300: #ebed9b;
+  --lime-100: #f6f7d6;
+  --amber-600: #d18b14;
+  --amber-500: #fabd2f;
+  --amber-400: #ffd166;
+  --amber-200: #ffe6a9;
+  --violet-600: #9d5f89;
+  --violet-500: #d3869b;
+  --violet-400: #e2a6b4;
+  --violet-200: #f0d1d8;
+  --sky-600: #4e8a91;
+  --sky-500: #83a598;
+  --sky-400: #a2bdae;
+  --sky-200: #d8e1dc;
+  --rose-500: #fb4934;
+  --rose-400: #ff7968;
+  --text-on-accent: #282828;
+  --text-on-amber: #282008;
+}
+
+[data-theme="catppuccin"] {
+  color-scheme: dark;
+  --bg: #1e1e2e;
+  --surface: #242438;
+  --surface-2: #313244;
+  --surface-3: #45475a;
+  --border: #51546b;
+  --border-2: #6c7086;
+  --text: #cdd6f4;
+  --text-muted: #a6adc8;
+  --text-dim: #7f849c;
+  --lime-600: #83a85b;
+  --lime-500: #a6e3a1;
+  --lime-400: #b9edb5;
+  --lime-300: #d7f7d4;
+  --lime-100: #effbea;
+  --amber-600: #c68c3c;
+  --amber-500: #f9e2af;
+  --amber-400: #ffe9c3;
+  --amber-200: #fff2da;
+  --violet-600: #a879db;
+  --violet-500: #cba6f7;
+  --violet-400: #ddc2ff;
+  --violet-200: #efe1ff;
+  --sky-600: #63abc0;
+  --sky-500: #89dceb;
+  --sky-400: #a6e8f2;
+  --sky-200: #d9f6fb;
+  --rose-500: #f38ba8;
+  --rose-400: #f5a6ba;
+  --text-on-accent: #1e1e2e;
+  --text-on-violet: #271d34;
+  --text-on-amber: #302411;
+}
+
+[data-theme="monokai"] {
+  color-scheme: dark;
+  --bg: #272822;
+  --surface: #303126;
+  --surface-2: #3e3d32;
+  --surface-3: #515042;
+  --border: #5f5d4d;
+  --border-2: #75715e;
+  --text: #f8f8f2;
+  --text-muted: #cfcfc2;
+  --text-dim: #8f8d7c;
+  --lime-600: #82b51c;
+  --lime-500: #a6e22e;
+  --lime-400: #c0f45c;
+  --lime-300: #d9fa97;
+  --lime-100: #f0fbd0;
+  --amber-600: #d79b18;
+  --amber-500: #e6db74;
+  --amber-400: #f0e694;
+  --amber-200: #f8f2c2;
+  --violet-600: #8b62bd;
+  --violet-500: #ae81ff;
+  --violet-400: #c7a5ff;
+  --violet-200: #e4d4ff;
+  --sky-600: #4aa6b9;
+  --sky-500: #66d9ef;
+  --sky-400: #8be6f6;
+  --sky-200: #d4f7fb;
+  --rose-500: #f92672;
+  --rose-400: #ff669b;
+  --text-on-accent: #1e2019;
+  --text-on-violet: #211737;
+  --text-on-amber: #2f2a0e;
+}
+
+[data-theme="rosepine"] {
+  color-scheme: dark;
+  --bg: #191724;
+  --surface: #211f30;
+  --surface-2: #26233a;
+  --surface-3: #312e48;
+  --border: #403d52;
+  --border-2: #524f67;
+  --text: #e0def4;
+  --text-muted: #b4aecb;
+  --text-dim: #817c9c;
+  --lime-600: #7fa46b;
+  --lime-500: #9ccfd8;
+  --lime-400: #b3dce4;
+  --lime-300: #d4eef2;
+  --lime-100: #ecf7f8;
+  --amber-600: #c28f62;
+  --amber-500: #f6c177;
+  --amber-400: #f8d199;
+  --amber-200: #fbe5c2;
+  --violet-600: #a480c4;
+  --violet-500: #c4a7e7;
+  --violet-400: #d7c1f0;
+  --violet-200: #eadff7;
+  --sky-600: #6a93b8;
+  --sky-500: #9ccfd8;
+  --sky-400: #b3dce4;
+  --sky-200: #d6eef2;
+  --rose-500: #eb6f92;
+  --rose-400: #ebbcba;
+  --text-on-accent: #171421;
+  --text-on-violet: #21152e;
+  --text-on-amber: #281c0b;
 }
 
 * { box-sizing: border-box; }
@@ -100,7 +481,7 @@ body {
   font-feature-settings: 'ss01', 'cv02', 'cv11';
 }
 
-::selection { background: var(--violet-500); color: #fff; }
+::selection { background: var(--violet-500); color: var(--selection-text); }
 
 a { color: inherit; text-decoration: none; }
 
@@ -137,7 +518,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 /* M4 PDF reader — off-screen page placeholder shimmer. Kept as a class (not an
    inline style) so the prefers-reduced-motion guard below can disable it. */
 .nn-pdf-page-shimmer {
-  background: linear-gradient(90deg, rgba(200,200,200,0.10) 25%, rgba(200,200,200,0.22) 50%, rgba(200,200,200,0.10) 75%);
+  background: linear-gradient(90deg, var(--shimmer-stop-1) 25%, var(--shimmer-stop-2) 50%, var(--shimmer-stop-1) 75%);
   background-size: 200% 100%;
   animation: nn-shimmer 2s ease infinite;
 }
@@ -376,19 +757,19 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-rendered .hljs-built_in,
 .nn-rendered .hljs-builtin-name,
 .nn-rendered .hljs-meta,
-.nn-rendered .hljs-link { color: #6cb6e8; }
+.nn-rendered .hljs-link { color: var(--code-link); }
 .nn-rendered .hljs-title,
 .nn-rendered .hljs-function .hljs-title,
 .nn-rendered .hljs-class .hljs-title,
 .nn-rendered .hljs-selector-id,
-.nn-rendered .hljs-selector-class { color: #e8c46c; }
+.nn-rendered .hljs-selector-class { color: var(--code-selector); }
 .nn-rendered .hljs-attr,
 .nn-rendered .hljs-attribute,
 .nn-rendered .hljs-variable,
 .nn-rendered .hljs-template-variable,
 .nn-rendered .hljs-property { color: var(--ink-200); }
 .nn-rendered .hljs-tag { color: var(--ink-300); }
-.nn-rendered .hljs-deletion { color: #e06c75; }
+.nn-rendered .hljs-deletion { color: var(--code-deletion); }
 .nn-rendered .hljs-emphasis { font-style: italic; }
 
 /* Markdown pipe tables (table/thead/tbody/tr/th/td — all allow-listed at both
@@ -493,7 +874,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-reader-bg {
   background: var(--ink-950);
 }
-[data-theme="light"] .nn-reader-bg {
+[data-theme-mode="light"] .nn-reader-bg {
   background: var(--surface-3);
 }
 
@@ -502,15 +883,15 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
    transition: scale commits are instant; the CSS transition gives a 120 ms
    settle feel without blocking interaction. */
 .nn-pdf-page {
-  background: #ffffff; /* PDF content is always on white */
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: var(--pdf-page-bg); /* PDF content is always on white */
+  border: 1px solid var(--pdf-page-border);
   border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(0,0,0,0.06);
+  box-shadow: var(--pdf-page-shadow);
   transition: box-shadow 150ms ease;
 }
-[data-theme="light"] .nn-pdf-page {
-  box-shadow: 0 1px 4px rgba(0,0,0,0.12), 0 4px 16px rgba(0,0,0,0.08);
-  border-color: rgba(0,0,0,0.1);
+[data-theme-mode="light"] .nn-pdf-page {
+  box-shadow: var(--pdf-page-shadow-light);
+  border-color: var(--pdf-page-border-light);
 }
 
 /* Frosted toolbar container — one compact sticky row above the reader. Uses
@@ -524,7 +905,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 @media (prefers-reduced-motion: reduce) {
   .nn-reader-toolbar { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--surface); }
 }
-[data-theme="light"] .nn-reader-toolbar {
+[data-theme-mode="light"] .nn-reader-toolbar {
   background: color-mix(in srgb, var(--surface) 92%, transparent);
 }
 
@@ -647,7 +1028,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   -webkit-backdrop-filter: blur(4px) brightness(0.7);
 }
 @media (prefers-reduced-motion: reduce) {
-  .nn-dialog-backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(0,0,0,0.6); }
+  .nn-dialog-backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--scrim-strong); }
 }
 
 /* Mobile workspace tab bar — active indicator as a lime underline pill. */
@@ -718,8 +1099,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   letter-spacing: 0.9px;
   margin: 0 0 10px;
 }
-[data-theme="light"] .nn-h1 { color: var(--text); }
-[data-theme="light"] .nn-section-label { color: var(--text-dim); }
+[data-theme-mode="light"] .nn-h1 { color: var(--text); }
+[data-theme-mode="light"] .nn-section-label { color: var(--text-dim); }
 
 /* Code-block copy button (B3) — injected by decorateCodeBlocks() AFTER the
    sanitized markdown renders (never part of the sanitize pipeline). */
@@ -822,7 +1203,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-lib-progress {
   height: 4px;
   border-radius: 2px;
-  background: color-mix(in srgb, var(--ink-700, #2c3038) 60%, transparent);
+  background: color-mix(in srgb, var(--border-2) 60%, transparent);
   overflow: hidden;
 }
 .nn-lib-progress-fill {
@@ -848,11 +1229,11 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 .nn-lib-chip:hover { color: var(--text); border-color: var(--border-2); }
 .nn-lib-chip.active {
-  color: #0d1608;
+  color: var(--text-on-accent);
   background: var(--lime-500);
   border-color: var(--lime-500);
 }
-[data-theme="light"] .nn-lib-chip.active { color: #0d1608; }
+[data-theme-mode="light"] .nn-lib-chip.active { color: var(--text-on-accent); }
 
 /* Tag pill (details panel). */
 .nn-lib-tag {
@@ -865,8 +1246,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   font-weight: 500;
   font-family: var(--font-sans);
   color: var(--sky-400);
-  background: rgba(85,196,214,0.10);
-  border: 1px solid rgba(85,196,214,0.22);
+  background: var(--tone-sky-bg);
+  border: 1px solid var(--tone-sky-border);
   border-radius: var(--r-pill);
 }
 
@@ -1043,7 +1424,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   width: 320px;
   height: 220px;
   pointer-events: none;
-  background: radial-gradient(closest-side, rgba(132, 87, 232, 0.10), transparent 70%);
+  background: radial-gradient(closest-side, var(--tone-violet-bg), transparent 70%);
 }
 .nn-nb-continue-tile {
   position: relative;
@@ -1088,7 +1469,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 .nn-nb-create:hover {
   border-color: var(--lime-500);
-  background: rgba(154, 209, 85, 0.04);
+  background: color-mix(in srgb, var(--lime-500) 4%, transparent);
 }
 .nn-nb-create:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
 .nn-nb-create-plus {
@@ -1124,10 +1505,10 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-nb-pulse { animation: none; }
 }
 
-[data-theme="light"] .nn-nb-card,
-[data-theme="light"] .nn-nb-continue { background: var(--surface); border-color: var(--border); }
-[data-theme="light"] .nn-nb-search { background: var(--surface); border-color: var(--border); }
-[data-theme="light"] .nn-nb-create-plus { background: var(--surface-2); border-color: var(--border); }
+[data-theme-mode="light"] .nn-nb-card,
+[data-theme-mode="light"] .nn-nb-continue { background: var(--surface); border-color: var(--border); }
+[data-theme-mode="light"] .nn-nb-search { background: var(--surface); border-color: var(--border); }
+[data-theme-mode="light"] .nn-nb-create-plus { background: var(--surface-2); border-color: var(--border); }
 
 /* ── «Блокноты 2.0» N2 — studio + overview dock ─────────────────────────────── */
 
@@ -1168,7 +1549,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   height: 26px;
   flex-shrink: 0;
   border-radius: var(--r-sm);
-  background: rgba(154, 209, 85, 0.12);
+  background: var(--tone-lime-bg);
 }
 .nn-studio-tile-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .nn-studio-tile-name {
@@ -1203,13 +1584,13 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   font-weight: 600;
   font-family: var(--font-sans);
   color: var(--sky-400);
-  background: rgba(85, 196, 214, 0.1);
-  border: 1px solid rgba(85, 196, 214, 0.28);
+  background: var(--tone-sky-bg);
+  border: 1px solid var(--tone-sky-border);
   border-radius: 999px;
   cursor: pointer;
   transition: background 100ms ease;
 }
-.nn-studio-footnote:hover { background: rgba(85, 196, 214, 0.2); }
+.nn-studio-footnote:hover { background: var(--tone-sky-bg-strong); }
 
 /* Suggested-question pill (overview tab). */
 .nn-suggest-pill {
@@ -1239,8 +1620,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   padding: 8px 10px;
   font-size: 12px;
   color: var(--amber-400);
-  background: rgba(243, 182, 85, 0.1);
-  border: 1px solid rgba(243, 182, 85, 0.25);
+  background: var(--tone-amber-bg);
+  border: 1px solid var(--tone-amber-border);
   border-radius: var(--r-md);
 }
 
@@ -1288,7 +1669,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   position: fixed;
   inset: 0;
   z-index: 95;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
 }
 .nn-artifact-reader {
   position: fixed;
@@ -1379,9 +1760,9 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-artifact-reader-doc-title { font-size: 20px; }
 }
 
-[data-theme="light"] .nn-artifact-reader-backdrop { background: rgba(0, 0, 0, 0.4); }
-[data-theme="light"] .nn-studio-tile { background: var(--surface); }
-[data-theme="light"] .nn-suggest-pill { background: var(--surface); }
+[data-theme-mode="light"] .nn-artifact-reader-backdrop { background: var(--scrim-soft); }
+[data-theme-mode="light"] .nn-studio-tile { background: var(--surface); }
+[data-theme-mode="light"] .nn-suggest-pill { background: var(--surface); }
 
 /* ── «Блокноты 2.0» N3 — quiz player ─────────────────────────────────────── */
 
@@ -1601,12 +1982,12 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   font-size: 11px;
   font-family: var(--font-sans);
   color: var(--sky-400);
-  background: rgba(85, 196, 214, 0.12);
+  background: var(--tone-sky-bg);
   border: none;
   border-radius: var(--r-xs);
   cursor: pointer;
 }
-.nn-quiz-source-link:hover { background: rgba(85, 196, 214, 0.2); }
+.nn-quiz-source-link:hover { background: var(--tone-sky-bg-strong); }
 
 /* Attempt-history rows. */
 .nn-quiz-history-row {
@@ -1659,13 +2040,13 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-quiz-dot { transition: none; }
 }
 
-[data-theme="light"] .nn-quiz-preset,
-[data-theme="light"] .nn-quiz-option,
-[data-theme="light"] .nn-quiz-tf,
-[data-theme="light"] .nn-quiz-textarea,
-[data-theme="light"] .nn-quiz-selfgrade,
-[data-theme="light"] .nn-quiz-history-row,
-[data-theme="light"] .nn-coverage-gap { background: var(--surface); }
+[data-theme-mode="light"] .nn-quiz-preset,
+[data-theme-mode="light"] .nn-quiz-option,
+[data-theme-mode="light"] .nn-quiz-tf,
+[data-theme-mode="light"] .nn-quiz-textarea,
+[data-theme-mode="light"] .nn-quiz-selfgrade,
+[data-theme-mode="light"] .nn-quiz-history-row,
+[data-theme-mode="light"] .nn-coverage-gap { background: var(--surface); }
 
 /* Right-dock column entrance (desktop) — a gentle slide+fade so expand/collapse
    feels smooth without animating layout width (the column mounts/unmounts). */
@@ -1687,7 +2068,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   padding: 6px;
   overflow: hidden;
 }
-[data-theme="light"] .nn-concept-map { background: var(--surface); }
+[data-theme-mode="light"] .nn-concept-map { background: var(--surface); }
 
 /* A node group: circle + label. The circle pulses subtly on hover (lit). */
 .nn-concept-node {
@@ -1744,7 +2125,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--lime-500) 8%, rgba(0,0,0,0.45));
+  background: var(--drop-overlay-bg);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
   pointer-events: none;
@@ -1803,19 +2184,19 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   font-weight: 600;
   line-height: 1;
   vertical-align: text-top;
-  background: rgba(167, 136, 255, 0.12);
+  background: var(--tone-violet-bg);
   color: var(--violet-400);
-  border: 1px solid rgba(167, 136, 255, 0.28);
+  border: 1px solid var(--tone-violet-border);
   cursor: pointer;
   transition: background 120ms ease;
 }
 .nn-nb-cite:not(.nn-nb-cite-static) { margin-left: 3px; }
-.nn-nb-cite:hover { background: rgba(167, 136, 255, 0.22); }
+.nn-nb-cite:hover { background: var(--tone-violet-bg-strong); }
 .nn-nb-cite-static { cursor: inherit; }
 
 /* Numbered source chip under an answer. */
 .nn-nb-srcchip { transition: border-color 140ms ease; }
-.nn-nb-srcchip:hover:not(:disabled) { border-color: rgba(167, 136, 255, 0.4); }
+.nn-nb-srcchip:hover:not(:disabled) { border-color: color-mix(in srgb, var(--violet-500) 40%, transparent); }
 
 /* Assistant action buttons (copy / save / regenerate). */
 .nn-nb-action { transition: background 120ms ease, color 120ms ease; }
@@ -1835,13 +2216,13 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 
 /* Light theme overrides — the violet/lime accents already use tokens, but the
    composer hover border + citation chip read better with a softer tint. */
-[data-theme='light'] .nn-nb-cite {
-  background: rgba(132, 87, 232, 0.10);
-  border-color: rgba(132, 87, 232, 0.22);
+[data-theme-mode='light'] .nn-nb-cite {
+  background: var(--tone-violet-bg);
+  border-color: var(--tone-violet-border);
 }
-[data-theme='light'] .nn-nb-cite:hover { background: rgba(132, 87, 232, 0.18); }
-[data-theme='light'] .nn-nb-composer:hover,
-[data-theme='light'] .nn-nb-composer:focus-within { border-color: var(--border-2); }
+[data-theme-mode='light'] .nn-nb-cite:hover { background: var(--tone-violet-bg-strong); }
+[data-theme-mode='light'] .nn-nb-composer:hover,
+[data-theme-mode='light'] .nn-nb-composer:focus-within { border-color: var(--border-2); }
 
 @media (prefers-reduced-motion: reduce) {
   .nn-nb-sug,
@@ -1965,11 +2346,11 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   position: relative;
   border-radius: 4px;
   overflow: hidden;
-  box-shadow: inset 2px 0 0 rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.35);
+  box-shadow: inset 2px 0 0 var(--inset-shadow), 0 1px 3px var(--ambient-shadow);
 }
 .nn-nb-cover-letter {
   font-family: var(--font-serif);
-  color: rgba(255, 255, 255, 0.92);
+  color: color-mix(in srgb, var(--text-on-violet) 92%, transparent);
   line-height: 1;
 }
 
@@ -2028,9 +2409,9 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   100% { transform: translateX(290%); }
 }
 
-[data-theme='light'] .nn-nb-connect { background: var(--surface); }
-[data-theme='light'] .nn-nb-seg { background: var(--surface); border-color: var(--border); }
-[data-theme='light'] .nn-nb-seg-tab.active { background: var(--surface-2); }
+[data-theme-mode='light'] .nn-nb-connect { background: var(--surface); }
+[data-theme-mode='light'] .nn-nb-seg { background: var(--surface); border-color: var(--border); }
+[data-theme-mode='light'] .nn-nb-seg-tab.active { background: var(--surface-2); }
 
 @media (prefers-reduced-motion: reduce) {
   .nn-nb-ws-back,
@@ -2077,11 +2458,11 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   background: var(--surface-2);
   transform: scale(0.93);
 }
-[data-theme='light'] .nn-tb-ghost:hover {
-  background: rgba(0, 0, 0, 0.065);
+[data-theme-mode='light'] .nn-tb-ghost:hover {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
 }
-[data-theme='light'] .nn-tb-ghost:active {
-  background: rgba(0, 0, 0, 0.12);
+[data-theme-mode='light'] .nn-tb-ghost:active {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
 }
 @media (prefers-reduced-motion: reduce) {
   .nn-tb-ghost {

@@ -210,7 +210,7 @@ export function SelectionPopover({
               cursor: 'pointer',
               padding: 0,
               flexShrink: 0,
-              boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.12)',
+              boxShadow: 'var(--mark-swatch-shadow)',
               transition: 'transform 80ms ease, box-shadow 80ms ease',
             }}
             onMouseEnter={(e) => {
@@ -219,7 +219,7 @@ export function SelectionPopover({
             }}
             onMouseLeave={(e) => {
               (e.currentTarget as HTMLElement).style.transform = '';
-              (e.currentTarget as HTMLElement).style.boxShadow = 'inset 0 0 0 1px rgba(0,0,0,0.12)';
+              (e.currentTarget as HTMLElement).style.boxShadow = 'var(--mark-swatch-shadow)';
             }}
           />
         ))}
@@ -313,7 +313,7 @@ export function SelectionPopover({
                 borderRadius: 'var(--r-sm)',
                 border: 'none',
                 background: 'var(--lime-500)',
-                color: '#0d1608',
+                color: 'var(--text-on-accent)',
                 cursor: 'pointer',
                 fontSize: 12,
                 fontWeight: 700,
@@ -349,7 +349,7 @@ export function SelectionPopover({
             transform: 'rotate(45deg)',
             marginTop: -6,
             marginLeft: 1,
-            boxShadow: '1px 1px 2px rgba(0,0,0,0.1)',
+            boxShadow: 'var(--mark-arrow-shadow)',
           }}
         />
       </div>

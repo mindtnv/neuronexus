@@ -1177,7 +1177,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
             <div
               className="nn-dialog-backdrop"
               onClick={() => setDockSheetOpen(false)}
-              style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'rgba(0,0,0,0.5)' }}
+              style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'var(--scrim)' }}
             />
             <div
               style={{
@@ -1450,7 +1450,7 @@ const CitationViewer = ({
   // Mobile — fullscreen sheet.
   return (
     <>
-      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.5)' }} />
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'var(--scrim)' }} />
       <div style={{ position: 'fixed', inset: 0, zIndex: 81, display: 'flex', flexDirection: 'column' }}>
         {panel}
       </div>
@@ -1669,7 +1669,7 @@ const NNCheck = ({
       }}
     />
     <span className={`nn-nb-check${on ? ' on' : ''}${disabled ? ' disabled' : ''}`} aria-hidden>
-      {on && <NNIcon name="check" size={11} color="#0d1608" strokeWidth={2.6} />}
+      {on && <NNIcon name="check" size={11} color="var(--text-on-accent)" strokeWidth={2.6} />}
     </span>
   </label>
 );
@@ -2031,7 +2031,7 @@ const LibraryAttachPicker = ({
 
   return (
     <>
-      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.5)' }} />
+      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--scrim)' }} />
       <div style={{ position: 'fixed', inset: 0, zIndex: 91, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, pointerEvents: 'none' }}>
         <NNCard padding={16} style={{ width: 460, maxWidth: '100%', maxHeight: '76vh', display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'auto', boxShadow: 'var(--shadow-lg)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
