@@ -43,6 +43,12 @@
   --rose-500: #d15566;
   --rose-400: #e8788a;
 
+  --accent-600: var(--lime-600);
+  --accent-500: var(--lime-500);
+  --accent-400: var(--lime-400);
+  --accent-300: var(--lime-300);
+  --accent-100: var(--lime-100);
+
   /* Semantics — dark default */
   --bg:       var(--ink-950);
   --surface:  var(--ink-900);
@@ -73,6 +79,7 @@
   --shadow-lg: 0 12px 40px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.4);
   --glow-lime: 0 0 0 1px rgba(154,209,85,0.2), 0 0 20px rgba(154,209,85,0.15);
   --glow-violet: 0 0 0 1px rgba(167,136,255,0.22), 0 0 24px rgba(132,87,232,0.18);
+  --glow-accent: 0 0 0 1px color-mix(in srgb, var(--accent-400) 24%, transparent), 0 0 22px color-mix(in srgb, var(--accent-500) 18%, transparent);
 
   /* Semantic color roles */
   --text-on-accent: #0d1608;
@@ -90,6 +97,9 @@
   --shimmer-stop-2: color-mix(in srgb, var(--text) 22%, transparent);
   --input-fill: var(--surface-2);
   --bottom-nav-bg: color-mix(in srgb, var(--bg) 92%, transparent);
+  --tone-accent-bg: color-mix(in srgb, var(--accent-500) 12%, transparent);
+  --tone-accent-bg-strong: color-mix(in srgb, var(--accent-500) 18%, transparent);
+  --tone-accent-border: color-mix(in srgb, var(--accent-500) 30%, transparent);
   --tone-lime-bg: color-mix(in srgb, var(--lime-500) 12%, transparent);
   --tone-lime-bg-strong: color-mix(in srgb, var(--lime-500) 18%, transparent);
   --tone-lime-border: color-mix(in srgb, var(--lime-500) 28%, transparent);
@@ -127,8 +137,8 @@
   --plant-water-1: var(--sky-600);
   --plant-water-2: var(--sky-500);
   --plant-water-3: var(--sky-200);
-  --auth-bg: radial-gradient(1200px 600px at 50% -10%, var(--tone-lime-bg) 0%, transparent 60%), var(--surface);
-  --workspace-avatar-bg: linear-gradient(135deg, var(--lime-400), var(--sky-400));
+  --auth-bg: radial-gradient(1200px 600px at 50% -10%, var(--tone-accent-bg) 0%, transparent 60%), var(--surface);
+  --workspace-avatar-bg: linear-gradient(135deg, var(--accent-400), var(--sky-400));
   --garden-terrarium-bg: linear-gradient(180deg, color-mix(in srgb, var(--sky-600) 10%, var(--bg)) 0%, color-mix(in srgb, var(--lime-600) 10%, var(--surface)) 70%, color-mix(in srgb, var(--amber-600) 12%, var(--surface-2)) 100%);
   --garden-ground-bg: linear-gradient(180deg, var(--plant-pot-dark) 0%, color-mix(in srgb, var(--plant-pot-dark) 70%, var(--bg)) 100%);
   --chart-area-stop: var(--lime-400);
@@ -181,6 +191,11 @@
   --sky-200: #bcefeb;
   --rose-500: #e16f88;
   --rose-400: #f096a8;
+  --accent-600: var(--lime-600);
+  --accent-500: var(--lime-500);
+  --accent-400: var(--lime-400);
+  --accent-300: var(--lime-300);
+  --accent-100: var(--lime-100);
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.5);
   --shadow-md: 0 4px 18px rgba(0,0,0,0.32), 0 1px 2px rgba(0,0,0,0.5);
   --shadow-lg: 0 16px 44px rgba(0,0,0,0.38), 0 2px 8px rgba(0,0,0,0.45);
@@ -218,6 +233,11 @@
   --sky-200: #bde7ed;
   --rose-500: #d85a82;
   --rose-400: #e984a3;
+  --accent-600: var(--rose-500);
+  --accent-500: var(--rose-500);
+  --accent-400: var(--rose-400);
+  --accent-300: #f0b4c8;
+  --accent-100: #f9dfe8;
   --shadow-sm: 0 1px 2px rgba(20,45,35,0.08);
   --shadow-md: 0 1px 2px rgba(20,45,35,0.06), 0 8px 24px rgba(20,45,35,0.08);
   --shadow-lg: 0 2px 6px rgba(20,45,35,0.07), 0 16px 40px rgba(20,45,35,0.10);
@@ -255,6 +275,11 @@
   --sky-200: #d8f9ff;
   --rose-500: #ff79c6;
   --rose-400: #ff9bd5;
+  --accent-600: var(--violet-600);
+  --accent-500: var(--violet-500);
+  --accent-400: var(--violet-400);
+  --accent-300: #dac2ff;
+  --accent-100: #f0e7ff;
   --text-on-accent: #14161d;
   --text-on-violet: #1f1830;
   --text-on-amber: #261807;
@@ -290,6 +315,11 @@
   --sky-200: #d8edf2;
   --rose-500: #bf616a;
   --rose-400: #d08770;
+  --accent-600: var(--sky-600);
+  --accent-500: var(--sky-500);
+  --accent-400: var(--sky-400);
+  --accent-300: #badde7;
+  --accent-100: #edf7fa;
   --text-on-accent: #202630;
   --text-on-violet: #241d26;
 }
@@ -324,6 +354,11 @@
   --sky-200: #c7e1f2;
   --rose-500: #d33682;
   --rose-400: #dc647f;
+  --accent-600: var(--sky-600);
+  --accent-500: var(--sky-500);
+  --accent-400: var(--sky-400);
+  --accent-300: #91c6e8;
+  --accent-100: #dceef8;
   --text-on-accent: #fdf6e3;
   --text-on-amber: #2f2100;
   --hairline-contrast: rgba(7, 54, 66, 0.08);
@@ -359,6 +394,11 @@
   --sky-200: #d8e1dc;
   --rose-500: #fb4934;
   --rose-400: #ff7968;
+  --accent-600: var(--amber-600);
+  --accent-500: var(--amber-500);
+  --accent-400: var(--amber-400);
+  --accent-300: #ffe09a;
+  --accent-100: #fff2cf;
   --text-on-accent: #282828;
   --text-on-amber: #282008;
 }
@@ -393,6 +433,11 @@
   --sky-200: #d9f6fb;
   --rose-500: #f38ba8;
   --rose-400: #f5a6ba;
+  --accent-600: var(--violet-600);
+  --accent-500: var(--violet-500);
+  --accent-400: var(--violet-400);
+  --accent-300: #e7d0ff;
+  --accent-100: #f6edff;
   --text-on-accent: #1e1e2e;
   --text-on-violet: #271d34;
   --text-on-amber: #302411;
@@ -428,6 +473,11 @@
   --sky-200: #d4f7fb;
   --rose-500: #f92672;
   --rose-400: #ff669b;
+  --accent-600: var(--lime-600);
+  --accent-500: var(--lime-500);
+  --accent-400: var(--lime-400);
+  --accent-300: var(--lime-300);
+  --accent-100: var(--lime-100);
   --text-on-accent: #1e2019;
   --text-on-violet: #211737;
   --text-on-amber: #2f2a0e;
@@ -463,9 +513,284 @@
   --sky-200: #d6eef2;
   --rose-500: #eb6f92;
   --rose-400: #ebbcba;
+  --accent-600: var(--rose-500);
+  --accent-500: var(--rose-500);
+  --accent-400: var(--rose-400);
+  --accent-300: #f0c9c7;
+  --accent-100: #f7e8e7;
   --text-on-accent: #171421;
   --text-on-violet: #21152e;
   --text-on-amber: #281c0b;
+}
+
+[data-theme="tokyonight"] {
+  color-scheme: dark;
+  --bg: #1a1b26;
+  --surface: #1f2335;
+  --surface-2: #24283b;
+  --surface-3: #2f3549;
+  --border: #3b4261;
+  --border-2: #565f89;
+  --text: #c0caf5;
+  --text-muted: #9aa5ce;
+  --text-dim: #6f789e;
+  --lime-600: #73a85f;
+  --lime-500: #9ece6a;
+  --lime-400: #b7e080;
+  --lime-300: #d5efb3;
+  --lime-100: #eef8dd;
+  --amber-600: #b97946;
+  --amber-500: #e0af68;
+  --amber-400: #f0c88a;
+  --amber-200: #f7dfb8;
+  --violet-600: #8f6cc8;
+  --violet-500: #bb9af7;
+  --violet-400: #d0b5ff;
+  --violet-200: #eadcff;
+  --sky-600: #527fdb;
+  --sky-500: #7aa2f7;
+  --sky-400: #9abaff;
+  --sky-200: #d7e4ff;
+  --rose-500: #f7768e;
+  --rose-400: #ff9aa9;
+  --accent-600: var(--sky-600);
+  --accent-500: var(--sky-500);
+  --accent-400: var(--sky-400);
+  --accent-300: #bdd1ff;
+  --accent-100: #e6eeff;
+  --text-on-accent: #111827;
+  --text-on-violet: #211634;
+}
+
+[data-theme="onedark"] {
+  color-scheme: dark;
+  --bg: #282c34;
+  --surface: #2f343f;
+  --surface-2: #353b45;
+  --surface-3: #3f4652;
+  --border: #4b5363;
+  --border-2: #5c6370;
+  --text: #abb2bf;
+  --text-muted: #939baa;
+  --text-dim: #707783;
+  --lime-600: #7da95d;
+  --lime-500: #98c379;
+  --lime-400: #b1d895;
+  --lime-300: #d1e8c0;
+  --lime-100: #eef7e9;
+  --amber-600: #c48b40;
+  --amber-500: #e5c07b;
+  --amber-400: #f0d199;
+  --amber-200: #f8e8c9;
+  --violet-600: #a06cb8;
+  --violet-500: #c678dd;
+  --violet-400: #d99bed;
+  --violet-200: #f0d7f7;
+  --sky-600: #4a8fc8;
+  --sky-500: #61afef;
+  --sky-400: #86c4f5;
+  --sky-200: #d4eafb;
+  --rose-500: #e06c75;
+  --rose-400: #ec9097;
+  --accent-600: var(--sky-600);
+  --accent-500: var(--sky-500);
+  --accent-400: var(--sky-400);
+  --accent-300: #afd9fa;
+  --accent-100: #e6f3fd;
+  --text-on-accent: #111a22;
+}
+
+[data-theme="everforest"] {
+  color-scheme: dark;
+  --bg: #2b3339;
+  --surface: #303a40;
+  --surface-2: #323d43;
+  --surface-3: #3c484f;
+  --border: #4f5b58;
+  --border-2: #5f6d68;
+  --text: #d3c6aa;
+  --text-muted: #b9ac91;
+  --text-dim: #859289;
+  --lime-600: #879d58;
+  --lime-500: #a7c080;
+  --lime-400: #bdd29c;
+  --lime-300: #d8e5c2;
+  --lime-100: #f0f5e8;
+  --amber-600: #c18a46;
+  --amber-500: #dbbc7f;
+  --amber-400: #e6cb9a;
+  --amber-200: #f3e5c9;
+  --violet-600: #b07886;
+  --violet-500: #d699b6;
+  --violet-400: #e4b4ca;
+  --violet-200: #f2dce6;
+  --sky-600: #6e9ea2;
+  --sky-500: #83c092;
+  --sky-400: #9fd2aa;
+  --sky-200: #d7eddc;
+  --rose-500: #e67e80;
+  --rose-400: #ee9a9b;
+  --accent-600: var(--lime-600);
+  --accent-500: var(--lime-500);
+  --accent-400: var(--lime-400);
+  --accent-300: var(--lime-300);
+  --accent-100: var(--lime-100);
+  --text-on-accent: #1e2727;
+}
+
+[data-theme="kanagawa"] {
+  color-scheme: dark;
+  --bg: #1f1f28;
+  --surface: #252532;
+  --surface-2: #2a2a37;
+  --surface-3: #363646;
+  --border: #49485f;
+  --border-2: #5d5a78;
+  --text: #dcd7ba;
+  --text-muted: #b8b091;
+  --text-dim: #7e7a68;
+  --lime-600: #76946a;
+  --lime-500: #98bb6c;
+  --lime-400: #b4cf8a;
+  --lime-300: #d3e5b9;
+  --lime-100: #eef5df;
+  --amber-600: #c58645;
+  --amber-500: #ffa066;
+  --amber-400: #ffbf8b;
+  --amber-200: #f8ddb9;
+  --violet-600: #8f6f9f;
+  --violet-500: #957fb8;
+  --violet-400: #b29bd1;
+  --violet-200: #e2d6ef;
+  --sky-600: #5b8aa8;
+  --sky-500: #7e9cd8;
+  --sky-400: #9db5e4;
+  --sky-200: #dce7f6;
+  --rose-500: #c34043;
+  --rose-400: #e46876;
+  --accent-600: var(--amber-600);
+  --accent-500: var(--amber-500);
+  --accent-400: var(--amber-400);
+  --accent-300: #ffd2ad;
+  --accent-100: #fff0df;
+  --text-on-accent: #23170c;
+  --text-on-amber: #23170c;
+}
+
+[data-theme="ayu"] {
+  color-scheme: dark;
+  --bg: #0f1419;
+  --surface: #171d26;
+  --surface-2: #1f2430;
+  --surface-3: #262d3a;
+  --border: #354052;
+  --border-2: #4b5668;
+  --text: #e6e1cf;
+  --text-muted: #b8b29f;
+  --text-dim: #697586;
+  --lime-600: #7ba65a;
+  --lime-500: #aad94c;
+  --lime-400: #c6ea78;
+  --lime-300: #e0f4ae;
+  --lime-100: #f3f9dc;
+  --amber-600: #c57d2a;
+  --amber-500: #ffb454;
+  --amber-400: #ffc978;
+  --amber-200: #ffe5b8;
+  --violet-600: #9b73c4;
+  --violet-500: #d2a6ff;
+  --violet-400: #dfbdff;
+  --violet-200: #f0ddff;
+  --sky-600: #4f91b8;
+  --sky-500: #59c2ff;
+  --sky-400: #85d2ff;
+  --sky-200: #d7f1ff;
+  --rose-500: #f07178;
+  --rose-400: #ff8f96;
+  --accent-600: var(--amber-600);
+  --accent-500: var(--amber-500);
+  --accent-400: var(--amber-400);
+  --accent-300: #ffd69b;
+  --accent-100: #fff0d8;
+  --text-on-accent: #241608;
+  --text-on-amber: #241608;
+}
+
+[data-theme="material"] {
+  color-scheme: dark;
+  --bg: #263238;
+  --surface: #2d3b42;
+  --surface-2: #37474f;
+  --surface-3: #43545c;
+  --border: #54666e;
+  --border-2: #607d8b;
+  --text: #eeffff;
+  --text-muted: #b8c7cb;
+  --text-dim: #879da3;
+  --lime-600: #8aa55b;
+  --lime-500: #c3e88d;
+  --lime-400: #d4f2a9;
+  --lime-300: #e9f8d2;
+  --lime-100: #f6fce9;
+  --amber-600: #c17d32;
+  --amber-500: #ffcb6b;
+  --amber-400: #ffdb94;
+  --amber-200: #ffedc8;
+  --violet-600: #9d76d6;
+  --violet-500: #c792ea;
+  --violet-400: #ddb5f4;
+  --violet-200: #f0dcfa;
+  --sky-600: #55a8a4;
+  --sky-500: #80cbc4;
+  --sky-400: #a2dcd7;
+  --sky-200: #d8f1ef;
+  --rose-500: #f07178;
+  --rose-400: #ff9ca1;
+  --accent-600: var(--sky-600);
+  --accent-500: var(--sky-500);
+  --accent-400: var(--sky-400);
+  --accent-300: #c1e8e5;
+  --accent-100: #e8f8f6;
+  --text-on-accent: #122321;
+}
+
+[data-theme="synthwave"] {
+  color-scheme: dark;
+  --bg: #241b2f;
+  --surface: #2a2040;
+  --surface-2: #33264a;
+  --surface-3: #412e60;
+  --border: #5b3e78;
+  --border-2: #7b4fa3;
+  --text: #fff5f8;
+  --text-muted: #d8c4e2;
+  --text-dim: #9b7daf;
+  --lime-600: #80b65c;
+  --lime-500: #b6f36a;
+  --lime-400: #cbff8c;
+  --lime-300: #e3ffbd;
+  --lime-100: #f3ffe2;
+  --amber-600: #d28437;
+  --amber-500: #ffd166;
+  --amber-400: #ffdf92;
+  --amber-200: #ffedc5;
+  --violet-600: #8566dc;
+  --violet-500: #9d7cff;
+  --violet-400: #b69cff;
+  --violet-200: #e3d8ff;
+  --sky-600: #2ab5d3;
+  --sky-500: #36f9f6;
+  --sky-400: #72fffb;
+  --sky-200: #cefffd;
+  --rose-500: #ff7edb;
+  --rose-400: #ffa3e6;
+  --accent-600: var(--rose-500);
+  --accent-500: var(--rose-500);
+  --accent-400: var(--rose-400);
+  --accent-300: #ffc4ef;
+  --accent-100: #ffe7f8;
+  --text-on-accent: #2a0d24;
+  --text-on-violet: #221336;
 }
 
 * { box-sizing: border-box; }
@@ -541,14 +866,14 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-spin { animation: none; }
 }
 
-/* Reader jump-to-chunk highlight (NotebookLM workspace) — a brief lime outline +
+/* Reader jump-to-chunk highlight (NotebookLM workspace) — a brief accent outline +
    tint that fades when a citation/backlink scrolls the reader to a passage. */
 @keyframes nn-chunk-flash {
-  0% { outline-color: var(--lime-500); background: color-mix(in srgb, var(--lime-500) 14%, transparent); }
+  0% { outline-color: var(--accent-500); background: color-mix(in srgb, var(--accent-500) 14%, transparent); }
   100% { outline-color: transparent; background: transparent; }
 }
 .nn-chunk-flash {
-  outline: 2px solid var(--lime-500);
+  outline: 2px solid var(--accent-500);
   outline-offset: 2px;
   border-radius: var(--r-md);
   animation: nn-chunk-flash 2200ms ease forwards;
@@ -559,7 +884,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 
 /* M4 PDF reader — page outline flash when a citation/deep-link jumps to a page. */
 @keyframes nn-pdf-page-flash {
-  0% { box-shadow: 0 0 0 3px var(--lime-500), var(--shadow-md); }
+  0% { box-shadow: 0 0 0 3px var(--accent-500), var(--shadow-md); }
   100% { box-shadow: 0 0 0 0 transparent, var(--shadow-md); }
 }
 .nn-pdf-page-flash {
@@ -571,7 +896,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 
 /* M5 — pdf.js text layer. Sits above the canvas, below the ink layer.
    Spans use `color: transparent` so the glyphs are invisible but selectable.
-   `::selection` shows a lime tint to indicate where text was selected.
+   `::selection` shows an accent tint to indicate where text was selected.
    `pointer-events: none` on the container keeps ink drawing unblocked in
    drawing mode; the container itself gets pe:auto only in hand/read tool. */
 .nn-textlayer {
@@ -647,7 +972,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   pointer-events: auto;
 }
 .nn-textlayer ::selection {
-  background: color-mix(in srgb, var(--lime-500) 38%, transparent);
+  background: color-mix(in srgb, var(--accent-500) 38%, transparent);
   /* The GLOBAL `::selection { color: #fff }` would repaint the transparent
      glyph spans WHITE while selected (a ghost double of the canvas text) —
      keep them invisible: only the tint band shows. */
@@ -656,7 +981,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 /* M5 — mark highlight flash (brief outline on the highlight rect when user
    jumps to it from the Разметка panel). */
 @keyframes nn-mark-flash {
-  0% { outline: 2px solid var(--lime-500); outline-offset: 1px; }
+  0% { outline: 2px solid var(--accent-500); outline-offset: 1px; }
   100% { outline: 2px solid transparent; outline-offset: 1px; }
 }
 .nn-mark-flash {
@@ -919,7 +1244,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 
 /* 36-px icon button inside the toolbar — compact, touch-friendly.
-   Active state: lime tint.  Disabled: dim + no pointer events. */
+   Active state: accent tint.  Disabled: dim + no pointer events. */
 .nn-tb-btn {
   width: 36px;
   height: 36px;
@@ -941,9 +1266,9 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 .nn-tb-btn.active,
 .nn-tb-btn[aria-pressed="true"] {
-  border-color: var(--lime-500);
-  background: color-mix(in srgb, var(--lime-500) 16%, transparent);
-  color: var(--lime-300);
+  border-color: var(--accent-500);
+  background: var(--tone-accent-bg-strong);
+  color: var(--accent-300);
 }
 .nn-tb-btn:disabled {
   opacity: 0.35;
@@ -962,7 +1287,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-save-dot-saving { animation: none; }
 }
 
-/* Sources rail rows — quiet, sidebar-style. Selected row = 3-px lime left bar
+/* Sources rail rows — quiet, sidebar-style. Selected row = 3-px accent left bar
    + subtle surface-2 bg. Hover reveals rename/delete (nn-deck-row-actions pattern). */
 .nn-source-row {
   display: flex;
@@ -978,8 +1303,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   background: var(--surface-2);
 }
 .nn-source-row.active {
-  border-left-color: var(--lime-500);
-  background: color-mix(in srgb, var(--lime-500) 7%, var(--surface-2));
+  border-left-color: var(--accent-500);
+  background: color-mix(in srgb, var(--accent-500) 7%, var(--surface-2));
 }
 .nn-source-row-actions {
   opacity: 0;
@@ -1195,8 +1520,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 .nn-lib-search-hit:hover {
-  border-color: var(--lime-500);
-  background: color-mix(in srgb, var(--lime-500) 8%, var(--surface-2));
+  border-color: var(--accent-500);
+  background: color-mix(in srgb, var(--accent-500) 8%, var(--surface-2));
 }
 
 /* Reading progress bar (cover overlay + shelf + details). */
@@ -1230,8 +1555,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-lib-chip:hover { color: var(--text); border-color: var(--border-2); }
 .nn-lib-chip.active {
   color: var(--text-on-accent);
-  background: var(--lime-500);
-  border-color: var(--lime-500);
+  background: var(--accent-500);
+  border-color: var(--accent-500);
 }
 [data-theme-mode="light"] .nn-lib-chip.active { color: var(--text-on-accent); }
 
@@ -1335,7 +1660,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   border-color: var(--border-2);
   box-shadow: var(--shadow-md);
 }
-.nn-nb-card:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-card:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 .nn-nb-card .nn-nb-menu-anchor { opacity: 0; transition: opacity 120ms ease; }
 .nn-nb-card:hover .nn-nb-menu-anchor,
 .nn-nb-card:focus-within .nn-nb-menu-anchor { opacity: 1; }
@@ -1416,7 +1741,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   border-color: var(--border-2);
   box-shadow: var(--shadow-md);
 }
-.nn-nb-continue:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-continue:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 .nn-nb-continue-glow {
   position: absolute;
   top: -60px;
@@ -1468,10 +1793,10 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   transition: border-color 140ms ease, background 140ms ease;
 }
 .nn-nb-create:hover {
-  border-color: var(--lime-500);
-  background: color-mix(in srgb, var(--lime-500) 4%, transparent);
+  border-color: var(--accent-500);
+  background: color-mix(in srgb, var(--accent-500) 4%, transparent);
 }
-.nn-nb-create:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-create:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 .nn-nb-create-plus {
   display: inline-flex;
   align-items: center;
@@ -1535,12 +1860,12 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
 }
 .nn-studio-tile:hover:not(:disabled) {
-  border-color: var(--lime-500);
+  border-color: var(--accent-500);
   background: var(--surface-3);
   transform: translateY(-1px);
 }
 .nn-studio-tile:disabled { opacity: 0.55; cursor: default; }
-.nn-studio-tile:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-studio-tile:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 .nn-studio-tile-icon {
   display: flex;
   align-items: center;
@@ -1549,7 +1874,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   height: 26px;
   flex-shrink: 0;
   border-radius: var(--r-sm);
-  background: var(--tone-lime-bg);
+  background: var(--tone-accent-bg);
 }
 .nn-studio-tile-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .nn-studio-tile-name {
@@ -1607,7 +1932,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   transition: border-color 110ms ease, background 110ms ease, color 110ms ease;
 }
 .nn-suggest-pill:hover {
-  border-color: var(--lime-500);
+  border-color: var(--accent-500);
   color: var(--text);
   background: var(--surface-3);
 }
@@ -1782,11 +2107,11 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 .nn-quiz-preset:hover { color: var(--text); border-color: var(--border-2); }
 .nn-quiz-preset.selected {
-  color: var(--lime-400);
-  border-color: var(--lime-500);
-  background: color-mix(in srgb, var(--lime-500) 12%, transparent);
+  color: var(--accent-400);
+  border-color: var(--accent-500);
+  background: color-mix(in srgb, var(--accent-500) 12%, transparent);
 }
-.nn-quiz-preset:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-quiz-preset:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 
 /* Intro icon halo. */
 .nn-quiz-intro-icon {
@@ -1796,7 +2121,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   width: 56px;
   height: 56px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--lime-500) 14%, transparent);
+  background: color-mix(in srgb, var(--accent-500) 14%, transparent);
 }
 
 /* Progress dots. */
@@ -1808,8 +2133,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   background: var(--border-2);
   transition: background 120ms, transform 120ms;
 }
-.nn-quiz-dot.done { background: var(--lime-500); }
-.nn-quiz-dot.current { transform: scale(1.4); background: var(--lime-400); }
+.nn-quiz-dot.done { background: var(--accent-500); }
+.nn-quiz-dot.current { transform: scale(1.4); background: var(--accent-400); }
 
 /* MCQ option button (big touch target). */
 .nn-quiz-option {
@@ -1831,10 +2156,10 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 .nn-quiz-option:hover { border-color: var(--border-2); }
 .nn-quiz-option.selected {
-  border-color: var(--lime-500);
-  background: color-mix(in srgb, var(--lime-500) 10%, transparent);
+  border-color: var(--accent-500);
+  background: color-mix(in srgb, var(--accent-500) 10%, transparent);
 }
-.nn-quiz-option:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-quiz-option:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 .nn-quiz-radio {
   flex-shrink: 0;
   width: 18px;
@@ -1844,8 +2169,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   transition: border-color 120ms, box-shadow 120ms;
 }
 .nn-quiz-radio.on {
-  border-color: var(--lime-500);
-  box-shadow: inset 0 0 0 4px var(--lime-500);
+  border-color: var(--accent-500);
+  box-shadow: inset 0 0 0 4px var(--accent-500);
 }
 
 /* True/False big buttons. */
@@ -1868,10 +2193,10 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 .nn-quiz-tf:hover { border-color: var(--border-2); }
 .nn-quiz-tf.selected {
-  border-color: var(--lime-500);
-  background: color-mix(in srgb, var(--lime-500) 10%, transparent);
+  border-color: var(--accent-500);
+  background: color-mix(in srgb, var(--accent-500) 10%, transparent);
 }
-.nn-quiz-tf:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-quiz-tf:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 
 /* Open-answer textarea + model answer + self-grade. */
 .nn-quiz-textarea {
@@ -1889,7 +2214,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   resize: vertical;
   box-sizing: border-box;
 }
-.nn-quiz-textarea:focus { border-color: var(--lime-500); }
+.nn-quiz-textarea:focus { border-color: var(--accent-500); }
 .nn-quiz-model-answer {
   display: flex;
   flex-direction: column;
@@ -1926,7 +2251,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   border-color: var(--rose-500);
   background: color-mix(in srgb, var(--rose-500) 10%, transparent);
 }
-.nn-quiz-selfgrade:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-quiz-selfgrade:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 
 /* Result score block. */
 .nn-quiz-score {
@@ -2141,7 +2466,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   font-family: var(--font-sans);
   color: var(--text);
   background: var(--surface);
-  border: 2px dashed var(--lime-500);
+  border: 2px dashed var(--accent-500);
   border-radius: var(--r-lg);
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2211,10 +2536,10 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-nb-icon-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
 
 .nn-nb-send { transition: background 120ms ease, box-shadow 120ms ease, opacity 120ms ease; }
-.nn-nb-send:hover:not(:disabled) { background: var(--lime-400); box-shadow: var(--glow-lime); }
+.nn-nb-send:hover:not(:disabled) { background: var(--accent-400); box-shadow: var(--glow-accent); }
 .nn-nb-send:disabled { cursor: not-allowed; opacity: 0.45; }
 
-/* Light theme overrides — the violet/lime accents already use tokens, but the
+/* Light theme overrides — the violet/accent tints already use tokens, but the
    composer hover border + citation chip read better with a softer tint. */
 [data-theme-mode='light'] .nn-nb-cite {
   background: var(--tone-violet-bg);
@@ -2258,7 +2583,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   transition: background 120ms ease, color 120ms ease;
 }
 .nn-nb-ws-back:hover { background: var(--surface-2); color: var(--text); }
-.nn-nb-ws-back:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-ws-back:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 .nn-nb-ws-sep {
   width: 1px;
   height: 20px;
@@ -2295,25 +2620,25 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   text-align: left;
   transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
 }
-.nn-nb-connect:hover { border-color: var(--lime-500); color: var(--text); }
-.nn-nb-connect:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-connect:hover { border-color: var(--accent-500); color: var(--text); }
+.nn-nb-connect:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 
-/* Rail lime link-button («Снять выбор» / «Выбрать все»). */
+/* Rail accent link-button («Снять выбор» / «Выбрать все»). */
 .nn-nb-rail-link {
   background: none;
   border: none;
   padding: 0;
   cursor: pointer;
-  color: var(--lime-400);
+  color: var(--accent-400);
   font-family: var(--font-sans);
   font-size: 11.5px;
   font-weight: 500;
   transition: color 120ms ease;
 }
-.nn-nb-rail-link:hover { color: var(--lime-300, var(--lime-400)); }
-.nn-nb-rail-link:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; border-radius: 4px; }
+.nn-nb-rail-link:hover { color: var(--accent-300, var(--accent-400)); }
+.nn-nb-rail-link:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; border-radius: 4px; }
 
-/* Lime-filled checkbox (NBCheck) — the «в чате» scope toggle. The native input
+/* Accent-filled checkbox (NBCheck) — the «в чате» scope toggle. The native input
    is visually hidden; this span is the painted box. */
 .nn-nb-check {
   display: inline-flex;
@@ -2328,12 +2653,12 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
 }
 .nn-nb-check.on {
-  border-color: var(--lime-500);
-  background: var(--lime-500);
+  border-color: var(--accent-500);
+  background: var(--accent-500);
 }
 .nn-nb-check.disabled { opacity: 0.4; }
 .nn-nb-check-input:focus-visible + .nn-nb-check {
-  outline: 2px solid var(--lime-500);
+  outline: 2px solid var(--accent-500);
   outline-offset: 2px;
 }
 
@@ -2384,7 +2709,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   color: var(--text);
   font-weight: 600;
 }
-.nn-nb-seg-tab:focus-visible { outline: 2px solid var(--lime-500); outline-offset: 2px; }
+.nn-nb-seg-tab:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 
 /* Document indeterminate progress bar (generating). */
 .nn-nb-doc-progress {

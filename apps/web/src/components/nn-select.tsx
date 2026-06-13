@@ -365,14 +365,14 @@ export function NNSelect<T extends string>({
                       padding: '8px 10px 8px 28px',
                       borderRadius: 'var(--r-sm)',
                       background: 'var(--surface-2)',
-                      border: searchFocused ? '1px solid var(--lime-500)' : '1px solid var(--border)',
-                      boxShadow: searchFocused ? 'var(--glow-lime)' : undefined,
+                      border: searchFocused ? '1px solid var(--accent-500)' : '1px solid var(--border)',
+                      boxShadow: searchFocused ? 'var(--glow-accent)' : undefined,
                       color: 'var(--text)',
                       fontFamily: 'var(--font-sans)',
                       fontSize: 13.5,
                       outline: 'none',
                       boxSizing: 'border-box',
-                      caretColor: 'var(--lime-400)',
+                      caretColor: 'var(--accent-400)',
                     }}
                   />
                 </div>
@@ -457,7 +457,7 @@ export function NNSelect<T extends string>({
                       </span>
                       {isSel && (
                         <span style={{ display: 'flex', flexShrink: 0 }}>
-                          <NNIcon name="check" size={15} color="var(--lime-400)" />
+                          <NNIcon name="check" size={15} color="var(--accent-400)" />
                         </span>
                       )}
                     </div>
@@ -496,10 +496,10 @@ export function NNSelect<T extends string>({
         style={{
           ...triggerStyle,
           border: open
-            ? '1px solid var(--lime-500)'
+            ? '1px solid var(--accent-500)'
             : '1px solid var(--border)',
           boxShadow: open
-            ? 'var(--glow-lime)'
+            ? 'var(--glow-accent)'
             : focused
               ? 'var(--glow-violet)'
               : undefined,

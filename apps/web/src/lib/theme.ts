@@ -20,7 +20,14 @@ export type ThemeId =
   | 'gruvbox'
   | 'catppuccin'
   | 'monokai'
-  | 'rosepine';
+  | 'rosepine'
+  | 'tokyonight'
+  | 'onedark'
+  | 'everforest'
+  | 'kanagawa'
+  | 'ayu'
+  | 'material'
+  | 'synthwave';
 export type ThemePref = ThemeId | 'system';
 export type ThemeMode = 'dark' | 'light';
 
@@ -36,6 +43,13 @@ export const THEME_IDS = [
   'catppuccin',
   'monokai',
   'rosepine',
+  'tokyonight',
+  'onedark',
+  'everforest',
+  'kanagawa',
+  'ayu',
+  'material',
+  'synthwave',
 ] as const satisfies readonly ThemeId[];
 export const THEME_PREFS = ['system', ...THEME_IDS] as const satisfies readonly ThemePref[];
 
@@ -51,6 +65,13 @@ export const THEME_MODES: Record<ThemeId, ThemeMode> = {
   catppuccin: 'dark',
   monokai: 'dark',
   rosepine: 'dark',
+  tokyonight: 'dark',
+  onedark: 'dark',
+  everforest: 'dark',
+  kanagawa: 'dark',
+  ayu: 'dark',
+  material: 'dark',
+  synthwave: 'dark',
 };
 
 export const THEME_SWATCHES: Record<ThemePref, readonly [string, string, string]> = {
@@ -66,25 +87,19 @@ export const THEME_SWATCHES: Record<ThemePref, readonly [string, string, string]
   catppuccin: ['#1e1e2e', '#313244', '#cba6f7'],
   monokai: ['#272822', '#3e3d32', '#a6e22e'],
   rosepine: ['#191724', '#26233a', '#ebbcba'],
+  tokyonight: ['#1a1b26', '#24283b', '#7aa2f7'],
+  onedark: ['#282c34', '#353b45', '#61afef'],
+  everforest: ['#2b3339', '#323d43', '#a7c080'],
+  kanagawa: ['#1f1f28', '#2a2a37', '#ffa066'],
+  ayu: ['#0f1419', '#1f2430', '#ffb454'],
+  material: ['#263238', '#37474f', '#80cbc4'],
+  synthwave: ['#241b2f', '#33264a', '#ff7edb'],
 };
 
 export const THEME_LS_KEY = 'nn:theme';
 
 function isThemePref(raw: string | null): raw is ThemePref {
-  return (
-    raw === 'system' ||
-    raw === 'dark' ||
-    raw === 'light' ||
-    raw === 'aurora' ||
-    raw === 'bloom' ||
-    raw === 'dracula' ||
-    raw === 'nord' ||
-    raw === 'solarized' ||
-    raw === 'gruvbox' ||
-    raw === 'catppuccin' ||
-    raw === 'monokai' ||
-    raw === 'rosepine'
-  );
+  return typeof raw === 'string' && (THEME_PREFS as readonly string[]).includes(raw);
 }
 
 /** Read the persisted preference; defaults to 'system' when unset/unavailable. */

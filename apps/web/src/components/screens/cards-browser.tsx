@@ -853,7 +853,7 @@ export const NNCardsBrowser = () => {
                       cursor: 'pointer',
                       background: restBg,
                       // Strong left accent marks the card currently open in the dock.
-                      boxShadow: isFocused ? 'inset 2px 0 0 var(--lime-500)' : undefined,
+                      boxShadow: isFocused ? 'inset 2px 0 0 var(--accent-500)' : undefined,
                       opacity: card.suspended ? 0.55 : 1,
                       fontSize: 12.5,
                     }}

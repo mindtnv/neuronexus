@@ -114,7 +114,7 @@ export default function ForgotPasswordPage() {
       )}
 
       <div style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center' }}>
-        <Link href="/auth/sign-in" style={{ color: 'var(--lime-300)' }}>
+        <Link href="/auth/sign-in" style={{ color: 'var(--accent-300)' }}>
           Назад к входу
         </Link>
       </div>

@@ -63,7 +63,7 @@ const renderNavItem = ({
         style={{
           fontSize: 10.5,
           fontWeight: 600,
-          background: 'var(--lime-500)',
+          background: 'var(--accent-500)',
           color: 'var(--text-on-accent)',
           padding: '2px 6px',
           borderRadius: 999,
@@ -83,7 +83,7 @@ const renderNavItem = ({
           width: 6,
           height: 6,
           borderRadius: 3,
-          background: 'var(--lime-500)',
+          background: 'var(--accent-500)',
         }}
       />
     )}
@@ -422,9 +422,9 @@ export const NNTopbar = ({
               width: wco ? 32 : 36,
               height: wco ? 32 : 36,
               borderRadius: wco ? 8 : 9,
-              background: 'var(--lime-500)',
+              background: 'var(--accent-500)',
               color: 'var(--text-on-accent)',
-              border: '1px solid var(--lime-500)',
+              border: '1px solid var(--accent-500)',
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',

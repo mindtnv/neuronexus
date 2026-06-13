@@ -2094,7 +2094,7 @@ const LibraryAttachPicker = ({
                         type="checkbox"
                         checked={checked}
                         onChange={() => toggle(s.sourceId)}
-                        style={{ width: 14, height: 14, accentColor: 'var(--lime-500)', flexShrink: 0, cursor: 'pointer' }}
+                        style={{ width: 14, height: 14, accentColor: 'var(--accent-500)', flexShrink: 0, cursor: 'pointer' }}
                       />
                       <NNIcon name={s.kind === 'url' ? 'link' : s.kind === 'text' ? 'edit' : 'book'} size={13} color="var(--text-muted)" />
                       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
@@ -2137,7 +2137,7 @@ const LibraryAttachPicker = ({
                       checked={checked || already}
                       disabled={already}
                       onChange={() => !already && toggle(it.id)}
-                      style={{ width: 14, height: 14, accentColor: 'var(--lime-500)', flexShrink: 0, cursor: already ? 'default' : 'pointer' }}
+                      style={{ width: 14, height: 14, accentColor: 'var(--accent-500)', flexShrink: 0, cursor: already ? 'default' : 'pointer' }}
                     />
                     <NNIcon name={it.kind === 'url' ? 'link' : it.kind === 'text' ? 'edit' : 'book'} size={13} color="var(--text-muted)" />
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>

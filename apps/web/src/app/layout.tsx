@@ -32,7 +32,7 @@ export { metadata, viewport } from "./layout.metadata";
 // paints, so theme users never see the wrong palette. Reads the persisted
 // preference (default 'system') and stamps the concrete data-theme plus its
 // light/dark family. Kept in lock-step with lib/theme.ts.
-const THEME_INIT_SCRIPT = `(function(){try{var m={dark:'dark',light:'light',aurora:'dark',bloom:'light',dracula:'dark',nord:'dark',solarized:'light',gruvbox:'dark',catppuccin:'dark',monokai:'dark',rosepine:'dark'};var p=localStorage.getItem('nn:theme');if(!m[p]&&p!=='system')p='system';var t=p;if(p==='system')t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';var e=document.documentElement;e.setAttribute('data-theme',t);e.setAttribute('data-theme-mode',m[t]||'dark');}catch(_){}})();`;
+const THEME_INIT_SCRIPT = `(function(){try{var m={dark:'dark',light:'light',aurora:'dark',bloom:'light',dracula:'dark',nord:'dark',solarized:'light',gruvbox:'dark',catppuccin:'dark',monokai:'dark',rosepine:'dark',tokyonight:'dark',onedark:'dark',everforest:'dark',kanagawa:'dark',ayu:'dark',material:'dark',synthwave:'dark'};var p=localStorage.getItem('nn:theme');if(!m[p]&&p!=='system')p='system';var t=p;if(p==='system')t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';var e=document.documentElement;e.setAttribute('data-theme',t);e.setAttribute('data-theme-mode',m[t]||'dark');}catch(_){}})();`;
 
 export default function RootLayout({
   children,

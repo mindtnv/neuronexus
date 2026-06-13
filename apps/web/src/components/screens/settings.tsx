@@ -326,9 +326,9 @@ export const NNSettings = () => {
                       padding: '10px 6px',
                       borderRadius: 8,
                       cursor: 'pointer',
-                      background: active ? 'var(--lime-500)' : 'var(--surface-2)',
+                      background: active ? 'var(--accent-500)' : 'var(--surface-2)',
                       color: active ? 'var(--text-on-accent)' : 'var(--text)',
-                      border: active ? '1px solid var(--lime-500)' : '1px solid var(--border)',
+                      border: active ? '1px solid var(--accent-500)' : '1px solid var(--border)',
                       fontSize: 13,
                       fontWeight: 500,
                     }}
@@ -345,52 +345,54 @@ export const NNSettings = () => {
       {/* ── Appearance (P3.3) — theme + language ── */}
       <Section title={t('settings.appearance.title')} subtitle={t('settings.appearance.subtitle')}>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 14 : 18 }}>
-          <Field label={t('settings.appearance.themeLabel')}>
-            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
-              {themeOptions.map((o) => {
-                const active = theme === o.key;
-                const swatches = THEME_SWATCHES[o.key];
-                return (
-                  <button
-                    key={o.key}
-                    type="button"
-                    onClick={() => { if (!active) pickTheme(o.key); }}
-                    aria-pressed={active}
-                    style={{
-                      minHeight: 58,
-                      padding: '9px 10px',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                      background: active ? 'color-mix(in srgb, var(--lime-500) 16%, var(--surface))' : 'var(--surface-2)',
-                      color: 'var(--text)',
-                      border: active ? '1px solid var(--lime-500)' : '1px solid var(--border)',
-                      fontSize: 13,
-                      fontWeight: 600,
-                      fontFamily: 'inherit',
-                      boxShadow: active ? 'var(--glow-lime)' : 'none',
-                      textAlign: 'left',
-                    }}
-                  >
-                    <span style={{ display: 'flex', gap: 4, marginBottom: 7 }} aria-hidden="true">
-                      {swatches.map((color, idx) => (
-                        <span
-                          key={`${o.key}-${idx}`}
-                          style={{
-                            width: 16,
-                            height: 16,
-                            borderRadius: 999,
-                            background: color,
-                            border: '1px solid color-mix(in srgb, var(--text) 16%, transparent)',
-                          }}
-                        />
-                      ))}
-                    </span>
-                    <span>{o.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </Field>
+          <div style={{ gridColumn: isMobile ? undefined : '1 / -1' }}>
+            <Field label={t('settings.appearance.themeLabel')}>
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))', gap: 8 }}>
+                {themeOptions.map((o) => {
+                  const active = theme === o.key;
+                  const swatches = THEME_SWATCHES[o.key];
+                  return (
+                    <button
+                      key={o.key}
+                      type="button"
+                      onClick={() => { if (!active) pickTheme(o.key); }}
+                      aria-pressed={active}
+                      style={{
+                        minHeight: 58,
+                        padding: '9px 10px',
+                        borderRadius: 8,
+                        cursor: 'pointer',
+                        background: active ? 'color-mix(in srgb, var(--accent-500) 16%, var(--surface))' : 'var(--surface-2)',
+                        color: 'var(--text)',
+                        border: active ? '1px solid var(--accent-500)' : '1px solid var(--border)',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        fontFamily: 'inherit',
+                        boxShadow: active ? 'var(--glow-accent)' : 'none',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span style={{ display: 'flex', gap: 4, marginBottom: 7 }} aria-hidden="true">
+                        {swatches.map((color, idx) => (
+                          <span
+                            key={`${o.key}-${idx}`}
+                            style={{
+                              width: 16,
+                              height: 16,
+                              borderRadius: 999,
+                              background: color,
+                              border: '1px solid color-mix(in srgb, var(--text) 16%, transparent)',
+                            }}
+                          />
+                        ))}
+                      </span>
+                      <span>{o.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          </div>
           <Field label={t('settings.appearance.language')}>
             <LocaleToggle />
           </Field>
@@ -640,7 +642,7 @@ export const NNSettings = () => {
                 height: 24,
                 borderRadius: 12,
                 border: 'none',
-                background: notifEnabled ? 'var(--lime-500)' : 'var(--surface-3)',
+                background: notifEnabled ? 'var(--accent-500)' : 'var(--surface-3)',
                 position: 'relative',
                 cursor: 'pointer',
                 transition: 'background 150ms',

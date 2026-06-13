@@ -2349,8 +2349,8 @@ export const ChatPanel = ({
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      background: 'var(--lime-500)',
-                      border: '1px solid var(--lime-500)',
+                      background: 'var(--accent-500)',
+                      border: '1px solid var(--accent-500)',
                       color: 'var(--text-on-accent)',
                     }}
                   >

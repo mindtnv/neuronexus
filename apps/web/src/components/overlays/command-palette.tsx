@@ -294,7 +294,7 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
             style={{
               flex: 1, background: 'transparent', border: 'none', outline: 'none',
               fontSize: isMobile ? 14 : 15, color: 'var(--text)', fontFamily: 'var(--font-sans)',
-              caretColor: 'var(--lime-400)',
+              caretColor: 'var(--accent-400)',
               minWidth: 0,
             }}
           />
@@ -339,7 +339,7 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       flexShrink: 0,
                     }}>
-                      <NNIcon name={item.icon} size={14} color={isActive ? 'var(--lime-400)' : 'var(--text-muted)'}/>
+                      <NNIcon name={item.icon} size={14} color={isActive ? 'var(--accent-400)' : 'var(--text-muted)'}/>
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: isMobile ? 12.5 : 13.5, fontWeight: 500, color: 'var(--text)', letterSpacing: -0.1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -414,4 +414,3 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
     </div>
   );
 };
-

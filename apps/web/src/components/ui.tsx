@@ -212,7 +212,7 @@ export const NNBtn = ({
     xl: { h: 52, px: 24, fs: 16, gap: 10, r: 14 },
   };
   const variants: Record<BtnVariant, { bg: string; color: string; border: string }> = {
-    primary: { bg: 'var(--lime-500)', color: 'var(--text-on-accent)', border: 'var(--lime-500)' },
+    primary: { bg: 'var(--accent-500)', color: 'var(--text-on-accent)', border: 'var(--accent-500)' },
     violet: { bg: 'var(--violet-500)', color: 'var(--text-on-violet)', border: 'var(--violet-500)' },
     amber: { bg: 'var(--amber-500)', color: 'var(--text-on-amber)', border: 'var(--amber-500)' },
     ghost: { bg: 'transparent', color: 'var(--text)', border: 'transparent' },
@@ -291,7 +291,7 @@ export const NNBadge = ({
     violet: { bg: 'var(--tone-violet-bg)', color: 'var(--violet-400)', border: 'var(--tone-violet-border)' },
     sky: { bg: 'var(--tone-sky-bg)', color: 'var(--sky-400)', border: 'var(--tone-sky-border)' },
     rose: { bg: 'var(--tone-rose-bg)', color: 'var(--rose-400)', border: 'var(--tone-rose-border)' },
-    solid: { bg: 'var(--lime-500)', color: 'var(--text-on-accent)', border: 'var(--lime-500)' },
+    solid: { bg: 'var(--accent-500)', color: 'var(--text-on-accent)', border: 'var(--accent-500)' },
   };
   const sizes: Record<BadgeSize, { h: number; px: number; fs: number; gap: number }> = {
     xs: { h: 18, px: 6, fs: 10.5, gap: 3 },
@@ -414,7 +414,7 @@ export const NNLogo = ({ size = 28, showText = true }: { size?: number; showText
     <svg width={size} height={size} viewBox="0 0 32 32">
       <defs>
         <linearGradient id="nn-logo-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="var(--lime-400)" />
+          <stop offset="0" stopColor="var(--accent-400)" />
           <stop offset="1" stopColor="var(--violet-500)" />
         </linearGradient>
       </defs>
@@ -426,7 +426,7 @@ export const NNLogo = ({ size = 28, showText = true }: { size?: number; showText
     </svg>
     {showText && (
       <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, letterSpacing: -0.3, color: 'var(--text)' }}>
-        neuro<span style={{ color: 'var(--lime-400)' }}>nexus</span>
+        neuro<span style={{ color: 'var(--accent-400)' }}>nexus</span>
       </span>
     )}
   </div>

@@ -34,7 +34,7 @@ export const LocaleToggle = ({ size = 'md' }: { size?: 'sm' | 'md' }) => {
             style={{
               padding: pad,
               borderRadius: 999,
-              background: active ? 'var(--lime-500)' : 'transparent',
+              background: active ? 'var(--accent-500)' : 'transparent',
               color: active ? 'var(--text-on-accent)' : 'var(--text-muted)',
               border: 'none',
               cursor: 'pointer',

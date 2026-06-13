@@ -420,7 +420,7 @@ function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => 
                   fontFamily: 'var(--font-sans)',
                   fontSize: 14,
                   outline: 'none',
-                  caretColor: 'var(--lime-400)',
+                  caretColor: 'var(--accent-400)',
                 }}
               />
               {error && (
@@ -453,7 +453,7 @@ function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => 
                       fontSize: 13.5,
                       outline: 'none',
                       boxSizing: 'border-box',
-                      caretColor: 'var(--lime-400)',
+                      caretColor: 'var(--accent-400)',
                     }}
                   />
                 </div>
@@ -525,7 +525,7 @@ function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => 
                               width: 8,
                               height: 8,
                               borderRadius: '50%',
-                              background: 'var(--lime-400)',
+                              background: 'var(--accent-400)',
                               flexShrink: 0,
                             }}
                           />

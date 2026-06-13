@@ -803,7 +803,7 @@ const QuizCountDialog = ({
               value={count}
               onChange={(e) => setCount(Number(e.target.value))}
               className="nn-quiz-slider"
-              style={{ flex: 1, accentColor: 'var(--lime-500)' }}
+              style={{ flex: 1, accentColor: 'var(--accent-500)' }}
               aria-label={t('notebooks.quiz.dialogTitle')}
             />
             <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', minWidth: 24, textAlign: 'right' }}>

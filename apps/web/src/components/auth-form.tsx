@@ -133,7 +133,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
           <>
             <span>
               Нет аккаунта?{' '}
-              <Link href="/auth/sign-up" style={{ color: 'var(--lime-300)' }}>
+              <Link href="/auth/sign-up" style={{ color: 'var(--accent-300)' }}>
                 Создать
               </Link>
             </span>
@@ -147,7 +147,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
         ) : (
           <span>
             Уже есть аккаунт?{' '}
-            <Link href="/auth/sign-in" style={{ color: 'var(--lime-300)' }}>
+            <Link href="/auth/sign-in" style={{ color: 'var(--accent-300)' }}>
               Войти
             </Link>
           </span>
@@ -198,7 +198,7 @@ function Field({
           outline: 'none',
           transition: 'border-color 120ms ease',
         }}
-        onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--lime-400)')}
+        onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--accent-400)')}
         onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
       />
     </label>
