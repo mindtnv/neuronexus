@@ -9,6 +9,7 @@
 // into Elysia lifecycle via onRequest / onAfterResponse in app.ts.
 
 import pino, { type Logger } from 'pino';
+import { newUuidV7 } from '@neuronexus/shared';
 
 const level =
   process.env.LOG_LEVEL ??
@@ -70,5 +71,5 @@ export function requestLogger(opts: {
 export function pickRequestId(headers: Headers): string {
   const incoming = headers.get('x-request-id');
   if (incoming && incoming.length > 0 && incoming.length <= 128) return incoming;
-  return crypto.randomUUID();
+  return newUuidV7();
 }

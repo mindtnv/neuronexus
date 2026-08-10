@@ -18,6 +18,7 @@
 // presign→finalize media flow), then returns the media id for `cover_media_id`.
 
 import { db, media } from '@neuronexus/db';
+import { newUuidV7 } from '@neuronexus/shared';
 import { putObject } from '../storage.ts';
 import { assertPublicHost, validatePageUrl } from './page-reader.ts';
 
@@ -244,7 +245,7 @@ export async function storeCoverMedia(
   cover: CoverImage,
 ): Promise<string | null> {
   try {
-    const mediaId = crypto.randomUUID();
+    const mediaId = newUuidV7();
     const key = `media/${mediaId}`;
     await putObject(key, cover.bytes, cover.mime);
     await db.insert(media).values({

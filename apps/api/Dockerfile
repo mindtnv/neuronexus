@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.24.0
 # ── API Dockerfile (Bun + Elysia) ──────────────────────────────────────────
 # Multi-stage: install workspace deps → bundle → slim runtime image.
 # Build from the repo root so bun workspaces resolve `@neuronexus/*` symlinks.
@@ -9,7 +9,7 @@
 #   DATABASE_URL, BETTER_AUTH_SECRET, BETTER_AUTH_URL, WEB_ORIGIN,
 #   API_PORT (default 3000), NODE_ENV=production
 
-FROM oven/bun:1.3-alpine AS deps
+FROM oven/bun:1.3.14-alpine AS deps
 WORKDIR /repo
 COPY package.json bun.lock ./
 COPY apps/api/package.json apps/api/
@@ -36,7 +36,7 @@ RUN cd apps/api && bun build src/index.ts --target bun --outdir ./dist --minify
 # migrations in __drizzle_migrations).
 RUN cd packages/db && bun build src/migrate.ts --target bun --outdir ./dist --minify
 
-FROM oven/bun:1.3-alpine AS runtime
+FROM oven/bun:1.3.14-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV API_PORT=3000

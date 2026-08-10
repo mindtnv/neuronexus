@@ -1,10 +1,10 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.24.0
 # ── Web Dockerfile (Next.js 16 standalone) ────────────────────────────────
 # Build from the repo root so bun workspaces resolve `@neuronexus/*`.
 #
 #   docker build -f apps/web/Dockerfile -t neuronexus-web:latest .
 
-FROM oven/bun:1.3-alpine AS deps
+FROM oven/bun:1.3.14-alpine AS deps
 WORKDIR /repo
 COPY package.json bun.lock ./
 COPY apps/web/package.json apps/web/
@@ -33,7 +33,7 @@ ENV NEXT_PUBLIC_MEDIA_BASE_URL=$NEXT_PUBLIC_MEDIA_BASE_URL
 WORKDIR /repo/apps/web
 RUN bun run build
 
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3001

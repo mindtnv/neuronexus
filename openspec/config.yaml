@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  NeuroNexus is a Bun-workspaces TypeScript monorepo: Elysia API, Next.js/React web,
+  Drizzle ORM, PostgreSQL 18 with pgvector, and Better Auth. PostgreSQL is the
+  server of truth. Domain writes are user-scoped; agent mutations require a
+  validate -> dry-run preview -> explicit confirmation workflow. Persistent IDs
+  are UUIDv7. Development may use db:push, but release safety depends on committed
+  migrations. CLAUDE.md is the canonical agent guide; AGENTS.md mirrors its body.
+
+rules:
+  proposal:
+    - State explicit non-goals for changes that cross API, database, or deployment boundaries.
+    - Do not backfill specs for unrelated shipped behavior.
+  specs:
+    - Express externally observable behavior and compatibility constraints, not implementation details.
+    - Include user isolation and degrade-never-crash scenarios when the affected capability touches them.
+  design:
+    - Record migration, rollback, and index implications for database changes.
+  tasks:
+    - Order tasks as test-first vertical slices and include fresh verification after the final edit.
+
+operations:
+  apply:
+    guidance:
+      - Preserve unrelated dirty-worktree changes.
+      - Use red-green-refactor for observable behavior changes.
+      - Update CLAUDE.md first, then mirror its body into AGENTS.md while preserving each header.
+  archive:
+    guidance:
+      - Archive only after strict OpenSpec validation and the documented repository gate pass.

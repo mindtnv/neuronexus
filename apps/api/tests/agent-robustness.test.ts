@@ -164,7 +164,7 @@ describe('agentic loop — robustness regressions', () => {
     // the stable-UUID era looks like (the user's dev DB).
     for (const def of BUILTIN_NOTE_TYPES) {
       await db.insert(noteTypesTable).values({
-        // No explicit id → defaultRandom() — NOT the shared literal.
+        // No explicit id → PostgreSQL uuidv7() default — NOT the shared literal.
         userId: null,
         name: def.name,
         fields: def.fields,

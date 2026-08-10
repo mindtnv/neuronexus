@@ -122,7 +122,7 @@ export const profile = pgTable('profile', {
 export const deckOptionsPreset = pgTable(
   'deck_options_preset',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -153,7 +153,7 @@ export const deckOptionsPreset = pgTable(
 export const decks = pgTable(
   'decks',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -190,7 +190,7 @@ export const decks = pgTable(
 export const noteTypes = pgTable(
   'note_types',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     // NULLABLE → global builtin (C-4). No ON DELETE needed for NULL rows; user
     // rows cascade when the user is deleted.
     userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
@@ -224,7 +224,7 @@ export const noteTypes = pgTable(
 export const notes = pgTable(
   'notes',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -256,7 +256,7 @@ export const notes = pgTable(
 export const cards = pgTable(
   'cards',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -294,11 +294,11 @@ export const cards = pgTable(
     index('cards_due_idx').on(t.userId, t.due),
     index('cards_note_idx').on(t.noteId),
     // Card-database (Browse) query paths:
-    //  - (user_id, state) and (user_id, created_at) match the hot filter+sort
+    //  - (user_id, state) and (user_id, created_at, id) match the hot filter+sort
     //    paths of GET /cards/search (is:/state filters, default created sort).
     //  - tag: now resolves via notes.tags GIN (notes_tags_gin_idx).
     index('cards_user_state_idx').on(t.userId, t.state),
-    index('cards_user_created_idx').on(t.userId, t.createdAt),
+    index('cards_user_created_idx').on(t.userId, t.createdAt, t.id),
   ],
 );
 
@@ -346,7 +346,7 @@ export interface UndoSnapshot {
 export const reviews = pgTable(
   'reviews',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -401,7 +401,7 @@ export const reviews = pgTable(
 export const media = pgTable(
   'media',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -424,7 +424,7 @@ export const media = pgTable(
 export const filteredDeck = pgTable(
   'filtered_deck',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -466,7 +466,7 @@ export const filteredDeck = pgTable(
 export const kbChunk = pgTable(
   'kb_chunk',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -512,7 +512,7 @@ export const kbChunk = pgTable(
 export const conversations = pgTable(
   'conversations',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -552,7 +552,7 @@ export const conversations = pgTable(
 export const messages = pgTable(
   'messages',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     conversationId: uuid('conversation_id')
       .notNull()
       .references(() => conversations.id, { onDelete: 'cascade' }),
@@ -619,7 +619,7 @@ export const messages = pgTable(
 export const notebooks = pgTable(
   'notebooks',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -652,7 +652,7 @@ export const notebooks = pgTable(
 export const notebookNotes = pgTable(
   'notebook_notes',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -694,7 +694,7 @@ export const notebookNotes = pgTable(
 export const notebookArtifacts = pgTable(
   'notebook_artifacts',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -734,7 +734,7 @@ export const notebookArtifacts = pgTable(
 export const quizAttempts = pgTable(
   'quiz_attempts',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -762,7 +762,7 @@ export const quizAttempts = pgTable(
 export const notebookSources = pgTable(
   'notebook_sources',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -799,7 +799,7 @@ export const notebookSources = pgTable(
 export const sources = pgTable(
   'sources',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -844,7 +844,7 @@ export const sources = pgTable(
 export const sourceChunks = pgTable(
   'source_chunks',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -881,7 +881,7 @@ export const sourceChunks = pgTable(
 export const cardSources = pgTable(
   'card_sources',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -925,7 +925,7 @@ export const cardSources = pgTable(
 export const sourceAnnotations = pgTable(
   'source_annotations',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -966,7 +966,7 @@ export const sourceAnnotations = pgTable(
 export const sourceMarks = pgTable(
   'source_marks',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -1017,7 +1017,7 @@ export const sourceMarks = pgTable(
 export const sourceReadingState = pgTable(
   'source_reading_state',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),

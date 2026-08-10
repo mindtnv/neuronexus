@@ -24,7 +24,7 @@
 import { Elysia, t } from 'elysia';
 import { and, desc, eq } from 'drizzle-orm';
 import { db, media } from '@neuronexus/db';
-import { MAX_MEDIA_BYTES, MEDIA_MIME_ALLOWLIST } from '@neuronexus/shared';
+import { MAX_MEDIA_BYTES, MEDIA_MIME_ALLOWLIST, newUuidV7 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
 import { rootLogger } from '../logger.ts';
 import { env } from '../env.ts';
@@ -101,7 +101,7 @@ export const mediaModule = new Elysia({ prefix: '/media' })
         return status(400, { error: 'too_large' });
       }
 
-      const mediaId = crypto.randomUUID();
+      const mediaId = newUuidV7();
       const key = keyFor(mediaId);
 
       // Claim the uuid: insert a pending row BEFORE presigning. The

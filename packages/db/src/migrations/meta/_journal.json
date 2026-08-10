@@ -162,6 +162,20 @@
       "when": 1781343373984,
       "tag": "0022_sloppy_sue_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786342391124,
+      "tag": "0023_complex_vance_astro",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786346527075,
+      "tag": "0024_pale_vapor",
+      "breakpoints": true
     }
   ]
 }

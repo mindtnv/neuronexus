@@ -18,7 +18,6 @@
 // are intersected with the SAMPLED chunk ids — a hallucinated / un-sampled token
 // is stripped (`applyArtifactCitations`).
 
-import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
   db,
@@ -29,6 +28,7 @@ import {
   sources,
 } from '@neuronexus/db';
 import {
+  newUuidV7,
   QUIZ_QUESTIONS_DEFAULT,
   QUIZ_QUESTIONS_MAX,
   type ArtifactErrorCode,
@@ -316,7 +316,7 @@ function validateQuizQuestion(
       : undefined;
 
   const base: QuizQuestion = {
-    id: randomUUID(),
+    id: newUuidV7(),
     kind,
     prompt,
     ...(explanation ? { explanation } : {}),

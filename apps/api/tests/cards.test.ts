@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
-import { db, deckOptionsPreset, decks as decksTable } from '@neuronexus/db';
+import { cards as cardsTable, db, deckOptionsPreset, decks as decksTable } from '@neuronexus/db';
 import { buildApp } from '../src/app.ts';
 import {
   callApp,
@@ -186,6 +186,73 @@ describe('cards', () => {
     const fronts1 = new Set(page1.items.map((c) => c.renderFrontText));
     const overlap = page2.items.some((c) => fronts1.has(c.renderFrontText));
     expect(overlap).toBe(false);
+  });
+
+  test('GET /cards cursor does not skip cards with the same createdAt', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail('page-tie'));
+    const deck = await freshDeck(cookie);
+    const cardIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const card = await seedBasicCard(app, cookie, {
+        deckId: deck,
+        front: `same-time-${i}`,
+        back: `back-${i}`,
+      });
+      cardIds.push(card.id);
+    }
+
+    const sharedCreatedAt = new Date('2026-01-02T03:04:05.678Z');
+    await db
+      .update(cardsTable)
+      .set({ createdAt: sharedCreatedAt })
+      .where(eq(cardsTable.userId, userId));
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const query = cursor
+        ? `/cards?limit=2&cursor=${encodeURIComponent(cursor)}`
+        : '/cards?limit=2';
+      const page = await (await callApp(app, 'GET', query, { cookie })).json<{
+        items: { id: string; createdAt: string }[];
+        nextCursor: string | null;
+      }>();
+      seen.push(...page.items.map((card) => card.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+
+    expect(seen).toEqual([...cardIds].sort().reverse());
+    expect(new Set(seen).size).toBe(cardIds.length);
+  });
+
+  test('GET /cards accepts a legacy timestamp-only cursor', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail('page-legacy'));
+    const deck = await freshDeck(cookie);
+    const older = await seedBasicCard(app, cookie, {
+      deckId: deck,
+      front: 'older',
+      back: 'older-back',
+    });
+    const newer = await seedBasicCard(app, cookie, {
+      deckId: deck,
+      front: 'newer',
+      back: 'newer-back',
+    });
+    const cutoff = new Date('2026-02-03T04:05:06.789Z');
+    await db
+      .update(cardsTable)
+      .set({ createdAt: new Date(cutoff.getTime() - 1_000) })
+      .where(eq(cardsTable.id, older.id));
+    await db.update(cardsTable).set({ createdAt: cutoff }).where(eq(cardsTable.id, newer.id));
+
+    const page = await (
+      await callApp(app, 'GET', `/cards?cursor=${encodeURIComponent(cutoff.toISOString())}`, {
+        cookie,
+      })
+    ).json<{ items: { id: string }[]; nextCursor: string | null }>();
+
+    expect(page.items.map((card) => card.id)).toEqual([older.id]);
+    expect(page.nextCursor).toBeNull();
   });
 
   test('GET /cards includes x-request-id response header', async () => {

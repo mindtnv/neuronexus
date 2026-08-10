@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-10
+goal: Ensure CI proves the committed migration chain and GET /cards never skips
+  rows with equal timestamps.

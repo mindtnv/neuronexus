@@ -1,0 +1,22 @@
+ALTER TABLE "card_sources" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "cards" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "conversations" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "deck_options_preset" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "decks" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "filtered_deck" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "kb_chunk" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "media" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "messages" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "note_types" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "notebook_artifacts" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "notebook_notes" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "notebook_sources" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "notebooks" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "notes" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "quiz_attempts" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "reviews" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "source_annotations" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "source_chunks" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "source_marks" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "source_reading_state" ALTER COLUMN "id" SET DEFAULT uuidv7();--> statement-breakpoint
+ALTER TABLE "sources" ALTER COLUMN "id" SET DEFAULT uuidv7();

@@ -17,6 +17,7 @@ import {
   type Source,
 } from '@neuronexus/db';
 import {
+  newUuidV7,
   SOURCE_MIME_TO_KIND,
   type SourceMime,
 } from '@neuronexus/shared';
@@ -177,7 +178,7 @@ export async function presignUploadSource(
   if (body.size < 1 || body.size > MAX_SOURCE_BYTES) return { ok: false, error: 'too_large' };
   const sourceMime = body.mime as SourceMime;
   const kind = SOURCE_MIME_TO_KIND[sourceMime];
-  const sourceId = crypto.randomUUID();
+  const sourceId = newUuidV7();
   const key = sourceKeyFor(sourceId);
   try {
     await db.insert(sources).values({

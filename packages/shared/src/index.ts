@@ -17,6 +17,7 @@ export * from './notebook.ts';
 export * from './annotations.ts';
 export * from './chat-models.ts';
 export * from './rag-prompt.ts';
+export * from './uuid.ts';
 
 export const CARD_RATINGS = [1, 2, 3, 4] as const;
 

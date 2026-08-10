@@ -8,6 +8,7 @@
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { db } from '@neuronexus/db/client';
+import { newUuidV7 } from '@neuronexus/shared';
 import { sendEmail } from './email.ts';
 
 function requireEnv(key: string): string {
@@ -59,6 +60,11 @@ export const auth = betterAuth({
     updateAge: 60 * 60 * 24, // refresh token daily
   },
   advanced: {
+    database: {
+      // Better Auth owns its text PKs, so use the same UUIDv7 contract as the
+      // domain schema instead of its default base62 generator.
+      generateId: () => newUuidV7(),
+    },
     // Different origins for api (:3000) and web (:3001) in dev.
     defaultCookieAttributes: {
       sameSite: 'lax',

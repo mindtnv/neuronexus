@@ -1,9 +1,8 @@
 services:
   postgres:
-    # pgvector/pgvector:pg17 = official Postgres 17 + the `vector` extension
-    # available. The 0010_* migration / ensure-vector create the extension
-    # per-DB; initdb does not. PG17→PG17 so the existing pgdata volume is reused.
-    image: pgvector/pgvector:pg17
+    # PostgreSQL 18 + pgvector 0.8.2. Major Postgres upgrades require a fresh
+    # local volume (or pg_upgrade); this dev/test stack treats data as disposable.
+    image: pgvector/pgvector:0.8.2-pg18
     container_name: neuronexus-postgres
     restart: unless-stopped
     environment:
@@ -15,7 +14,8 @@ services:
     ports:
       - '5432:5432'
     volumes:
-      - neuronexus-pgdata:/var/lib/postgresql/data
+      # PostgreSQL 18 stores clusters below a major-version directory.
+      - neuronexus-pgdata:/var/lib/postgresql
       - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U neuronexus -d neuronexus']

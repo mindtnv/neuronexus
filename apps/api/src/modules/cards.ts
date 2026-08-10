@@ -112,6 +112,20 @@ async function enrichCards(rows: CardRow[]): Promise<EnrichedCard[]> {
 const DEFAULT_CARDS_PAGE = 500;
 const MAX_CARDS_PAGE = 1000;
 
+type CardsCursor = { createdAt: Date; id: string | null };
+
+function parseCardsCursor(raw: string): CardsCursor | null {
+  const separator = raw.lastIndexOf('_');
+  const timestamp = separator === -1 ? raw : raw.slice(0, separator);
+  const id = separator === -1 ? null : raw.slice(separator + 1);
+  const createdAt = new Date(timestamp);
+  if (Number.isNaN(createdAt.getTime())) return null;
+  if (id !== null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    return null;
+  }
+  return { createdAt, id };
+}
+
 // ── /cards/search sort + tuple-keyset cursor helpers ──────────────────────────
 
 // Sort allowlist (Architect must-fix #3): `<field> <dir>` validated against
@@ -503,12 +517,13 @@ export async function patchCard(
 
 export const cardsModule = new Elysia({ prefix: '/cards' })
   .use(authPlugin)
-  // List cards. Cursor-paginated: ordered by `created_at DESC`, cursor is
-  // the ISO createdAt of the last item you saw.
+  // List cards. Cursor-paginated: ordered by `(created_at, id) DESC`, cursor is
+  // `<ISO createdAt>_<id>` for the last item you saw. Legacy bare-ISO cursors
+  // remain accepted during the transition.
   //
   //   GET /cards                 → first page (500 most recent, suspended excluded)
   //   GET /cards?limit=200       → smaller page
-  //   GET /cards?cursor=<iso>    → next page after that createdAt
+  //   GET /cards?cursor=<tuple>  → next page after that exact card
   //   GET /cards?includeSuspended=true  → include suspended
   //   GET /cards?due=true        → only what's currently due (ad-hoc filter;
   //                                the full scheduler queue lives under /cards/queue)
@@ -528,19 +543,28 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       if (query.due === 'true') conditions.push(lte(cards.due, new Date()));
       if (query.includeSuspended !== 'true') conditions.push(eq(cards.suspended, false));
       if (query.cursor) {
-        const parsed = new Date(query.cursor);
-        if (!Number.isNaN(parsed.getTime())) {
-          conditions.push(lt(cards.createdAt, parsed));
+        const cursor = parseCardsCursor(query.cursor);
+        if (cursor) {
+          conditions.push(
+            cursor.id
+              ? or(
+                  lt(cards.createdAt, cursor.createdAt),
+                  and(eq(cards.createdAt, cursor.createdAt), lt(cards.id, cursor.id)),
+                )!
+              : lt(cards.createdAt, cursor.createdAt),
+          );
         }
       }
       const rows = await db
         .select()
         .from(cards)
         .where(and(...conditions))
-        .orderBy(desc(cards.createdAt))
+        .orderBy(desc(cards.createdAt), desc(cards.id))
         .limit(limit);
       const nextCursor =
-        rows.length === limit ? rows[rows.length - 1]!.createdAt.toISOString() : null;
+        rows.length === limit
+          ? `${rows[rows.length - 1]!.createdAt.toISOString()}_${rows[rows.length - 1]!.id}`
+          : null;
       return { items: await enrichCards(rows), nextCursor };
     },
     {
