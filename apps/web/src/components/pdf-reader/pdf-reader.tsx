@@ -64,7 +64,8 @@ interface PdfPageViewport {
 }
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type PdfPage = any;
-type PdfDocument = any;
+type PdfDocument = import('pdfjs-dist').PDFDocumentProxy;
+type PdfLoadingTask = import('pdfjs-dist').PDFDocumentLoadingTask;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 /** One PDF outline entry (L2 — table of contents), flattened with depth. */
@@ -370,6 +371,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     // ── Load the document (dynamic pdf.js import, client-only) ────────────────────
     useEffect(() => {
       let cancelled = false;
+      let loadingTask: PdfLoadingTask | null = null;
       const ac = new AbortController();
       setLoadState('loading');
       setLoadProgress({ loaded: 0, total: null });
@@ -403,11 +405,9 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
           });
           if (cancelled) return;
 
-          const doc: PdfDocument = await pdfjs.getDocument({ data }).promise;
-          if (cancelled) {
-            void doc.destroy();
-            return;
-          }
+          loadingTask = pdfjs.getDocument({ data });
+          const doc: PdfDocument = await loadingTask.promise;
+          if (cancelled) return;
           docRef.current = doc;
           setNumPages(doc.numPages);
 
@@ -506,9 +506,8 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
         ac.abort();
         for (const timer of saveTimersRef.current.values()) clearTimeout(timer);
         saveTimersRef.current.clear();
-        const doc = docRef.current;
         docRef.current = null;
-        if (doc) void doc.destroy().catch(() => {});
+        if (loadingTask) void loadingTask.destroy().catch(() => {});
       };
     }, [sourceId]);
 
