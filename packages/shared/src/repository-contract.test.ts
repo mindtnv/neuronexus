@@ -34,4 +34,29 @@ describe('repository contracts', () => {
       expect(workflow).toContain('run: bun run spec:validate');
     }
   });
+
+  test('CI hard-gates real S3 round trips against pinned disposable MinIO', () => {
+    const packageJson = JSON.parse(readRepoFile('package.json')) as {
+      scripts: Record<string, string>;
+    };
+    expect(packageJson.scripts['test:s3:ci']).toContain(
+      'S3_INTEGRATION_REQUIRED=true',
+    );
+
+    const compose = readRepoFile('docker-compose.yml');
+    expect(compose).toContain('minio/minio:RELEASE.2025-09-07T16-13-09Z');
+    expect(compose).toContain('minio/mc:RELEASE.2025-08-13T08-35-41Z');
+
+    for (const path of ['.github/workflows/ci.yml', '.github/workflows/deploy.yml']) {
+      const workflow = readRepoFile(path);
+      expect(workflow).toContain('s3-integration:');
+      expect(workflow).toContain('docker compose up -d --wait minio');
+      expect(workflow).toContain('docker compose run --rm --no-deps createbuckets');
+      expect(workflow).toContain('run: bun run test:s3:ci');
+    }
+
+    expect(readRepoFile('.github/workflows/deploy.yml')).toContain(
+      'needs: [test, s3-integration, build-api, build-web]',
+    );
+  });
 });

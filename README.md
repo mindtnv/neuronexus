@@ -78,4 +78,6 @@ Production-bound schema changes use `db:generate`, reviewed/committed SQL, and `
 - `apps/web/Dockerfile` builds with Bun 1.3.14 and runs the Next standalone output on Node 26 Alpine.
 - Both Compose files use `pgvector/pgvector:0.8.2-pg18`. PostgreSQL 18 volumes mount at `/var/lib/postgresql`; upgrading from an older major requires `pg_upgrade` or a fresh disposable volume.
 
+Production logging, readiness, request-correlation, and shutdown operations are documented in [`docs/observability.md`](docs/observability.md).
+
 See `.env.example` for configuration and `CLAUDE.md` / `AGENTS.md` for the detailed architecture and repository-working contract.

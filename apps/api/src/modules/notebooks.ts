@@ -75,12 +75,16 @@ import {
 import { authPlugin } from '../auth-plugin.ts';
 import { AI_COOLDOWN_MS, cooldownCheck } from '../ai-cooldown.ts';
 import { env } from '../env.ts';
-import { rootLogger } from '../logger.ts';
+import {
+  requestLogFromContext,
+  rootLogger,
+} from '../logger.ts';
+import type { Logger } from 'pino';
 import { getObjectBytes } from '../storage.ts';
 import { isChatEnabled } from '../ai/openai-client.ts';
 import {
   ARTIFACT_TYPE_TITLE,
-  generateArtifact,
+  scheduleArtifactGeneration,
   generateNotebookOverview,
   scoreQuizAttempt,
 } from '../ai/artifacts.ts';
@@ -329,10 +333,12 @@ async function nextArtifactTitle(
 
 /** Fire-and-forget kick of the artifact generator (logs but never rejects).
  *  `questionCount` is forwarded for quiz generation (ignored by markdown types). */
-function kickArtifact(artifactId: string, questionCount?: number): void {
-  void generateArtifact(artifactId, { questionCount }).catch((err) => {
-    rootLogger.error({ err, artifactId }, 'ai.artifact.kick_failed');
-  });
+function kickArtifact(
+  artifactId: string,
+  questionCount?: number,
+  requestLog: Logger = rootLogger,
+): void {
+  scheduleArtifactGeneration(artifactId, { questionCount, requestLog });
 }
 
 /**
@@ -453,7 +459,8 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // description CLEARS the field.
   .patch(
     '/:id',
-    async ({ user, params, body, status }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
       const set: Record<string, unknown> = {};
       let contentChanged = false;
 
@@ -623,7 +630,9 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // per-notebook cap (attach target) and the per-user library cap.
   .post(
     '/:id/sources',
-    async ({ user, params, body, status }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
+      const log = requestLogFromContext(context);
       const [nb] = await db
         .select({ id: notebooks.id })
         .from(notebooks)
@@ -640,7 +649,7 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
 
       // ── upload kinds (pdf/epub): claim + presign (attach at finalize) ──────────
       if (body.kind === 'upload') {
-        const res = await presignUploadSource(user.id, body);
+        const res = await presignUploadSource(user.id, body, log);
         if (!res.ok) {
           const code = res.error === 'source_conflict' ? 409 : 400;
           return status(code, { error: res.error });
@@ -655,6 +664,7 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
           ? { kind: 'url', title: body.title, url: body.url }
           : { kind: 'text', title: body.title, text: body.text },
         params.id,
+        log,
       );
       return row;
     },
@@ -1111,7 +1121,9 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // The `source_ids` snapshot = the resolved ready scope. Bumps notebook.updated_at.
   .post(
     '/:id/artifacts',
-    async ({ user, params, body, status }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
+      const log = requestLogFromContext(context);
       // 1) ownership.
       const [nb] = await db
         .select({ id: notebooks.id })
@@ -1179,7 +1191,7 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       if (!created) return status(409, { error: 'generation_in_progress' });
 
       // 6) async kick (not awaited; .catch-logged). questionCount rides for quiz.
-      kickArtifact(created.id, type === 'quiz' ? body.questionCount : undefined);
+      kickArtifact(created.id, type === 'quiz' ? body.questionCount : undefined, log);
       return created;
     },
     {
@@ -1197,7 +1209,8 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // Full artifact (content_md|content_json + status + error). user-scoped 404.
   .get(
     '/:id/artifacts/:artifactId',
-    async ({ user, params, status }) => {
+    async (context) => {
+      const { user, params, status } = context;
       const [row] = await db
         .select()
         .from(notebookArtifacts)
@@ -1264,7 +1277,9 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // Bumps notebook.updated_at (Р15).
   .post(
     '/:id/artifacts/:artifactId/regenerate',
-    async ({ user, params, status }) => {
+    async (context) => {
+      const { user, params, status } = context;
+      const log = requestLogFromContext(context);
       const [nb] = await db
         .select({ id: notebooks.id })
         .from(notebooks)
@@ -1336,7 +1351,7 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       if ('error' in out) {
         return status(409, { error: out.error });
       }
-      kickArtifact(out.row.id);
+      kickArtifact(out.row.id, undefined, log);
       return out.row;
     },
     {
@@ -1735,8 +1750,10 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
   // can NEVER finalize user A's presigned uuid (mirrors media finalize).
   .post(
     '/:id/finalize',
-    async ({ user, params, status }) => {
-      const res = await finalizeUploadSource(user.id, params.id);
+    async (context) => {
+      const { user, params, status } = context;
+      const log = requestLogFromContext(context);
+      const res = await finalizeUploadSource(user.id, params.id, undefined, log);
       if (!res.ok) {
         return status(res.status, {
           error: res.error,
@@ -2228,7 +2245,9 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
   // provenance, allowed by the schema). Returns `{ noteId, cardIds }`.
   .post(
     '/:id/quick-card',
-    async ({ user, params, body, status }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
+      const log = requestLogFromContext(context);
       const [source] = await db
         .select({ id: sources.id })
         .from(sources)
@@ -2332,8 +2351,8 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
       });
 
       // RAG index enqueue AFTER commit (same discipline as the notes route/tools).
-      enqueueToolCardsForIndex(result.cardIds);
-      rootLogger.info(
+      enqueueToolCardsForIndex(result.cardIds, log);
+      log.info(
         { sourceId: params.id, noteId: result.noteId, cards: result.cardIds.length },
         'source.quick_card',
       );
@@ -2363,7 +2382,9 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
   // client keeps the user's manual Front/Back values. user-scoped 404 on the source.
   .post(
     '/:id/suggest-card',
-    async ({ user, params, body, status, store }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
+      const log = requestLogFromContext(context);
       if (!isChatEnabled()) return status(503, { error: 'ai_disabled' });
 
       const [source] = await db
@@ -2378,7 +2399,6 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
       const cd = cooldownCheck(`suggest:${params.id}`, AI_COOLDOWN_MS.suggestCard);
       if (!cd.ok) return status(429, { error: 'cooldown', retryAfterMs: cd.retryAfterMs });
 
-      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
       // Cards are written in the USER'S language (S2 / M5.1), not the source's —
       // the body carries the active app locale; absent defaults to 'ru' (the
       // n=1 RU-primary app default).
@@ -2411,7 +2431,9 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
   // `harvest_failed` (never a 500). Nothing to harvest → `{ candidates: [] }`.
   .post(
     '/:id/harvest-cards',
-    async ({ user, params, body, status, store }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
+      const log = requestLogFromContext(context);
       if (!isChatEnabled()) return status(503, { error: 'ai_disabled' });
 
       const [source] = await db
@@ -2492,7 +2514,6 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
 
       if (passages.length === 0) return { candidates: [] };
 
-      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
       const cards = await harvestCards(passages, {
         sourceTitle: source.title,
         // Cards are written in the USER'S language (the body carries the active
@@ -2532,7 +2553,9 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
   // cap → 400 too_many. Returns `{ created, cardIds }`.
   .post(
     '/:id/harvest-cards/apply',
-    async ({ user, params, body, status }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
+      const log = requestLogFromContext(context);
       const [source] = await db
         .select({ id: sources.id })
         .from(sources)
@@ -2674,8 +2697,8 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
       });
 
       // RAG index enqueue AFTER commit (same discipline as quick-card/notes).
-      enqueueToolCardsForIndex(result.cardIds);
-      rootLogger.info(
+      enqueueToolCardsForIndex(result.cardIds, log);
+      log.info(
         { sourceId: params.id, created: result.cardIds.length },
         'source.harvest_cards.apply',
       );

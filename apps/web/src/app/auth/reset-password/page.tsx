@@ -3,6 +3,7 @@
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { apiErrorFromResponse } from '@/lib/api';
 const API_BASE =
   typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL
@@ -47,8 +48,7 @@ function ResetPasswordForm() {
         body: JSON.stringify({ newPassword: password, token }),
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { message?: string } | null;
-        throw new Error(body?.message ?? 'Ссылка устарела или неверна.');
+        throw await apiErrorFromResponse(res, 'Ссылка устарела или неверна.');
       }
       setDone(true);
       setTimeout(() => router.replace('/auth/sign-in'), 1500);

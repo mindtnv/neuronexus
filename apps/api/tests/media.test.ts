@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { buildApp } from '../src/app.ts';
 import { env } from '../src/env.ts';
 import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
+import { s3RoundTrip } from './s3-test-gate.ts';
 
 const app = buildApp();
 
@@ -15,21 +16,6 @@ const PNG_1X1 = new Uint8Array([
   0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42,
   0x60, 0x82,
 ]);
-
-// Probe whether MinIO/S3 is reachable. The full presign→POST→finalize tests run
-// against real storage when it's up (it is, locally + CI); otherwise they skip
-// so a missing-bucket dev box doesn't fail the suite.
-let s3Up = false;
-try {
-  const res = await fetch(`${env.S3_ENDPOINT}/minio/health/live`, {
-    method: 'GET',
-    signal: AbortSignal.timeout(2000),
-  });
-  s3Up = res.ok;
-} catch {
-  s3Up = false;
-}
-const roundTrip = s3Up ? test : test.skip;
 
 type PresignBody = {
   mediaId: string;
@@ -113,7 +99,7 @@ describe('media', () => {
     expect(res.status).toBe(401);
   });
 
-  roundTrip('full presign → POST → finalize happy path', async () => {
+  s3RoundTrip('full presign → POST → finalize happy path', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const presign = await (
       await callApp(app, 'POST', '/media/presign', {
@@ -156,7 +142,7 @@ describe('media', () => {
     expect(list.items.map((m) => m.id)).toContain(presign.mediaId);
   });
 
-  roundTrip('finalize deletes the object + 400 when bytes are not a real image', async () => {
+  s3RoundTrip('finalize deletes the object + 400 when bytes are not a real image', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const presign = await (
       await callApp(app, 'POST', '/media/presign', {
@@ -193,7 +179,7 @@ describe('media', () => {
     expect(list.items).toEqual([]);
   });
 
-  roundTrip('S3 rejects a Content-Type that does not match the signed policy', async () => {
+  s3RoundTrip('S3 rejects a Content-Type that does not match the signed policy', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const presign = await (
       await callApp(app, 'POST', '/media/presign', {
@@ -222,7 +208,7 @@ describe('media', () => {
     expect(await res.json<{ error: string }>()).toEqual({ error: 'not_uploaded' });
   });
 
-  roundTrip(
+  s3RoundTrip(
     "cross-user integrity: B finalizing A's presigned uuid → 404; A can still finalize",
     async () => {
       const { cookie: aCookie, userId: aUserId } = await signUpAndCookie(app, uniqueEmail('a'));

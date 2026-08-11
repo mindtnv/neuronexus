@@ -1,4 +1,4 @@
-import { Elysia } from 'elysia';
+import { Elysia, ElysiaCustomStatusResponse } from 'elysia';
 import { cors } from '@elysiajs/cors';
 import { swagger } from '@elysiajs/swagger';
 import { env } from './env.ts';
@@ -19,42 +19,106 @@ import { cardsSimilarModule, graphModule } from './modules/semantic.ts';
 import { notebooksModule, sourcesModule } from './modules/notebooks.ts';
 import { libraryModule } from './modules/library.ts';
 import { AUTH_RATE_RULES, clientIpFromRequest, rateLimitCheck } from './rate-limit.ts';
-import { pickRequestId, requestLogger, rootLogger } from './logger.ts';
+import { pickRequestId, requestLogger, rootLogger, safeError } from './logger.ts';
+import type { Logger } from 'pino';
+import { embeddingDegraded } from './ai/index-queue.ts';
+import {
+  artifactWorkerState,
+  indexWorkerState,
+  lifecycleSnapshot,
+  sourceIngestWorkerState,
+} from './runtime-state.ts';
+
+export interface BuildAppOptions {
+  logger?: Logger;
+  pingDb?: typeof dbPing;
+  embeddingIsDegraded?: () => boolean;
+}
+
+interface RequestLifecycleState {
+  errorStatus?: number;
+}
 
 /**
  * Build the full Elysia app (no .listen). Separating this from the binding
  * lets tests call `app.handle(req)` directly against an in-process instance.
  */
-export function buildApp() {
+export function buildApp(options: BuildAppOptions = {}) {
+  const baseLogger = options.logger ?? rootLogger;
+  const pingDb = options.pingDb ?? dbPing;
+  const embeddingIsDegraded = options.embeddingIsDegraded ?? embeddingDegraded;
   // Global request body ceiling (DoS hardening): cap any single request body at
   // 2 MiB. `serve.maxRequestBodySize` is the Bun.serve option Elysia forwards
   // (Elysia 1.4 `ElysiaConfig.serve: Partial<Serve>` → Bun `Serve.Options`).
   return new Elysia({ serve: { maxRequestBodySize: 2 * 1024 * 1024 } })
-    .state('log', rootLogger)
     .use(
       cors({
         origin: env.WEB_ORIGIN,
         credentials: true,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-request-id'],
         exposeHeaders: ['x-request-id'],
       }),
     )
     .use(swagger({ path: '/docs' }))
-    // Request ID + structured logger — runs first so every other hook / handler
-    // can attach to the same child logger through `store.log`.
-    .onRequest(({ request, set, store }) => {
+    // Per-request derivation, never shared mutable state. Every downstream hook
+    // and route receives its own logger/request id even under concurrency.
+    .derive({ as: 'global' }, ({ request, set }) => {
       const requestId = pickRequestId(request.headers);
       const url = new URL(request.url);
       const child = requestLogger({
         requestId,
         method: request.method,
         path: url.pathname,
-      });
-      (store as { log: typeof rootLogger }).log = child;
+      }, baseLogger);
       set.headers['x-request-id'] = requestId;
-      child.debug('request.start');
+      const requestState: RequestLifecycleState = {};
+      return {
+        log: child,
+        requestId,
+        requestStartedAt: performance.now(),
+        requestState,
+      };
     })
+    .onAfterHandle({ as: 'global' }, ({ requestState, responseValue }) => {
+      if (!requestState) return;
+      if (responseValue instanceof ElysiaCustomStatusResponse) {
+        requestState.errorStatus = responseValue.code;
+      } else if (responseValue instanceof Response) {
+        requestState.errorStatus = responseValue.status;
+      }
+    })
+    .onAfterResponse(
+      { as: 'global' },
+      async ({ log, requestStartedAt, requestState, set, responseValue, route }) => {
+      // Elysia maps custom/not-found responses immediately after the handler;
+      // one microtask lets `set.status` settle to the final wire status.
+      await Bun.sleep(0);
+      try {
+        const rawStatus = set.status;
+        const status =
+          requestState.errorStatus ??
+          (!route || route === '/*'
+            ? 404
+            : responseValue instanceof ElysiaCustomStatusResponse
+              ? responseValue.code
+              : typeof rawStatus === 'number'
+                ? rawStatus
+                : Number(rawStatus) || 200);
+        log.info(
+          {
+            event: 'http.request.completed',
+            matchedRoute: route || undefined,
+            status,
+            durationMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+          },
+          'http.request.completed',
+        );
+      } catch {
+        // Observability must never change the response path.
+      }
+      },
+    )
     // IP-based rate limiter for the auth surface. Runs before `.mount(auth.handler)`
     // in authPlugin, so any 429 short-circuits BetterAuth entirely.
     .onRequest(({ request, set }) => {
@@ -80,30 +144,75 @@ export function buildApp() {
       return { error: 'rate_limited', retryAfterSeconds: retryS };
     })
     .use(authPlugin)
-    .get('/health', async ({ status, store }) => {
-      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+    .get('/health', async ({ status, log }) => {
       try {
-        const ping = await dbPing();
+        const ping = await pingDb();
         return { ok: true, now: new Date().toISOString(), db: ping };
       } catch (err) {
-        log.error({ err }, 'health.db_ping_failed');
+        log.error({ err: safeError(err) }, 'health.db_ping_failed');
         return status(503, {
           ok: false,
           now: new Date().toISOString(),
-          db: { ok: false, error: String(err) },
+          db: { ok: false, error: 'unavailable' },
         });
       }
     })
-    .onError(({ code, error, status, store }) => {
-      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
+    .get('/ready', async ({ status, log }) => {
+      const lifecycle = lifecycleSnapshot();
+      const workers = {
+        index: indexWorkerState.snapshot(),
+        sourceIngest: sourceIngestWorkerState.snapshot(),
+        artifact: artifactWorkerState.snapshot(),
+      };
+      let db: { ok: true; latencyMs: number } | { ok: false; error: 'unavailable' };
+      try {
+        db = await pingDb();
+      } catch (err) {
+        log.error({ err: safeError(err) }, 'readiness.db_ping_failed');
+        db = { ok: false, error: 'unavailable' };
+      }
+
+      const degraded: Array<{ code: string; at?: string }> = [];
+      if (embeddingIsDegraded()) degraded.push({ code: 'embedding_dimension_mismatch' });
+      for (const [name, snapshot] of Object.entries(workers)) {
+        if (snapshot.lastFailure) {
+          degraded.push({
+            code: `${name === 'sourceIngest' ? 'source_ingest' : name}:${snapshot.lastFailure.code}`,
+            at: snapshot.lastFailure.at,
+          });
+        }
+      }
+
+      const notReady = !db.ok || lifecycle.state === 'shutting_down';
+      const readinessStatus = notReady ? 'not_ready' : degraded.length > 0 ? 'degraded' : 'ready';
+      const body = {
+        ok: !notReady,
+        status: readinessStatus,
+        now: new Date().toISOString(),
+        db,
+        lifecycle,
+        workers,
+        degraded,
+      };
+      return notReady ? status(503, body) : body;
+    })
+    .onError({ as: 'global' }, ({ code, error, status, log, requestState }) => {
+      const state = requestState as RequestLifecycleState | undefined;
+      const errorLog = log ?? baseLogger;
       if (code === 'VALIDATION') {
-        log.warn({ code, err: String(error) }, 'validation');
-        return status(400, { error: 'ValidationError', detail: String(error) });
+        if (state) state.errorStatus = 400;
+        const issueCount = Array.isArray((error as { all?: unknown[] }).all)
+          ? (error as { all: unknown[] }).all.length
+          : 1;
+        errorLog.warn({ event: 'http.validation.failed', code, issueCount }, 'validation');
+        return status(400, { error: 'ValidationError', detail: 'Invalid request' });
       }
       if (code === 'NOT_FOUND') {
+        if (state) state.errorStatus = 404;
         return status(404, { error: 'NotFound' });
       }
-      log.error({ code, err: error }, 'unhandled');
+      if (state) state.errorStatus = 500;
+      errorLog.error({ code, err: safeError(error) }, 'unhandled');
       return status(500, { error: 'InternalServerError' });
     })
     .use(profileModule)
@@ -122,7 +231,13 @@ export function buildApp() {
     .use(chatModule)
     .use(notebooksModule)
     .use(sourcesModule)
-    .use(libraryModule);
+    .use(libraryModule)
+    // Explicit fallback keeps the completion hook's final status accurate for
+    // unmatched routes too (Elysia's implicit 404 is mapped after analytics).
+    .all('/*', ({ set }) => {
+      set.status = 404;
+      return { error: 'NotFound' as const };
+    });
 }
 
 export type App = ReturnType<typeof buildApp>;

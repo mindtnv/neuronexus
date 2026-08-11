@@ -89,6 +89,61 @@ jobs:
       - name: Test
         run: bun run test:ci
 
+  s3-integration:
+    name: S3 round trips
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg18
+        env:
+          POSTGRES_USER: neuronexus
+          POSTGRES_PASSWORD: neuronexus
+          POSTGRES_DB: neuronexus_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U neuronexus -d neuronexus_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://neuronexus:neuronexus@localhost:5432/neuronexus_test
+      TEST_DATABASE_URL: postgres://neuronexus:neuronexus@localhost:5432/neuronexus_test
+      BETTER_AUTH_SECRET: ci-secret-32chars-ci-secret-32chars
+      BETTER_AUTH_URL: http://localhost:3000
+      WEB_ORIGIN: http://localhost:3001
+      NEXT_PUBLIC_API_URL: http://localhost:3000
+      API_PORT: '3000'
+      S3_ENDPOINT: http://localhost:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: neuronexus-media
+      S3_ACCESS_KEY_ID: neuronexus
+      S3_SECRET_ACCESS_KEY: neuronexus-secret
+      S3_PUBLIC_BASE_URL: http://localhost:9000/neuronexus-media
+      NEXT_PUBLIC_MEDIA_BASE_URL: http://localhost:9000/neuronexus-media
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Cache bun packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - name: Install deps
+        run: bun install --frozen-lockfile
+      - name: Start disposable S3
+        run: |
+          docker compose up -d --wait minio
+          docker compose run --rm --no-deps createbuckets
+      - name: Apply migrations against test DB
+        run: bun run db:migrate:apply:test
+      - name: Test real S3 round trips
+        run: bun run test:s3:ci
+
   build-api:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -151,7 +206,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [test, build-api, build-web]
+    needs: [test, s3-integration, build-api, build-web]
     steps:
       - name: Point Coolify at the new tags and deploy
         run: |

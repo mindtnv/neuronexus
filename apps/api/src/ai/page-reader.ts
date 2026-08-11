@@ -23,7 +23,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import type { Logger } from 'pino';
 import { env, fetchPageEnabled } from '../env.ts';
-import { rootLogger } from '../logger.ts';
+import { rootLogger, safeLogUrl } from '../logger.ts';
 
 export interface PageContent {
   /** Final URL (after redirects / as reported by the backend). */
@@ -106,7 +106,7 @@ export function validatePageUrl(raw: string): URL {
   try {
     u = new URL(raw);
   } catch {
-    throw new Error(`invalid URL "${raw}"`);
+    throw new Error('invalid URL');
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     throw new Error(`only http(s) URLs can be fetched (got ${u.protocol})`);
@@ -345,7 +345,7 @@ export class DirectPageReader implements PageReader {
           await assertPublicHost(current);
           continue;
         }
-        if (!res.ok) throw new Error(`HTTP ${res.status} for ${current.href}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status} for ${safeLogUrl(current.href)}`);
 
         const ct = (res.headers.get('content-type') ?? '').toLowerCase();
         if (ct && !ALLOWED_CONTENT_TYPES.some((t) => ct.includes(t))) {
@@ -513,7 +513,10 @@ export async function readPageCached(url: string, opts: PageReadOpts = {}): Prom
   const reader = getPageReader();
   if (!reader) throw new Error('fetch_page is not configured');
   const page = await reader.read(url, opts);
-  log.debug({ url, chars: page.text.length, links: page.links.length }, 'ai.fetch_page.read');
+  log.debug(
+    { url: safeLogUrl(url), chars: page.text.length, links: page.links.length },
+    'ai.fetch_page.read',
+  );
 
   if (pageCache.size >= PAGE_CACHE_MAX) {
     // Drop the oldest insertion (Map preserves insertion order).

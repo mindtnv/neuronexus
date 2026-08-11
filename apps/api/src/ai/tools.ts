@@ -60,6 +60,7 @@ import {
 import { cardProgress, dueForecast, studyStats } from '../modules/progress-stats.ts';
 import { parseCardQuery, CardQueryError } from '@neuronexus/shared';
 import { env } from '../env.ts';
+import { safeError, safeLogUrl } from '../logger.ts';
 
 const RETRIEVE_K = env.ai.RETRIEVE_K;
 const RETRIEVE_MIN_SCORE = env.ai.RETRIEVE_MIN_SCORE;
@@ -402,7 +403,7 @@ const fetchPage: Tool = {
     try {
       page = await readPageCached(url, { log: ctx.log });
     } catch (err) {
-      ctx.log.warn({ err, url }, 'ai.tool.fetch_page.failed');
+      ctx.log.warn({ err: safeError(err), url: safeLogUrl(url) }, 'ai.tool.fetch_page.failed');
       return {
         ok: false,
         error: `fetch_page: ${err instanceof Error ? err.message : 'fetch failed'}`,
@@ -2510,8 +2511,11 @@ export function buildToolRegistry(
  * loop calls this AFTER the (possibly caller-owned) transaction commits — same
  * post-commit discipline as the notes/cards routes. No-op when embeddings off.
  */
-export function enqueueToolCardsForIndex(cardIds: string[] | undefined): void {
-  if (cardIds && cardIds.length > 0) enqueueCardsForIndex(cardIds);
+export function enqueueToolCardsForIndex(
+  cardIds: string[] | undefined,
+  log?: Logger,
+): void {
+  if (cardIds && cardIds.length > 0) enqueueCardsForIndex(cardIds, log);
 }
 
 /** Map a registry to the gateway's `tools[]` request schema. */

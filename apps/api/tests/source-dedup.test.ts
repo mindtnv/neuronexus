@@ -21,7 +21,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { and, count, eq, sql } from 'drizzle-orm';
 import { db, sources as sourcesTable } from '@neuronexus/db';
 import { buildApp } from '../src/app.ts';
-import { env } from '../src/env.ts';
 import {
   __resetAiClientForTests,
   __setAiClientForTests,
@@ -29,22 +28,10 @@ import {
 import { __setPdfExtractorForTests } from '../src/ai/source-parsers.ts';
 import { drainSourceIngest } from '../src/ai/source-ingest.ts';
 import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
+import { s3RoundTrip } from './s3-test-gate.ts';
 
 const app = buildApp();
 const DIM = 1536;
-
-// Reachability probe (mirrors media.test.ts) — the e2e dedup tests need MinIO.
-let s3Up = false;
-try {
-  const res = await fetch(`${env.S3_ENDPOINT}/minio/health/live`, {
-    method: 'GET',
-    signal: AbortSignal.timeout(2000),
-  });
-  s3Up = res.ok;
-} catch {
-  s3Up = false;
-}
-const roundTrip = s3Up ? test : test.skip;
 
 const PDF_BYTES_A = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 1, 2, 3, 4, 5]); // "%PDF-" + junk
 const PDF_BYTES_B = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 9, 8, 7, 6, 5]);
@@ -113,7 +100,7 @@ describe('source dedup — finalize byte_hash (real MinIO round-trip)', () => {
     __resetAiClientForTests();
   });
 
-  roundTrip('same bytes, same notebook → second finalize 409 duplicate_source (no second embed)', async () => {
+  s3RoundTrip('same bytes, same notebook → second finalize 409 duplicate_source (no second embed)', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const nbId = await createNotebook(cookie);
 
@@ -151,7 +138,7 @@ describe('source dedup — finalize byte_hash (real MinIO round-trip)', () => {
     expect(ready!.n).toBe(1);
   });
 
-  roundTrip('different bytes, same notebook → second finalize succeeds (no dedup)', async () => {
+  s3RoundTrip('different bytes, same notebook → second finalize succeeds (no dedup)', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const nbId = await createNotebook(cookie);
 
@@ -171,7 +158,7 @@ describe('source dedup — finalize byte_hash (real MinIO round-trip)', () => {
     expect(readyN!.n).toBe(2);
   });
 
-  roundTrip('same bytes, DIFFERENT notebook → second finalize 409 (dedup is per-USER now, Р5)', async () => {
+  s3RoundTrip('same bytes, DIFFERENT notebook → second finalize 409 (dedup is per-USER now, Р5)', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const nb1 = await createNotebook(cookie, 'NB1');
     const nb2 = await createNotebook(cookie, 'NB2');

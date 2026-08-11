@@ -24,7 +24,13 @@ import {
   type NoteTypeDef,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
-import { rootLogger } from '../logger.ts';
+import {
+  logCorrelation,
+  requestLogFromContext,
+  rootLogger,
+  safeError,
+} from '../logger.ts';
+import type { Logger } from 'pino';
 import { sanitizeFieldValues } from '../sanitize.ts';
 import { defFromRow } from './note-types.ts';
 import { enqueueIndex } from '../ai/index-queue.ts';
@@ -41,11 +47,15 @@ type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
  * Exported so the agentic `create_card`/`edit_card` tools (which reuse the
  * extracted note helpers below) enqueue identically after their own commit.
  */
-export function enqueueCardsForIndex(cardIds: Array<string | undefined>): void {
+export function enqueueCardsForIndex(
+  cardIds: Array<string | undefined>,
+  log: Logger = rootLogger,
+): void {
   try {
-    for (const id of cardIds) if (id) enqueueIndex(id);
+    const correlation = logCorrelation(log);
+    for (const id of cardIds) if (id) enqueueIndex(id, correlation);
   } catch (err) {
-    rootLogger.warn({ err }, 'ai.index.enqueue_failed');
+    log.warn({ err: safeError(err) }, 'ai.index.enqueue_failed');
   }
 }
 
@@ -334,7 +344,9 @@ export const notesModule = new Elysia({ prefix: '/notes' })
   .use(authPlugin)
   .post(
     '/',
-    async ({ user, body, status }) => {
+    async (context) => {
+      const { user, body, status } = context;
+      const log = requestLogFromContext(context);
       // Authorize deck + note-type ownership and pre-compute sanitize+gen.
       const resolved = await resolveNoteCreate(user.id, {
         deckId: body.deckId,
@@ -356,7 +368,7 @@ export const notesModule = new Elysia({ prefix: '/notes' })
         }),
       );
 
-      rootLogger.info(
+      log.info(
         {
           noteId: result.note.id,
           noteTypeId: body.noteTypeId,
@@ -366,7 +378,7 @@ export const notesModule = new Elysia({ prefix: '/notes' })
       );
 
       // RAG index hook (Slice 3): enqueue each generated card after commit.
-      enqueueCardsForIndex(result.cards.map((c) => c?.id));
+      enqueueCardsForIndex(result.cards.map((c) => c?.id), log);
 
       return result;
     },
@@ -382,7 +394,9 @@ export const notesModule = new Elysia({ prefix: '/notes' })
   )
   .patch(
     '/:id',
-    async ({ user, params, body, status }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
+      const log = requestLogFromContext(context);
       const resolved = await resolveNoteUpdate(user.id, params.id, {
         fieldValues: body.fieldValues,
         tags: body.tags,
@@ -401,7 +415,7 @@ export const notesModule = new Elysia({ prefix: '/notes' })
         }),
       );
 
-      rootLogger.info(
+      log.info(
         {
           noteId: params.id,
           noteTypeId: resolved.note.noteTypeId,
@@ -414,7 +428,7 @@ export const notesModule = new Elysia({ prefix: '/notes' })
 
       // RAG index hook (Slice 3): re-enqueue surviving + new cards after commit.
       // The sourceHash skip means an unchanged render_text costs nothing.
-      enqueueCardsForIndex(result.cards.map((c) => c.id));
+      enqueueCardsForIndex(result.cards.map((c) => c.id), log);
 
       return { note: result.note, cards: result.cards };
     },

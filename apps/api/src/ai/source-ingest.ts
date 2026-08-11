@@ -31,7 +31,14 @@ import {
 } from '@neuronexus/db';
 import { chunkSource, type SourceUnit } from '@neuronexus/shared';
 import { env, notebooksEnabled } from '../env.ts';
-import { rootLogger } from '../logger.ts';
+import {
+  rootLogger,
+  safeError,
+  workerLogger,
+  type LogCorrelation,
+} from '../logger.ts';
+import { CorrelatedPendingQueue, sourceIngestWorkerState } from '../runtime-state.ts';
+import type { Logger } from 'pino';
 import { computeSourceHash, EMBED_BATCH, embeddingDegraded } from './index-queue.ts';
 import { embed, isEmbeddingEnabled } from './openai-client.ts';
 import { getObjectBytes } from '../storage.ts';
@@ -41,7 +48,7 @@ import { downloadUrlCover, storeCoverMedia, type CoverImage } from './source-cov
 // ── In-process claim loop (concurrency-capped) ────────────────────────────────
 
 const CONCURRENCY = Math.max(1, env.ai.SOURCE_INGEST_CONCURRENCY);
-const queued = new Set<string>(); // source ids awaiting a worker slot
+const queued = new CorrelatedPendingQueue(); // source ids + bounded causal metadata
 let active = 0;
 let idleResolvers: Array<() => void> = [];
 
@@ -59,23 +66,29 @@ function settleIfIdle(): void {
  * Idempotent (a re-enqueue of an in-flight id is dropped — the row's CAS guard
  * is the real safety net). Kicks the bounded claim loop.
  */
-export function enqueueSource(sourceId: string): void {
-  if (queued.has(sourceId)) return;
-  queued.add(sourceId);
+export function enqueueSource(sourceId: string, correlation?: LogCorrelation): void {
+  const isNew = queued.enqueue(sourceId, correlation);
+  if (isNew) sourceIngestWorkerState.enqueue();
   kick();
 }
 
 function kick(): void {
   while (active < CONCURRENCY && queued.size > 0) {
-    const next = queued.values().next().value as string | undefined;
-    if (next === undefined) break;
-    queued.delete(next);
+    const next = queued.takeOne();
+    if (!next) break;
     active += 1;
-    void ingestSource(next).finally(() => {
-      active -= 1;
-      if (queued.size > 0) kick();
-      settleIfIdle();
-    });
+    sourceIngestWorkerState.start();
+    const log = workerLogger('source_ingest', next.correlation);
+    void ingestSourceWithResult(next.id, { log })
+      .then((failureCode) => {
+        if (failureCode) sourceIngestWorkerState.fail(failureCode);
+        else sourceIngestWorkerState.succeed();
+      })
+      .finally(() => {
+        active -= 1;
+        if (queued.size > 0) kick();
+        settleIfIdle();
+      });
   }
 }
 
@@ -108,22 +121,37 @@ export async function drainSourceIngest({ timeoutMs }: { timeoutMs: number }): P
  * an over-limit source resolves to a CAS `error` (with a machine code), never a
  * crash that takes down the loop. Exported so tests can drive it synchronously.
  */
-export async function ingestSource(sourceId: string): Promise<void> {
+export async function ingestSource(
+  sourceId: string,
+  opts: { log?: Logger } = {},
+): Promise<void> {
+  await ingestSourceWithResult(sourceId, opts);
+}
+
+/** Internal result lets the queue tracker record a safe failure code while the
+ * public/test contract remains the original `Promise<void>`. */
+async function ingestSourceWithResult(
+  sourceId: string,
+  opts: { log?: Logger } = {},
+): Promise<string | null> {
+  const log = opts.log ?? rootLogger;
   try {
     const claimed = await claimForParse(sourceId);
     if (!claimed) {
       // Not claimable as `pending` — maybe already `indexing` (resume) or gone.
-      await resumeIndexing(sourceId);
-      return;
+      await resumeIndexing(sourceId, log);
+      return null;
     }
-    await parsePhase(claimed);
-    await indexPhase(sourceId);
+    await parsePhase(claimed, log);
+    await indexPhase(sourceId, log);
+    return null;
   } catch (err) {
-    if (err instanceof TerminalSkip) return; // vanished / deleting — clean exit
+    if (err instanceof TerminalSkip) return null; // vanished / deleting — clean exit
     const code =
       err instanceof SourceParseError ? err.code : ('parse_failed' as const);
-    rootLogger.error({ err, sourceId, code }, 'ai.source_ingest.failed');
+    log.error({ err: safeError(err), sourceId, code }, 'ai.source_ingest.failed');
     await casStatus(sourceId, ['pending', 'parsing', 'indexing'], 'error', { errorCode: code });
+    return code;
   }
 }
 
@@ -142,7 +170,7 @@ async function claimForParse(sourceId: string): Promise<Source | null> {
 
 // ── Parse phase: bytes → parseSource → source_chunks (SoT) in ONE tx ───────────
 
-async function parsePhase(source: Source): Promise<void> {
+async function parsePhase(source: Source, log: Logger): Promise<void> {
   try {
     const bytes = await loadBytes(source);
     const { units, cover, imageUrl } = await parseSource({
@@ -204,7 +232,7 @@ async function parsePhase(source: Source): Promise<void> {
     // Best-effort cover (L3 §8.2): EPUB ships its cover in the archive; a URL's
     // og:image is downloaded SSRF-guarded. NEVER fails ingest (try/catch + log),
     // and only fills `cover_media_id` when it's still NULL (a client PATCH wins).
-    await maybeStoreCover(source, cover, imageUrl);
+    await maybeStoreCover(source, cover, imageUrl, log);
 
     // CAS parsing → indexing (a concurrent delete loses this race → 0 rows → skip).
     const moved = await casStatus(source.id, ['parsing'], 'indexing');
@@ -228,6 +256,7 @@ async function maybeStoreCover(
   source: Source,
   cover: CoverImage | undefined,
   imageUrl: string | undefined,
+  log: Logger,
 ): Promise<void> {
   try {
     let image: CoverImage | null = cover ?? null;
@@ -242,7 +271,7 @@ async function maybeStoreCover(
       .set({ coverMediaId: mediaId })
       .where(and(eq(sources.id, source.id), sql`cover_media_id IS NULL`));
   } catch (err) {
-    rootLogger.warn({ err, sourceId: source.id }, 'ai.source_ingest.cover_failed');
+    log.warn({ err: safeError(err), sourceId: source.id }, 'ai.source_ingest.cover_failed');
   }
 }
 
@@ -290,11 +319,11 @@ async function loadBytes(source: Source): Promise<Uint8Array | undefined> {
  * source_chunks.embedded=true. Then CAS indexing → ready. notebooksEnabled off
  * → parse-and-park (skip embedding, leave at `indexing`).
  */
-async function indexPhase(sourceId: string): Promise<void> {
+async function indexPhase(sourceId: string, log: Logger): Promise<void> {
   // Degrade: no embedder configured OR dim-assertion failed → park at 'indexing'.
   // Mirrors canIndex() in index-queue.ts (isEmbeddingEnabled && !embeddingDegraded).
   if (!isEmbeddingEnabled() || embeddingDegraded()) {
-    rootLogger.info(
+    log.info(
       { sourceId, notebooksEnabled },
       'ai.source_ingest.parked — embedding disabled or dim degraded, SoT written',
     );
@@ -304,7 +333,7 @@ async function indexPhase(sourceId: string): Promise<void> {
   // The ingest path runs with the source in `indexing` (this CAS will move it to
   // `ready`); a per-batch re-check that the source is STILL in an allowed status
   // bails cleanly on a concurrent reingest (which flips it back to `pending`).
-  await embedUnembeddedChunks(sourceId, ['indexing']);
+  await embedUnembeddedChunks(sourceId, ['indexing'], log);
 
   // All chunks embedded → CAS indexing → ready (a delete-race loses → skip).
   await casStatus(sourceId, ['indexing'], 'ready');
@@ -327,6 +356,7 @@ async function indexPhase(sourceId: string): Promise<void> {
 async function embedUnembeddedChunks(
   sourceId: string,
   allowedStatuses: readonly string[],
+  log: Logger = rootLogger,
 ): Promise<void> {
   const model = env.ai.EMBEDDING_MODEL;
 
@@ -429,7 +459,7 @@ async function embedUnembeddedChunks(
     });
     if (deletedDuringEmbed) throw new TerminalSkip();
 
-    rootLogger.info({ sourceId, batch: batch.length, model }, 'ai.source_ingest.embed');
+    log.info({ sourceId, batch: batch.length, model }, 'ai.source_ingest.embed');
   }
 }
 
@@ -437,7 +467,7 @@ async function embedUnembeddedChunks(
  * Resume an already-`indexing` (or stuck-`parsing`) source. Parse already wrote
  * the SoT, so we only need to finish embedding (or re-CAS parsing→indexing).
  */
-async function resumeIndexing(sourceId: string): Promise<void> {
+async function resumeIndexing(sourceId: string, log: Logger): Promise<void> {
   const [row] = await db
     .select({ id: sources.id, status: sources.status })
     .from(sources)
@@ -445,7 +475,7 @@ async function resumeIndexing(sourceId: string): Promise<void> {
     .limit(1);
   if (!row) return; // gone — clean terminal
   if (row.status === 'indexing') {
-    await indexPhase(sourceId);
+    await indexPhase(sourceId, log);
   }
   // pending was handled by claimForParse; parsing/other terminal → nothing here.
 }
@@ -496,6 +526,7 @@ export async function resumeSourceIngestOnStartup(): Promise<void> {
     rootLogger.info({ count: rows.length }, 'ai.source_ingest.resume');
     for (const { id } of rows) enqueueSource(id);
   } catch (err) {
+    sourceIngestWorkerState.recordFailure('startup_resume_failed');
     rootLogger.error({ err }, 'ai.source_ingest.resume_failed — degrading');
   }
 }
@@ -521,6 +552,7 @@ export async function resumeSourceIngestOnStartup(): Promise<void> {
  */
 export async function reconcileDocumentsOnStartup(
   scope: { all: true } | { userId: string },
+  log: Logger = rootLogger,
 ): Promise<number> {
   try {
     // Mirror canIndex(): no embedder OR dim mismatch ⇒ park (leave vectors stale).
@@ -588,7 +620,7 @@ export async function reconcileDocumentsOnStartup(
       try {
         // Reconcile runs over `ready` sources; a per-batch re-check bails
         // cleanly if a concurrent reingest pulled the source out of `ready`.
-        await embedUnembeddedChunks(sourceId, ['ready']);
+        await embedUnembeddedChunks(sourceId, ['ready'], log);
         reembedded += 1;
       } catch (err) {
         if (err instanceof TerminalSkip) continue; // vanished/deleting — clean
@@ -597,11 +629,13 @@ export async function reconcileDocumentsOnStartup(
     }
 
     if (reembedded > 0) {
-      rootLogger.info({ reembedded, model }, 'ai.source_ingest.doc_reconcile.done');
+      log.info({ reembedded, model }, 'ai.source_ingest.doc_reconcile.done');
     }
+    sourceIngestWorkerState.recover();
     return reembedded;
   } catch (err) {
-    rootLogger.error({ err }, 'ai.source_ingest.doc_reconcile_failed — degrading');
+    sourceIngestWorkerState.recordFailure('document_reconcile_failed');
+    log.error({ err: safeError(err) }, 'ai.source_ingest.doc_reconcile_failed — degrading');
     return 0;
   }
 }

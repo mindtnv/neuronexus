@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { ApiError, apiErrorFromResponse } from '@/lib/api';
 // BetterAuth's endpoint name varies between versions — calling it via the
 // SDK would lock us to a specific method name. A bare `fetch` to the REST
 // path works on every version and needs zero type gymnastics.
@@ -36,8 +37,13 @@ export default function ForgotPasswordPage() {
         // Rate limit or validation — show a generic message so we don't leak
         // user-enumeration signals.
         if (res.status === 429) {
-          throw new Error('Слишком много попыток. Подожди и попробуй ещё раз.');
+          const upstream = await apiErrorFromResponse(res, 'rate_limited');
+          throw new ApiError('Слишком много попыток. Подожди и попробуй ещё раз.', {
+            status: res.status,
+            requestId: upstream.requestId,
+          });
         }
+        if (res.status >= 500) throw await apiErrorFromResponse(res, 'Не удалось отправить письмо.');
       }
       // Success is indistinguishable from "email doesn't exist" — intentional,
       // so we always show the sent-confirmation.

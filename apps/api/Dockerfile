@@ -7,7 +7,8 @@
 #
 # Runtime env vars (no baked-in defaults — must be passed):
 #   DATABASE_URL, BETTER_AUTH_SECRET, BETTER_AUTH_URL, WEB_ORIGIN,
-#   API_PORT (default 3000), NODE_ENV=production
+#   API_PORT (default 3000), SHUTDOWN_TIMEOUT_MS (default 8000),
+#   NODE_ENV=production
 
 FROM oven/bun:1.3.14-alpine AS deps
 WORKDIR /repo
@@ -46,7 +47,7 @@ COPY --from=build /repo/packages/db/dist/migrate.js ./dist/migrate.js
 COPY --from=build /repo/packages/db/src/migrations ./dist/migrations
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:${API_PORT}/health || exit 1
+  CMD wget -qO- http://127.0.0.1:${API_PORT}/ready || exit 1
 USER bun
 # Apply pending migrations, then start. First boot runs the full chain
 # (incl. 0010 `CREATE EXTENSION vector` — the DB image must ship pgvector).

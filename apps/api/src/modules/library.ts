@@ -33,6 +33,7 @@ import { authPlugin } from '../auth-plugin.ts';
 import { embeddingEnabled, env } from '../env.ts';
 import { embed, isEmbeddingEnabled } from '../ai/openai-client.ts';
 import { retrieveDocuments } from '../ai/retrieve-documents.ts';
+import { requestLogFromContext } from '../logger.ts';
 import {
   countLibraryItems,
   createInlineSource,
@@ -401,7 +402,9 @@ export const libraryModule = new Elysia({ prefix: '/library' })
   // `notebookId` that attaches in the same tx (Р8). Enforces the per-user cap.
   .post(
     '/items',
-    async ({ user, body, status }) => {
+    async (context) => {
+      const { user, body, status } = context;
+      const log = requestLogFromContext(context);
       if ((await countLibraryItems(user.id)) >= env.ai.MAX_LIBRARY_ITEMS_PER_USER) {
         return status(409, { error: 'library_full' });
       }
@@ -419,6 +422,7 @@ export const libraryModule = new Elysia({ prefix: '/library' })
           ? { kind: 'url', title: body.title, url: body.url }
           : { kind: 'text', title: body.title, text: body.text },
         body.notebookId,
+        log,
       );
       return row;
     },
@@ -445,11 +449,13 @@ export const libraryModule = new Elysia({ prefix: '/library' })
   // finalize (the upload may never complete). Enforces the per-user cap up front.
   .post(
     '/items/presign',
-    async ({ user, body, status }) => {
+    async (context) => {
+      const { user, body, status } = context;
+      const log = requestLogFromContext(context);
       if ((await countLibraryItems(user.id)) >= env.ai.MAX_LIBRARY_ITEMS_PER_USER) {
         return status(409, { error: 'library_full' });
       }
-      const res = await presignUploadSource(user.id, body);
+      const res = await presignUploadSource(user.id, body, log);
       if (!res.ok) {
         const code = res.error === 'source_conflict' ? 409 : 400;
         return status(code, { error: res.error });
@@ -470,7 +476,9 @@ export const libraryModule = new Elysia({ prefix: '/library' })
   // source id so the UI can offer "attach the existing one instead".
   .post(
     '/items/:id/finalize',
-    async ({ user, params, body, status }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
+      const log = requestLogFromContext(context);
       if (body.notebookId) {
         const [nb] = await db
           .select({ id: notebooks.id })
@@ -479,7 +487,7 @@ export const libraryModule = new Elysia({ prefix: '/library' })
           .limit(1);
         if (!nb) return status(404, { error: 'not_found' });
       }
-      const res = await finalizeUploadSource(user.id, params.id, body.notebookId);
+      const res = await finalizeUploadSource(user.id, params.id, body.notebookId, log);
       if (!res.ok) {
         return status(res.status, {
           error: res.error,
@@ -712,8 +720,10 @@ export const libraryModule = new Elysia({ prefix: '/library' })
   // notebook's chat scope (status ≠ ready) until it re-indexes.
   .post(
     '/items/:id/reingest',
-    async ({ user, params, status }) => {
-      const res = await reingestSource(user.id, params.id);
+    async (context) => {
+      const { user, params, status } = context;
+      const log = requestLogFromContext(context);
+      const res = await reingestSource(user.id, params.id, log);
       if (!res.ok) return status(res.status, { error: res.error });
       // `parked` ⇒ embeddings off/degraded: the source re-parses but defers
       // (re)embedding — the client surfaces the existing setup-notice.

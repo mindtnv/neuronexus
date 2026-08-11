@@ -19,6 +19,7 @@ import type {
   ConfirmImpact,
   MessageAttachmentInput,
 } from '@neuronexus/shared';
+import { ApiError, apiErrorFromResponse } from './api.ts';
 
 // Same resolution order as lib/api.ts so the two clients agree on the origin.
 const baseURL =
@@ -37,7 +38,7 @@ export interface ChatStreamHandlers {
    * A terminal error frame arrived (post-flush server error) OR the transport
    * itself failed (network / non-2xx / no body). Either way the stream is over.
    */
-  onError?: (message: string) => void;
+  onError?: (message: string, error?: ApiError) => void;
 
   // ── Agentic stream handlers (Phase A) ──────────────────────────────────────
   /**
@@ -72,7 +73,7 @@ export interface ChatStreamHandlers {
 }
 
 /** Dispatch one parsed SSE event to the matching handler. */
-function dispatch(event: ChatStreamEvent, handlers: ChatStreamHandlers): void {
+function dispatch(event: ChatStreamEvent, handlers: ChatStreamHandlers, response?: Response): void {
   switch (event.type) {
     case 'token':
       handlers.onToken?.(event.delta);
@@ -84,7 +85,13 @@ function dispatch(event: ChatStreamEvent, handlers: ChatStreamHandlers): void {
       handlers.onDone?.(event.messageId);
       break;
     case 'error':
-      handlers.onError?.(event.message);
+      {
+        const error = new ApiError(event.message, {
+          status: response && response.status >= 400 ? response.status : 500,
+          requestId: response?.headers.get('x-request-id') ?? undefined,
+        });
+        handlers.onError?.(error.message, error);
+      }
       break;
     // ── Agentic frames (Phase A; additive — parseBlock already decodes them) ──
     case 'reasoning':
@@ -157,14 +164,8 @@ async function consumeSseResponse(
   // Pre-flush failures (chat disabled → 503, foreign thread → 404, auth → 401)
   // come back as a normal JSON body, not a stream. Surface them as an error.
   if (!res.ok || !res.body) {
-    let message = `chat_failed_${res.status}`;
-    try {
-      const payload = (await res.json()) as { error?: string };
-      if (payload?.error) message = payload.error;
-    } catch {
-      // non-JSON body — keep the status-coded message.
-    }
-    handlers.onError?.(message);
+    const error = await apiErrorFromResponse(res, `chat_failed_${res.status}`);
+    handlers.onError?.(error.message, error);
     return;
   }
 
@@ -185,20 +186,21 @@ async function consumeSseResponse(
         const block = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
         const event = parseBlock(block);
-        if (event) dispatch(event, handlers);
+        if (event) dispatch(event, handlers, res);
       }
     }
     // Flush any final block that wasn't terminated by a blank line.
     const tail = buffer.trim();
     if (tail) {
       const event = parseBlock(tail);
-      if (event) dispatch(event, handlers);
+      if (event) dispatch(event, handlers, res);
     }
   } catch (err) {
     // A deliberate stop aborts the in-flight reader.read() with AbortError —
     // swallow it (the turn was cancelled on purpose, not a transport failure).
     if (isAbortError(err) || signal?.aborted) return;
-    handlers.onError?.(err instanceof Error ? err.message : 'stream_error');
+    const error = new ApiError(err instanceof Error ? err.message : 'stream_error', { status: 0 });
+    handlers.onError?.(error.message, error);
   }
 }
 
@@ -273,7 +275,8 @@ export async function streamChat(
     // A deliberate stop (controller.abort()) rejects the fetch with AbortError —
     // swallow it; the caller drops the placeholder + shows the retry affordance.
     if (isAbortError(err)) return;
-    handlers.onError?.(err instanceof Error ? err.message : 'network_error');
+    const error = new ApiError(err instanceof Error ? err.message : 'network_error', { status: 0 });
+    handlers.onError?.(error.message, error);
     return;
   }
 
@@ -313,7 +316,8 @@ export async function resumeChat(
     });
   } catch (err) {
     if (isAbortError(err)) return;
-    handlers.onError?.(err instanceof Error ? err.message : 'network_error');
+    const error = new ApiError(err instanceof Error ? err.message : 'network_error', { status: 0 });
+    handlers.onError?.(error.message, error);
     return;
   }
 
@@ -355,7 +359,8 @@ export async function regenerateChat(
     });
   } catch (err) {
     if (isAbortError(err)) return;
-    handlers.onError?.(err instanceof Error ? err.message : 'network_error');
+    const error = new ApiError(err instanceof Error ? err.message : 'network_error', { status: 0 });
+    handlers.onError?.(error.message, error);
     return;
   }
 

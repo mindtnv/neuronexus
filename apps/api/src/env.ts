@@ -4,6 +4,11 @@ function required(key: string): string {
   return v;
 }
 
+function positiveNumber(key: string, fallback: number): number {
+  const parsed = Number(process.env[key] ?? fallback);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export const env = {
   PORT: Number(process.env.API_PORT ?? 3000),
   WEB_ORIGIN: process.env.WEB_ORIGIN ?? 'http://localhost:3001',
@@ -11,6 +16,8 @@ export const env = {
   BETTER_AUTH_URL: required('BETTER_AUTH_URL'),
   BETTER_AUTH_SECRET: required('BETTER_AUTH_SECRET'),
   NODE_ENV: process.env.NODE_ENV ?? 'development',
+  // Total application shutdown budget. Keep below the container stop grace.
+  SHUTDOWN_TIMEOUT_MS: positiveNumber('SHUTDOWN_TIMEOUT_MS', 8000),
   // ── Media storage (M2) — S3-compatible (MinIO local / R2-S3 prod) ──────────
   S3_ENDPOINT: required('S3_ENDPOINT'),
   S3_REGION: process.env.S3_REGION ?? 'us-east-1',

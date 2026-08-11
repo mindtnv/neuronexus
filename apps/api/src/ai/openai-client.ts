@@ -18,7 +18,7 @@
 
 import type { Logger } from 'pino';
 import { env, embeddingEnabled, chatEnabled } from '../env.ts';
-import { rootLogger } from '../logger.ts';
+import { rootLogger, summarizeUpstreamResponse } from '../logger.ts';
 
 /** Thrown when an AI surface is invoked while its feature flag is off. */
 export class AiDisabledError extends Error {
@@ -276,8 +276,8 @@ export async function embed(texts: string[]): Promise<number[][]> {
       continue;
     }
 
-    const detail = await res.text().catch(() => '');
-    log.error({ status: res.status, detail }, 'ai.embed.failed');
+    const upstream = await summarizeUpstreamResponse(res);
+    log.error({ upstream }, 'ai.embed.failed');
     throw new Error(`embed_failed:${res.status}`);
   }
   throw lastErr instanceof Error ? lastErr : new Error('embed_failed');
@@ -376,8 +376,8 @@ export async function* chatStream(
   });
 
   if (!res.ok || !res.body) {
-    const detail = await res.text().catch(() => '');
-    log.error({ status: res.status, detail }, 'ai.chat.failed');
+    const upstream = await summarizeUpstreamResponse(res);
+    log.error({ upstream }, 'ai.chat.failed');
     throw new Error(`chat_failed:${res.status}`);
   }
 
@@ -476,8 +476,8 @@ export async function* chatStreamAgentic(
   });
 
   if (!res.ok || !res.body) {
-    const detail = await res.text().catch(() => '');
-    log.error({ status: res.status, detail }, 'ai.chat.failed');
+    const upstream = await summarizeUpstreamResponse(res);
+    log.error({ upstream }, 'ai.chat.failed');
     throw new Error(`chat_failed:${res.status}`);
   }
 
@@ -575,8 +575,8 @@ export async function complete(messages: ChatMessage[], opts: CompleteOpts = {})
   });
 
   if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    log.error({ status: res.status, detail }, 'ai.complete.failed');
+    const upstream = await summarizeUpstreamResponse(res);
+    log.error({ upstream }, 'ai.complete.failed');
     throw new Error(`complete_failed:${res.status}`);
   }
 

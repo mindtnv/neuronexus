@@ -47,6 +47,9 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+    # The app has one 8s shutdown deadline; leave two seconds for final JSON
+    # output and the container runtime before SIGKILL.
+    stop_grace_period: 10s
     environment:
       NODE_ENV: production
       API_PORT: 3000
@@ -54,6 +57,7 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?secret required}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL}
       WEB_ORIGIN: ${WEB_ORIGIN}
+      SHUTDOWN_TIMEOUT_MS: ${SHUTDOWN_TIMEOUT_MS:-8000}
     ports:
       - '3000:3000'
 

@@ -37,7 +37,14 @@ import {
   type QuizQuestion,
 } from '@neuronexus/shared';
 import { env } from '../env.ts';
-import { rootLogger } from '../logger.ts';
+import {
+  logCorrelation,
+  rootLogger,
+  safeError,
+  workerLogger,
+} from '../logger.ts';
+import { artifactWorkerState } from '../runtime-state.ts';
+import type { Logger } from 'pino';
 import {
   AiDisabledError,
   chatStream,
@@ -599,8 +606,9 @@ async function runGeneration(artifactId: string, messages: ChatMessage[]): Promi
  */
 export async function generateArtifact(
   artifactId: string,
-  opts: { questionCount?: number } = {},
+  opts: { questionCount?: number; log?: Logger } = {},
 ): Promise<void> {
+  const log = opts.log ?? rootLogger;
   try {
     // CAS pending → generating. Returns the claimed row so we have type +
     // user_id + source_ids without a second SELECT.
@@ -631,7 +639,7 @@ export async function generateArtifact(
         if (err instanceof ArtifactCancelled) return;
         const code = classifyError(err);
         if (code === 'generation_failed') {
-          rootLogger.error({ err, artifactId }, 'ai.artifact.generation_failed');
+          log.error({ err: safeError(err), artifactId }, 'ai.artifact.generation_failed');
         }
         await failArtifact(artifactId, code);
         return;
@@ -643,13 +651,14 @@ export async function generateArtifact(
       }
       // content_md held the partial raw JSON during streaming — overwrite it with
       // NULL at ready (the structured quiz lives in content_json, Р8).
-      await casArtifact(artifactId, ['generating'], {
+      const saved = await casArtifact(artifactId, ['generating'], {
         status: 'ready',
         contentJson: quiz,
         contentMd: null,
         errorCode: null,
         model: env.ai.CHAT_MODEL,
       });
+      if (saved) artifactWorkerState.recover();
       return;
     }
 
@@ -663,7 +672,7 @@ export async function generateArtifact(
       if (err instanceof ArtifactCancelled) return;
       const code = classifyError(err);
       if (code === 'generation_failed') {
-        rootLogger.error({ err, artifactId }, 'ai.artifact.generation_failed');
+        log.error({ err: safeError(err), artifactId }, 'ai.artifact.generation_failed');
       }
       await failArtifact(artifactId, code);
       return;
@@ -678,21 +687,63 @@ export async function generateArtifact(
     }
 
     // CAS generating → ready (a delete/regenerate race loses → 0 rows → discard).
-    await casArtifact(artifactId, ['generating'], {
+    const saved = await casArtifact(artifactId, ['generating'], {
       status: 'ready',
       contentMd,
       errorCode: null,
       model: env.ai.CHAT_MODEL,
     });
+    if (saved) artifactWorkerState.recover();
   } catch (err) {
     // Truly-unexpected (a DB error) — best-effort mark error, never rethrow.
-    rootLogger.error({ err, artifactId }, 'ai.artifact.unexpected');
+    log.error({ err: safeError(err), artifactId }, 'ai.artifact.unexpected');
     await failArtifact(artifactId, 'generation_failed').catch(() => {});
   }
 }
 
+const activeArtifactJobs = new Set<Promise<void>>();
+
+/** Fire-and-forget artifact start with bounded request correlation and drain tracking. */
+export function scheduleArtifactGeneration(
+  artifactId: string,
+  opts: { questionCount?: number; requestLog?: Logger } = {},
+): void {
+  const log = workerLogger('artifact', logCorrelation(opts.requestLog ?? rootLogger));
+  artifactWorkerState.enqueue();
+  artifactWorkerState.start();
+  let job!: Promise<void>;
+  job = generateArtifact(artifactId, { questionCount: opts.questionCount, log })
+    .catch((err) => {
+      artifactWorkerState.recordFailure('artifact_unexpected');
+      log.error({ err: safeError(err), artifactId }, 'ai.artifact.kick_failed');
+    })
+    .finally(() => {
+      artifactWorkerState.complete();
+      activeArtifactJobs.delete(job);
+    });
+  activeArtifactJobs.add(job);
+}
+
+export async function drainArtifactGeneration({ timeoutMs }: { timeoutMs: number }): Promise<void> {
+  if (activeArtifactJobs.size === 0) return;
+  const settle = Promise.allSettled([...activeArtifactJobs]).then(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      rootLogger.warn(
+        { active: artifactWorkerState.snapshot().active },
+        'ai.artifact.drain_timeout',
+      );
+      resolve();
+    }, timeoutMs);
+  });
+  await Promise.race([settle, timeout]);
+  if (timer) clearTimeout(timer);
+}
+
 /** CAS generating → error with a machine code (a delete race loses → no-op). */
 async function failArtifact(artifactId: string, errorCode: ArtifactErrorCode): Promise<void> {
+  artifactWorkerState.recordFailure(errorCode);
   await casArtifact(artifactId, ['generating'], { status: 'error', errorCode });
 }
 
@@ -857,9 +908,11 @@ export async function reconcileArtifactsOnStartup(): Promise<void> {
       .where(inArray(notebookArtifacts.status, ['pending', 'generating']))
       .returning({ id: notebookArtifacts.id });
     if (rows.length > 0) {
+      artifactWorkerState.recordFailure('interrupted');
       rootLogger.info({ count: rows.length }, 'ai.artifact.reconcile');
     }
   } catch (err) {
+    artifactWorkerState.recordFailure('reconcile_failed');
     rootLogger.error({ err }, 'ai.artifact.reconcile_failed — degrading');
   }
 }

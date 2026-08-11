@@ -81,7 +81,7 @@ import { isFetchPageEnabled } from '../ai/page-reader.ts';
 import { compressHistory } from '../ai/compress.ts';
 import { writeCardProvenance } from '../ai/provenance.ts';
 import { generateConversationTitle } from '../ai/title.ts';
-import { rootLogger } from '../logger.ts';
+import { logCorrelation, requestLogFromContext, rootLogger } from '../logger.ts';
 import type { Logger } from 'pino';
 
 /** A Drizzle transaction handle (the arg passed to `db.transaction`). */
@@ -1471,19 +1471,21 @@ export const aiModule = new Elysia({ prefix: '/ai' })
   // `queued` is 0 when embeddings are unconfigured/degraded (no-op).
   .post(
     '/reindex',
-    async ({ user, status }) => {
+    async (context) => {
+      const { user, status } = context;
+      const log = requestLogFromContext(context);
       // Cooldown the paid full-corpus reindex per-user (a rapid re-trigger just
       // re-walks the same chunks). The authed user IS the only owner here, so
       // there's no foreign-id concern — arm before the (fire-and-forget) calls.
       const cd = cooldownCheck(`reindex:${user.id}`, AI_COOLDOWN_MS.reindex);
       if (!cd.ok) return status(429, { error: 'cooldown', retryAfterMs: cd.retryAfterMs });
 
-      const queued = await reindexUser(user.id);
+      const queued = await reindexUser(user.id, logCorrelation(log));
       // Also re-embed any stale library document vectors (L4 §5 — a model swap
       // leaves document chunks stale; the card queue above only walks cards).
       // Fire-and-forget: documents read their SoT text, never re-parse; parks
       // when embeddings are off/degraded.
-      void reconcileDocumentsOnStartup({ userId: user.id });
+      void reconcileDocumentsOnStartup({ userId: user.id }, log);
       return { queued };
     },
     { auth: true },
@@ -1640,7 +1642,9 @@ export const chatModule = new Elysia({ prefix: '/chat' })
   // `event: error` frame (NEVER reach app.ts's `.onError`).
   .post(
     '/conversations/:id/stream',
-    async ({ user, params, body, status, store, request }) => {
+    async (context) => {
+      const { user, params, body, status, request } = context;
+      const log = requestLogFromContext(context);
       // Pre-flush gate: chat off → 503 (effective check so the injected test stub
       // flips it on). Nothing flushed yet, so a normal JSON body is fine.
       if (!isChatEnabled()) {
@@ -1673,8 +1677,6 @@ export const chatModule = new Elysia({ prefix: '/chat' })
       if (!lock) return status(409, { error: 'turn_in_progress' });
 
       const userQuery = body.content;
-      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
-
       try {
         // Resolve the per-turn deck scope (AC3.7), composer mentions (C7),
         // attachments and the user's standing instructions (C5) BEFORE
@@ -1843,7 +1845,9 @@ export const chatModule = new Elysia({ prefix: '/chat' })
   // `done` (never double-execute), backed by the partial unique index.
   .post(
     '/conversations/:id/resume',
-    async ({ user, params, body, status, store, request }) => {
+    async (context) => {
+      const { user, params, body, status, request } = context;
+      const log = requestLogFromContext(context);
       if (!isChatEnabled()) {
         return status(503, { error: 'ai_disabled' });
       }
@@ -1865,7 +1869,6 @@ export const chatModule = new Elysia({ prefix: '/chat' })
       const lock = acquireTurnLock(conv.id);
       if (!lock) return status(409, { error: 'turn_in_progress' });
 
-      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
       const { resumeToolCallId, decision } = body;
 
       // Resolve the per-turn deck scope for the continuation (AC3.7) + the
@@ -2052,7 +2055,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
           });
 
           // RAG index hook — enqueue created/updated cards AFTER the commit.
-          enqueueToolCardsForIndex(toolCardIds);
+          enqueueToolCardsForIndex(toolCardIds, log);
         } else {
           // Reject (explicit, or an apply whose per-card selections excluded
           // EVERY card): record a "user rejected" tool result so the model can
@@ -2182,7 +2185,9 @@ export const chatModule = new Elysia({ prefix: '/chat' })
   //     one "stopped — regenerate?" recovery affordance covers both.
   .post(
     '/conversations/:id/regenerate',
-    async ({ user, params, body, status, store, request }) => {
+    async (context) => {
+      const { user, params, body, status, request } = context;
+      const log = requestLogFromContext(context);
       if (!isChatEnabled()) {
         return status(503, { error: 'ai_disabled' });
       }
@@ -2203,8 +2208,6 @@ export const chatModule = new Elysia({ prefix: '/chat' })
       // observed history-corruption incident).
       const lock = acquireTurnLock(conv.id);
       if (!lock) return status(409, { error: 'turn_in_progress' });
-
-      const log = (store as { log?: typeof rootLogger }).log ?? rootLogger;
 
       // C7 — re-resolve mentions ONLY when the body carries them; `undefined`
       // keeps the stored snapshot (replay-faithful).

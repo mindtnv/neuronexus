@@ -26,7 +26,7 @@ import {
   type RenderKind,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
-import { rootLogger } from '../logger.ts';
+import { requestLogFromContext } from '../logger.ts';
 
 const renderKindSchema = t.Union([
   t.Literal('basic'),
@@ -134,7 +134,9 @@ export const noteTypesModule = new Elysia({ prefix: '/note-types' })
   )
   .patch(
     '/:id',
-    async ({ user, params, body, status }) => {
+    async (context) => {
+      const { user, params, body, status } = context;
+      const log = requestLogFromContext(context);
       // Resolve the target row: must be owned OR a global builtin.
       const [target] = await db
         .select()
@@ -239,7 +241,7 @@ export const noteTypesModule = new Elysia({ prefix: '/note-types' })
               cardsRerendered += 1;
             }
           }
-          rootLogger.info({ noteTypeId: params.id, cardsRerendered }, 'note_type.rerender');
+          log.info({ noteTypeId: params.id, cardsRerendered }, 'note_type.rerender');
         }
 
         return updated;

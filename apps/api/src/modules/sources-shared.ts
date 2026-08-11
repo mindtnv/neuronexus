@@ -22,7 +22,8 @@ import {
   type SourceMime,
 } from '@neuronexus/shared';
 import { env } from '../env.ts';
-import { rootLogger } from '../logger.ts';
+import { logCorrelation, rootLogger } from '../logger.ts';
+import type { Logger } from 'pino';
 import { deleteObject, getObjectBytes, headSize, presignUpload } from '../storage.ts';
 import { enqueueSource, stashInlineText } from '../ai/source-ingest.ts';
 import { embeddingDegraded } from '../ai/index-queue.ts';
@@ -116,6 +117,7 @@ export async function createInlineSource(
   userId: string,
   input: InlineSourceInput,
   notebookId?: string,
+  log: Logger = rootLogger,
 ): Promise<Source> {
   const row = await db.transaction(async (tx) => {
     let created: Source;
@@ -155,7 +157,7 @@ export async function createInlineSource(
     }
     return created;
   });
-  enqueueSource(row.id);
+  enqueueSource(row.id, logCorrelation(log));
   return row;
 }
 
@@ -173,6 +175,7 @@ export type PresignResult =
 export async function presignUploadSource(
   userId: string,
   body: { mime: string; size: number; title: string },
+  log: Logger = rootLogger,
 ): Promise<PresignResult> {
   if (!(body.mime in SOURCE_MIME_TO_KIND)) return { ok: false, error: 'unsupported_mime' };
   if (body.size < 1 || body.size > MAX_SOURCE_BYTES) return { ok: false, error: 'too_large' };
@@ -197,7 +200,7 @@ export async function presignUploadSource(
     throw err;
   }
   const upload = await presignUpload(key, sourceMime, MAX_SOURCE_BYTES);
-  rootLogger.debug({ sourceId, userId, kind }, 'source.presign');
+  log.debug({ sourceId, userId, kind }, 'source.presign');
   return { ok: true, sourceId, upload };
 }
 
@@ -219,6 +222,7 @@ export async function finalizeUploadSource(
   userId: string,
   sourceId: string,
   notebookId?: string,
+  log: Logger = rootLogger,
 ): Promise<FinalizeResult> {
   const [pending] = await db
     .select()
@@ -287,8 +291,8 @@ export async function finalizeUploadSource(
     if (notebookId) await attachSourceToNotebook(tx, { userId, notebookId, sourceId });
     return row!;
   });
-  rootLogger.info({ sourceId, userId, size }, 'source.finalize');
-  enqueueSource(sourceId);
+  log.info({ sourceId, userId, size }, 'source.finalize');
+  enqueueSource(sourceId, logCorrelation(log));
   return { ok: true, source };
 }
 
@@ -355,7 +359,11 @@ export type ReingestResult =
  * carries `parked` — true when embeddings are off/dim-degraded, so the source
  * re-parses but defers (re)embedding (mirrors the worker's park decision).
  */
-export async function reingestSource(userId: string, sourceId: string): Promise<ReingestResult> {
+export async function reingestSource(
+  userId: string,
+  sourceId: string,
+  log: Logger = rootLogger,
+): Promise<ReingestResult> {
   const [source] = await db
     .select({ id: sources.id, kind: sources.kind, status: sources.status })
     .from(sources)
@@ -405,7 +413,7 @@ export async function reingestSource(userId: string, sourceId: string): Promise<
   });
 
   if (!reset) return { ok: false, status: 409, error: 'not_terminal' };
-  enqueueSource(sourceId);
+  enqueueSource(sourceId, logCorrelation(log));
   // `parked` mirrors the worker's parse-and-park decision (source-ingest.ts:
   // `!isEmbeddingEnabled() || embeddingDegraded()`): the source will re-parse +
   // re-write its SoT chunks but skip (re)embedding until embeddings come back —

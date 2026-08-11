@@ -26,7 +26,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db, media } from '@neuronexus/db';
 import { MAX_MEDIA_BYTES, MEDIA_MIME_ALLOWLIST, newUuidV7 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
-import { rootLogger } from '../logger.ts';
+import { requestLogFromContext } from '../logger.ts';
 import { env } from '../env.ts';
 import { deleteObject, headSize, presignUpload, sniffMagic } from '../storage.ts';
 
@@ -95,7 +95,9 @@ export const mediaModule = new Elysia({ prefix: '/media' })
   // a cross-user finalize impossible (finalize SELECTs by (id, userId)).
   .post(
     '/presign',
-    async ({ user, body, status }) => {
+    async (context) => {
+      const { user, body, status } = context;
+      const log = requestLogFromContext(context);
       if (!ALLOWED_MIME.has(body.mime)) return status(400, { error: 'bad_mime' });
       if (body.size < 1 || body.size > MAX_BYTES) {
         return status(400, { error: 'too_large' });
@@ -126,7 +128,7 @@ export const mediaModule = new Elysia({ prefix: '/media' })
       // just a fast pre-check; S3 enforces the real upper bound.
       const upload = await presignUpload(key, body.mime, MAX_BYTES);
 
-      rootLogger.debug(
+      log.debug(
         { mediaId, userId: user.id, mime: body.mime, size: body.size },
         'media.presign',
       );
@@ -147,7 +149,9 @@ export const mediaModule = new Elysia({ prefix: '/media' })
   // already-verified row returns it unchanged.
   .post(
     '/:id/finalize',
-    async ({ user, params, status }) => {
+    async (context) => {
+      const { user, params, status } = context;
+      const log = requestLogFromContext(context);
       const mediaId = params.id;
       const key = keyFor(mediaId);
 
@@ -203,7 +207,7 @@ export const mediaModule = new Elysia({ prefix: '/media' })
         .where(and(eq(media.id, mediaId), eq(media.userId, user.id)))
         .returning();
 
-      rootLogger.info(
+      log.info(
         { mediaId, userId: user.id, mime: sniffedMime, size },
         'media.finalize',
       );

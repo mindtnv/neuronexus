@@ -8,64 +8,49 @@ import {
   reconcileDocumentsOnStartup,
   resumeSourceIngestOnStartup,
 } from './ai/source-ingest.ts';
-import { reconcileArtifactsOnStartup } from './ai/artifacts.ts';
+import {
+  drainArtifactGeneration,
+  reconcileArtifactsOnStartup,
+} from './ai/artifacts.ts';
+import { createProcessFailureHandlers, createShutdownCoordinator } from './shutdown.ts';
 
 const app = buildApp().listen(env.PORT, () => {
   rootLogger.info(
-    { port: env.PORT, corsOrigin: env.WEB_ORIGIN, nodeEnv: env.NODE_ENV },
+    { event: 'api.listening', port: env.PORT, corsOrigin: env.WEB_ORIGIN, nodeEnv: env.NODE_ENV },
     'api.listening',
   );
-  // RAG index reconciliation (Slice 3): index any card with no chunk or a stale
-  // sourceHash, THEN re-embed library document vectors that went stale on a
-  // model change (L4 §5 — closes the runbook gap; documents read their SoT
-  // text, never a re-parse). Both guarded by the embedding switch + never throw.
+  // Startup work has no causal request id and is deliberately root-scoped.
   void reconcileOnStartup().then(() => reconcileDocumentsOnStartup({ all: true }));
-  // NotebookLM M1: reclaim any source left mid-ingest by a previous run
-  // (status pending/parsing/indexing → re-parse/re-embed idempotently). Never
-  // throws into here (mirrors reconcileOnStartup).
   void resumeSourceIngestOnStartup();
-  // «Блокноты 2.0» N2: an artifact job is NOT resumable (single cheap
-  // complete()) — mark any pending/generating row left by a crashed run as
-  // error('interrupted') so the studio shows a «Повторить» affordance.
   void reconcileArtifactsOnStartup();
 });
 
-let shuttingDown = false;
-async function shutdown(signal: string) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  rootLogger.info({ signal }, 'api.shutdown.start');
-  // Drain pending embeds (Slice 3) BEFORE the server + pool close, so in-flight
-  // index work finishes (or times out — a timeout is logged, not fatal: the next
-  // startup reconcile picks up the remainder). 4s budget fits stop_grace_period ≥5s.
-  try {
-    await drainIndexQueue({ timeoutMs: 4000 });
-  } catch (err) {
-    rootLogger.error({ err }, 'api.shutdown.drain_error');
-  }
-  // Drain in-flight source ingest too — a timeout is logged, not fatal (the next
-  // startup resume reclaims the remainder).
-  try {
-    await drainSourceIngest({ timeoutMs: 4000 });
-  } catch (err) {
-    rootLogger.error({ err }, 'api.shutdown.source_ingest_drain_error');
-  }
-  try {
-    await app.stop();
-  } catch (err) {
-    rootLogger.error({ err }, 'api.shutdown.server_stop_error');
-  }
-  try {
-    await closeDb();
-  } catch (err) {
-    rootLogger.error({ err }, 'api.shutdown.db_close_error');
-  }
-  rootLogger.info('api.shutdown.done');
-  process.exit(0);
-}
+const shutdown = createShutdownCoordinator({
+  logger: rootLogger,
+  timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
+  stopServer: () => app.stop(),
+  workers: {
+    index: (timeoutMs) => drainIndexQueue({ timeoutMs }),
+    sourceIngest: (timeoutMs) => drainSourceIngest({ timeoutMs }),
+    artifact: (timeoutMs) => drainArtifactGeneration({ timeoutMs }),
+  },
+  closeDb,
+  // Avoid process.exit(): after the listener/pool close, the event loop exits
+  // naturally and Pino gets a chance to flush the final outcome line.
+  exit: (code) => {
+    process.exitCode = code;
+  },
+});
 
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
-process.on('SIGINT', () => void shutdown('SIGINT'));
+const processHandlers = createProcessFailureHandlers({
+  logger: rootLogger,
+  shutdown: shutdown.shutdown,
+});
+
+process.on('SIGTERM', processHandlers.sigterm);
+process.on('SIGINT', processHandlers.sigint);
+process.on('uncaughtException', processHandlers.uncaughtException);
+process.on('unhandledRejection', processHandlers.unhandledRejection);
 
 // Exported *type only* — the Eden Treaty client in apps/web imports this to
 // derive end-to-end route types. No runtime shape ever crosses the boundary.

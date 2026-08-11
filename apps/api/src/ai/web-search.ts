@@ -12,7 +12,7 @@
 
 import type { Logger } from 'pino';
 import { env, webSearchEnabled } from '../env.ts';
-import { rootLogger } from '../logger.ts';
+import { rootLogger, safeError, summarizeUpstreamResponse } from '../logger.ts';
 
 export interface WebSearchResult {
   title: string;
@@ -85,8 +85,8 @@ export class BraveWebSearchProvider implements WebSearchProvider {
         }
         // 429 / 5xx → one bounded retry; other 4xx → fail fast.
         const retryable = res.status === 429 || (res.status >= 500 && res.status < 600);
-        const detail = await res.text().catch(() => '');
-        log.warn({ status: res.status, detail, attempt }, 'ai.web_search.http_error');
+        const upstream = await summarizeUpstreamResponse(res);
+        log.warn({ upstream, attempt }, 'ai.web_search.http_error');
         lastErr = new Error(`web_search_failed:${res.status}`);
         if (!retryable || attempt === MAX_ATTEMPTS - 1) throw lastErr;
         await new Promise((r) => setTimeout(r, 500));
@@ -95,7 +95,7 @@ export class BraveWebSearchProvider implements WebSearchProvider {
         // Abort (timeout/external) or network error. Retry once on the first
         // attempt; otherwise propagate (the tool's execute() catches it).
         if (attempt === MAX_ATTEMPTS - 1) throw err;
-        log.warn({ err, attempt }, 'ai.web_search.retry');
+        log.warn({ err: safeError(err), attempt }, 'ai.web_search.retry');
         await new Promise((r) => setTimeout(r, 500));
       } finally {
         clearTimeout(timer);
@@ -140,7 +140,11 @@ export class ExaWebSearchProvider implements WebSearchProvider {
         }),
         signal: controller.signal,
       });
-      if (!res.ok) throw new Error(`exa search HTTP ${res.status}`);
+      if (!res.ok) {
+        const upstream = await summarizeUpstreamResponse(res);
+        (opts.log ?? rootLogger).warn({ upstream }, 'ai.web_search.http_error');
+        throw new Error(`exa_search_failed:${res.status}`);
+      }
       const json = (await res.json()) as ExaSearchResponse;
       return (json.results ?? [])
         .filter((r) => r.url)

@@ -11,7 +11,7 @@ import type {
   SourceMarkColor,
   SourceMarkKind,
 } from '@neuronexus/shared';
-import { api, ok } from '@/lib/api';
+import { api, apiErrorFromResponse, ok } from '@/lib/api';
 import { CooldownError } from '@/lib/store';
 import type { QuickCardResult, SourceMark, SuggestCardResult } from '@/lib/types';
 
@@ -41,7 +41,7 @@ export async function fetchSourceFile(
     credentials: 'include',
     signal: opts?.signal,
   });
-  if (!res.ok) throw new Error(`file ${res.status}`);
+  if (!res.ok) throw await apiErrorFromResponse(res, `file ${res.status}`);
 
   const lenHeader = res.headers.get('content-length');
   const total = lenHeader ? Number(lenHeader) : null;
