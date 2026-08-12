@@ -2,7 +2,8 @@
 
 import { create } from 'zustand';
 import { countDueCardsByDeck, getDueCards } from './cards';
-import { api, ok } from './api';
+import { api, ok, type ApiError } from './api';
+import { toApiError, type LoadStatus } from './resource-state';
 import {
   cardFromApi,
   deckFromApi,
@@ -28,6 +29,9 @@ type BulkAction = 'move' | 'delete' | 'suspend' | 'unsuspend' | 'addTag' | 'remo
 
 interface State {
   bootstrapped: boolean;
+  /** Detailed bootstrap lifecycle; `bootstrapped` remains for existing consumers. */
+  bootstrapStatus: LoadStatus;
+  bootstrapError: ApiError | null;
   decks: Deck[];
   cards: Card[];
   noteTypes: NoteType[];
@@ -491,8 +495,13 @@ export function isCooldownError(err: unknown): err is CooldownError {
   return err instanceof CooldownError || (err instanceof Error && err.name === 'CooldownError');
 }
 
+let bootstrapPromise: Promise<void> | null = null;
+let bootstrapGeneration = 0;
+
 export const useNN = create<State>()((set, get) => ({
   bootstrapped: false,
+  bootstrapStatus: 'idle',
+  bootstrapError: null,
   decks: [],
   cards: [],
   noteTypes: [],
@@ -503,38 +512,74 @@ export const useNN = create<State>()((set, get) => ({
 
   async bootstrap() {
     if (get().bootstrapped) return;
+    if (bootstrapPromise) return bootstrapPromise;
+    const generation = bootstrapGeneration;
+    set((state) => ({
+      bootstrapStatus: state.bootstrapped ? 'refreshing' : 'loading',
+      bootstrapError: null,
+    }));
     // Parallel fetch of the user's snapshot. /cards is cursor-paginated;
     // bootstrap takes the first page (500 most recent cards). If the user has
     // more, we load on-demand later — all current UI fits in one page. Note-
     // types (own + global builtins) load too so the note editor can pick one.
     // Presets (deck-options) are also fetched here so the settings editor and
     // per-deck binding are immediately available.
-    const [profile, decks, cardsPage, noteTypes, presetsRes, filteredDecksRes] = await Promise.all([
-      ok(await (api as any).profile.get()),
-      ok(await (api as any).decks.get()),
-      ok(await (api as any).cards.get()),
-      ok(await (api as any)['note-types'].get()),
-      ok(await (api as any)['deck-options'].get()),
-      ok(await (api as any)['filtered-decks'].get()),
-    ]);
-    const cardRows = Array.isArray(cardsPage)
-      ? cardsPage
-      : ((cardsPage as { items: unknown[] }).items ?? []);
-    set({
-      profile: profileFromApi(profile),
-      decks: (decks as any[]).map(deckFromApi),
-      cards: (cardRows as any[]).map(cardFromApi),
-      noteTypes: (noteTypes as any[]).map(noteTypeFromApi),
-      presets: (presetsRes as any[]).map(presetFromApi),
-      filteredDecks: (filteredDecksRes as any[]).map(filteredDeckFromApi),
-      bootstrapped: true,
-    });
+    let request!: Promise<void>;
+    request = (async () => {
+      try {
+        const [profile, decks, cardsPage, noteTypes, presetsRes, filteredDecksRes] = await Promise.all([
+          ok(await (api as any).profile.get()),
+          ok(await (api as any).decks.get()),
+          ok(await (api as any).cards.get()),
+          ok(await (api as any)['note-types'].get()),
+          ok(await (api as any)['deck-options'].get()),
+          ok(await (api as any)['filtered-decks'].get()),
+        ]);
+        if (generation !== bootstrapGeneration) return;
+        const cardRows = Array.isArray(cardsPage)
+          ? cardsPage
+          : ((cardsPage as { items: unknown[] }).items ?? []);
+        set({
+          profile: profileFromApi(profile),
+          decks: (decks as any[]).map(deckFromApi),
+          cards: (cardRows as any[]).map(cardFromApi),
+          noteTypes: (noteTypes as any[]).map(noteTypeFromApi),
+          presets: (presetsRes as any[]).map(presetFromApi),
+          filteredDecks: (filteredDecksRes as any[]).map(filteredDeckFromApi),
+          bootstrapped: true,
+          bootstrapStatus: 'ready',
+          bootstrapError: null,
+        });
+      } catch (error) {
+        if (generation === bootstrapGeneration) {
+          set({ bootstrapStatus: 'error', bootstrapError: toApiError(error) });
+        }
+        throw error;
+      } finally {
+        if (bootstrapPromise === request) bootstrapPromise = null;
+      }
+    })();
+    bootstrapPromise = request;
+    return request;
   },
 
   reset() {
     // Server is source of truth — blow away the local mirror and let bootstrap
     // repopulate on next mount.
-    set({ decks: [], cards: [], noteTypes: [], presets: [], filteredDecks: [], profile: null, bootstrapped: false });
+    bootstrapGeneration += 1;
+    bootstrapPromise = null;
+    set({
+      decks: [],
+      cards: [],
+      noteTypes: [],
+      presets: [],
+      filteredDecks: [],
+      profile: null,
+      cardTags: [],
+      bootstrapped: false,
+      bootstrapStatus: 'idle',
+      bootstrapError: null,
+    });
   },
 
   async addDeck(input) {

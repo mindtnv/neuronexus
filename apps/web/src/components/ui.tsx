@@ -11,7 +11,7 @@ export type IconName =
   | 'chevd' | 'tag' | 'clock' | 'sparkle' | 'play' | 'pause' | 'eye'
   | 'edit' | 'link' | 'sync' | 'arrow' | 'trophy' | 'target' | 'mic'
   | 'image' | 'dots' | 'filter' | 'grid' | 'stars' | 'bulb' | 'pin'
-  | 'clip' | 'doc' | 'book' | 'send' | 'note' | 'copy';
+  | 'clip' | 'doc' | 'book' | 'send' | 'note' | 'copy' | 'warning';
 
 export const NNIcon = ({
   name,
@@ -162,6 +162,12 @@ export const NNIcon = ({
         <path d="M5 15V6a2 2 0 012-2h9" {...p} />
       </>
     ),
+    warning: (
+      <>
+        <path d="M12 3L2.8 20h18.4L12 3z" {...p} />
+        <path d="M12 9v5M12 17.5h.01" {...p} />
+      </>
+    ),
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: 'block', flexShrink: 0 }}>
@@ -190,6 +196,8 @@ export const NNBtn = ({
   title,
   ariaLabel,
   disabled,
+  loading = false,
+  loadingLabel,
 }: {
   children?: ReactNode;
   variant?: BtnVariant;
@@ -204,6 +212,10 @@ export const NNBtn = ({
   title?: string;
   ariaLabel?: string;
   disabled?: boolean;
+  /** Keeps the button's dimensions stable while an action is in flight. */
+  loading?: boolean;
+  /** Optional accessible label announced instead of the normal label while busy. */
+  loadingLabel?: string;
 }) => {
   const sizes: Record<BtnSize, { h: number; px: number; fs: number; gap: number; r: number }> = {
     sm: { h: 28, px: 10, fs: 12.5, gap: 6, r: 8 },
@@ -222,13 +234,15 @@ export const NNBtn = ({
   };
   const s = sizes[size];
   const v = variants[variant];
+  const unavailable = disabled || loading;
   return (
     <button
       type={type ?? 'button'}
       onClick={onClick}
       title={title}
-      aria-label={ariaLabel ?? title}
-      disabled={disabled}
+      aria-label={loading ? (loadingLabel ?? ariaLabel ?? title) : (ariaLabel ?? title)}
+      aria-busy={loading || undefined}
+      disabled={unavailable}
       style={{
         height: s.h,
         padding: `0 ${s.px}px`,
@@ -241,26 +255,59 @@ export const NNBtn = ({
         fontFamily: 'var(--font-sans)',
         fontWeight: 500,
         letterSpacing: -0.1,
-        cursor: disabled ? 'not-allowed' : 'pointer',
+        cursor: unavailable ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.5 : 1,
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        transition: 'all 120ms ease',
+        transition: 'background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease, transform 120ms ease',
         width: block ? '100%' : undefined,
         whiteSpace: 'nowrap',
         ...style,
       }}
       onMouseEnter={(e) => {
-        if (variant === 'ghost' && !disabled) e.currentTarget.style.background = 'var(--surface-3)';
+        if (variant === 'ghost' && !unavailable) e.currentTarget.style.background = 'var(--surface-3)';
       }}
       onMouseLeave={(e) => {
         if (variant === 'ghost' && !active) e.currentTarget.style.background = 'transparent';
       }}
     >
-      {icon && <NNIcon name={icon} size={s.fs + 2} />}
-      {children}
-      {iconRight && <NNIcon name={iconRight} size={s.fs + 2} />}
+      <span
+        style={{
+          display: 'inline-grid',
+          gridTemplateAreas: '"content"',
+          alignItems: 'center',
+          justifyItems: 'center',
+        }}
+      >
+        <span
+          style={{
+            gridArea: 'content',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: s.gap,
+            opacity: loading ? 0 : 1,
+            transition: 'opacity 120ms ease',
+          }}
+        >
+          {icon && <NNIcon name={icon} size={s.fs + 2} />}
+          {children}
+          {iconRight && <NNIcon name={iconRight} size={s.fs + 2} />}
+        </span>
+        <span
+          aria-hidden
+          className={loading ? 'nn-spin' : undefined}
+          style={{
+            gridArea: 'content',
+            display: 'inline-flex',
+            opacity: loading ? 1 : 0,
+            pointerEvents: 'none',
+            transition: 'opacity 120ms ease',
+          }}
+        >
+          <NNIcon name="sync" size={s.fs + 2} />
+        </span>
+      </span>
     </button>
   );
 };
@@ -372,7 +419,7 @@ export const NNCard = ({
       borderRadius: 'var(--r-lg)',
       padding,
       cursor: onClick || hoverable ? 'pointer' : 'default',
-      transition: 'all 150ms ease',
+      transition: 'background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease',
       ...style,
     }}
   >
@@ -732,4 +779,96 @@ export const NNSkeleton = ({
       ...style,
     }}
   />
+);
+
+/** A stable, chrome-neutral page fallback for route/query suspension. */
+export const NNPageSkeleton = ({ compact = false }: { compact?: boolean }) => (
+  <div
+    aria-busy="true"
+    aria-label="Loading"
+    style={{
+      flex: 1,
+      overflow: 'hidden',
+      padding: compact ? 16 : 24,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 14,
+    }}
+  >
+    <NNSkeleton width="38%" height={18} />
+    <NNSkeleton width="64%" height={11} />
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+        gap: 12,
+        marginTop: 6,
+      }}
+    >
+      <NNSkeleton height={compact ? 92 : 138} />
+      <NNSkeleton height={compact ? 92 : 138} />
+      <NNSkeleton height={compact ? 92 : 138} />
+    </div>
+  </div>
+);
+
+/** Non-blocking refresh affordance: existing content remains mounted beneath it. */
+export const NNInlineRefresh = ({ label }: { label: string }) => (
+  <span
+    role="status"
+    aria-live="polite"
+    style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 6,
+      color: 'var(--text-dim)',
+      fontSize: 11.5,
+      fontVariantNumeric: 'tabular-nums',
+    }}
+  >
+    <span className="nn-spin" aria-hidden><NNIcon name="sync" size={13} /></span>
+    {label}
+  </span>
+);
+
+/** Retryable resource error that retains the API correlation reference. */
+export const NNLoadError = ({
+  title,
+  description,
+  retryLabel,
+  onRetry,
+  requestId,
+}: {
+  title: string;
+  description?: string;
+  retryLabel: string;
+  onRetry: () => void;
+  requestId?: string;
+}) => (
+  <div
+    role="alert"
+    style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'flex-start',
+      gap: 8,
+      padding: 16,
+      borderRadius: 'var(--r-lg)',
+      border: '1px solid var(--tone-rose-border)',
+      background: 'var(--tone-rose-bg)',
+      color: 'var(--text)',
+    }}
+  >
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600 }}>
+      <NNIcon name="warning" size={17} color="var(--rose-400)" />
+      {title}
+    </span>
+    {description ? <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{description}</span> : null}
+    {requestId ? (
+      <span className="mono" style={{ color: 'var(--text-dim)', fontSize: 10.5 }}>
+        request: {requestId}
+      </span>
+    ) : null}
+    <NNBtn size="sm" variant="outline" icon="sync" onClick={onRetry}>{retryLabel}</NNBtn>
+  </div>
 );

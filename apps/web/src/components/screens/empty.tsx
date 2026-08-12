@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import Link from 'next/link';
+import { AppLink } from '@/components/navigation';
 import { State } from 'ts-fsrs';
 import { NNBtn, NNIcon, NNPlant } from '@/components/ui';
 import { useNN } from '@/lib/store';
@@ -43,7 +43,7 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
             }}
           >
             {onboarding.map((o) => (
-              <Link
+              <AppLink
                 key={o.key}
                 href={o.href}
                 style={{
@@ -78,7 +78,7 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
                 <div style={{ fontSize: 12.5, color: 'var(--text-dim)', lineHeight: 1.5 }}>
                   {t(`empty.firstRun.cards.${o.key}.desc`)}
                 </div>
-              </Link>
+              </AppLink>
             ))}
           </div>
         </div>
@@ -99,9 +99,9 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
           </div>
           <div style={{ display: 'flex', gap: isMobile ? 7 : 10, justifyContent: 'center', marginTop: 24, flexWrap: 'wrap' }}>
             {newCount > 0 && (
-              <Link href="/review"><NNBtn size="lg" variant="soft" icon="bolt">{t('empty.done.learnNew', { n: newCount })}</NNBtn></Link>
+              <AppLink href="/review"><NNBtn size="lg" variant="soft" icon="bolt">{t('empty.done.learnNew', { n: newCount })}</NNBtn></AppLink>
             )}
-            <Link href="/graph"><NNBtn size="lg" variant="ghost" icon="graph">{t('empty.done.exploreGraph')}</NNBtn></Link>
+            <AppLink href="/graph"><NNBtn size="lg" variant="ghost" icon="graph">{t('empty.done.exploreGraph')}</NNBtn></AppLink>
           </div>
         </div>
       </div>
@@ -128,7 +128,7 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
           {' '}{t('empty.graph.subtitleSuffix')}
         </div>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 24 }}>
-          <Link href="/editor"><NNBtn size="lg" variant="primary" icon="plus">{t('empty.graph.addCards')}</NNBtn></Link>
+          <AppLink href="/editor"><NNBtn size="lg" variant="primary" icon="plus">{t('empty.graph.addCards')}</NNBtn></AppLink>
         </div>
       </div>
     </div>

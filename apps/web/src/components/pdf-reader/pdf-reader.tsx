@@ -25,10 +25,11 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { useRouter } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import type { InkStroke, MarkRect, PageAnnotations, SourceMarkColor } from '@neuronexus/shared';
 import { ANNOTATION_MAX_STROKES, MARKED_TEXT_MAX } from '@neuronexus/shared';
 import { extractMarkedText, textItemBBox, type PdfTextItem } from '@/lib/pdf-ink';
+import { destroyPdfResources } from '@/lib/pdf-task-cleanup';
 import {
   createMark,
   deleteMark,
@@ -133,7 +134,7 @@ const POS_KEY = (id: string) => `nn:pdf:pos:${id}`;
 
 export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
   ({ sourceId, sourceName, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false, onPageChange, tocOpen, tocAvailable, onToggleToc, onDocInfo, onExportMarkup }, ref) => {
-    const router = useRouter();
+    const router = useAppNavigation();
     const { locale } = useLocale();
     const containerRef = useRef<HTMLDivElement>(null);
     const pageElsRef = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -506,8 +507,27 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
         ac.abort();
         for (const timer of saveTimersRef.current.values()) clearTimeout(timer);
         saveTimersRef.current.clear();
+        for (const rendered of renderedRef.current.values()) {
+          try {
+            rendered.task?.cancel?.();
+          } catch {
+            // A render can already be settling while its route unmounts.
+          }
+        }
+        renderedRef.current.clear();
+        for (const layer of textLayerInstances.current.values()) {
+          try {
+            layer?.cancel?.();
+          } catch {
+            // Text-layer cancellation is best-effort across pdf.js builds.
+          }
+        }
+        textLayerInstances.current.clear();
+        for (const element of textLayerEls.current.values()) element.remove();
+        textLayerEls.current.clear();
+        const document = docRef.current;
         docRef.current = null;
-        if (loadingTask) void loadingTask.destroy().catch(() => {});
+        void destroyPdfResources(loadingTask, document);
       };
     }, [sourceId]);
 

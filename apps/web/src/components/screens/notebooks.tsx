@@ -16,8 +16,7 @@
 // mimeFor / NONTERMINAL / AddKind) are CONSUMED by notebook-workspace.tsx and
 // stay here unchanged.
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useCallback, useMemo, useState, type SetStateAction } from 'react';
 import {
   NOTEBOOK_COLORS,
   SOURCE_MIME_TO_KIND,
@@ -27,7 +26,7 @@ import {
   type SourceMime,
   type SourceStatus,
 } from '@neuronexus/shared';
-import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
+import { NNBtn, NNCard, NNIcon, NNBadge, NNInlineRefresh, NNLoadError, NNSkeleton } from '@/components/ui';
 import { api, ok } from '@/lib/api';
 import { useNN } from '@/lib/store';
 import type { Notebook, NotebookCoverSource, Source } from '@/lib/types';
@@ -37,6 +36,8 @@ import { relativeUpdated } from '@/lib/notebook-format';
 import { sourceKindToneVar } from '@/lib/source-kind';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
+import { useSessionResource } from '@/lib/session-resource';
+import { useAppNavigation } from '@/components/navigation';
 
 type AiStatus = {
   notebooksEnabled: boolean;
@@ -191,7 +192,7 @@ export type AddKind = 'file' | 'url' | 'text';
 
 export const NotebooksScreen = () => {
   const t = useT();
-  const router = useRouter();
+  const navigation = useAppNavigation();
   const isMobile = useIsMobile();
   const { prompt, confirm } = useDialog();
 
@@ -200,50 +201,45 @@ export const NotebooksScreen = () => {
   const patchNotebook = useNN((s) => s.patchNotebook);
   const deleteNotebook = useNN((s) => s.deleteNotebook);
 
-  const [status, setStatus] = useState<AiStatus | null>(null);
-  const [statusLoaded, setStatusLoaded] = useState(false);
-  const [notebooks, setNotebooks] = useState<Notebook[]>([]);
-  const [notebooksLoaded, setNotebooksLoaded] = useState(false);
   const [archived, setArchived] = useState(false);
   const [search, setSearch] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
 
   // ── AI status (degrade, never crash) ────────────────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const s = (await ok(await (api as any).ai.status.get())) as AiStatus;
-        if (!cancelled) setStatus(s);
-      } catch {
-        if (!cancelled) setStatus({ notebooksEnabled: false });
-      } finally {
-        if (!cancelled) setStatusLoaded(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const fetchStatus = useCallback(
+    async () => (await ok(await (api as any).ai.status.get())) as AiStatus,
+    [],
+  );
+  const statusResource = useSessionResource({
+    key: 'notebooks:ai-status',
+    fetcher: fetchStatus,
+    keepPreviousData: true,
+  });
+  const status = statusResource.data;
+  const statusLoaded = status !== null;
 
   // ── Notebook list (re-fetched per archive toggle) ─────────────────────────────
-  const refreshNotebooks = useCallback(async () => {
-    try {
-      const rows = await listNotebooks({ archived });
-      setNotebooks(rows);
-    } catch {
-      /* leave the list as-is; a transient fetch error shouldn't blank the screen */
-    } finally {
-      setNotebooksLoaded(true);
-    }
-  }, [listNotebooks, archived]);
-
-  useEffect(() => {
-    if (statusLoaded && status?.notebooksEnabled) {
-      setNotebooksLoaded(false);
-      void refreshNotebooks();
-    }
-  }, [statusLoaded, status?.notebooksEnabled, refreshNotebooks]);
+  const fetchNotebooks = useCallback(
+    () => listNotebooks({ archived }),
+    [listNotebooks, archived],
+  );
+  const notebooksResource = useSessionResource({
+    key: `notebooks:list:${archived ? 'archived' : 'active'}`,
+    scope: 'notebooks:list',
+    enabled: status?.notebooksEnabled === true,
+    fetcher: fetchNotebooks,
+    keepPreviousData: true,
+  });
+  const notebooks = notebooksResource.data ?? [];
+  const notebooksLoaded = notebooksResource.data !== null || notebooksResource.status === 'error';
+  const setNotebooks = useCallback((update: SetStateAction<Notebook[]>) => {
+    notebooksResource.mutate((previous) => {
+      const value = previous ?? [];
+      return typeof update === 'function'
+        ? (update as (current: Notebook[]) => Notebook[])(value)
+        : update;
+    });
+  }, [notebooksResource.mutate]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -369,6 +365,20 @@ export const NotebooksScreen = () => {
   );
 
   // ── Render: setup notice when notebooks are unconfigured ──────────────────────
+  if (statusResource.status === 'error' && !status) {
+    return (
+      <div style={{ padding: isMobile ? 16 : 32, maxWidth: 640, margin: '0 auto' }}>
+        <NNLoadError
+          title={t('toasts.error')}
+          description={statusResource.error?.safeMessage}
+          retryLabel={t('notebooks.overview.retry')}
+          requestId={statusResource.error?.requestId}
+          onRetry={statusResource.refresh}
+        />
+      </div>
+    );
+  }
+
   if (statusLoaded && status && !status.notebooksEnabled) {
     return (
       <div style={{ padding: isMobile ? 16 : 32, maxWidth: 640, margin: '0 auto' }}>
@@ -405,7 +415,10 @@ export const NotebooksScreen = () => {
   const continueNb = !archived && !search.trim() && notebooks.length > 0 ? notebooks[0] : null;
 
   return (
-    <div style={{ padding: isMobile ? 16 : 24, maxWidth: 1040, margin: '0 auto', width: '100%' }}>
+    <div
+      aria-busy={notebooksResource.status === 'loading' || notebooksResource.status === 'refreshing'}
+      style={{ padding: isMobile ? 16 : 24, maxWidth: 1040, margin: '0 auto', width: '100%' }}
+    >
       {createOpen && (
         <CreateNotebookDialog onCreate={onCreate} onClose={() => setCreateOpen(false)} t={t} />
       )}
@@ -455,13 +468,31 @@ export const NotebooksScreen = () => {
         </NNBtn>
       </div>
 
+      {notebooksResource.status === 'refreshing' && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '-10px 0 10px' }}>
+          <NNInlineRefresh label={t('states.loading')} />
+        </div>
+      )}
+
+      {notebooksResource.status === 'error' && (
+        <div style={{ marginBottom: 14 }}>
+          <NNLoadError
+            title={t('toasts.error')}
+            description={notebooksResource.error?.safeMessage}
+            retryLabel={t('notebooks.overview.retry')}
+            requestId={notebooksResource.error?.requestId}
+            onRetry={notebooksResource.refresh}
+          />
+        </div>
+      )}
+
       {/* «Продолжить» strip */}
       {continueNb && (
         <>
           <div className="nn-nb-section-label">{t('notebooks.meta.sectionContinue')}</div>
           <ContinueCard
             notebook={continueNb}
-            onOpen={() => router.push(`/notebooks/${continueNb.id}`)}
+            onOpen={() => navigation.push(`/notebooks/${continueNb.id}`)}
             t={t}
           />
         </>
@@ -502,7 +533,7 @@ export const NotebooksScreen = () => {
             <NotebookCard
               key={nb.id}
               notebook={nb}
-              onOpen={() => router.push(`/notebooks/${nb.id}`)}
+              onOpen={() => navigation.push(`/notebooks/${nb.id}`)}
               onRename={() => onRename(nb)}
               onTogglePin={() => onTogglePin(nb)}
               onToggleArchive={() => onToggleArchive(nb)}

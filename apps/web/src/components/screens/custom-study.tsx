@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import { parseCardQuery, CardQueryError } from '@neuronexus/shared';
 import { NNBtn, NNBadge, NNIcon } from '@/components/ui';
 import { useNN } from '@/lib/store';
@@ -296,7 +296,7 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
 export const NNCustomStudy = () => {
   const t = useT();
   const { confirm } = useDialog();
-  const router = useRouter();
+  const router = useAppNavigation();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
 

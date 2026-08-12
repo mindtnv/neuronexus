@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { ApiError, apiErrorFromResponse } from '@/lib/api';
 // BetterAuth's endpoint name varies between versions — calling it via the
 // SDK would lock us to a specific method name. A bare `fetch` to the REST
@@ -11,6 +10,7 @@ const API_BASE =
     ? process.env.NEXT_PUBLIC_API_URL
     : 'http://localhost:3000';
 import { NNBtn, NNLogo } from '@/components/ui';
+import { AppLink } from '@/components/navigation';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -120,9 +120,9 @@ export default function ForgotPasswordPage() {
       )}
 
       <div style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center' }}>
-        <Link href="/auth/sign-in" style={{ color: 'var(--accent-300)' }}>
+        <AppLink href="/auth/sign-in" style={{ color: 'var(--accent-300)' }}>
           Назад к входу
-        </Link>
+        </AppLink>
       </div>
     </form>
   );

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import Link from 'next/link';
+import { AppLink } from '@/components/navigation';
 import { State } from 'ts-fsrs';
 import { NNIcon, NNBtn, NNBadge, NNPlant } from '@/components/ui';
 import { useNN } from '@/lib/store';
@@ -249,21 +249,21 @@ export const NNGardenTerrarium = () => {
           justifyContent: 'center',
         }}
       >
-        <Link href="/review">
+        <AppLink href="/review">
           <NNBtn size={isMobile ? 'md' : 'lg'} variant="primary" icon="bolt">
             {t('garden.reviewCards')}
           </NNBtn>
-        </Link>
-        <Link href="/decks">
+        </AppLink>
+        <AppLink href="/decks">
           <NNBtn size={isMobile ? 'md' : 'lg'} variant="soft" icon="plus">
             {t('garden.plantNewDeck')}
           </NNBtn>
-        </Link>
-        <Link href="/settings">
+        </AppLink>
+        <AppLink href="/settings">
           <NNBtn size={isMobile ? 'md' : 'lg'} variant="outline" icon="settings">
             {t('garden.changeSpecies')}
           </NNBtn>
-        </Link>
+        </AppLink>
       </div>
 
       {/* species gallery — all unlocks in one row */}

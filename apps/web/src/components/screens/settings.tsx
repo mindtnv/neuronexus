@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useAppNavigation } from '@/components/navigation';
 import { ANKI_DEFAULTS, MIN_RETENTION, MAX_RETENTION } from '@neuronexus/shared';
-import { NNBadge, NNBtn, NNIcon } from '@/components/ui';
+import { NNBadge, NNBtn, NNIcon, NNLoadError, NNPageSkeleton, NNSkeleton } from '@/components/ui';
 import { signOut, useSession } from '@/lib/auth';
 import { api, ok } from '@/lib/api';
 import { useNN } from '@/lib/store';
@@ -13,6 +13,8 @@ import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { LocaleToggle } from '@/components/locale-toggle';
 import { getTheme, setTheme, THEME_PREFS, THEME_SWATCHES, type ThemePref } from '@/lib/theme';
+import { useSessionResource } from '@/lib/session-resource';
+import type { Profile } from '@/lib/types';
 import {
   isNotificationsEnabled,
   requestNotificationPermission,
@@ -60,10 +62,11 @@ function parseSteps(raw: string): string[] {
 export const NNSettings = () => {
   const t = useT();
   const { confirm } = useDialog();
-  const router = useRouter();
+  const router = useAppNavigation();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const profile = useNN((s) => s.profile);
+  const bootstrapStatus = useNN((s) => s.bootstrapStatus);
   const updateProfile = useNN((s) => s.updateProfile);
   const presets = useNN((s) => s.presets);
   const decks = useNN((s) => s.decks);
@@ -73,6 +76,26 @@ export const NNSettings = () => {
   const resetStore = useNN((s) => s.reset);
   const { data: session } = useSession();
   const userEmail = session?.user?.email ?? '';
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileSaveError, setProfileSaveError] = useState('');
+  const profileMutationRef = useRef<Promise<void>>(Promise.resolve());
+  const profileMutationSequenceRef = useRef(0);
+  const saveProfile = useCallback((patch: Partial<Omit<Profile, 'id'>>) => {
+    const sequence = ++profileMutationSequenceRef.current;
+    setProfileSaving(true);
+    setProfileSaveError('');
+    const request = profileMutationRef.current
+      .catch(() => {})
+      .then(() => updateProfile(patch));
+    profileMutationRef.current = request;
+    void request.catch(() => {
+      if (profileMutationSequenceRef.current === sequence) {
+        setProfileSaveError(t('settings.deckOptions.saveError'));
+      }
+    }).finally(() => {
+      if (profileMutationRef.current === request) setProfileSaving(false);
+    });
+  }, [t, updateProfile]);
 
   const [nameDraft, setNameDraft] = useState(profile?.name ?? '');
   React.useEffect(() => {
@@ -273,27 +296,35 @@ export const NNSettings = () => {
   };
 
   // ── AI status (P3.3b) — read-only feature flags + models, lazy on mount ──
-  const [aiStatus, setAiStatus] = useState<AiStatusFlags | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const s = (await ok(await (api as any).ai.status.get())) as AiStatusFlags;
-        if (!cancelled) setAiStatus(s);
-      } catch {
-        if (!cancelled) setAiStatus(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+  const fetchAiStatus = useCallback(
+    async () => (await ok(await (api as any).ai.status.get())) as AiStatusFlags,
+    [],
+  );
+  const aiStatusResource = useSessionResource({
+    key: 'settings:ai-status',
+    fetcher: fetchAiStatus,
+    keepPreviousData: true,
+  });
+  const aiStatus = aiStatusResource.data;
 
   const themeOptions: { key: ThemePref; label: string }[] = THEME_PREFS.map((key) => ({
     key,
     label: t(`settings.appearance.theme.${key}`),
   }));
 
+  if (!profile && bootstrapStatus !== 'error') return <NNPageSkeleton />;
+
   return (
-    <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : '28px 40px', maxWidth: 880, width: '100%', margin: '0 auto' }}>
+    <div
+      className="nn-scroll"
+      aria-busy={profileSaving || undefined}
+      style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : '28px 40px', maxWidth: 880, width: '100%', margin: '0 auto' }}
+    >
+      {profileSaveError && (
+        <div role="alert" style={{ marginBottom: 12, color: 'var(--rose-500)', fontSize: 12 }}>
+          {profileSaveError}
+        </div>
+      )}
       {/* ── Profile ── */}
       <Section title={t('settings.profile.title')} subtitle={t('settings.profile.subtitle')}>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 14 : 18 }}>
@@ -304,7 +335,7 @@ export const NNSettings = () => {
               onChange={(e) => setNameDraft(e.target.value)}
               onBlur={() => {
                 const next = nameDraft.trim();
-                if (next && next !== profile?.name) void updateProfile({ name: next });
+                if (next && next !== profile?.name) saveProfile({ name: next });
               }}
               placeholder={t('settings.profile.namePlaceholder')}
               style={inputStyle}
@@ -319,7 +350,7 @@ export const NNSettings = () => {
                     key={m}
                     type="button"
                     onClick={() => {
-                      if (!active) void updateProfile({ dailyGoalMinutes: m });
+                      if (!active) saveProfile({ dailyGoalMinutes: m });
                     }}
                     style={{
                       flex: 1,
@@ -405,18 +436,39 @@ export const NNSettings = () => {
         subtitle={t('settings.aiStatus.subtitle')}
         accent={<NNBadge tone="neutral" size="xs">{t('settings.aiStatus.hint')}</NNBadge>}
       >
-        <AiFlagRow label={t('settings.aiStatus.chat')} on={aiStatus?.chatEnabled} t={t} />
-        <AiFlagRow label={t('settings.aiStatus.embedding')} on={aiStatus?.embeddingEnabled} t={t} />
-        <AiFlagRow label={t('settings.aiStatus.webSearch')} on={aiStatus?.webSearchEnabled} t={t} />
-        <AiFlagRow label={t('settings.aiStatus.vision')} on={aiStatus?.visionEnabled} t={t} />
-        <AiFlagRow label={t('settings.aiStatus.notebooks')} on={aiStatus?.notebooksEnabled} t={t} />
-        <InfoRow label={t('settings.aiStatus.chatModel')} value={aiStatus?.chatModel || t('settings.aiStatus.none')} />
-        <InfoRow label={t('settings.aiStatus.embeddingModel')} value={aiStatus?.embeddingModel || t('settings.aiStatus.none')} />
-        {aiStatus?.models && aiStatus.models.length > 0 && (
-          <InfoRow
-            label={t('settings.aiStatus.models')}
-            value={aiStatus.models.map((m) => m.label || m.id).join(' · ')}
+        {aiStatusResource.status === 'error' && !aiStatus ? (
+          <NNLoadError
+            title={t('toasts.error')}
+            description={aiStatusResource.error?.safeMessage}
+            retryLabel={t('notebooks.overview.retry')}
+            requestId={aiStatusResource.error?.requestId}
+            onRetry={aiStatusResource.refresh}
           />
+        ) : (
+          <>
+            <AiFlagRow label={t('settings.aiStatus.chat')} on={aiStatus?.chatEnabled} t={t} />
+            <AiFlagRow label={t('settings.aiStatus.embedding')} on={aiStatus?.embeddingEnabled} t={t} />
+            <AiFlagRow label={t('settings.aiStatus.webSearch')} on={aiStatus?.webSearchEnabled} t={t} />
+            <AiFlagRow label={t('settings.aiStatus.vision')} on={aiStatus?.visionEnabled} t={t} />
+            <AiFlagRow label={t('settings.aiStatus.notebooks')} on={aiStatus?.notebooksEnabled} t={t} />
+            {aiStatus ? (
+              <>
+                <InfoRow label={t('settings.aiStatus.chatModel')} value={aiStatus.chatModel || t('settings.aiStatus.none')} />
+                <InfoRow label={t('settings.aiStatus.embeddingModel')} value={aiStatus.embeddingModel || t('settings.aiStatus.none')} />
+                {aiStatus.models && aiStatus.models.length > 0 && (
+                  <InfoRow
+                    label={t('settings.aiStatus.models')}
+                    value={aiStatus.models.map((m) => m.label || m.id).join(' · ')}
+                  />
+                )}
+              </>
+            ) : (
+              <>
+                <InfoLoadingRow label={t('settings.aiStatus.chatModel')} />
+                <InfoLoadingRow label={t('settings.aiStatus.embeddingModel')} />
+              </>
+            )}
+          </>
         )}
       </Section>
 
@@ -430,7 +482,7 @@ export const NNSettings = () => {
           onBlur={() => {
             const next = agentDraft.trim();
             if (next !== (profile?.agentInstructions ?? '')) {
-              void updateProfile({ agentInstructions: next });
+              saveProfile({ agentInstructions: next });
             }
           }}
           placeholder={t('settings.agent.placeholder')}
@@ -469,8 +521,8 @@ export const NNSettings = () => {
             max={99}
             value={retentionDraft}
             onChange={(e) => setRetentionDraft(Number(e.target.value))}
-            onMouseUp={() => { void updateProfile({ desiredRetention: retentionDraft / 100 }); }}
-            onTouchEnd={() => { void updateProfile({ desiredRetention: retentionDraft / 100 }); }}
+            onMouseUp={() => { saveProfile({ desiredRetention: retentionDraft / 100 }); }}
+            onTouchEnd={() => { saveProfile({ desiredRetention: retentionDraft / 100 }); }}
             aria-label={t('settings.retention.title')}
             style={{ position: 'absolute', inset: '-8px 0', width: '100%', opacity: 0, cursor: 'pointer' }}
           />
@@ -495,7 +547,7 @@ export const NNSettings = () => {
                 key={s.key}
                 type="button"
                 disabled={!isUnlocked}
-                onClick={() => { if (isUnlocked && !active) void updateProfile({ plantSpecies: s.key }); }}
+                onClick={() => { if (isUnlocked && !active) saveProfile({ plantSpecies: s.key }); }}
                 style={{
                   padding: '14px 10px',
                   borderRadius: 12,
@@ -798,6 +850,15 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function InfoLoadingRow({ label }: { label: string }) {
+  return (
+    <div aria-busy="true" style={{ display: 'flex', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+      <span style={{ flex: 1, fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
+      <NNSkeleton style={{ width: 104, height: 14 }} />
+    </div>
+  );
+}
+
 // On/off feature-flag row for the AI status section (P3.3b). `on` is undefined
 // while the status is still loading → renders the "off" pill (degrade, no flash).
 function AiFlagRow({
@@ -809,6 +870,14 @@ function AiFlagRow({
   on: boolean | undefined;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
+  if (on === undefined) {
+    return (
+      <div aria-busy="true" style={{ display: 'flex', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+        <span style={{ flex: 1, fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
+        <NNSkeleton style={{ width: 56, height: 22, borderRadius: 999 }} />
+      </div>
+    );
+  }
   const enabled = on === true;
   return (
     <div style={{ display: 'flex', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--border)' }}>

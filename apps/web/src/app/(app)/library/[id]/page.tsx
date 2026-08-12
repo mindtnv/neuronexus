@@ -3,6 +3,7 @@
 import { Suspense } from 'react';
 import { useParams } from 'next/navigation';
 import { LibraryReader } from '@/components/screens/library-reader';
+import { ReaderRouteFallback } from '@/components/route-fallbacks';
 
 // L2 — the full-screen reader at /library/[id]. The M4/M5 reading-first workflow
 // (PDF + ink + marks + quick-card) moved here OUT of the notebook workspace.
@@ -14,7 +15,7 @@ export default function Page() {
   const params = useParams<{ id: string }>();
   const id = typeof params?.id === 'string' ? params.id : undefined;
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<ReaderRouteFallback />}>
       {id ? <LibraryReader sourceId={id} /> : null}
     </Suspense>
   );

@@ -7,7 +7,7 @@
 // snippets only — never raw HTML. Mirrors similar-cards.tsx (module-level cache).
 
 import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import type { CardSourceLink } from '@/lib/types';
 import { NNBadge, NNIcon } from '@/components/ui';
 import { api, ok } from '@/lib/api';
@@ -66,7 +66,7 @@ export function useCardSources(cardId: string | null): SourceLinksState {
  */
 export const SourceLinksPanel = ({ cardId }: { cardId: string }) => {
   const t = useT();
-  const router = useRouter();
+  const router = useAppNavigation();
   const { items, loading } = useCardSources(cardId);
 
   if (loading || items.length === 0) return null;

@@ -1,12 +1,12 @@
 'use client';
 
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { BOTTOM_TABS, getActiveNavId } from './nav-config';
 import { NNIcon } from './ui';
 import { countDueCards } from '@/lib/cards';
 import { useNN } from '@/lib/store';
 import { useT } from '@/lib/i18n';
+import { AppLink } from './navigation';
 
 export const BottomTabs = () => {
   const pathname = usePathname() ?? '/';
@@ -16,7 +16,7 @@ export const BottomTabs = () => {
 
   return (
     <nav
-      className="nn-chrome"
+      className="nn-chrome nn-bottom-tabs"
       style={{
         position: 'fixed',
         bottom: 0,
@@ -28,7 +28,6 @@ export const BottomTabs = () => {
         backdropFilter: 'blur(18px)',
         WebkitBackdropFilter: 'blur(18px)',
         borderTop: '1px solid var(--border)',
-        display: 'flex',
         justifyContent: 'space-around',
         alignItems: 'center',
         zIndex: 40,
@@ -37,7 +36,7 @@ export const BottomTabs = () => {
       {BOTTOM_TABS.map((tab) => {
         const active = activeTab === tab.id;
         return (
-          <Link
+          <AppLink
             key={tab.id}
             href={tab.href}
             style={{
@@ -76,7 +75,7 @@ export const BottomTabs = () => {
                 {dueCount}
               </span>
             )}
-          </Link>
+          </AppLink>
         );
       })}
     </nav>

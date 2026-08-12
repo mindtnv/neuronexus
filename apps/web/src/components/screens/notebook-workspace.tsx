@@ -25,7 +25,8 @@
 //  `?thread=<convId>` selects a chat thread.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import {
   MAX_SOURCE_BYTES_DEFAULT,
   SOURCE_MIME_TO_KIND,
@@ -33,8 +34,10 @@ import {
   type NotebookColor,
   type SourceMime,
 } from '@neuronexus/shared';
-import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
+import { NNBtn, NNCard, NNIcon, NNBadge, NNLoadError, NNSkeleton } from '@/components/ui';
 import { isCooldownError, useNN } from '@/lib/store';
+import type { ApiError } from '@/lib/api';
+import { toApiError } from '@/lib/resource-state';
 import type {
   Notebook,
   Source,
@@ -148,7 +151,7 @@ const SourceCover = ({
 
 export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const t = useT();
-  const router = useRouter();
+  const router = useAppNavigation();
   const searchParams = useSearchParams();
   const bp = useBreakpoint();
   const isDesktop = bp === 'desktop';
@@ -190,6 +193,8 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const [notebook, setNotebook] = useState<Notebook | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [sourcesLoaded, setSourcesLoaded] = useState(false);
+  const [sourcesError, setSourcesError] = useState<ApiError | null>(null);
+  const [sourcesRevision, setSourcesRevision] = useState(0);
 
   // ── /ai/status.chatEnabled — gates the studio/overview generation (degrade) ──
   const [chatEnabled, setChatEnabled] = useState(false);
@@ -233,21 +238,27 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     [dockTabKey],
   );
 
-  // Hydrate the dock-collapsed + active-tab state from localStorage once.
-  const dockHydratedRef = useRef(false);
+  // Hydrate route-local dock state for every notebook. The component can stay
+  // mounted while `[id]` changes, so a one-time boolean would leak the previous
+  // notebook's preference into the next workspace.
+  const dockHydratedNotebookRef = useRef<string | null>(null);
   useEffect(() => {
-    if (dockHydratedRef.current) return;
-    dockHydratedRef.current = true;
+    if (dockHydratedNotebookRef.current === notebookId) return;
+    dockHydratedNotebookRef.current = notebookId;
     try {
       setDockCollapsed(localStorage.getItem(dockKey) === 'collapsed');
       const storedTab = localStorage.getItem(dockTabKey);
-      if (storedTab === 'overview' || storedTab === 'notes' || storedTab === 'studio') {
-        setDockTab(storedTab);
-      }
+      setDockTab(
+        storedTab === 'overview' || storedTab === 'notes' || storedTab === 'studio'
+          ? storedTab
+          : 'overview',
+      );
     } catch {
-      /* best-effort */
+      setDockCollapsed(false);
+      setDockTab('overview');
     }
-  }, [dockKey, dockTabKey]);
+    setDockSheetOpen(false);
+  }, [dockKey, dockTabKey, notebookId]);
 
   const toggleDock = useCallback(() => {
     setDockCollapsed((prev) => {
@@ -342,12 +353,19 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   // ── Load notebook + sources ───────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
+    setSourcesLoaded(false);
+    setSourcesError(null);
+    scopeHydratedRef.current = false;
+    setScope(new Set());
+    setActiveThreadId(null);
+    setViewer(null);
+    setAttachOpen(false);
     (async () => {
       try {
         const nbs = await listNotebooks();
         if (!cancelled) setNotebook(nbs.find((n) => n.id === notebookId) ?? null);
       } catch {
-        /* leave null; header falls back to a generic title */
+        if (!cancelled) setNotebook(null);
       }
       try {
         const rows = await listSources(notebookId);
@@ -368,8 +386,11 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
             : new Set(readyIds);
           setScope(next);
         }
-      } catch {
-        /* keep empty */
+      } catch (error) {
+        if (!cancelled) {
+          setSources([]);
+          setSourcesError(toApiError(error));
+        }
       } finally {
         if (!cancelled) setSourcesLoaded(true);
       }
@@ -378,7 +399,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notebookId]);
+  }, [notebookId, sourcesRevision]);
 
   // ── /ai/status.chatEnabled (degrade — gates studio/overview generation) ───────
   useEffect(() => {
@@ -402,6 +423,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   useEffect(() => {
     let cancelled = false;
     setDetailLoaded(false);
+    setNotebookDetail(null);
     (async () => {
       try {
         const nb = await getNotebook(notebookId);
@@ -445,10 +467,10 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   }, [generateOverview, notebookId, onDetailChange, t]);
 
   // ── Consume the library handoff prefill on mount ───────────────────────────────
-  const consumedPrefillRef = useRef(false);
+  const consumedPrefillRef = useRef<string | null>(null);
   useEffect(() => {
-    if (consumedPrefillRef.current) return;
-    consumedPrefillRef.current = true;
+    if (consumedPrefillRef.current === notebookId) return;
+    consumedPrefillRef.current = notebookId;
     // Defer so the ChatPanel has populated composerPrefillRef.
     const id = window.setTimeout(() => {
       try {
@@ -774,7 +796,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     (id: string | null) => {
       setActiveThreadId(id);
       const base = `/notebooks/${notebookId}`;
-      router.replace(id ? `${base}?thread=${id}` : base, { scroll: false });
+      router.replace(id ? `${base}?thread=${id}` : base, { scroll: false, track: false });
     },
     [router, notebookId],
   );
@@ -787,7 +809,17 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   );
 
   // ── Panels ─────────────────────────────────────────────────────────────────────
-  const sourcesPanel = (
+  const sourcesPanel = sourcesError ? (
+    <div style={{ padding: 18 }}>
+      <NNLoadError
+        title={t('toasts.error')}
+        description={sourcesError.safeMessage}
+        retryLabel={t('notebooks.overview.retry')}
+        requestId={sourcesError.requestId}
+        onRetry={() => setSourcesRevision((value) => value + 1)}
+      />
+    </div>
+  ) : (
     <SourcesPanel
       sources={sources}
       loaded={sourcesLoaded}

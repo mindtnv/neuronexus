@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import { format } from 'date-fns';
 import {
   buildCardPredicate,
@@ -10,7 +11,7 @@ import {
   stateLabel,
   type CardLike,
 } from '@neuronexus/shared';
-import { NNBtn, NNBadge, NNTag, NNIcon, NNSkeleton } from '@/components/ui';
+import { NNBtn, NNBadge, NNTag, NNIcon, NNLoadError, NNSkeleton } from '@/components/ui';
 import type { BadgeTone } from '@/components/ui';
 import { CardsViewSwitcher } from '@/components/cards-view-switcher';
 import { NNCardForm } from '@/components/card-form';
@@ -29,6 +30,8 @@ import {
   getDescendantIds,
 } from '@/lib/decks';
 import { addOrReplaceToken, toggleToken } from '@/lib/card-query-ui';
+import { toApiError } from '@/lib/resource-state';
+import type { ApiError } from '@/lib/api';
 
 const DEFAULT_CARDS_PAGE = 500;
 
@@ -115,7 +118,7 @@ export const NNCardsBrowser = () => {
   const dateLocale = useDateLocale();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
-  const router = useRouter();
+  const router = useAppNavigation();
   const searchParams = useSearchParams();
 
   const cards = useNN((s) => s.cards);
@@ -140,11 +143,13 @@ export const NNCardsBrowser = () => {
   // Hybrid completeness signal (must-fix #4): server results for the current `q`.
   const [serverResults, setServerResults] = useState<Card[] | null>(null);
   const [serverQ, setServerQ] = useState<string | null>(null);
+  const [serverKey, setServerKey] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   // Honest pagination: the cursor for the NEXT server page (null = no more rows).
   const [serverCursor, setServerCursor] = useState<string | null>(null);
   // Surface transport failures instead of silently sitting on stale local rows.
-  const [serverError, setServerError] = useState(false);
+  const [serverError, setServerError] = useState<ApiError | null>(null);
 
   // Two decoupled intents (must-fix: stop conflating look / edit-one / bulk):
   //  • `selected` (checkboxes / Ctrl+Shift-click) → drives ONLY the floating bulk bar.
@@ -168,6 +173,18 @@ export const NNCardsBrowser = () => {
 
   const urlWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queryRef = useRef(query);
+  const searchGeneration = useRef(0);
+  const loadMoreGeneration = useRef(0);
+  const loadingMoreRef = useRef(false);
+
+  const invalidatePendingSearches = useCallback(() => {
+    searchGeneration.current += 1;
+    loadMoreGeneration.current += 1;
+    loadingMoreRef.current = false;
+    setSearching(false);
+    setLoadingMore(false);
+  }, []);
 
   // Fetch the distinct tag universe once on mount (C3 — not from the ≤500 mirror).
   useEffect(() => {
@@ -177,7 +194,12 @@ export const NNCardsBrowser = () => {
   // Keep local query in sync when the URL changes externally (deck drill-in,
   // back/forward). Only adopt the URL value when it actually differs.
   useEffect(() => {
-    setQuery((prev) => (prev === urlQ ? prev : urlQ));
+    if (queryRef.current === urlQ) return;
+    invalidatePendingSearches();
+    setServerError(null);
+    setSearching(true);
+    queryRef.current = urlQ;
+    setQuery(urlQ);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlQ]);
 
@@ -195,7 +217,7 @@ export const NNCardsBrowser = () => {
     const params = new URLSearchParams(Array.from(searchParams.entries()));
     params.delete('focus');
     const qs = params.toString();
-    router.replace(qs ? `/cards?${qs}` : '/cards');
+    router.replace(qs ? `/cards?${qs}` : '/cards', { track: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusParam, bootstrapped, cards]);
 
@@ -241,43 +263,54 @@ export const NNCardsBrowser = () => {
     return sortCards(out, sortField, sortDir);
   }, [cards, predicate, queryError, sortField, sortDir]);
 
-  // Provisional whenever the mirror is at cap OR no server fetch finished for q.
-  const provisional =
-    cards.length >= DEFAULT_CARDS_PAGE || serverQ !== query;
+  const sortStr = `${sortField} ${sortDir}`;
+  const currentSearchKey = `${query}\u0000${sortStr}`;
 
   // True when the displayed rows are the authoritative server result set for the
   // current query (vs the provisional client mirror).
-  const serverActive = serverResults !== null && serverQ === query;
+  const serverActive = serverResults !== null && serverKey === currentSearchKey;
 
-  // The list actually rendered: authoritative server results when available for
-  // the current query, otherwise the instant client view.
+  // Provisional whenever the mirror can be truncated OR no matching authoritative
+  // response has completed yet. A previous authoritative result stays visible
+  // while the matching query refreshes.
+  const provisional = cards.length >= DEFAULT_CARDS_PAGE || !serverActive;
+
+  // Once an authoritative result exists, retain it across query/sort refreshes.
+  // The client mirror is only the cold-start fallback before the first response.
   const rows = useMemo(() => {
-    if (serverResults && serverQ === query) {
+    if (serverResults !== null) {
       return sortCards(serverResults, sortField, sortDir);
     }
     return clientFiltered;
-  }, [serverResults, serverQ, query, clientFiltered, sortField, sortDir]);
+  }, [serverResults, clientFiltered, sortField, sortDir]);
 
   // More server pages exist beyond what's shown → render an honest "Load more"
   // and an "N+" count instead of silently capping at the page size.
   const hasMore = serverActive && serverCursor !== null;
 
-  const sortStr = `${sortField} ${sortDir}`;
-
   const runServerSearch = useCallback(
     async (q: string) => {
+      const requestKey = `${q}\u0000${sortStr}`;
+      const generation = ++searchGeneration.current;
+      // A fresh authoritative search supersedes any pagination append in flight.
+      loadMoreGeneration.current += 1;
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
       setSearching(true);
-      setServerError(false);
+      setServerError(null);
       try {
         const { items, nextCursor } = await searchCards(q, { sort: sortStr });
+        if (generation !== searchGeneration.current) return;
         setServerResults(items);
         setServerQ(q);
+        setServerKey(requestKey);
         setServerCursor(nextCursor);
       } catch (err) {
+        if (generation !== searchGeneration.current) return;
         console.error('searchCards failed', err);
-        setServerError(true);
+        setServerError(toApiError(err));
       } finally {
-        setSearching(false);
+        if (generation === searchGeneration.current) setSearching(false);
       }
     },
     [searchCards, sortStr],
@@ -286,14 +319,18 @@ export const NNCardsBrowser = () => {
   // Honest "Load more": fetch the next page from the cursor and APPEND it to the
   // displayed server results (no silent truncation at the 500-row cap).
   const loadMore = useCallback(async () => {
-    if (!serverCursor || serverQ === null) return;
-    setSearching(true);
-    setServerError(false);
+    if (!serverCursor || serverQ === null || serverKey !== currentSearchKey) return;
+    if (loadingMoreRef.current) return;
+    const generation = ++loadMoreGeneration.current;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    setServerError(null);
     try {
       const { items, nextCursor } = await searchCards(serverQ, {
         sort: sortStr,
         cursor: serverCursor,
       });
+      if (generation !== loadMoreGeneration.current) return;
       setServerResults((prev) => {
         const base = prev ?? [];
         const byId = new Map(base.map((c) => [c.id, c]));
@@ -302,27 +339,34 @@ export const NNCardsBrowser = () => {
       });
       setServerCursor(nextCursor);
     } catch (err) {
+      if (generation !== loadMoreGeneration.current) return;
       console.error('searchCards (load more) failed', err);
-      setServerError(true);
+      setServerError(toApiError(err));
     } finally {
-      setSearching(false);
+      if (generation === loadMoreGeneration.current) {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      }
     }
-  }, [searchCards, serverCursor, serverQ, sortStr]);
+  }, [currentSearchKey, searchCards, serverCursor, serverKey, serverQ, sortStr]);
 
   // Auto-fire the debounced server search whenever results are provisional for
   // the current query (and the query is parseable).
   useEffect(() => {
-    if (queryError) return;
-    if (!provisional) return;
+    if (queryError) {
+      setSearching(false);
+      return;
+    }
+    if (serverActive) return;
     if (serverTimer.current) clearTimeout(serverTimer.current);
+    setSearching(true);
     serverTimer.current = setTimeout(() => {
       void runServerSearch(query);
     }, 300);
     return () => {
       if (serverTimer.current) clearTimeout(serverTimer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, provisional, queryError, sortStr]);
+  }, [query, queryError, runServerSearch, serverActive]);
 
   // Debounced write of the query into the URL (?q=).
   const writeUrl = useCallback(
@@ -333,29 +377,30 @@ export const NNCardsBrowser = () => {
         if (q) params.set('q', q);
         else params.delete('q');
         const qs = params.toString();
-        router.replace(qs ? `/cards?${qs}` : '/cards');
+        router.replace(qs ? `/cards?${qs}` : '/cards', { track: false });
       }, 250);
     },
     [router, searchParams],
   );
 
   const onQueryChange = (q: string) => {
+    invalidatePendingSearches();
+    queryRef.current = q;
     setQuery(q);
-    // Reset server authority — results are provisional until the new fetch lands.
-    setServerResults(null);
-    setServerQ(null);
-    setServerCursor(null);
-    setServerError(false);
+    // Keep the previous authoritative rows mounted while the new query resolves.
+    setSearching(true);
+    setServerError(null);
     writeUrl(q);
   };
 
   const onQueryEnter = () => {
     if (urlWriteTimer.current) clearTimeout(urlWriteTimer.current);
+    if (serverTimer.current) clearTimeout(serverTimer.current);
     const params = new URLSearchParams(Array.from(searchParams.entries()));
     if (query) params.set('q', query);
     else params.delete('q');
     const qs = params.toString();
-    router.replace(qs ? `/cards?${qs}` : '/cards');
+    router.replace(qs ? `/cards?${qs}` : '/cards', { track: false });
     if (!queryError) void runServerSearch(query);
   };
 
@@ -378,11 +423,10 @@ export const NNCardsBrowser = () => {
       setSortField(field);
       setSortDir(field === 'front' ? 'asc' : 'desc');
     }
-    // A sort change invalidates server authority (server re-sorts too).
-    setServerResults(null);
-    setServerQ(null);
-    setServerCursor(null);
-    setServerError(false);
+    // A sort change refreshes server authority without blanking the table.
+    invalidatePendingSearches();
+    setSearching(true);
+    setServerError(null);
   };
 
   // Row click. Three distinct intents:
@@ -530,7 +574,7 @@ export const NNCardsBrowser = () => {
       if (!queryError && serverQ === query) void runServerSearch(query);
     } catch (err) {
       console.error('bulk action failed', err);
-      setServerError(true);
+      setServerError(toApiError(err));
     }
   };
 
@@ -546,7 +590,7 @@ export const NNCardsBrowser = () => {
       if (!queryError && serverQ === query) void runServerSearch(query);
     } catch (err) {
       console.error('forget failed', err);
-      setServerError(true);
+      setServerError(toApiError(err));
     }
   };
 
@@ -568,7 +612,7 @@ export const NNCardsBrowser = () => {
       if (!queryError && serverQ === query) void runServerSearch(query);
     } catch (err) {
       console.error('set-due failed', err);
-      setServerError(true);
+      setServerError(toApiError(err));
     }
   };
 
@@ -640,7 +684,10 @@ export const NNCardsBrowser = () => {
       )}
 
       {/* Main column */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+      <div
+        aria-busy={searching || loadingMore}
+        style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}
+      >
         {/* Query bar */}
         <div
           style={{
@@ -728,7 +775,7 @@ export const NNCardsBrowser = () => {
               {!searching && serverError && (
                 <span style={{ color: 'var(--rose-400)' }}>{t('cards.search.serverError')}</span>
               )}
-              {!searching && !serverError && provisional && (serverQ !== query) && (
+              {!searching && !serverError && provisional && !serverActive && (
                 <NNBadge tone="amber" size="xs">{t('cards.search.localResults')}</NNBadge>
               )}
             </>
@@ -791,11 +838,24 @@ export const NNCardsBrowser = () => {
             </div>
 
             {/* Rows */}
-            {loading ? (
+            {loading || (rows.length === 0 && !serverActive && !serverError && !queryError) ? (
               <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {Array.from({ length: 8 }).map((_, i) => (
                   <NNSkeleton key={i} height={34} />
                 ))}
+              </div>
+            ) : rows.length === 0 && serverError && !serverActive ? (
+              <div style={{ padding: 16 }}>
+                <NNLoadError
+                  title={t('cards.search.serverError')}
+                  retryLabel={t('notebooks.overview.retry')}
+                  onRetry={() => void runServerSearch(query)}
+                  requestId={serverError.requestId}
+                />
+              </div>
+            ) : rows.length === 0 && queryError ? (
+              <div role="alert" style={{ padding: 24, color: 'var(--rose-400)', fontSize: 13 }}>
+                {queryError}
               </div>
             ) : rows.length === 0 ? (
               <div className="nn-empty-state" style={{ paddingTop: 48, paddingBottom: 48 }}>
@@ -914,7 +974,7 @@ export const NNCardsBrowser = () => {
             {/* Honest pagination: more server rows exist beyond this page. */}
             {hasMore && (
               <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 14px' }}>
-                <NNBtn size="sm" variant="soft" onClick={() => void loadMore()} disabled={searching}>
+                <NNBtn size="sm" variant="soft" onClick={() => void loadMore()} loading={loadingMore} disabled={loadingMore}>
                   {t('cards.search.loadMore')}
                 </NNBtn>
               </div>

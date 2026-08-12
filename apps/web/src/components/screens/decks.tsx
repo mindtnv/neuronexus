@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { AppLink, useAppNavigation } from '@/components/navigation';
 import { NNIcon, NNBtn, NNCard, NNPlant, NNBadge } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import type { DeckColor } from '@/lib/types';
@@ -53,7 +52,7 @@ export const NNDecks = () => {
     });
   };
 
-  const router = useRouter();
+  const router = useAppNavigation();
 
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
@@ -409,7 +408,7 @@ export const NNDecks = () => {
                 {/* hover-revealed icon actions (desktop only) */}
                 {!isMobile && (
                   <div className="nn-deck-row-actions" style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                    <Link
+                    <AppLink
                       href={`/editor?deck=${encodeURIComponent(d.id)}`}
                       onClick={(e) => e.stopPropagation()}
                       aria-label={t('decks.addCard')}
@@ -417,9 +416,9 @@ export const NNDecks = () => {
                       style={iconActionStyle}
                     >
                       <NNIcon name="plus" size={14} />
-                    </Link>
+                    </AppLink>
                     {agg.due > 0 && (
-                      <Link
+                      <AppLink
                         href={`/review?deck=${encodeURIComponent(d.id)}`}
                         onClick={(e) => e.stopPropagation()}
                         aria-label={t('decks.review')}
@@ -427,14 +426,14 @@ export const NNDecks = () => {
                         style={{ ...iconActionStyle, color: 'var(--lime-400)' }}
                       >
                         <NNIcon name="bolt" size={14} />
-                      </Link>
+                      </AppLink>
                     )}
                   </div>
                 )}
 
                 {/* due-pill */}
                 {agg.due > 0 ? (
-                  <Link
+                  <AppLink
                     href={`/review?deck=${encodeURIComponent(d.id)}`}
                     onClick={(e) => e.stopPropagation()}
                     aria-label={t('decks.review')}
@@ -454,7 +453,7 @@ export const NNDecks = () => {
                     }}
                   >
                     {agg.due}
-                  </Link>
+                  </AppLink>
                 ) : (
                   <span
                     className="mono"

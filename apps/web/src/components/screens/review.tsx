@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { AppLink, useAppNavigation } from '@/components/navigation';
+import { useSearchParams } from 'next/navigation';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNKbd, NNSkeleton, NNTag } from '@/components/ui';
 import { previewGrades, xpForRating } from '@neuronexus/shared';
 import { humanInterval } from '@/lib/fsrs';
@@ -109,7 +109,7 @@ const diffAnswer = (userRaw: string, targetRaw: string): DiffToken[] => {
 export const NNReviewClassic = () => {
   const t = useT();
   useEmptyRedirect('first-run');
-  const router = useRouter();
+  const router = useAppNavigation();
   const searchParams = useSearchParams();
   const filteredDeckId = searchParams.get('filteredDeckId') ?? undefined;
   // deck= param from the decks screen "Review" button (per-deck scoped queue).
@@ -1091,13 +1091,13 @@ export const NNReviewClassic = () => {
             <NNKbd>J</NNKbd> {t('review.hints.prev')} · <NNKbd>K</NNKbd> {t('review.hints.skip')} · <NNKbd>E</NNKbd> {t('review.hints.edit')} · <NNKbd>Esc</NNKbd> {t('review.hints.home')}
           </span>
         )}
-        <Link
+        <AppLink
           href={`/editor?card=${current.id}`}
           onClick={(e) => e.stopPropagation()}
           style={{ color: 'inherit', display: 'inline-flex' }}
         >
           <NNBtn size="sm" variant="ghost" icon="edit" />
-        </Link>
+        </AppLink>
       </div>
 
       {/* Feature #1 — held lapse-peek overlay. On Again for a provenance card we
@@ -1346,18 +1346,18 @@ const ReviewEmpty = ({
       <div style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 460, lineHeight: 1.5 }}>{subtitle}</div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8 }}>
         {cta && href && (
-          <Link href={href}>
+          <AppLink href={href}>
             <NNBtn size="lg" variant="primary" icon="plus">
               {cta}
             </NNBtn>
-          </Link>
+          </AppLink>
         )}
         {customStudyHref && customStudyLabel && (
-          <Link href={customStudyHref}>
+          <AppLink href={customStudyHref}>
             <NNBtn size="lg" variant="soft" icon="filter">
               {customStudyLabel}
             </NNBtn>
-          </Link>
+          </AppLink>
         )}
       </div>
     </div>
@@ -1394,18 +1394,17 @@ const SessionDone = ({ completed, xp }: { completed: number; xp: number }) => {
         </span>
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-        <Link href="/session/complete">
+        <AppLink href="/session/complete">
           <NNBtn size="lg" variant="primary" icon="check">
             {t('review.sessionComplete.viewSummary')}
           </NNBtn>
-        </Link>
-        <Link href="/">
+        </AppLink>
+        <AppLink href="/">
           <NNBtn size="lg" variant="outline">
             {t('review.sessionComplete.backHome')}
           </NNBtn>
-        </Link>
+        </AppLink>
       </div>
     </div>
   );
 };
-

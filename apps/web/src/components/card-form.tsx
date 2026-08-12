@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import { NNBtn, NNBadge, NNTag, NNCard, NNIcon } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import type { Card, NoteType } from '@/lib/types';
@@ -388,7 +388,7 @@ export const NNCardForm = ({
 }: NNCardFormProps) => {
   const t = useT();
   const { confirm } = useDialog();
-  const router = useRouter();
+  const router = useAppNavigation();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
 

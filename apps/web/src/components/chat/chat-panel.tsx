@@ -25,7 +25,8 @@
 //    the rendered prose.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import type {
   CardCitation,
   ChatModelOption,
@@ -41,10 +42,24 @@ import {
   MAX_MEDIA_BYTES,
   MEDIA_MIME_ALLOWLIST,
 } from '@neuronexus/shared';
-import { NNBtn, NNCard, NNIcon, NNKbd, NNSkeleton, NNBadge } from '@/components/ui';
+import {
+  NNBadge,
+  NNBtn,
+  NNCard,
+  NNIcon,
+  NNInlineRefresh,
+  NNKbd,
+  NNLoadError,
+  NNSkeleton,
+} from '@/components/ui';
 import { RichCard } from '@/components/rich-card';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { api, ok } from '@/lib/api';
+import type { ResourceState } from '@/lib/resource-state';
+import {
+  fetchSessionResource,
+  peekSessionResource,
+} from '@/lib/session-resource';
 import {
   regenerateChat,
   resumeChat,
@@ -349,7 +364,7 @@ export const ChatPanel = ({
 }: ChatPanelProps = {}) => {
   const t = useT();
   const { locale } = useLocale();
-  const router = useRouter();
+  const router = useAppNavigation();
   const searchParams = useSearchParams();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
@@ -382,7 +397,15 @@ export const ChatPanel = ({
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageVM[]>([]);
-  const [threadLoading, setThreadLoading] = useState(false);
+  const [threadResource, setThreadResource] = useState<ResourceState<MessageVM[]>>({
+    data: [],
+    status: 'ready',
+    error: null,
+  });
+  // An Eden request cannot be cancelled after it starts. This sequence is the
+  // local commit guard: a late A response can still finish after a rapid A→B,
+  // but only B is allowed to update the visible transcript/status.
+  const threadRequestRef = useRef(0);
   // On mobile the two panes are mutually exclusive. `composing` means the stream
   // pane is showing (either an open thread or a fresh, not-yet-created chat). On
   // desktop both panes are always visible, so this only gates the mobile layout.
@@ -607,8 +630,10 @@ export const ChatPanel = ({
     if (activeThreadId === undefined) return;
     if (activeThreadId === activeId) return;
     if (activeThreadId === null) {
+      threadRequestRef.current += 1;
       setActiveId(null);
       setMessages([]);
+      setThreadResource({ data: [], status: 'ready', error: null });
       return;
     }
     if (conversations.some((c) => c.id === activeThreadId)) {
@@ -718,47 +743,76 @@ export const ChatPanel = ({
 
   const openThread = useCallback(
     async (id: string) => {
+      const requestVersion = ++threadRequestRef.current;
+      const cacheKey = `chat:thread:${id}`;
+      const scope = `chat:thread-pane:${isNotebook ? notebookId ?? 'notebook' : 'global'}`;
+      const cached = peekSessionResource<MessageVM[]>(cacheKey);
+
       setActiveId(id);
       setComposing(true);
-      setThreadLoading(true);
+      if (cached) {
+        setMessages(cached);
+        setThreadResource({ data: cached, status: 'refreshing', error: null });
+      } else {
+        // Keep the previous transcript in memory until the requested thread is
+        // ready, but do not present it under the newly selected thread id.
+        setThreadResource({ data: null, status: 'loading', error: null });
+      }
       // Shareable URL (A5): keep ?thread= in sync with the open conversation.
       // Notebook mode: the workspace owns the URL — notify it instead.
       if (isNotebook) onThreadChangeRef.current?.(id);
-      else router.replace(`/chat?thread=${id}`, { scroll: false });
-      try {
-        const res = (await ok(await (api as any).chat.conversations({ id }).get())) as {
-          messages: PersistedMessageRow[];
-        };
-        // Reconstruct the agentic transcript from the persisted wire shape: tool-call
-        // rows become cards, role:'tool' rows fold into their parent, the '' sentinel
-        // and JSON-in-content tool rows never leak as blank/garbled bubbles.
-        setMessages(reconstructMessages(res.messages ?? []));
-      } catch {
-        setMessages([]);
-      } finally {
-        setThreadLoading(false);
+      else router.replace(`/chat?thread=${id}`, { scroll: false, track: false });
+
+      const result = await fetchSessionResource({
+        key: cacheKey,
+        scope,
+        fetcher: async () => {
+          const res = (await ok(await (api as any).chat.conversations({ id }).get())) as {
+            messages: PersistedMessageRow[];
+          };
+          // Reconstruct the agentic transcript from the persisted wire shape:
+          // tool-call rows become cards, role:'tool' rows fold into their parent,
+          // and JSON-in-content tool rows never leak as blank/garbled bubbles.
+          return reconstructMessages(res.messages ?? []);
+        },
+      });
+
+      if (threadRequestRef.current !== requestVersion || !result.current) return;
+      if (result.ok) {
+        setMessages(result.data);
+        setThreadResource({ data: result.data, status: 'ready', error: null });
+      } else {
+        setThreadResource((previous) => ({
+          ...previous,
+          status: 'error',
+          error: result.error,
+        }));
       }
     },
-    [router, isNotebook],
+    [router, isNotebook, notebookId],
   );
 
   // Start a fresh chat: clear the active thread and (on mobile) reveal the
   // stream pane with an empty state + composer.
   const newThread = useCallback(() => {
+    threadRequestRef.current += 1;
     setActiveId(null);
     setMessages([]);
+    setThreadResource({ data: [], status: 'ready', error: null });
     setComposing(true);
     if (isNotebook) onThreadChangeRef.current?.(null);
-    else router.replace('/chat', { scroll: false });
+    else router.replace('/chat', { scroll: false, track: false });
   }, [router, isNotebook]);
 
   // Mobile-only: leave the stream pane and return to the thread list.
   const backToList = useCallback(() => {
+    threadRequestRef.current += 1;
     setActiveId(null);
     setMessages([]);
+    setThreadResource({ data: [], status: 'ready', error: null });
     setComposing(false);
     if (isNotebook) onThreadChangeRef.current?.(null);
-    else router.replace('/chat', { scroll: false });
+    else router.replace('/chat', { scroll: false, track: false });
   }, [router, isNotebook]);
 
   // Pin / unpin a thread (C4): optimistic flip, reverted on a failed PATCH.
@@ -787,8 +841,10 @@ export const ChatPanel = ({
       }
       setConversations((prev) => prev.filter((c) => c.id !== id));
       if (activeId === id) {
+        threadRequestRef.current += 1;
         setActiveId(null);
         setMessages([]);
+        setThreadResource({ data: [], status: 'ready', error: null });
         setComposing(!isMobile);
       }
     },
@@ -1132,6 +1188,14 @@ export const ChatPanel = ({
     // Attachment-only sends are valid (e.g. "here's a screenshot" with no text).
     const hasAttachments = attachChipsRef.current.some((a) => !a.uploading);
     if (!content && !hasAttachments) return;
+    // Do not append a turn to a transcript that has never loaded. Cached data
+    // remains actionable during SWR; starting a turn then invalidates the
+    // background GET so it cannot replace the optimistic stream.
+    if (activeId && threadResource.data === null) return;
+    if (activeId && threadResource.status !== 'ready') {
+      threadRequestRef.current += 1;
+      setThreadResource({ data: messagesRef.current, status: 'ready', error: null });
+    }
     // Mid-stream send → queue ONE follow-up (a second send replaces it) (D4).
     if (sending) {
       queuedRef.current = content;
@@ -1180,7 +1244,7 @@ export const ChatPanel = ({
         setActiveId(created.id);
         setConversations((prev) => [{ ...created, title: content.slice(0, 80) }, ...prev]);
         if (isNotebook) onThreadChangeRef.current?.(created.id);
-        else router.replace(`/chat?thread=${created.id}`, { scroll: false });
+        else router.replace(`/chat?thread=${created.id}`, { scroll: false, track: false });
       } catch {
         setSending(false);
         setDraft(content);
@@ -1248,7 +1312,7 @@ export const ChatPanel = ({
 
     setSending(false);
     maybeFlushQueue();
-  }, [activeId, sending, buildStreamHandlers, model, deckScope, research, router, draftStorageKey, updateDraft, maybeFlushQueue, isNotebook, notebookId]);
+  }, [activeId, sending, buildStreamHandlers, model, deckScope, research, router, draftStorageKey, updateDraft, maybeFlushQueue, isNotebook, notebookId, threadResource.data, threadResource.status]);
   useEffect(() => {
     sendContentRef.current = sendContent;
   }, [sendContent]);
@@ -1660,6 +1724,9 @@ export const ChatPanel = ({
           <div
             ref={scrollRef}
             className="nn-scroll"
+            aria-busy={
+              threadResource.status === 'loading' || threadResource.status === 'refreshing'
+            }
             style={{
               flex: 1,
               overflowY: 'auto',
@@ -1669,10 +1736,43 @@ export const ChatPanel = ({
               gap: 18,
             }}
           >
-            {threadLoading ? (
+            {threadResource.status === 'refreshing' && threadResource.data !== null && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <NNInlineRefresh label={t('states.loading')} />
+              </div>
+            )}
+            {threadResource.status === 'error' && threadResource.data !== null && (
+              <NNLoadError
+                title={t('toasts.error')}
+                description={threadResource.error?.safeMessage}
+                retryLabel={t('notebooks.overview.retry')}
+                requestId={threadResource.error?.requestId}
+                onRetry={() => {
+                  if (activeId) void openThread(activeId);
+                }}
+              />
+            )}
+            {threadResource.status === 'loading' && threadResource.data === null ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 760, width: '100%', margin: '0 auto' }}>
                 <NNSkeleton height={48} />
                 <NNSkeleton height={96} />
+              </div>
+            ) : threadResource.status === 'error' && threadResource.data === null ? (
+              <div
+                style={{
+                  width: 'min(520px, 100%)',
+                  margin: 'auto',
+                }}
+              >
+                <NNLoadError
+                  title={t('toasts.error')}
+                  description={threadResource.error?.safeMessage}
+                  retryLabel={t('notebooks.overview.retry')}
+                  requestId={threadResource.error?.requestId}
+                  onRetry={() => {
+                    if (activeId) void openThread(activeId);
+                  }}
+                />
               </div>
             ) : messages.length === 0 ? (
               isNotebook ? (

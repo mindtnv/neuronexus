@@ -1,7 +1,8 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import { NNCardForm } from '@/components/card-form';
 import { useNN } from '@/lib/store';
 
@@ -11,7 +12,7 @@ import { useNN } from '@/lib/store';
 // itself never touches the router — Architect tension e).
 // ─────────────────────────────────────────────
 export const NNEditor = () => {
-  const router = useRouter();
+  const router = useAppNavigation();
   const searchParams = useSearchParams();
   const cardId = searchParams?.get('card') ?? null;
   const deckQuery = searchParams?.get('deck') ?? null;
@@ -36,7 +37,7 @@ export const NNEditor = () => {
       defaultDeckId={defaultDeckId}
       showFsrsHeader
       autoFocusFront
-      onSaved={(c) => router.replace(`/editor?card=${encodeURIComponent(c.id)}`)}
+      onSaved={(c) => router.replace(`/editor?card=${encodeURIComponent(c.id)}`, { track: false })}
       onDeleted={() => router.push('/decks')}
     />
   );

@@ -15,9 +15,11 @@
 // native-ESM build; this screen only changes where it is mounted.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { NNBadge, NNBtn, NNIcon, NNSkeleton } from '@/components/ui';
-import { api, ok } from '@/lib/api';
+import { useSearchParams } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
+import { NNBadge, NNBtn, NNIcon, NNLoadError, NNSkeleton } from '@/components/ui';
+import { api, ok, type ApiError } from '@/lib/api';
+import { toApiError } from '@/lib/resource-state';
 import { useNN } from '@/lib/store';
 import type {
   LibraryItemDetail,
@@ -56,7 +58,7 @@ interface TocEntry {
 
 export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
   const t = useT();
-  const router = useRouter();
+  const router = useAppNavigation();
   const searchParams = useSearchParams();
   const { confirm } = useDialog();
 
@@ -74,6 +76,8 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
   const [source, setSource] = useState<Source | null>(null);
   const [detail, setDetail] = useState<LibraryItemDetail | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<ApiError | null>(null);
+  const [loadRevision, setLoadRevision] = useState(0);
 
   // PDF | Text reader mode. PDF sources default to 'pdf' (persisted per source);
   // non-PDF sources are always 'text'.
@@ -111,6 +115,18 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
   // state change (an effect would run one render too late).
   useEffect(() => {
     let cancelled = false;
+    setLoaded(false);
+    setLoadError(null);
+    setSource(null);
+    setDetail(null);
+    setTocOpen(false);
+    setTocEntries(null);
+    setHandoffQuote(null);
+    setCardsDrawerOpen(false);
+    pendingPageRef.current = undefined;
+    pendingMarkRef.current = undefined;
+    pendingChunkRef.current = null;
+    docInfoDoneRef.current = false;
     (async () => {
       try {
         const [src, det] = await Promise.all([
@@ -183,10 +199,14 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
         }
         // Clear the deep-link params from the URL (eat-and-clear).
         if (pageParam || chunkParam || posParam || markParam) {
-          router.replace(`/library/${sourceId}`, { scroll: false });
+          router.replace(`/library/${sourceId}`, { scroll: false, track: false });
         }
-      } catch {
-        if (!cancelled) setSource(null);
+      } catch (error) {
+        if (!cancelled) {
+          setSource(null);
+          setDetail(null);
+          setLoadError(toApiError(error));
+        }
       } finally {
         if (!cancelled) setLoaded(true);
       }
@@ -195,7 +215,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceId, getSource, getLibraryItem]);
+  }, [sourceId, getSource, getLibraryItem, loadRevision]);
 
   // chatEnabled (degrade — hide AI formulate).
   useEffect(() => {
@@ -505,6 +525,21 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
 
   // ── Render ────────────────────────────────────────────────────────────────────
   if (loaded && !source) {
+    if (loadError && loadError.status !== 404) {
+      return (
+        <div style={{ flex: 1, minHeight: 0, display: 'grid', placeItems: 'center', padding: 24 }}>
+          <div style={{ width: 'min(520px, 100%)' }}>
+            <NNLoadError
+              title={t('toasts.error')}
+              description={loadError.safeMessage}
+              retryLabel={t('notebooks.overview.retry')}
+              requestId={loadError.requestId}
+              onRetry={() => setLoadRevision((value) => value + 1)}
+            />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="nn-empty-state" style={{ flex: 1, minHeight: 0 }}>
         <span className="nn-empty-state-icon"><NNIcon name="doc" size={32} color="var(--text-dim)" /></span>

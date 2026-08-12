@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { NNAppPage } from '@/components/app-page';
 import { NotebookWorkspace } from '@/components/screens/notebook-workspace';
 import { useT } from '@/lib/i18n';
+import { RouteContentFallback } from '@/components/route-fallbacks';
 
 // M2: the per-notebook page is the three-panel workspace (sources │ reader │
 // chat). The library list stays at /notebooks. The workspace consumes
@@ -16,7 +17,7 @@ export default function Page() {
   const id = typeof params?.id === 'string' ? params.id : undefined;
   return (
     <NNAppPage title={t('nav.notebooks')}>
-      <Suspense fallback={null}>
+      <Suspense fallback={<RouteContentFallback />}>
         {id ? <NotebookWorkspace key={id} notebookId={id} /> : null}
       </Suspense>
     </NNAppPage>

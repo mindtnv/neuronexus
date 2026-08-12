@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import Link from 'next/link';
 import { NNIcon, NNKbd } from '@/components/ui';
+import { AppLink } from '@/components/navigation';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import type { Card, Deck, DeckColor, LibraryItem, Notebook } from '@/lib/types';
@@ -365,14 +365,14 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
                   </div>
                 );
                 return item.href ? (
-                  <Link
+                  <AppLink
                     key={item.id}
                     href={item.href}
                     onClick={() => onClose?.()}
                     style={{ display: 'block', color: 'inherit', textDecoration: 'none' }}
                   >
                     {row}
-                  </Link>
+                  </AppLink>
                 ) : (
                   <div key={item.id}>{row}</div>
                 );

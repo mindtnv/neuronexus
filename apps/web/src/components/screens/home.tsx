@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import { State } from 'ts-fsrs';
 import { addDays, format, isSameDay, startOfDay, startOfMonth, subDays } from 'date-fns';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNPlant, NNSkeleton } from '@/components/ui';
@@ -17,7 +17,7 @@ import { useT, useDateLocale } from '@/lib/i18n';
 
 export const NNHome = () => {
   const t = useT();
-  const router = useRouter();
+  const router = useAppNavigation();
   const dateLocale = useDateLocale();
   useEmptyRedirect('first-run');
   const bp = useBreakpoint();

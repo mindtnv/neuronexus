@@ -1,18 +1,19 @@
 'use client';
 
 import { Suspense, useState } from 'react';
-import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { apiErrorFromResponse } from '@/lib/api';
 const API_BASE =
   typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL
     : 'http://localhost:3000';
 import { NNBtn, NNLogo } from '@/components/ui';
+import { AuthFormFallback } from '@/components/route-fallbacks';
+import { AppLink, useAppNavigation } from '@/components/navigation';
 
 export default function ResetPasswordPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<AuthFormFallback />}>
       <ResetPasswordForm />
     </Suspense>
   );
@@ -20,7 +21,7 @@ export default function ResetPasswordPage() {
 
 function ResetPasswordForm() {
   const searchParams = useSearchParams();
-  const router = useRouter();
+  const router = useAppNavigation();
   const token = searchParams.get('token') ?? '';
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -141,9 +142,9 @@ function ResetPasswordForm() {
       )}
 
       <div style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center' }}>
-        <Link href="/auth/sign-in" style={{ color: 'var(--accent-300)' }}>
+        <AppLink href="/auth/sign-in" style={{ color: 'var(--accent-300)' }}>
           Назад к входу
-        </Link>
+        </AppLink>
       </div>
     </form>
   );

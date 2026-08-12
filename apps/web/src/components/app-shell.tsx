@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useNN } from '@/lib/store';
@@ -9,25 +9,24 @@ import { NNSidebar } from './shell';
 import { BottomTabs } from './bottom-tabs';
 import GlobalOverlays from './overlays/global-overlays';
 import { ToastsStack, raiseToast } from './toasts';
+import { NNLoadError } from './ui';
 
-export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => {
+const AppShellContent = ({ children }: { children: React.ReactNode }) => {
   const bp = useBreakpoint();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
-  const bootstrapped = useNN((s) => s.bootstrapped);
   const sidebarCollapsed = useUI((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useUI((s) => s.setSidebarCollapsed);
   const zenMode = useUI((s) => s.zenMode);
   const setZen = useUI((s) => s.setZen);
+  const bootstrapStatus = useNN((s) => s.bootstrapStatus);
+  const bootstrapError = useNN((s) => s.bootstrapError);
+  const bootstrap = useNN((s) => s.bootstrap);
 
-  // Track the previous pathname so we can detect real route changes (not first mount)
-  const prevPathnameRef = useRef<string | null>(null);
-  const [fadeKey, setFadeKey] = useState(0);
-
-  // Hydrate the persisted sidebar preference on mount (client-only) so SSR/first
-  // paint always renders the default (false) and we never get a hydration
-  // mismatch. readSidebarCollapsed is try/catch-guarded → no-throw.
-  useEffect(() => {
+  // Resolve the persisted preference before the browser paints the hydrated
+  // shell. The server markup remains deterministic, while the first visible
+  // client frame already has the user's actual sidebar choice.
+  useLayoutEffect(() => {
     const persisted = readSidebarCollapsed();
     if (persisted !== null) setSidebarCollapsed(persisted);
   }, [setSidebarCollapsed]);
@@ -78,32 +77,9 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
     if (bp !== 'mobile') setDrawerOpen(false);
   }, [bp]);
 
-  // D2: trigger crossfade only after bootstrap + on actual pathname changes
-  useEffect(() => {
-    if (!bootstrapped) {
-      // Record current pathname so the first post-bootstrap navigation can compare
-      prevPathnameRef.current = pathname;
-      return;
-    }
-    if (prevPathnameRef.current === null) {
-      prevPathnameRef.current = pathname;
-      return;
-    }
-    if (prevPathnameRef.current !== pathname) {
-      prevPathnameRef.current = pathname;
-      setFadeKey((k) => k + 1);
-    }
-  }, [pathname, bootstrapped]);
-
-  // D1: tablet (720–1100px) gets the inline sidebar in collapsed (60px) mode.
-  // Sidebar is fully hidden in zen mode or when the user collapsed it (desktop
-  // toggle / ⌘B) — content reflows to full width (the content div is already flex:1).
-  const showSidebarInline = bp !== 'mobile' && !zenMode && !sidebarCollapsed;
-  const showDrawer = bp === 'mobile' && drawerOpen;
-  const showBottomTabs = bp === 'mobile' && !zenMode;
-
   return (
     <div
+      className="nn-app-shell"
       style={{
         display: 'flex',
         height: '100vh',
@@ -113,64 +89,85 @@ export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => 
         position: 'relative',
       }}
     >
-      {showSidebarInline && <NNSidebar collapsed={bp === 'tablet'} />}
+      {!zenMode && !sidebarCollapsed ? (
+        <div className="nn-app-sidebar-slot">
+          <NNSidebar responsive />
+        </div>
+      ) : null}
 
-      {/* D2: opacity-only crossfade on route change, gated behind bootstrapped */}
       <div
-        key={bootstrapped ? fadeKey : 'skeleton'}
+        className="nn-route-slot"
         style={{
           flex: 1,
           display: 'flex',
           flexDirection: 'column',
           minWidth: 0,
           overflow: 'hidden',
-          paddingBottom: showBottomTabs ? 68 : 0,
-          animation: bootstrapped && fadeKey > 0 ? 'nn-page-fade 150ms ease' : undefined,
         }}
       >
-        {children}
+        {bootstrapStatus === 'error' ? (
+          <div
+            style={{
+              flex: 1,
+              display: 'grid',
+              placeItems: 'center',
+              padding: 24,
+              overflow: 'auto',
+            }}
+          >
+            <div style={{ width: 'min(520px, 100%)' }}>
+              <NNLoadError
+                title="Не удалось загрузить данные"
+                description="Проверь соединение и повтори попытку. Введённые локально данные не будут очищены."
+                retryLabel="Повторить"
+                requestId={bootstrapError?.requestId}
+                onRetry={() => void bootstrap().catch(() => {})}
+              />
+            </div>
+          </div>
+        ) : children}
       </div>
 
-      {showDrawer && (
+      {drawerOpen ? (
         <div
+          className="nn-mobile-drawer-backdrop"
           onClick={() => setDrawerOpen(false)}
+          role="presentation"
           style={{
             position: 'fixed',
             inset: 0,
             background: 'var(--scrim-strong)',
             zIndex: 80,
             display: 'flex',
-            animation: 'nn-fade-in 140ms ease',
           }}
         >
           <div
+            className="nn-mobile-drawer-panel"
             onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation"
             style={{
               width: 260,
               maxWidth: '86vw',
               height: '100%',
               boxShadow: '4px 0 32px var(--scrim-strong)',
-              animation: 'nn-slide-in 200ms ease',
               display: 'flex',
             }}
           >
             <NNSidebar fullWidth />
           </div>
         </div>
-      )}
+      ) : null}
 
-      {showBottomTabs && !drawerOpen && <BottomTabs />}
+      {!zenMode && !drawerOpen ? <BottomTabs /> : null}
 
       <GlobalOverlays />
       <ToastsStack />
-
-      <style>{`
-        @keyframes nn-fade-in { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes nn-slide-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
-        @keyframes nn-page-fade { from { opacity: 0; } to { opacity: 1; } }
-      `}</style>
     </div>
   );
 };
+
+export const AppShellWrapper = AppShellContent;
 
 export default AppShellWrapper;

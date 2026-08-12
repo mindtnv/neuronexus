@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
+import { AppLink } from '@/components/navigation';
 import { addDays, isSameDay } from 'date-fns';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNPlant } from '@/components/ui';
 import { useNN } from '@/lib/store';
@@ -131,11 +131,11 @@ export const NNSessionComplete = () => {
         >
           {t('session.empty.subtitle')}
         </div>
-        <Link href="/review" style={{ marginTop: 8 }}>
+        <AppLink href="/review" style={{ marginTop: 8 }}>
           <NNBtn size="lg" variant="primary" icon="bolt">
             {t('session.empty.startReview')}
           </NNBtn>
-        </Link>
+        </AppLink>
       </div>
     );
   }
@@ -333,11 +333,11 @@ export const NNSessionComplete = () => {
               </NNBadge>
             )}
             <div style={{ flex: 1 }} />
-            <Link href="/review">
+            <AppLink href="/review">
               <NNBtn size="sm" variant="soft">
                 {t('session.attention.requeueAll')}
               </NNBtn>
-            </Link>
+            </AppLink>
           </div>
           <div
             style={{
@@ -396,27 +396,27 @@ export const NNSessionComplete = () => {
         </div>
 
         <div style={{ display: 'flex', gap: isMobile ? 7 : 10, marginTop: isMobile ? 22 : 32, flexWrap: 'wrap' }}>
-          <Link href="/garden">
+          <AppLink href="/garden">
             <NNBtn size="lg" variant="soft" icon="garden">
               {t('session.actions.visitGarden')}
             </NNBtn>
-          </Link>
-          <Link href="/graph">
+          </AppLink>
+          <AppLink href="/graph">
             <NNBtn size="lg" variant="soft" icon="graph">
               {t('session.actions.viewGraph')}
             </NNBtn>
-          </Link>
+          </AppLink>
           <div style={{ flex: 1 }} />
-          <Link href="/">
+          <AppLink href="/">
             <NNBtn size="lg" variant="ghost">
               {t('session.actions.finish')}
             </NNBtn>
-          </Link>
-          <Link href="/review">
+          </AppLink>
+          <AppLink href="/review">
             <NNBtn size="lg" variant="primary" icon="bolt">
               {t('session.actions.learnNew', { n: Math.max(0, cards.length - session.cards) })}
             </NNBtn>
-          </Link>
+          </AppLink>
         </div>
       </div>
 

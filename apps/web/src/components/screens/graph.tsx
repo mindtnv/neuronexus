@@ -20,7 +20,7 @@ import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zo
 import { drag } from 'd3-drag';
 import { select } from 'd3-selection';
 
-import { NNIcon, NNBtn, NNBadge } from '@/components/ui';
+import { NNIcon, NNBtn, NNBadge, NNSkeleton } from '@/components/ui';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
@@ -36,6 +36,7 @@ import { humanInterval } from '@/lib/fsrs';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import type { DeckColor } from '@/lib/types';
 import { useT } from '@/lib/i18n';
+import { useSessionResource } from '@/lib/session-resource';
 
 // Fallback initial viewport (used before ResizeObserver fires).
 const INITIAL_W = 1200;
@@ -100,7 +101,7 @@ export const NNGraphForce = () => {
   // Semantic edges load once per mount; when present they are the DEFAULT.
   // The user's explicit choice persists in localStorage and is re-validated
   // against data availability (no embeddings ⇒ silently fall back to tags).
-  const [semEdges, setSemEdges] = useState<GraphEdge[] | null>(null);
+  const [edgePreferenceResolved, setEdgePreferenceResolved] = useState(false);
   const [edgePref, setEdgePref] = useState<'semantic' | 'tags' | null>(null);
 
   useEffect(() => {
@@ -109,28 +110,28 @@ export const NNGraphForce = () => {
       if (stored === 'tags' || stored === 'semantic') setEdgePref(stored);
     } catch {
       // localStorage unavailable — keep the default.
+    } finally {
+      setEdgePreferenceResolved(true);
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const body = (await ok(
-          await (api as any).graph['semantic-edges'].get({ query: {} }),
-        )) as { edges: { a: string; b: string; score: number }[]; reason?: string };
-        if (cancelled) return;
-        setSemEdges(body.edges.length > 0 ? semanticToGraphEdges(body.edges) : null);
-      } catch {
-        if (!cancelled) setSemEdges(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  const fetchSemanticEdges = useCallback(async () => {
+    const body = (await ok(
+      await (api as any).graph['semantic-edges'].get({ query: {} }),
+    )) as { edges: { a: string; b: string; score: number }[]; reason?: string };
+    return semanticToGraphEdges(body.edges);
   }, []);
+  const semanticResource = useSessionResource({
+    key: 'graph:semantic-edges',
+    fetcher: fetchSemanticEdges,
+    keepPreviousData: true,
+  });
+  const semEdges = semanticResource.data ?? [];
+  const edgeAvailabilityResolved =
+    edgePreferenceResolved &&
+    (semanticResource.data !== null || semanticResource.status === 'error');
 
-  const semanticAvailable = semEdges !== null && semEdges.length > 0;
+  const semanticAvailable = semEdges.length > 0;
   const edgeSource: 'semantic' | 'tags' =
     semanticAvailable && edgePref !== 'tags' ? 'semantic' : 'tags';
   const pickEdgeSource = useCallback((src: 'semantic' | 'tags') => {
@@ -143,9 +144,10 @@ export const NNGraphForce = () => {
   }, []);
 
   const built = useMemo(
-    () =>
-      buildGraph(cards, decks, W, H, edgeSource === 'semantic' ? (semEdges ?? undefined) : undefined),
-    [cards, decks, W, H, edgeSource, semEdges],
+    () => edgeAvailabilityResolved
+      ? buildGraph(cards, decks, W, H, edgeSource === 'semantic' ? semEdges : undefined)
+      : { nodes: [], edges: [] },
+    [cards, decks, W, H, edgeSource, semEdges, edgeAvailabilityResolved],
   );
 
   // deckId → count for legend / toggle.
@@ -209,6 +211,9 @@ export const NNGraphForce = () => {
 
   // ─── Simulation & zoom setup (runs when graph data changes) ───
   useEffect(() => {
+    // Do not start a throwaway tag simulation while semantic availability is
+    // unresolved; the first visible simulation uses the final edge source.
+    if (!edgeAvailabilityResolved) return;
     const svgEl = svgRef.current;
     if (!svgEl) return;
 
@@ -325,7 +330,7 @@ export const NNGraphForce = () => {
     };
     // deckCentersByDeckId depends on the same cards/decks → no extra dep needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [simNodes, simLinks]);
+  }, [simNodes, simLinks, edgeAvailabilityResolved]);
 
   // ─── Node drag (wired once per render since refs may repopulate) ───
   useEffect(() => {
@@ -537,6 +542,25 @@ export const NNGraphForce = () => {
           minHeight: 0,
         }}
       >
+        {!edgeAvailabilityResolved && (
+          <div
+            aria-busy="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 8,
+              display: 'grid',
+              placeItems: 'center',
+              padding: 24,
+              background: 'var(--ink-950)',
+            }}
+          >
+            <div style={{ width: 'min(520px, 80%)', display: 'grid', gap: 14 }}>
+              <NNSkeleton style={{ height: 12, width: '42%' }} />
+              <NNSkeleton style={{ height: 260, borderRadius: '50%' }} />
+            </div>
+          </div>
+        )}
         {/* Top-left search field */}
         <div
           style={{

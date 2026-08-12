@@ -1,16 +1,17 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
+import React, { useCallback, useMemo } from 'react';
+import { AppLink } from '@/components/navigation';
 import { State } from 'ts-fsrs';
 import { format, startOfDay, subDays } from 'date-fns';
-import { NNCard, NNIcon, NNSkeleton } from '@/components/ui';
+import { NNCard, NNIcon, NNInlineRefresh, NNLoadError, NNSkeleton } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
 import { reviewFromApi } from '@/lib/mappers';
 import type { DeckColor, Review } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
+import { useSessionResource } from '@/lib/session-resource';
 
 // Server payloads of the /stats endpoints (see apps/api/src/modules/stats.ts).
 // Forecast buckets are SPARSE (only non-empty days) — the chart zero-fills.
@@ -23,6 +24,12 @@ interface ForecastData {
 interface IntervalRetentionData {
   days: number;
   buckets: { bucket: string; count: number; retentionPct: number | null }[];
+}
+interface StatsData {
+  reviews30: Review[];
+  reviews7: Review[];
+  forecast: ForecastData;
+  intervalRetention: IntervalRetentionData;
 }
 
 const FORECAST_DAYS = 30;
@@ -42,42 +49,33 @@ export const NNStats = () => {
   const decks = useNN((s) => s.decks);
   const profile = useNN((s) => s.profile);
 
-  const [reviews30, setReviews30] = useState<Review[]>([]);
-  const [reviews7, setReviews7] = useState<Review[]>([]);
-  const [forecast, setForecast] = useState<ForecastData | null>(null);
-  const [intervalRetention, setIntervalRetention] = useState<IntervalRetentionData | null>(null);
-
-  useEffect(() => {
-    if (!bootstrapped) return;
-    let cancelled = false;
-    (async () => {
-      const now = new Date();
-      const since30 = subDays(now, 30).getTime();
-      const since7 = subDays(now, 7).getTime();
-      try {
-        const [r30Raw, r7Raw, forecastRaw, retentionRaw] = await Promise.all([
-          ok(await (api as any).reviews.get({ query: { since: String(since30) } })),
-          ok(await (api as any).reviews.get({ query: { since: String(since7) } })),
-          ok(await (api as any).stats.forecast.get({ query: { days: String(FORECAST_DAYS) } })),
-          ok(await (api as any).stats.retention.get({ query: {} })),
-        ]);
-        if (cancelled) return;
-        setReviews30((r30Raw as any[]).map(reviewFromApi));
-        setReviews7((r7Raw as any[]).map(reviewFromApi));
-        setForecast(forecastRaw as ForecastData);
-        setIntervalRetention(retentionRaw as IntervalRetentionData);
-      } catch {
-        if (cancelled) return;
-        setReviews30([]);
-        setReviews7([]);
-        setForecast(null);
-        setIntervalRetention(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
+  const fetchStats = useCallback(async (): Promise<StatsData> => {
+    const now = new Date();
+    const since30 = subDays(now, 30).getTime();
+    const since7 = subDays(now, 7).getTime();
+    const [r30Raw, r7Raw, forecastRaw, retentionRaw] = await Promise.all([
+      ok(await (api as any).reviews.get({ query: { since: String(since30) } })),
+      ok(await (api as any).reviews.get({ query: { since: String(since7) } })),
+      ok(await (api as any).stats.forecast.get({ query: { days: String(FORECAST_DAYS) } })),
+      ok(await (api as any).stats.retention.get({ query: {} })),
+    ]);
+    return {
+      reviews30: (r30Raw as any[]).map(reviewFromApi),
+      reviews7: (r7Raw as any[]).map(reviewFromApi),
+      forecast: forecastRaw as ForecastData,
+      intervalRetention: retentionRaw as IntervalRetentionData,
     };
-  }, [bootstrapped]);
+  }, []);
+  const statsResource = useSessionResource({
+    key: 'stats:overview',
+    enabled: bootstrapped,
+    fetcher: fetchStats,
+    keepPreviousData: true,
+  });
+  const reviews30 = statsResource.data?.reviews30 ?? [];
+  const reviews7 = statsResource.data?.reviews7 ?? [];
+  const forecast = statsResource.data?.forecast ?? null;
+  const intervalRetention = statsResource.data?.intervalRetention ?? null;
 
   // simple sparkline
   const line = (vals: number[], w = 100, h = 30, color = 'var(--lime-400)') => {
@@ -308,10 +306,48 @@ export const NNStats = () => {
     },
   ];
 
-  if (!bootstrapped) return <StatsSkeleton isMobile={isMobile} />;
+  if (!bootstrapped || (!statsResource.data && statsResource.status !== 'error')) {
+    return <StatsSkeleton isMobile={isMobile} />;
+  }
+
+  if (!statsResource.data) {
+    return (
+      <div style={{ flex: 1, display: 'grid', placeItems: 'center', padding: 24 }}>
+        <div style={{ width: 'min(520px, 100%)' }}>
+          <NNLoadError
+            title={t('toasts.error')}
+            description={statsResource.error?.safeMessage}
+            retryLabel={t('notebooks.overview.retry')}
+            requestId={statsResource.error?.requestId}
+            onRetry={statsResource.refresh}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : 24 }}>
+    <div
+      className="nn-scroll"
+      aria-busy={statsResource.status === 'refreshing'}
+      style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : 24 }}
+    >
+      {statsResource.status === 'refreshing' && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+          <NNInlineRefresh label={t('states.loading')} />
+        </div>
+      )}
+      {statsResource.status === 'error' && (
+        <div style={{ marginBottom: 12 }}>
+          <NNLoadError
+            title={t('toasts.error')}
+            description={statsResource.error?.safeMessage}
+            retryLabel={t('notebooks.overview.retry')}
+            requestId={statsResource.error?.requestId}
+            onRetry={statsResource.refresh}
+          />
+        </div>
+      )}
       {/* Streak strip — the gamification entry point now that the sidebar has none. */}
       <div
         style={{
@@ -337,7 +373,7 @@ export const NNStats = () => {
           {t('stats.streak.level', { n: profile?.level ?? 1 })}
         </span>
         <div style={{ flex: 1 }} />
-        <Link
+        <AppLink
           href="/garden"
           style={{
             display: 'inline-flex',
@@ -355,7 +391,7 @@ export const NNStats = () => {
         >
           <NNIcon name="garden" size={14} />
           {t('stats.streak.openGarden')}
-        </Link>
+        </AppLink>
       </div>
 
       {/* Top stats */}

@@ -816,6 +816,140 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 /* Chrome-only nodes (sidebar, topbar, bottom-tabs) — never on content */
 .nn-chrome { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 
+/* Stable application chrome. Breakpoint-only presentation is CSS-owned so the
+   server frame and first hydrated frame never disagree about viewport layout. */
+.nn-app-sidebar-slot { display: flex; flex: 0 0 auto; height: 100%; }
+.nn-sidebar-responsive { width: 232px; }
+.nn-sidebar-logo-compact,
+.nn-sidebar-section-divider,
+.nn-sidebar-badge-dot,
+.nn-topbar-mobile-only { display: none !important; }
+.nn-topbar {
+  height: 44px;
+  padding-right: calc(24px + var(--nn-topbar-wco-right, 0px));
+  padding-left: calc(24px + var(--nn-topbar-wco-left, 0px));
+}
+.nn-topbar-title-group { align-items: baseline; gap: 12px; flex-direction: row; }
+.nn-topbar-desktop-only { display: inline-flex; align-items: center; }
+.nn-bottom-tabs { display: none; }
+.nn-route-slot { padding-bottom: 0; }
+
+@media (min-width: 720px) and (max-width: 1100px) {
+  .nn-sidebar-responsive { width: 60px; }
+  .nn-sidebar-responsive > :first-child { padding-right: 12px !important; padding-left: 12px !important; }
+  .nn-sidebar-responsive .nn-sidebar-expanded-only,
+  .nn-sidebar-responsive .nn-sidebar-label,
+  .nn-sidebar-responsive .nn-sidebar-badge,
+  .nn-sidebar-responsive .nn-sidebar-section-label,
+  .nn-sidebar-responsive .nn-sidebar-logo-expanded { display: none !important; }
+  .nn-sidebar-responsive .nn-sidebar-logo-compact,
+  .nn-sidebar-responsive .nn-sidebar-section-divider,
+  .nn-sidebar-responsive .nn-sidebar-badge-dot { display: inline-flex !important; }
+  .nn-sidebar-responsive nav { padding: 8px 6px !important; }
+  .nn-sidebar-responsive .nn-sidebar-nav-item {
+    justify-content: center !important;
+    padding: 9px 0 !important;
+  }
+}
+
+@media (max-width: 719.98px) {
+  .nn-app-sidebar-slot { display: none; }
+  .nn-route-slot { padding-bottom: 68px; }
+  .nn-bottom-tabs { display: flex; }
+  .nn-topbar {
+    height: 48px;
+    gap: 8px !important;
+    padding-right: calc(12px + var(--nn-topbar-wco-right, 0px));
+    padding-left: calc(12px + var(--nn-topbar-wco-left, 0px));
+  }
+  .nn-topbar-title-group { align-items: flex-start; gap: 0; flex-direction: column; }
+  .nn-topbar-title { font-size: 13px !important; font-weight: 600 !important; }
+  .nn-topbar-desktop-only { display: none !important; }
+  .nn-topbar-mobile-only { display: inline-flex !important; align-items: center; }
+}
+
+/* Delayed route progress: the controller mounts this only after 150ms and
+   keeps it visible for at least 200ms. It never replaces route content. */
+.nn-navigation-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 200;
+  pointer-events: none;
+  overflow: hidden;
+}
+.nn-navigation-progress > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: var(--accent-400);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent-400) 60%, transparent);
+  animation: nn-navigation-running 1200ms cubic-bezier(0.2, 0, 0, 1) forwards;
+  transition: transform 120ms ease-out, opacity 120ms ease-out;
+}
+.nn-navigation-progress[data-phase='completing'] > span {
+  animation: none;
+  transform: scaleX(1);
+  opacity: 0;
+}
+@keyframes nn-navigation-running {
+  from { transform: scaleX(0.06); }
+  to { transform: scaleX(0.86); }
+}
+
+/* Session resolution keeps the final application's geometry in place instead
+   of swapping a centered text label for the entire shell after hydration. */
+.nn-auth-gate-skeleton { min-height: 100dvh; display: flex; background: var(--bg); }
+.nn-auth-gate-sidebar {
+  width: 232px;
+  flex: 0 0 232px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+.nn-auth-gate-logo {
+  height: 45px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.nn-auth-gate-main { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.nn-auth-gate-topbar {
+  height: 45px;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+@media (min-width: 720px) and (max-width: 1100px) {
+  .nn-auth-gate-sidebar { width: 60px; flex-basis: 60px; overflow: hidden; }
+  .nn-auth-gate-sidebar > :not(.nn-auth-gate-logo) { display: none !important; }
+  .nn-auth-gate-logo { padding: 0 12px; }
+}
+@media (max-width: 719.98px) {
+  .nn-auth-gate-sidebar { display: none; }
+  .nn-auth-gate-topbar { height: 49px; padding: 0 12px; }
+}
+
+.nn-mobile-drawer-backdrop { animation: nn-shell-fade-in 140ms ease-out; }
+.nn-mobile-drawer-panel { animation: nn-shell-slide-in 200ms ease-out; }
+@keyframes nn-shell-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes nn-shell-slide-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@media (min-width: 720px) {
+  .nn-mobile-drawer-backdrop { display: none !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nn-navigation-progress > span,
+  .nn-mobile-drawer-backdrop,
+  .nn-mobile-drawer-panel { animation: none; transition: none; }
+}
+
 /* Safety belt: rendered card text MUST stay selectable even if chrome wraps it */
 .nn-rendered, .nn-rendered * { -webkit-user-select: text; user-select: text; }
 
@@ -1550,7 +1684,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   border-radius: var(--r-pill);
   cursor: pointer;
   white-space: nowrap;
-  transition: all 100ms ease;
+  transition: color 100ms ease, background-color 100ms ease, border-color 100ms ease;
 }
 .nn-lib-chip:hover { color: var(--text); border-color: var(--border-2); }
 .nn-lib-chip.active {

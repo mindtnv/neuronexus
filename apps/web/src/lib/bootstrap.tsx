@@ -7,13 +7,13 @@ import { countDueCards } from './cards';
 import { setBadge } from './app-badge';
 import { notifyDue } from './notify';
 import { applyTheme, getTheme, subscribeSystemTheme } from './theme';
+import { clearSessionResourceCache } from './session-resource';
 
 // Pulls the user snapshot (profile / decks / cards) as soon as a session is
 // present. Fires once per app load; resets if the user signs out and signs
 // back in as someone else.
 
-let lastBootstrappedUserId: string | null = null;
-let inFlight: Promise<void> | null = null;
+let activeUserId: string | null = null;
 // Guard: fire the app-open notification only once per bootstrap cycle.
 let notifiedThisSession = false;
 
@@ -54,32 +54,29 @@ export function Bootstrap() {
 
     // Signed out: clear mirror.
     if (!userId) {
-      if (lastBootstrappedUserId) {
+      if (activeUserId) {
         reset();
-        lastBootstrappedUserId = null;
+        clearSessionResourceCache();
+        activeUserId = null;
         notifiedThisSession = false;
       }
       return;
     }
 
-    // Same user, already loaded.
-    if (userId === lastBootstrappedUserId) return;
+    // A user boundary invalidates both the global mirror and every lazy
+    // screen cache. The store generation guard prevents the previous user's
+    // in-flight bootstrap from committing after this reset.
+    if (userId !== activeUserId) {
+      reset();
+      clearSessionResourceCache();
+      activeUserId = userId;
+      notifiedThisSession = false;
+    }
 
-    // New user (or first load with session).
-    if (inFlight) return;
-    inFlight = (async () => {
-      try {
-        reset();
-        await bootstrap();
-        lastBootstrappedUserId = userId;
-        notifiedThisSession = false;
-      } catch (err) {
-        console.error('[neuronexus] bootstrap failed', err);
-        lastBootstrappedUserId = null;
-      } finally {
-        inFlight = null;
-      }
-    })();
+    void bootstrap().catch((err) => {
+      // The typed, retryable error is retained in the store for the shell.
+      console.error('[neuronexus] bootstrap failed', err);
+    });
   }, [bootstrap, reset, data, isPending]);
 
   // ── App-open notification (E2) ─────────────────────────────────────────

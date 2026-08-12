@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import { NNBtn, NNBadge, NNCard, NNIcon } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import type { NoteType } from '@/lib/types';
@@ -754,7 +755,7 @@ const NoteTypeForm = ({
 export const NNNoteTypeEditor = () => {
   const t = useT();
   const { confirm, alert } = useDialog();
-  const router = useRouter();
+  const router = useAppNavigation();
   const searchParams = useSearchParams();
   const editId = searchParams?.get('edit') ?? null;
   const isNew = searchParams?.get('new') === '1';
@@ -767,8 +768,8 @@ export const NNNoteTypeEditor = () => {
     [noteTypes, editId],
   );
 
-  const goList = useCallback(() => router.replace('/note-types'), [router]);
-  const goNew = useCallback(() => router.replace('/note-types?new=1'), [router]);
+  const goList = useCallback(() => router.replace('/note-types', { track: false }), [router]);
+  const goNew = useCallback(() => router.replace('/note-types?new=1', { track: false }), [router]);
   // Leave the (deep-linked) note-types screen — back when there's history,
   // else fall through to Home so the user is never stranded.
   const goBack = useCallback(() => {
@@ -776,7 +777,7 @@ export const NNNoteTypeEditor = () => {
     else router.push('/');
   }, [router]);
   const goEdit = useCallback(
-    (nt: NoteType) => router.replace(`/note-types?edit=${encodeURIComponent(nt.id)}`),
+    (nt: NoteType) => router.replace(`/note-types?edit=${encodeURIComponent(nt.id)}`, { track: false }),
     [router],
   );
 

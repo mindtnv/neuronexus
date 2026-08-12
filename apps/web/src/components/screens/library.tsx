@@ -15,10 +15,10 @@
 //
 // Inline styles + CSS vars + ui.tsx primitives only (no Tailwind).
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import React, { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
+import { useSearchParams } from 'next/navigation';
 import type { IngestErrorCode, SourceKind, SourceMime, SourceStatus } from '@neuronexus/shared';
-import { NNBtn, NNCard, NNIcon, NNBadge, NNSkeleton, type IconName } from '@/components/ui';
+import { NNBtn, NNCard, NNIcon, NNBadge, NNInlineRefresh, NNLoadError, NNSkeleton, type IconName } from '@/components/ui';
 import {
   DuplicateSourceError,
   LibraryFullError,
@@ -39,6 +39,8 @@ import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { isNonTerminal, useSourceStatus } from '@/lib/use-source-status';
+import { useSessionResource } from '@/lib/session-resource';
+import { useAppNavigation } from '@/components/navigation';
 
 type Tr = (key: string, params?: Record<string, string | number>) => string;
 type ViewMode = 'grid' | 'list';
@@ -92,7 +94,7 @@ function mimeForFile(file: File): SourceMime | null {
 
 export const LibraryScreen = () => {
   const t = useT();
-  const router = useRouter();
+  const navigation = useAppNavigation();
   const searchParams = useSearchParams();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
@@ -106,11 +108,6 @@ export const LibraryScreen = () => {
   const getSource = useNN((s) => s.getSource);
 
   // ── List state + filters ──────────────────────────────────────────────────────
-  const [items, setItems] = useState<LibraryItem[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [shelf, setShelf] = useState<LibraryItem[]>([]);
-
   const [search, setSearch] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [kind, setKind] = useState<KindFilter>('all');
@@ -175,13 +172,6 @@ export const LibraryScreen = () => {
     }
   }, []);
 
-  // Distinct tags from the loaded items (the simple client-side collection path).
-  const allTags = useMemo(() => {
-    const set = new Set<string>();
-    for (const it of items) for (const tg of it.tags) set.add(tg);
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [items]);
-
   // ── Add-source UI ──────────────────────────────────────────────────────────────
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [addDialog, setAddDialog] = useState<'url' | 'text' | null>(null);
@@ -194,58 +184,53 @@ export const LibraryScreen = () => {
 
   // L2 — clicking a material opens the full-screen reader; details moved to a
   // ⋯ button on each card/row.
-  const openReader = useCallback((id: string) => router.push(`/library/${id}`), [router]);
+  const openReader = useCallback((id: string) => navigation.push(`/library/${id}`), [navigation]);
 
   // ── Fetch list when filters change ──────────────────────────────────────────────
-  const refresh = useCallback(async () => {
-    try {
-      const res = await listLibrary(query);
-      setItems(res.items);
-      setNextCursor(res.nextCursor);
-    } catch {
-      /* keep current list on a transient error */
-    } finally {
-      setLoaded(true);
-    }
-  }, [listLibrary, query]);
+  // A stable scope gives us latest-request-wins across different filter keys;
+  // each key remains session-cached so returning to a previous filter is instant.
+  const libraryKey = useMemo(() => `library:list:${JSON.stringify(query)}`, [query]);
+  const fetchLibrary = useCallback(() => listLibrary(query), [listLibrary, query]);
+  const libraryResource = useSessionResource({
+    key: libraryKey,
+    scope: 'library:list',
+    fetcher: fetchLibrary,
+    keepPreviousData: true,
+  });
+  const items = libraryResource.data?.items ?? [];
+  const nextCursor = libraryResource.data?.nextCursor ?? null;
+  const loaded = libraryResource.data !== null || libraryResource.status === 'error';
+  const setItems = useCallback((update: SetStateAction<LibraryItem[]>) => {
+    libraryResource.mutate((current) => {
+      const previous = current?.items ?? [];
+      const next = typeof update === 'function'
+        ? (update as (value: LibraryItem[]) => LibraryItem[])(previous)
+        : update;
+      return { items: next, nextCursor: current?.nextCursor ?? null };
+    });
+  }, [libraryResource.mutate]);
+  const refresh = libraryResource.refresh;
 
-  useEffect(() => {
-    setLoaded(false);
-    void refresh();
-  }, [refresh]);
+  // Distinct tags from the loaded items (the simple client-side collection path).
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const it of items) for (const tg of it.tags) set.add(tg);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [items]);
 
   // ── Content (semantic) search ──────────────────────────────────────────────────
   const searchLibrary = useNN((s) => s.searchLibrary);
-  const [contentResult, setContentResult] = useState<LibrarySearchResult | null>(null);
-  const [contentLoading, setContentLoading] = useState(false);
-  useEffect(() => {
-    if (searchMode !== 'content') {
-      setContentResult(null);
-      return;
-    }
-    const q = debouncedQ;
-    if (q.length < 3) {
-      setContentResult(null);
-      setContentLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setContentLoading(true);
-    const id = window.setTimeout(async () => {
-      try {
-        const res = await searchLibrary(q);
-        if (!cancelled) setContentResult(res);
-      } catch {
-        if (!cancelled) setContentResult({ groups: [] });
-      } finally {
-        if (!cancelled) setContentLoading(false);
-      }
-    }, 500);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(id);
-    };
-  }, [searchMode, debouncedQ, searchLibrary]);
+  const contentEnabled = searchMode === 'content' && debouncedQ.length >= 3;
+  const fetchContent = useCallback(() => searchLibrary(debouncedQ), [searchLibrary, debouncedQ]);
+  const contentResource = useSessionResource({
+    key: `library:content:${debouncedQ}`,
+    scope: 'library:content',
+    enabled: contentEnabled,
+    fetcher: fetchContent,
+    keepPreviousData: true,
+  });
+  const contentResult = contentResource.data;
+  const contentLoading = contentResource.status === 'loading' || contentResource.status === 'refreshing';
 
   const openHit = useCallback(
     (group: LibrarySearchGroup, hit: LibrarySearchHit) => {
@@ -254,23 +239,30 @@ export const LibraryScreen = () => {
         group.source.kind === 'pdf' && hit.page != null
           ? `?page=${hit.page}`
           : `?chunk=${hit.position}`;
-      router.push(`/library/${group.source.id}${qs}`);
+      navigation.push(`/library/${group.source.id}${qs}`);
     },
-    [router],
+    [navigation],
   );
 
   // ── "Continue reading" shelf (separate fetch — reading=reading, lastRead) ──────
-  const refreshShelf = useCallback(async () => {
-    try {
-      const res = await listLibrary({ reading: 'reading', sort: 'lastRead', limit: 6 });
-      setShelf(res.items);
-    } catch {
-      setShelf([]);
-    }
-  }, [listLibrary]);
-  useEffect(() => {
-    void refreshShelf();
-  }, [refreshShelf]);
+  const fetchShelf = useCallback(
+    async () => (await listLibrary({ reading: 'reading', sort: 'lastRead', limit: 6 })).items,
+    [listLibrary],
+  );
+  const shelfResource = useSessionResource({
+    key: 'library:shelf:reading',
+    fetcher: fetchShelf,
+    keepPreviousData: true,
+  });
+  const shelf = shelfResource.data ?? [];
+  const setShelf = useCallback((update: SetStateAction<LibraryItem[]>) => {
+    shelfResource.mutate((previous) => {
+      const value = previous ?? [];
+      return typeof update === 'function'
+        ? (update as (current: LibraryItem[]) => LibraryItem[])(value)
+        : update;
+    });
+  }, [shelfResource.mutate]);
 
   // ── Poll non-terminal ingests (shared hook) ────────────────────────────────────
   const applyFresh = useCallback((fresh: { id: string; status: LibraryItem['status'] }[]) => {
@@ -310,8 +302,8 @@ export const LibraryScreen = () => {
     if (!focusParam || consumedFocusRef.current === focusParam) return;
     consumedFocusRef.current = focusParam;
     setDetailId(focusParam);
-    router.replace('/library', { scroll: false });
-  }, [focusParam, router]);
+    navigation.replace('/library', { scroll: false, track: false });
+  }, [focusParam, navigation]);
 
   // ── Upload queue (sequential presign → POST → finalize) ────────────────────────
   const runUploads = useCallback(
@@ -432,6 +424,7 @@ export const LibraryScreen = () => {
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div
+      aria-busy={libraryResource.status === 'loading' || libraryResource.status === 'refreshing'}
       onDragOver={(e) => {
         if (e.dataTransfer?.types?.includes('Files')) {
           e.preventDefault();
@@ -509,6 +502,24 @@ export const LibraryScreen = () => {
         </div>
       )}
 
+      {libraryResource.status === 'refreshing' && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '6px 0' }}>
+          <NNInlineRefresh label={t('states.loading')} />
+        </div>
+      )}
+
+      {libraryResource.status === 'error' && (
+        <div style={{ margin: '10px 0' }}>
+          <NNLoadError
+            title={t('toasts.error')}
+            description={libraryResource.error?.safeMessage}
+            retryLabel={t('notebooks.overview.retry')}
+            requestId={libraryResource.error?.requestId}
+            onRetry={refresh}
+          />
+        </div>
+      )}
+
       {/* Continue reading shelf (hidden in content-search mode) */}
       {searchMode === 'title' && shelf.length > 0 && (
         <ContinueShelf items={shelf} onOpen={openReader} t={t} />
@@ -516,13 +527,28 @@ export const LibraryScreen = () => {
 
       {/* Content-search results take over the body when in content mode */}
       {searchMode === 'content' ? (
-        <ContentSearchResults
-          result={contentResult}
-          loading={contentLoading}
-          query={debouncedQ}
-          onOpenHit={openHit}
-          t={t}
-        />
+        <>
+          {contentResource.status === 'error' && (
+            <div style={{ margin: '10px 0' }}>
+              <NNLoadError
+                title={t('toasts.error')}
+                description={contentResource.error?.safeMessage}
+                retryLabel={t('notebooks.overview.retry')}
+                requestId={contentResource.error?.requestId}
+                onRetry={contentResource.refresh}
+              />
+            </div>
+          )}
+          {(contentResource.status !== 'error' || contentResult) && (
+            <ContentSearchResults
+              result={contentResult}
+              loading={contentLoading}
+              query={debouncedQ}
+              onOpenHit={openHit}
+              t={t}
+            />
+          )}
+        </>
       ) : !loaded ? (
         <LibrarySkeleton view={view} />
       ) : items.length === 0 ? (
@@ -565,8 +591,10 @@ export const LibraryScreen = () => {
             onClick={async () => {
               try {
                 const res = await listLibrary({ ...query, cursor: nextCursor });
-                setItems((prev) => [...prev, ...res.items]);
-                setNextCursor(res.nextCursor);
+                libraryResource.mutate((current) => ({
+                  items: [...(current?.items ?? []), ...res.items],
+                  nextCursor: res.nextCursor,
+                }));
               } catch {
                 /* ignore */
               }
@@ -598,7 +626,7 @@ export const LibraryScreen = () => {
           onDeleted={onItemDeleted}
           confirm={confirm}
           prompt={prompt}
-          onOpenNotebook={(id) => router.push(`/notebooks/${id}`)}
+          onOpenNotebook={(id) => navigation.push(`/notebooks/${id}`)}
           onOpenReader={() => openReader(detailId)}
           isMobile={isMobile}
           t={t}

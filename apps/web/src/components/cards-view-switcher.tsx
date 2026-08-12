@@ -1,9 +1,9 @@
 'use client';
 
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { NNIcon, type IconName } from './ui';
 import { useT } from '@/lib/i18n';
+import { AppLink } from './navigation';
 
 type ViewDef = { href: string; icon: IconName; labelKey: string; match: string };
 
@@ -36,7 +36,7 @@ export const CardsViewSwitcher = () => {
       {VIEWS.map((v) => {
         const active = pathname.startsWith(v.match);
         return (
-          <Link
+          <AppLink
             key={v.href}
             href={v.href}
             role="tab"
@@ -57,7 +57,7 @@ export const CardsViewSwitcher = () => {
           >
             <NNIcon name={v.icon} size={14} />
             <span>{t(v.labelKey)}</span>
-          </Link>
+          </AppLink>
         );
       })}
     </div>

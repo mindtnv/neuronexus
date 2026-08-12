@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import { useNN } from './store';
 
 export type EmptyCheck = 'first-run' | 'done' | 'graph';
 
 export function useEmptyRedirect(check: EmptyCheck, enabled = true) {
-  const router = useRouter();
+  const router = useAppNavigation();
   const pathname = usePathname();
   const bootstrapped = useNN((s) => s.bootstrapped);
   const cards = useNN((s) => s.cards);

@@ -1,15 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { signIn, signUp } from '@/lib/auth';
 import { NNBtn, NNLogo } from './ui';
+import { AppLink, useAppNavigation } from './navigation';
 
 type Mode = 'sign-in' | 'sign-up';
 
 export function AuthForm({ mode }: { mode: Mode }) {
-  const router = useRouter();
+  const router = useAppNavigation();
   const searchParams = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -133,23 +133,23 @@ export function AuthForm({ mode }: { mode: Mode }) {
           <>
             <span>
               Нет аккаунта?{' '}
-              <Link href="/auth/sign-up" style={{ color: 'var(--accent-300)' }}>
+              <AppLink href="/auth/sign-up" style={{ color: 'var(--accent-300)' }}>
                 Создать
-              </Link>
+              </AppLink>
             </span>
-            <Link
+            <AppLink
               href="/auth/forgot-password"
               style={{ color: 'var(--text-dim)', fontSize: 12 }}
             >
               Забыл пароль?
-            </Link>
+            </AppLink>
           </>
         ) : (
           <span>
             Уже есть аккаунт?{' '}
-            <Link href="/auth/sign-in" style={{ color: 'var(--accent-300)' }}>
+            <AppLink href="/auth/sign-in" style={{ color: 'var(--accent-300)' }}>
               Войти
-            </Link>
+            </AppLink>
           </span>
         )}
       </div>

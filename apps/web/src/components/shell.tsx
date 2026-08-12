@@ -1,9 +1,9 @@
 'use client';
 
 import React, { CSSProperties, ReactNode } from 'react';
-import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { NNBtn, NNIcon, NNLogo } from './ui';
+import { AppLink, useAppNavigation } from './navigation';
 import { APP_NAV, FOOTER_NAV, NAV_SECTIONS, NAV_SECTION_LABEL, getActiveNavId, type AppNavItem } from './nav-config';
 import { countDueCards } from '@/lib/cards';
 import { signOut } from '@/lib/auth';
@@ -16,7 +16,6 @@ import {
   SIDEBAR_WIDTH_COLLAPSED,
   SIDEBAR_WIDTH_EXPANDED,
 } from '@/lib/ui-store';
-import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { LocaleToggle } from './locale-toggle';
 
@@ -26,17 +25,22 @@ const renderNavItem = ({
   isActive,
   badge,
   collapsed,
+  responsive,
   label,
 }: {
   item: AppNavItem;
   isActive: boolean;
   badge?: number;
   collapsed?: boolean;
+  responsive?: boolean;
   label: string;
 }) => (
-  <Link
+  <AppLink
     key={item.id}
     href={item.href}
+    className="nn-sidebar-nav-item"
+    title={collapsed ? label : undefined}
+    aria-label={collapsed || responsive ? label : undefined}
     onClick={() => window.dispatchEvent(new CustomEvent('nn:close-drawer'))}
     style={{
       display: 'flex',
@@ -57,9 +61,10 @@ const renderNavItem = ({
     }}
   >
     <NNIcon name={item.icon} size={16} />
-    {!collapsed && <span style={{ flex: 1 }}>{label}</span>}
-    {!collapsed && badge != null && (
+    {(!collapsed || responsive) && <span className="nn-sidebar-label" style={{ flex: 1 }}>{label}</span>}
+    {(!collapsed || responsive) && badge != null && (
       <span
+        className="nn-sidebar-badge"
         style={{
           fontSize: 10.5,
           fontWeight: 600,
@@ -74,8 +79,10 @@ const renderNavItem = ({
         {badge}
       </span>
     )}
-    {collapsed && badge != null && (
+    {(collapsed || responsive) && badge != null && (
       <span
+        className="nn-sidebar-badge-dot"
+        aria-hidden="true"
         style={{
           position: 'absolute',
           top: 4,
@@ -87,20 +94,22 @@ const renderNavItem = ({
         }}
       />
     )}
-  </Link>
+  </AppLink>
 );
 
 export const NNSidebar = ({
   active,
   collapsed,
   fullWidth,
+  responsive,
 }: {
   active?: string;
   collapsed?: boolean;
   fullWidth?: boolean;
+  responsive?: boolean;
 }) => {
   const pathname = usePathname();
-  const router = useRouter();
+  const router = useAppNavigation();
   const t = useT();
   const currentId = active ?? getActiveNavId(pathname, [...APP_NAV, ...FOOTER_NAV]);
   const resetStore = useNN((s) => s.reset);
@@ -130,9 +139,9 @@ export const NNSidebar = ({
 
   return (
     <aside
-      className="nn-chrome"
+      className={`nn-chrome nn-sidebar${responsive ? ' nn-sidebar-responsive' : ''}`}
       style={{
-        width: fullWidth ? '100%' : collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,
+        width: fullWidth ? '100%' : responsive ? undefined : collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,
         flexShrink: 0,
         background: 'var(--surface)',
         borderRight: '1px solid var(--border)',
@@ -156,11 +165,16 @@ export const NNSidebar = ({
           height: 45,
         }}
       >
-        {!wcoActive && <NNLogo showText={!collapsed} />}
+        {!wcoActive && responsive ? (
+          <>
+            <span className="nn-sidebar-logo-expanded"><NNLogo /></span>
+            <span className="nn-sidebar-logo-compact"><NNLogo showText={false} /></span>
+          </>
+        ) : !wcoActive ? <NNLogo showText={!collapsed} /> : null}
       </div>
 
-      {!collapsed && (
-        <div style={{ padding: '12px 14px 4px' }}>
+      {(!collapsed || responsive) && (
+        <div className="nn-sidebar-expanded-only" style={{ padding: '12px 14px 4px' }}>
           <div
             style={{
               display: 'flex',
@@ -205,8 +219,9 @@ export const NNSidebar = ({
           const labelKey = NAV_SECTION_LABEL[section];
           return (
             <React.Fragment key={section}>
-              {!collapsed && labelKey && (
+              {(!collapsed || responsive) && labelKey && (
                 <div
+                  className="nn-sidebar-section-label"
                   style={{
                     fontSize: 10.5,
                     fontWeight: 500,
@@ -219,11 +234,11 @@ export const NNSidebar = ({
                   {t(labelKey)}
                 </div>
               )}
-              {collapsed && labelKey && (
-                <div style={{ height: 1, background: 'var(--border)', margin: '8px 6px' }} />
+              {(collapsed || responsive) && labelKey && (
+                <div className="nn-sidebar-section-divider" style={{ height: 1, background: 'var(--border)', margin: '8px 6px' }} />
               )}
               {items.map((item) =>
-                renderNavItem({ item, isActive: currentId === item.id, badge: item.id === 'review' && dueCount > 0 ? dueCount : undefined, collapsed, label: t(item.labelKey) }),
+                renderNavItem({ item, isActive: currentId === item.id, badge: item.id === 'review' && dueCount > 0 ? dueCount : undefined, collapsed, responsive, label: t(item.labelKey) }),
               )}
             </React.Fragment>
           );
@@ -232,12 +247,12 @@ export const NNSidebar = ({
         {/* Stats + Settings — pinned below the sections behind a thin divider. */}
         <div style={{ height: 1, background: 'var(--border)', margin: collapsed ? '10px 6px' : '12px 4px' }} />
         {FOOTER_NAV.map((item) =>
-          renderNavItem({ item, isActive: currentId === item.id, collapsed, label: t(item.labelKey) }),
+          renderNavItem({ item, isActive: currentId === item.id, collapsed, responsive, label: t(item.labelKey) }),
         )}
       </nav>
 
-      {!collapsed && (
-        <div style={{ padding: 10, borderTop: '1px solid var(--border)' }}>
+      {(!collapsed || responsive) && (
+        <div className="nn-sidebar-expanded-only" style={{ padding: 10, borderTop: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 2px 0' }}>
             <LocaleToggle size="sm" />
             <button
@@ -279,7 +294,6 @@ export const NNTopbar = ({
   subtitle?: string;
   actions?: ReactNode;
 }) => {
-  const bp = useBreakpoint();
   const t = useT();
   const zenMode = useUI((s) => s.zenMode);
   const toggleSidebar = useUI((s) => s.toggleSidebar);
@@ -289,14 +303,10 @@ export const NNTopbar = ({
   // controls (left inset covers macOS lights minus the sidebar already under
   // them; right inset covers Windows-style right-side controls).
   const { wco, left: wcoLeft, right: wcoRight } = useWcoTopInsets();
-  const isDesktop = bp === 'desktop';
-  const isMobile = bp === 'mobile';
-
   // Zen (focus) mode hides the whole chrome — the per-page topbar disappears.
   // Zen is only ever true on /review (guarded in app-shell), so this is safe.
   if (zenMode) return null;
 
-  const basePad = isMobile ? 12 : 24;
   // Toolbar buttons: bordered squares in a browser tab; borderless 32px ghost
   // icons (hover tint via .nn-tb-ghost — inline background would beat CSS :hover)
   // when the strip doubles as the OS titlebar. Native macOS toolbars are tighter,
@@ -317,15 +327,15 @@ export const NNTopbar = ({
   };
   return (
     <header
-      className="nn-chrome"
+      className="nn-chrome nn-topbar"
       data-wco={wco ? '1' : undefined}
       style={{
-        height: isMobile ? 48 : 44,
-        padding: `0 ${basePad + wcoRight}px 0 ${basePad + wcoLeft}px`,
+        '--nn-topbar-wco-left': `${wcoLeft}px`,
+        '--nn-topbar-wco-right': `${wcoRight}px`,
         borderBottom: '1px solid var(--border)',
         display: 'flex',
         alignItems: 'center',
-        gap: isMobile ? 8 : wco ? 8 : 16,
+        gap: wco ? 8 : 16,
         background: 'var(--surface)',
         backdropFilter: 'blur(18px)',
         WebkitBackdropFilter: 'blur(18px)',
@@ -335,57 +345,52 @@ export const NNTopbar = ({
         paddingTop: displayMode === 'standalone' ? 'env(safe-area-inset-top, 0px)' : undefined,
         boxSizing: 'content-box',
         flexShrink: 0,
-      }}
+      } as CSSProperties & Record<'--nn-topbar-wco-left' | '--nn-topbar-wco-right', string>}
     >
-      {isDesktop && (
-        <button
-          type="button"
-          aria-label={t('chrome.toggleSidebar')}
-          title={`${t('chrome.toggleSidebar')} (⌘B)`}
-          onClick={() => toggleSidebar()}
-          className={tbBtnClass}
-          style={tbBtn}
-        >
-          <NNIcon name="stack" size={16} color="var(--text)" />
-        </button>
-      )}
-      {!isDesktop && (
-        <button
-          type="button"
-          aria-label={t('topbar.menuLabel')}
-          onClick={() => window.dispatchEvent(new CustomEvent('nn:open-drawer'))}
-          className={tbBtnClass}
-          style={tbBtn}
-        >
-          <NNIcon name="stack" size={16} color="var(--text)" />
-        </button>
-      )}
-      <div style={{ flex: 1, display: 'flex', alignItems: isMobile ? 'center' : 'baseline', gap: isMobile ? 0 : 12, minWidth: 0, flexDirection: isMobile ? 'column' : 'row' }}>
+      <button
+        type="button"
+        aria-label={t('chrome.toggleSidebar')}
+        title={`${t('chrome.toggleSidebar')} (⌘B)`}
+        onClick={() => toggleSidebar()}
+        className={`${tbBtnClass ?? ''} nn-topbar-desktop-only`}
+        style={tbBtn}
+      >
+        <NNIcon name="stack" size={16} color="var(--text)" />
+      </button>
+      <button
+        type="button"
+        aria-label={t('topbar.menuLabel')}
+        onClick={() => window.dispatchEvent(new CustomEvent('nn:open-drawer'))}
+        className={`${tbBtnClass ?? ''} nn-topbar-mobile-only`}
+        style={tbBtn}
+      >
+        <NNIcon name="stack" size={16} color="var(--text)" />
+      </button>
+      <div className="nn-topbar-title-group" style={{ flex: 1, display: 'flex', minWidth: 0 }}>
         <h1
+          className="nn-topbar-title"
           style={{
             margin: 0,
-            fontSize: wco ? 13 : isMobile ? 13 : 14,
-            fontWeight: wco ? 590 : isMobile ? 600 : 500,
+            fontSize: wco ? 13 : 14,
+            fontWeight: wco ? 590 : 500,
             letterSpacing: wco ? -0.2 : 0,
             color: 'var(--text)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             maxWidth: '100%',
-            alignSelf: isMobile ? 'flex-start' : undefined,
           }}
         >
           {title}
         </h1>
         {subtitle && (
           <span
-            className="mono"
+            className="mono nn-topbar-subtitle"
             style={{
               fontSize: 11,
               color: 'var(--text-dim)',
               whiteSpace: 'nowrap',
               flexShrink: 0,
-              alignSelf: isMobile ? 'flex-start' : undefined,
             }}
           >
             {subtitle}
@@ -402,9 +407,9 @@ export const NNTopbar = ({
       >
         <NNIcon name="search" size={16} color="var(--text)" />
       </button>
-      {isDesktop && actions}
-      {isDesktop ? (
-        <Link href="/editor" style={{ display: 'inline-flex' }}>
+      {actions ? <span className="nn-topbar-desktop-only">{actions}</span> : null}
+      <span className="nn-topbar-desktop-only">
+        <AppLink href="/editor" style={{ display: 'inline-flex' }}>
           <NNBtn
             size="md"
             variant="soft"
@@ -413,9 +418,10 @@ export const NNTopbar = ({
             ariaLabel={t('topbar.newCard')}
             style={wco ? { width: 32, height: 32, padding: 0, border: 'none', borderRadius: 8 } : { width: 36, padding: 0 }}
           />
-        </Link>
-      ) : (
-        <Link href="/editor" aria-label={t('topbar.newCardLabel')} style={{ display: 'inline-flex' }}>
+        </AppLink>
+      </span>
+      <span className="nn-topbar-mobile-only">
+        <AppLink href="/editor" aria-label={t('topbar.newCardLabel')} style={{ display: 'inline-flex' }}>
           <button
             type="button"
             style={{
@@ -434,8 +440,8 @@ export const NNTopbar = ({
           >
             <NNIcon name="plus" size={16} color="var(--text-on-accent)" />
           </button>
-        </Link>
-      )}
+        </AppLink>
+      </span>
     </header>
   );
 };
