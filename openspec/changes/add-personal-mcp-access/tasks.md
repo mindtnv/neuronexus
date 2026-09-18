@@ -23,4 +23,4 @@
 - [x] 4.1 Run strict OpenSpec validation, typecheck, migration-faithful full tests, real S3 tests and production build after final edits.
 - [x] 4.2 Verify local running state and production deployment/configuration readiness; report actual connectivity and any external prerequisite honestly.
 
-- [ ] 4.3 Restore remote S3 CI by fetching the unchanged pinned MinIO images from the official Quay registry and verify both PR checks.
+- [x] 4.3 Restore remote S3 CI by fetching the unchanged pinned MinIO images from the official Quay registry and verify both PR checks.
