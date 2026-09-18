@@ -28,6 +28,7 @@ const CLIENT_ERROR_LIMIT = 240;
 function safeClientText(value: string): string {
   const censored = value
     .replace(/\bBearer\s+[^\s"',;]+/gi, 'Bearer [REDACTED]')
+    .replace(/\bnn_pat_[A-Za-z0-9_-]+/g, '[REDACTED]')
     .replace(/\b(?:sk|hs)[-_][A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
     .replace(
       /\b(api[_-]?key|authorization|cookie|password|secret|token)\b\s*[:=]\s*[^\s,"';}]+/gi,

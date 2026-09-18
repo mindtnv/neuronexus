@@ -2279,7 +2279,7 @@ const editCard: Tool = {
       const res = await patchCard(ctx.userId, cardId, {
         deckId: typeof args.deckId === 'string' ? args.deckId : undefined,
         suspended: typeof args.suspended === 'boolean' ? args.suspended : undefined,
-      });
+      }, ctx.tx);
       if (!res.ok) return { ok: false, error: `edit_card: ${res.error}` };
       summaries.push(`Updated card ${cardId} (deck/suspend).`);
     }
@@ -2373,7 +2373,7 @@ const suspend: Tool = {
     const p = requireCardId(rawArgs);
     if (!p.ok) return { ok: false, error: `suspend: ${p.error}` };
     const suspended = typeof p.args.suspended === 'boolean' ? p.args.suspended : true;
-    const res = await patchCard(ctx.userId, p.cardId, { suspended });
+    const res = await patchCard(ctx.userId, p.cardId, { suspended }, ctx.tx);
     if (!res.ok) return { ok: false, error: `suspend: ${res.error}` };
     return { ok: true, text: `Card ${p.cardId} ${suspended ? 'suspended' : 'unsuspended'}.` };
   },
@@ -2409,7 +2409,7 @@ const setDue: Tool = {
     if (!p.ok) return { ok: false, error: `set_due: ${p.error}` };
     const due = typeof p.args.due === 'string' ? p.args.due : '';
     if (!due) return { ok: false, error: 'set_due: missing "due" ISO timestamp' };
-    const res = await patchCard(ctx.userId, p.cardId, { setDue: due });
+    const res = await patchCard(ctx.userId, p.cardId, { setDue: due }, ctx.tx);
     if (!res.ok) return { ok: false, error: `set_due: ${res.error}` };
     return { ok: true, text: `Card ${p.cardId} due date set to ${due}.` };
   },
@@ -2437,7 +2437,7 @@ const forget: Tool = {
   async execute(ctx, rawArgs): Promise<ToolResult> {
     const p = requireCardId(rawArgs);
     if (!p.ok) return { ok: false, error: `forget: ${p.error}` };
-    const res = await patchCard(ctx.userId, p.cardId, { forget: true });
+    const res = await patchCard(ctx.userId, p.cardId, { forget: true }, ctx.tx);
     if (!res.ok) return { ok: false, error: `forget: ${res.error}` };
     return { ok: true, text: `Card ${p.cardId} reset to new (forgotten).` };
   },

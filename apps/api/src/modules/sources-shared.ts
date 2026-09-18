@@ -119,46 +119,53 @@ export async function createInlineSource(
   notebookId?: string,
   log: Logger = rootLogger,
 ): Promise<Source> {
-  const row = await db.transaction(async (tx) => {
-    let created: Source;
-    if (input.kind === 'url') {
-      const [r] = await tx
-        .insert(sources)
-        .values({
-          userId,
-          kind: 'url',
-          title: input.title,
-          url: input.url,
-          status: 'pending',
-          verified: true,
-        })
-        .returning();
-      created = r!;
-    } else {
-      const text = input.text.slice(0, MAX_INLINE_TEXT);
-      const [r] = await tx
-        .insert(sources)
-        .values({
-          userId,
-          kind: 'text',
-          title: input.title,
-          byteSize: text.length,
-          status: 'pending',
-          verified: true,
-        })
-        .returning();
-      created = r!;
-      // Carry the inline text to the worker (no schema column; recoverable from
-      // SoT chunks on a later resume — see source-ingest.ts).
-      stashInlineText(created.id, text);
-    }
-    if (notebookId) {
-      await attachSourceToNotebook(tx, { userId, notebookId, sourceId: created.id });
-    }
-    return created;
-  });
-  enqueueSource(row.id, logCorrelation(log));
+  const row = await db.transaction((tx) => insertInlineSource(tx, userId, input, notebookId));
+  enqueueInlineSource(row, input, log);
   return row;
+}
+
+/** Insert only; callers enqueue AFTER their transaction commits. */
+export async function insertInlineSource(
+  tx: Tx, userId: string, input: InlineSourceInput, notebookId?: string,
+): Promise<Source> {
+  let created: Source;
+  if (input.kind === 'url') {
+    const [r] = await tx
+      .insert(sources)
+      .values({
+        userId,
+        kind: 'url',
+        title: input.title,
+        url: input.url,
+        status: 'pending',
+        verified: true,
+      })
+      .returning();
+    created = r!;
+  } else {
+    const text = input.text.slice(0, MAX_INLINE_TEXT);
+    const [r] = await tx
+      .insert(sources)
+      .values({
+        userId,
+        kind: 'text',
+        title: input.title,
+        byteSize: text.length,
+        status: 'pending',
+        verified: true,
+      })
+      .returning();
+    created = r!;
+  }
+  if (notebookId) {
+    await attachSourceToNotebook(tx, { userId, notebookId, sourceId: created.id });
+  }
+  return created;
+}
+
+export function enqueueInlineSource(row: Source, input: InlineSourceInput, log: Logger = rootLogger): void {
+  if (input.kind === 'text') stashInlineText(row.id, input.text.slice(0, MAX_INLINE_TEXT));
+  enqueueSource(row.id, logCorrelation(log));
 }
 
 // ── upload presign (pdf / epub) ───────────────────────────────────────────────

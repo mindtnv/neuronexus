@@ -16,6 +16,8 @@ import { ensureVectorExtension, kbChunk } from '@neuronexus/db';
 import { sql } from 'drizzle-orm';
 
 const TABLES = [
+  'mcp_actions',
+  'personal_access_tokens',
   // RAG substrate first — messages → conversations → kb_chunk reference
   // conversations/cards/user. RESTART IDENTITY CASCADE tolerates order, but
   // explicit ordering keeps intent clear.

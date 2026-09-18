@@ -12,6 +12,7 @@ import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { LocaleToggle } from '@/components/locale-toggle';
+import { McpSettings } from '@/components/mcp-settings';
 import { getTheme, setTheme, THEME_PREFS, THEME_SWATCHES, type ThemePref } from '@/lib/theme';
 import { useSessionResource } from '@/lib/session-resource';
 import type { Profile } from '@/lib/types';
@@ -35,7 +36,7 @@ type AiStatusFlags = {
 
 // ─────────────────────────────────────────────
 // SETTINGS — only the controls that are actually wired to the server.
-// Everything else (workspaces/billing/api tokens/theme sounds/sync/etc.) has
+// Everything else (workspaces/billing/theme sounds/sync/etc.) has
 // been removed until the backend feature lands. Adding a section here means
 // it's really functional.
 // ─────────────────────────────────────────────
@@ -733,6 +734,8 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Your data (export) ── */}
+      {session?.user?.id && <Section title={t('settings.mcp.title')} subtitle={t('settings.mcp.subtitle')}><McpSettings key={session.user.id} /></Section>}
+
       <Section title={t('settings.data.title')} subtitle={t('settings.data.subtitle')}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 200 }}>
