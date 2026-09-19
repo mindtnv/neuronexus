@@ -1,6 +1,8 @@
 const m = {
   // Thread list (left rail)
   threads: {
+    actions: 'Действия с беседой',
+    resize: 'Ширина списка бесед',
     title: 'Беседы',
     newThread: 'Новый чат',
     empty: 'Бесед пока нет.',
@@ -34,7 +36,7 @@ const m = {
     you: 'Вы',
     assistant: 'Ассистент',
     // Имя ассистента в шапке ответа (редизайн A2).
-    assistantName: 'NeuroNexus',
+    assistantName: 'Reomi',
     // Мета «по N источникам» в шапке ответа блокнота (N = размер скоупа).
     bySources: 'по {count} источникам',
     thinking: 'Думаю…',
@@ -102,13 +104,14 @@ const m = {
     quiz: 'Проверь мои знания по «{name}»',
   },
   // Setup notice (chatEnabled === false)
-  setup: {
-    title: 'Чат ещё не настроен.',
-    body:
-      'Для чата нужна OpenAI-совместимая модель. Задайте CHAT_API_KEY (и при необходимости CHAT_BASE_URL / CHAT_MODEL) в окружении сервера и перезапустите API.',
-    indexNote:
-      'Эмбеддинги (для поиска) настраиваются отдельно через OPENAI_API_KEY — оставьте обе переменные пустыми, чтобы выключить ИИ-функции.',
-    docsHint: 'Полный список переменных — в разделе AI / RAG README проекта.',
+  unavailable: {
+    title: 'Чат сейчас недоступен',
+    service: 'Сервис чата пока недоступен. Попробуйте ещё раз чуть позже — карточки и библиотека работают как обычно.',
+    connection: 'Не удалось связаться с сервисом чата. Проверьте соединение и повторите попытку.',
+    retry: 'Попробовать снова',
+    checking: 'Проверяем доступность чата…',
+    cards: 'К карточкам',
+    reference: 'Код обращения: {id}',
   },
   // Streamed reasoning trace (collapsible, ephemeral — never persisted)
   reasoning: {
@@ -139,6 +142,54 @@ const m = {
   },
   // Agentic tool calls (search_cards / web_search) surfaced as cards in the stream
   tool: {
+    get_capabilities: 'Проверка возможностей AI',
+    list_cards: 'Список карточек',
+    list_tags: 'Список тегов',
+    get_review_queue: 'Очередь повторения',
+    get_card_sources: 'Источники карточки',
+    get_similar_cards: 'Поиск похожих карточек',
+    get_semantic_graph: 'Граф знаний',
+    list_note_types: 'Типы карточек',
+    list_deck_options: 'Настройки колод',
+    list_filtered_decks: 'Сохранённые подборки',
+    get_retention: 'Статистика запоминания',
+    list_library: 'Список материалов библиотеки',
+    search_library: 'Поиск по библиотеке',
+    get_library_item: 'Сведения о материале',
+    read_source_chunks: 'Чтение материала',
+    get_source_cards: 'Карточки из материала',
+    get_source_marks: 'Выделения и закладки',
+    get_source_annotations: 'Разметка PDF',
+    list_notebooks: 'Список блокнотов',
+    get_notebook: 'Сведения о блокноте',
+    list_notebook_sources: 'Источники блокнота',
+    list_notebook_notes: 'Заметки блокнота',
+    list_artifacts: 'Материалы студии',
+    get_artifact: 'Чтение материала студии',
+    list_quiz_attempts: 'Результаты тестов',
+    get_notebook_coverage: 'Покрытие материала карточками',
+    get_concept_map: 'Карта понятий',
+    create_deck: 'Новая колода',
+    update_deck: 'Изменение колоды',
+    delete_deck: 'Удаление колоды',
+    create_notebook: 'Новый блокнот',
+    update_notebook: 'Изменение блокнота',
+    delete_notebook: 'Удаление блокнота',
+    update_note: 'Изменение заметки',
+    delete_note: 'Удаление заметки',
+    attach_source: 'Подключение материала',
+    detach_source: 'Отключение материала',
+    update_source: 'Изменение материала',
+    set_reading_status: 'Статус чтения',
+    delete_card: 'Удаление карточки',
+    delete_flashcard_note: 'Удаление карточек заметки',
+    create_text_source: 'Новый текст в библиотеке',
+    create_url_source: 'Новая веб-страница в библиотеке',
+    list_notes: 'Список заметок',
+    read_note: 'Чтение заметки',
+
+    deckCount: 'Колод: {count}',
+    resultDetails: 'Показать весь результат',
     search_cards: 'Поиск по вашим карточкам',
     web_search: 'Поиск в интернете',
     card_progress: 'Проверка прогресса карточки',
@@ -175,14 +226,23 @@ const m = {
   },
   // Свёрнутая группа активности (редизайн в стиле Codex) — таймированный,
   // сворачиваемый блок работы вокруг хода ассистента (размышления + шаги).
+  resourceFields: {title: 'Название', name: 'Название', description: 'Описание', content: 'Текст заметки', text: 'Текст материала', url: 'Ссылка', color: 'Цвет', emoji: 'Значок', parentId: 'Родительская колода', archived: 'В архиве', pinned: 'Закреплено', status: 'Статус', language: 'Язык', tags: 'Теги', notebook: 'Блокнот', source: 'Материал', icon: 'Значок'},
+  resourceKinds: {cards: 'Карточки', decks: 'Колоды', notes: 'Заметки', artifacts: 'Материалы студии', conversations: 'Беседы', reviews: 'Повторы'},
   activity: {
+    completedSteps: 'Выполнено действий: {count}',
+    results: 'Результатов: {count}',
+    cardsCount: 'Карточек: {count}',
+    dueCount: 'К повтору: {count}',
+    moreResults: 'Показать ещё {count}',
+    collapseResults: 'Свернуть',
+
     worked: 'Заняло {time}',
     working: 'Работаю…',
     workedSub: '<1 с',
     workedSeconds: '{count} с',
     workedMinutes: '{m} мин {s} с',
     workedHours: '{h} ч {m} мин',
-    steps: 'шагов: {count}',
+    steps: 'Действия · {count}',
     step: 'шаг: {count}',
     appliedCreated: 'Создано карточек: {count} — в {deck} · открыть',
     appliedCreatedNodeck: 'Создано карточек: {count} · открыть',
@@ -193,6 +253,7 @@ const m = {
   // Confirm-before-write controls (Phase B) — a write/SRS tool pauses the turn
   // and asks for explicit human approval, rendered inside the pending tool card.
   confirm: {
+    resourceDeleteWarning: 'Будут удалены перечисленные данные. Проверьте объём изменений перед подтверждением.',
     pendingTitle: 'Ожидает вашего подтверждения',
     apply: 'Применить',
     reject: 'Отклонить',

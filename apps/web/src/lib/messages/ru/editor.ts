@@ -1,4 +1,5 @@
 const m = {
+  editCardTitle: 'Редактирование карточки',
   noDeck: 'Без колоды',
   newCard: 'Новая карта',
   editingCard: 'Редактирование карты {id}',

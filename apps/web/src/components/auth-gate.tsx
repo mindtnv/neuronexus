@@ -1,15 +1,23 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect, type CSSProperties } from 'react';
 import { usePathname } from 'next/navigation';
+import { useUI, readSidebarWidth, readSidebarCollapsed } from '@/lib/ui-store';
 import { useSession } from '@/lib/auth';
 import { NNPageSkeleton, NNSkeleton } from './ui';
 import { useAppNavigation } from './navigation';
 
 function AuthGateSkeleton() {
+  const width = useUI(state => state.sidebarWidth);
+  const hidden = useUI(state => state.sidebarCollapsed);
+  useLayoutEffect(() => {
+    useUI.getState().setSidebarWidth(readSidebarWidth());
+    const collapsed = readSidebarCollapsed();
+    if (collapsed !== null) useUI.getState().setSidebarCollapsed(collapsed);
+  }, []);
   return (
-    <div className="nn-auth-gate-skeleton" aria-busy="true" aria-label="Loading session">
-      <aside className="nn-auth-gate-sidebar" aria-hidden>
+    <div className="nn-auth-gate-skeleton" data-compact={width < 160 || undefined} style={{ '--nn-sidebar-width': `${width}px` } as CSSProperties} aria-busy="true" aria-label="Loading session">
+      {!hidden && <aside className="nn-auth-gate-sidebar" aria-hidden>
         <div className="nn-auth-gate-logo"><NNSkeleton width={96} height={18} /></div>
         <div style={{ padding: '18px 14px', display: 'flex', flexDirection: 'column', gap: 14 }}>
           <NNSkeleton height={40} />
@@ -18,7 +26,7 @@ function AuthGateSkeleton() {
           <NNSkeleton height={32} />
           <NNSkeleton height={32} />
         </div>
-      </aside>
+      </aside>}
       <main className="nn-auth-gate-main">
         <div className="nn-auth-gate-topbar" aria-hidden>
           <NNSkeleton width={120} height={14} />

@@ -22,37 +22,46 @@ export interface CodeCopyLabels {
   copied: string;
 }
 
-/** Decorate every un-decorated `pre` under `root` with a copy button. */
+/** Clipboard works on both HTTPS and the private-network development origin. */
+export async function copyCodeText(text: string): Promise<void> {
+  try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return; } } catch { /* Try the local document fallback. */ }
+  const active = document.activeElement as HTMLElement | null;
+  const field = document.createElement('textarea');
+  field.value = text; field.style.cssText = 'position:fixed;left:-10000px;top:0;opacity:0';
+  document.body.appendChild(field); field.focus({ preventScroll: true }); field.select();
+  try { if (!document.execCommand('copy')) throw new Error('copy_failed'); }
+  finally { field.remove(); active?.focus({ preventScroll: true }); }
+}
+
+/** Post-sanitize decoration preserves highlight spans and copies only source code. */
 export function decorateCodeBlocks(root: HTMLElement, labels: CodeCopyLabels): void {
-  const pres = root.querySelectorAll('pre');
-  pres.forEach((pre) => {
-    if (pre.querySelector('[data-nn-copy]')) return;
-    pre.style.position = 'relative';
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'nn-code-copy';
-    btn.setAttribute('data-nn-copy', '1');
-    btn.setAttribute('aria-label', labels.copy);
-    btn.title = labels.copy;
+  root.querySelectorAll('pre').forEach(pre => {
+    if (pre.parentElement?.classList.contains('nn-code-block')) return;
+    const code = pre.querySelector('code');
+    if (!code || code.classList.contains('language-mermaid')) return;
+    const text = code.textContent ?? '';
+    pre.querySelector('[data-nn-copy]')?.remove();
+    const block = document.createElement('div'); block.className = 'nn-code-block';
+    const header = document.createElement('div'); header.className = 'nn-code-header';
+    const language = [...code.classList].find(name => name.startsWith('language-'))?.slice(9);
+    const name = document.createElement('span');
+    name.textContent = language ? ({ csharp: 'C#', cs: 'C#', javascript: 'JavaScript', typescript: 'TypeScript', cpp: 'C++' }[language] ?? language.toUpperCase()) : 'CODE';
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'nn-code-copy';
+    btn.setAttribute('data-nn-copy', '1'); btn.setAttribute('aria-label', labels.copy); btn.dataset.tooltip = labels.copy;
     btn.innerHTML = COPY_GLYPH;
-    btn.addEventListener('click', () => {
-      const code = pre.querySelector('code');
-      const text = (code ?? pre).textContent ?? '';
-      void navigator.clipboard
-        .writeText(text)
-        .then(() => {
-          btn.innerHTML = CHECK_GLYPH;
-          btn.title = labels.copied;
-          window.setTimeout(() => {
-            btn.innerHTML = COPY_GLYPH;
-            btn.title = labels.copy;
-          }, 1500);
-        })
-        .catch(() => {
-          // Clipboard unavailable / denied — best-effort, leave the glyph alone.
-        });
+    const caption = document.createElement('span'); caption.textContent = labels.copy; btn.appendChild(caption);
+    btn.addEventListener('click', event => {
+      event.preventDefault(); event.stopPropagation();
+      void copyCodeText(text).then(() => {
+        btn.innerHTML = CHECK_GLYPH; const done = document.createElement('span'); done.textContent = labels.copied; btn.appendChild(done);
+        btn.setAttribute('aria-label', labels.copied);
+        window.setTimeout(() => { if (!btn.isConnected) return; btn.innerHTML = COPY_GLYPH; btn.appendChild(caption); btn.setAttribute('aria-label', labels.copy); }, 1500);
+      }).catch(() => { /* Preserve the source and allow another copy attempt. */ });
     });
-    pre.appendChild(btn);
+    const lines = document.createElement('span'); lines.className = 'nn-code-lines'; lines.setAttribute('aria-hidden', 'true');
+    lines.textContent = Array.from({ length: text.replace(/\n$/, '').split('\n').length }, (_, i) => String(i + 1)).join('\n');
+    header.append(name, btn);
+    pre.parentNode?.insertBefore(block, pre); block.append(header, pre); pre.prepend(lines);
   });
 }
 

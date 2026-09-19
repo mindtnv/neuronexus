@@ -10,6 +10,7 @@
 // or { ok:false, error }). The loop turns a result into a `role:tool` message
 // (the `text` field, capped) + a streamed `tool_result` event.
 
+import { buildKnowledgeTools } from './knowledge-tools.ts';
 import type { Logger } from 'pino';
 import { and, asc, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
@@ -87,6 +88,7 @@ type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 export interface ToolContext {
   userId: string;
   log: Logger;
+  confirmationHash?: string;
   /** Optional caller-supplied transaction (confirm-resume atomicity). */
   tx?: Tx;
   /**
@@ -132,7 +134,7 @@ function pushGrounding(ctx: ToolContext, ids: string[]): void {
  * RAG indexing AFTER the (possibly caller-owned) transaction commits.
  */
 export type ToolResult =
-  | { ok: true; text: string; citations?: Citation[]; cardIds?: string[] }
+  | { ok: true; text: string; citations?: Citation[]; cardIds?: string[]; afterCommit?: () => void }
   | { ok: false; error: string };
 
 /**
@@ -170,6 +172,7 @@ function diffFieldValues(
 }
 
 export interface Tool {
+  requirePreview?: boolean;
   name: string;
   description: string;
   /** JSON Schema for the tool's arguments (the gateway `function.parameters`). */
@@ -2460,7 +2463,7 @@ const forget: Tool = {
  *    chatEnabled — the loop pauses each for confirmation before any mutation).
  */
 export function buildToolRegistry(
-  opts: { webSearchEnabled?: boolean; fetchPageEnabled?: boolean; notebook?: boolean } = {},
+  opts: { webSearchEnabled?: boolean; fetchPageEnabled?: boolean; notebook?: boolean; knowledge?: boolean } = {},
 ): Tool[] {
   const webOn = opts.webSearchEnabled ?? isWebSearchEnabled();
   const fetchOn = opts.fetchPageEnabled ?? isFetchPageEnabled();
@@ -2503,6 +2506,7 @@ export function buildToolRegistry(
   if (webOn) registry.push(webSearch);
   if (fetchOn) registry.push(fetchPage);
   registry.push(createCard, editCard, suspend, setDue, forget);
+  if (opts.knowledge !== false) registry.push(...buildKnowledgeTools());
   return registry;
 }
 

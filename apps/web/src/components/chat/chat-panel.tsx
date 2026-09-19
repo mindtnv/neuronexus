@@ -17,7 +17,7 @@
 //  • List / open / create / delete go through Eden (lib/api.ts). Sending goes
 //    through the RAW fetch+reader path (lib/chat-stream.ts) — Eden can't consume
 //    a stream. Tokens render live as they arrive (AC6).
-//  • On mount we read GET /ai/status; chatEnabled:false → a setup notice instead
+//  • On mount we read GET /ai/status; chatEnabled:false → a recoverable unavailable screen instead
 //    of the composer (degrade, never crash — Principle 5).
 //  • Card citations render through RichCard (Principle 4 / AC8); SOURCE citations
 //    (M2) render as compact doc chips → onSourceCitation (workspace scrolls the
@@ -53,12 +53,15 @@ import {
   NNSkeleton,
 } from '@/components/ui';
 import { RichCard } from '@/components/rich-card';
+import { compactToolText } from '@/lib/panel-width';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { api, ok } from '@/lib/api';
-import type { ResourceState } from '@/lib/resource-state';
+import { toApiError, type ResourceState } from '@/lib/resource-state';
+import { ChatUnavailable } from './chat-unavailable';
 import {
   fetchSessionResource,
   peekSessionResource,
+  clearSessionResourceCache,
 } from '@/lib/session-resource';
 import {
   regenerateChat,
@@ -110,7 +113,7 @@ import {
   type CitationNumbering,
 } from '@/lib/chat-citations';
 import { useStickToBottom } from '@/lib/use-stick-to-bottom';
-import { cardFromApi } from '@/lib/mappers';
+import { cardFromApi, deckFromApi } from '@/lib/mappers';
 import { useNN } from '@/lib/store';
 import { getDueCards } from '@/lib/cards';
 import type { Card } from '@/lib/types';
@@ -286,13 +289,13 @@ const AssistantMarkdown = ({
     onCite ?? noopCite,
   );
   return (
-    <div ref={hostRef}>
+    <div ref={hostRef} className="reomi-chat-prose">
       <SafeHtml
         html={html}
         style={{
           fontFamily: 'var(--font-sans)',
-          fontSize: 14.5,
-          lineHeight: 1.6,
+          fontSize: 16,
+          lineHeight: 1.7,
           color: 'var(--text)',
           wordBreak: 'break-word',
         }}
@@ -392,6 +395,9 @@ export const ChatPanel = ({
 
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [statusLoaded, setStatusLoaded] = useState(false);
+  const [statusChecking, setStatusChecking] = useState(false);
+  const [statusError, setStatusError] = useState<ReturnType<typeof toApiError> | null>(null);
+  const [statusRevision, setStatusRevision] = useState(0);
 
   const [conversations, setConversations] = useState<ConversationVM[]>([]);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
@@ -534,11 +540,13 @@ export const ChatPanel = ({
   // AI status + conversation list, lazy on mount.
   useEffect(() => {
     let cancelled = false;
+    setStatusChecking(true);
     (async () => {
       try {
         const s = (await ok(await (api as any).ai.status.get())) as AiStatus;
         if (!cancelled) {
           setStatus(s);
+          setStatusError(null);
           // Re-validate the persisted model against the live allow-list (AC2.4).
           // A stale value (model removed from CHAT_MODELS) silently falls back to
           // the default and is rewritten; an empty allow-list clears it entirely.
@@ -569,11 +577,13 @@ export const ChatPanel = ({
             }
           }
         }
-      } catch {
-        if (!cancelled)
+      } catch (error) {
+        if (!cancelled) {
+          setStatusError(toApiError(error));
           setStatus({ embeddingEnabled: false, chatEnabled: false, degraded: false, models: [] });
+        }
       } finally {
-        if (!cancelled) setStatusLoaded(true);
+        if (!cancelled) { setStatusLoaded(true); setStatusChecking(false); }
       }
       try {
         // Notebook mode lists ONLY this notebook's threads (?notebookId=); the
@@ -594,13 +604,19 @@ export const ChatPanel = ({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isNotebook, notebookId]);
+  }, [isNotebook, notebookId, statusRevision]);
 
   // Keep the stream pinned to the bottom as tokens / messages arrive — but ONLY
   // while the user is near the bottom (B1). Scrolled away ⇒ the pill lights up.
   useEffect(() => {
+    // The notebook welcome panel is reading content, not a transcript. Starting
+    // it at the bottom clips its heading on shorter windows / larger fonts.
+    if (messages.length === 0) {
+      if (scrollRef.current) scrollRef.current.scrollTop = 0;
+      return;
+    }
     stick.notifyContentChange();
-  }, [messages, stick]);
+  }, [messages, stick.notifyContentChange]);
 
   // ── Deep link `?thread=<id>` (A5) — global mode only ─────────────────────────
   // Open the linked conversation once the list has loaded. The param is KEPT
@@ -905,6 +921,16 @@ export const ChatPanel = ({
             string,
             unknown
           >;
+          if (tc.impact?.resourcePreview) clearSessionResourceCache();
+          if (['create_deck','update_deck','delete_deck'].includes(tc.name)) {
+            void (api as any).decks.get().then(ok).then((rows: any) => {
+              const fresh = (Array.isArray(rows) ? rows : rows.items ?? []).map(deckFromApi);
+              const ids = new Set(fresh.map((deck: {id:string}) => deck.id));
+              useNN.setState(state => ({ decks: fresh, cards: state.cards.filter(card => ids.has(card.deckId)) }));
+            }).catch(() => {});
+          }
+          if (tc.name === 'delete_card' && typeof args.id === 'string') useNN.setState(state => ({ cards: state.cards.filter(card => card.id !== args.id) }));
+          if (tc.name === 'delete_flashcard_note' && typeof args.id === 'string') useNN.setState(state => ({ cards: state.cards.filter(card => card.noteId !== args.id) }));
           const deckId = typeof args.deckId === 'string' ? args.deckId : undefined;
           const cardId = typeof args.cardId === 'string' ? args.cardId : undefined;
           if (tc.name === 'create_card' && deckId) {
@@ -1643,38 +1669,12 @@ export const ChatPanel = ({
     [onSaveAnswer],
   );
 
-  // ── Render: setup notice when chat is unconfigured ───────────────────────────
-
+  // Unavailable service and failed status requests use a recoverable product state.
   if (statusLoaded && status && !status.chatEnabled) {
-    return (
-      <div style={{ padding: isMobile ? 16 : 32, maxWidth: 640, margin: '0 auto' }}>
-        <NNCard padding={24} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <NNIcon name="sparkle" size={20} color="var(--violet-400)" />
-            <h2
-              style={{
-                fontSize: 18,
-                fontWeight: 700,
-                fontFamily: 'var(--font-sans)',
-                color: 'var(--text)',
-                margin: 0,
-              }}
-            >
-              {t('chat.setup.title')}
-            </h2>
-          </div>
-          <p style={{ fontSize: 14, lineHeight: 1.5, color: 'var(--text-muted)', margin: 0 }}>
-            {t('chat.setup.body')}
-          </p>
-          <p style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text-dim)', margin: 0 }}>
-            {t('chat.setup.indexNote')}
-          </p>
-          <p style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text-dim)', margin: 0 }}>
-            {t('chat.setup.docsHint')}
-          </p>
-        </NNCard>
-      </div>
-    );
+    return <ChatUnavailable connectionError={Boolean(statusError)} busy={statusChecking}
+      requestId={statusError?.requestId}
+      onRetry={() => { setStatusChecking(true); setStatusRevision(value => value + 1); }}
+      onLeave={() => router.push('/cards')} />;
   }
 
   // ── Render: main two-pane shell ──────────────────────────────────────────────
@@ -1723,14 +1723,14 @@ export const ChatPanel = ({
           <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex' }}>
           <div
             ref={scrollRef}
-            className="nn-scroll"
+            className="nn-scroll reomi-chat-scroll"
             aria-busy={
               threadResource.status === 'loading' || threadResource.status === 'refreshing'
             }
             style={{
               flex: 1,
               overflowY: 'auto',
-              padding: isMobile ? '16px 14px' : '24px 28px',
+              padding: isMobile ? '16px 14px' : '24px',
               display: 'flex',
               flexDirection: 'column',
               gap: 18,
@@ -1753,7 +1753,7 @@ export const ChatPanel = ({
               />
             )}
             {threadResource.status === 'loading' && threadResource.data === null ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 760, width: '100%', margin: '0 auto' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: isNotebook ? 760 : 'var(--chat-column-width)', width: '100%', margin: '0 auto' }}>
                 <NNSkeleton height={48} />
                 <NNSkeleton height={96} />
               </div>
@@ -1797,54 +1797,24 @@ export const ChatPanel = ({
                   t={t}
                 />
               ) : (
-                <div
-                  style={{
-                    margin: 'auto',
-                    maxWidth: 460,
-                    textAlign: 'center',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    gap: 12,
-                  }}
-                >
-                  <NNIcon name="sparkle" size={34} color="var(--violet-400)" />
-                  <h2
-                    style={{
-                      fontSize: 20,
-                      fontWeight: 700,
-                      fontFamily: 'var(--font-sans)',
-                      color: 'var(--text)',
-                      margin: 0,
-                    }}
-                  >
-                    {t('chat.stream.emptyTitle')}
-                  </h2>
+                <div className="reomi-chat-welcome">
+                  <span className="reomi-chat-welcome-icon"><NNIcon name="sparkle" size={26} color="var(--accent-500)" /></span>
+                  <h2>{t('chat.stream.emptyTitle')}</h2>
                   <p style={{ fontSize: 14, lineHeight: 1.55, color: 'var(--text-muted)', margin: 0 }}>
                     {t('chat.stream.emptySubtitle')}
                   </p>
                   {/* Suggested prompts — new conversations only; click = send now. */}
                   {!activeId && suggestions.length > 0 && (
-                    <div
-                      style={{
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        justifyContent: 'center',
-                        gap: 8,
-                        marginTop: 6,
-                      }}
-                    >
+                    <div className="reomi-chat-suggestions">
                       {suggestions.map((s) => (
                         <button
                           key={s}
                           type="button"
+                          className="reomi-chat-suggestion"
                           disabled={sending}
                           onClick={() => void sendContent(s)}
                           style={{
-                            border: '1px solid var(--border)',
-                            background: 'var(--surface-2)',
                             color: 'var(--text-muted)',
-                            borderRadius: 999,
                             padding: '7px 14px',
                             fontSize: 12.5,
                             fontFamily: 'var(--font-sans)',
@@ -1864,7 +1834,7 @@ export const ChatPanel = ({
                   display: 'flex',
                   flexDirection: 'column',
                   gap: 18,
-                  maxWidth: 760,
+                  maxWidth: isNotebook ? 760 : 'var(--chat-column-width)',
                   width: '100%',
                   margin: '0 auto',
                 }}
@@ -1873,7 +1843,7 @@ export const ChatPanel = ({
                   <React.Fragment key={m.id}>
                     {/* Day separator between messages from different LOCAL days (B2). */}
                     {needsDaySeparator(messages[i - 1]?.createdAt, m.createdAt) && (
-                      <div
+                      <div className="reomi-chat-date"
                         style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -1881,7 +1851,7 @@ export const ChatPanel = ({
                           margin: '2px 0',
                         }}
                       >
-                        <span style={{ flex: 1, borderTop: '1px dashed var(--border-2)' }} />
+                        <span style={{ flex: 1, borderTop: '1px solid var(--panel-edge)' }} />
                         <span
                           style={{
                             fontSize: 10.5,
@@ -1895,7 +1865,7 @@ export const ChatPanel = ({
                         >
                           {formatDayLabel(m.createdAt!, locale, t)}
                         </span>
-                        <span style={{ flex: 1, borderTop: '1px dashed var(--border-2)' }} />
+                        <span style={{ flex: 1, borderTop: '1px solid var(--panel-edge)' }} />
                       </div>
                     )}
                     <MessageRow
@@ -2040,6 +2010,7 @@ export const ChatPanel = ({
               and a single bottom controls row (attach · model · context · send).
               All behavior preserved (popovers, drag/paste, queue, stop). */}
           <div
+            className="reomi-composer-zone"
             onDragOver={(e) => {
               if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
             }}
@@ -2051,8 +2022,8 @@ export const ChatPanel = ({
               }
             }}
             style={{
-              padding: isMobile ? '6px 12px 12px' : '6px 24px 14px',
-              background: 'var(--bg)',
+              padding: isMobile ? '6px 14px 12px' : '6px 24px 14px',
+              background: 'transparent',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
@@ -2062,11 +2033,7 @@ export const ChatPanel = ({
               className="nn-nb-composer"
               style={{
                 width: '100%',
-                maxWidth: messages.length === 0 ? 560 : 620,
-                background: 'var(--surface)',
-                border: '1px solid var(--border-2)',
-                borderRadius: 16,
-                boxShadow: 'var(--shadow-md)',
+                maxWidth: isNotebook ? (messages.length === 0 ? 560 : 620) : 'var(--chat-column-width)',
                 padding: '10px 12px',
                 display: 'flex',
                 flexDirection: 'column',
@@ -2312,7 +2279,7 @@ export const ChatPanel = ({
                 style={{
                   width: '100%',
                   resize: 'none',
-                  minHeight: 24,
+                  minHeight: isNotebook ? 24 : 44,
                   maxHeight: 160,
                   padding: '2px 4px',
                   border: 'none',
@@ -2326,7 +2293,7 @@ export const ChatPanel = ({
               />
               {/* Bottom controls row — attach · model pill · context chip ·
                   spacer · ⏎ kbd · send/stop. */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div className="reomi-composer-controls">
                 <button
                   type="button"
                   className="nn-nb-icon-btn"
@@ -2392,21 +2359,6 @@ export const ChatPanel = ({
                   </>
                 )}
                 <span style={{ flex: 1 }} />
-                {!isMobile && (
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      fontSize: 11,
-                      color: 'var(--text-dim)',
-                      fontFamily: 'var(--font-sans)',
-                    }}
-                  >
-                    <NNKbd>⏎</NNKbd>
-                    {t('chat.composer.sendHint')}
-                  </span>
-                )}
                 {/* Send toggles to Stop while a turn is in flight (S6 / AC3.3). */}
                 {sending ? (
                   <button
@@ -2737,16 +2689,16 @@ const MessageRow = ({
                 </div>
               )}
               <div
-                className="nn-nb-user-bubble"
+                className="nn-nb-user-bubble reomi-user-message"
                 style={{
                   padding: '10px 14px',
-                  borderRadius: '16px 16px 4px 16px',
+                  borderRadius: 18,
                   background: 'var(--surface-3)',
                   border: '1px solid var(--border)',
                   color: 'var(--text)',
                   fontFamily: 'var(--font-sans)',
-                  fontSize: 13.5,
-                  lineHeight: 1.5,
+                  fontSize: 15,
+                  lineHeight: 1.6,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                   minWidth: 0,
@@ -2800,29 +2752,34 @@ const MessageRow = ({
     );
   }
 
+  const activityFirst = isStreaming || !answerStarted || toolCalls.some(call => call.awaitingConfirmation && !call.decision);
+  const activity = toolCalls.length > 0 ? (
+    <ToolActivityGroup
+          toolCalls={toolCalls}
+          elapsedMs={message.elapsedMs}
+          streaming={isStreaming}
+          answerStarted={answerStarted}
+          resolveCard={resolveCard}
+          deckNameById={deckNameById}
+          onConfirm={(toolCallId, decision, payload) =>
+            onConfirm(message.id, toolCallId, decision, payload)
+          }
+          onOpenCard={onOpenCard}
+          onOpenDeckCards={onOpenDeckCards}
+          onSourceCitation={onSourceCitation}
+          t={t}
+        />
+  ) : null;
+
   // Assistant turn: model prose (above) is visibly separate from the cited cards
   // (below), making own-vs-general content distinguishable (AC3).
   return (
-    <div className="nn-msg-row" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div className="nn-msg-row reomi-assistant" style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
       <div
         title={formatTimestamp(message.createdAt, locale)}
         style={{ display: 'flex', alignItems: 'center', gap: 8 }}
       >
-        <span
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: 9,
-            flexShrink: 0,
-            background: 'var(--tone-violet-bg)',
-            border: '1px solid var(--tone-violet-border)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <NNIcon name="sparkle" size={14} color="var(--violet-400)" />
-        </span>
+        <span className="reomi-brand-mark" aria-hidden style={{ width: 19, height: 19 }} />
         <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-sans)' }}>
           {t('chat.stream.assistantName')}
         </span>
@@ -2856,27 +2813,8 @@ const MessageRow = ({
         />
       )}
 
-      {/* Condensed activity group (Codex-like) — a single timed, collapsible work
-          block wrapping the turn's tool steps, ABOVE the prose. Reasoning stays
-          above it (rendered just before). "Worked for Ns" shows once finished and
-          `elapsedMs` is present; on reload timing is absent (graceful). */}
-      {toolCalls.length > 0 && (
-        <ToolActivityGroup
-          toolCalls={toolCalls}
-          elapsedMs={message.elapsedMs}
-          streaming={isStreaming}
-          answerStarted={answerStarted}
-          resolveCard={resolveCard}
-          deckNameById={deckNameById}
-          onConfirm={(toolCallId, decision, payload) =>
-            onConfirm(message.id, toolCallId, decision, payload)
-          }
-          onOpenCard={onOpenCard}
-          onOpenDeckCards={onOpenDeckCards}
-          onSourceCitation={onSourceCitation}
-          t={t}
-        />
-      )}
+      {/* Pending confirmations and live work stay above the answer. */}
+      {activityFirst && activity}
 
       {/* Model prose rendered as Markdown (same pipeline as cards, via SafeHtml).
           The inline [card:<id>] grounding tokens are stripped — the sources are
@@ -2991,11 +2929,14 @@ const MessageRow = ({
         </div>
       )}
 
+      {/* Completed work is secondary to the answer; keep it available below the prose. */}
+      {!activityFirst && activity}
+
       {/* Per-message actions: copy clean prose + «В заметки» + (last assistant
           only) regenerate + a dim model · token badge (B6). Ghost 26px buttons
           (A2). Only on a finished turn with prose. */}
       {!isStreaming && answerStarted && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', marginLeft: -9 }}>
+        <div className="reomi-message-footer" style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginLeft: -6 }}>
           <ActionBtn icon="copy" label={t('chat.message.copy')} onClick={() => onCopy?.()} />
           {onSaveAnswer && (
             <ActionBtn
@@ -3013,27 +2954,20 @@ const MessageRow = ({
           )}
           {(message.model || usageTotal(message.usage) > 0) && (
             <span
-              title={
+              data-tooltip={
                 message.usage
-                  ? `${message.usage.promptTokens} in · ${message.usage.completionTokens} out`
+                  ? `${t('chat.message.tokens', { count: usageTotal(message.usage).toLocaleString() })} · ${message.usage.promptTokens} in · ${message.usage.completionTokens} out`
                   : undefined
               }
               style={{
-                marginLeft: 'auto',
+                marginLeft: 10,
                 fontSize: 10.5,
                 color: 'var(--text-dim)',
                 fontFamily: 'var(--font-sans)',
                 whiteSpace: 'nowrap',
               }}
             >
-              {[
-                message.model ? (modelLabel?.(message.model) ?? message.model) : null,
-                usageTotal(message.usage) > 0
-                  ? t('chat.message.tokens', { count: usageTotal(message.usage).toLocaleString() })
-                  : null,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
+              {message.model ? (modelLabel?.(message.model) ?? message.model) : t('chat.message.tokens', { count: usageTotal(message.usage).toLocaleString() })}
             </span>
           )}
         </div>
@@ -3043,7 +2977,7 @@ const MessageRow = ({
 };
 
 // ── Notebook empty state (A2) ────────────────────────────────────────────────
-// Violet-glow hero + serif title + 2×2 suggestion cards + «Обновить подсказки».
+// Quiet reading welcome + suggestion cards + «Обновить подсказки».
 // Suggestion icons/tones cycle by index (bolt/amber, clock/sky, bulb/lime,
 // target/violet); clicking a card sends the question. The refresh button renders
 // only when `onRefresh` is passed (workspace wires it to the overview regen).
@@ -3082,44 +3016,18 @@ const NotebookChatEmpty = ({
       padding: '8px 0',
     }}
   >
-    {/* Violet radial glow behind the hero. */}
-    <div
-      aria-hidden
-      style={{
-        position: 'absolute',
-        top: -24,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        width: 560,
-        height: 380,
-        maxWidth: '100%',
-        pointerEvents: 'none',
-        background: 'radial-gradient(closest-side, var(--tone-violet-bg), transparent 72%)',
-      }}
-    />
-    <span
-      style={{
-        width: 54,
-        height: 54,
-        borderRadius: 16,
-        marginBottom: 20,
-        background: 'var(--surface)',
-        border: '1px solid var(--border-2)',
-        boxShadow: 'var(--glow-violet)',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      <NNIcon name="sparkle" size={24} color="var(--violet-400)" />
+    <span className="nn-nb-welcome-icon">
+      <NNIcon name="sparkle" size={24} color="var(--accent-500)" />
     </span>
     <h1
       style={{
         margin: 0,
         fontFamily: 'var(--font-serif)',
         fontWeight: 400,
-        fontSize: 36,
-        letterSpacing: -0.4,
+        fontSize: 30,
+        lineHeight: 1.35,
+        letterSpacing: -0.5,
+        textWrap: 'balance',
         color: 'var(--text)',
         textAlign: 'center',
       }}
@@ -3167,33 +3075,8 @@ const NotebookChatEmpty = ({
                 className="nn-nb-sug"
                 disabled={sending}
                 onClick={() => onAsk(q)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 10,
-                  padding: '12px 13px',
-                  borderRadius: 12,
-                  cursor: 'pointer',
-                  background: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  textAlign: 'left',
-                  fontFamily: 'var(--font-sans)',
-                }}
               >
-                <span
-                  style={{
-                    width: 26,
-                    height: 26,
-                    borderRadius: 8,
-                    flexShrink: 0,
-                    marginTop: 1,
-                    background: 'var(--surface-2)',
-                    border: '1px solid var(--border)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
+                <span className="nn-nb-sug-icon">
                   <NNIcon name={s.icon} size={13} color={`var(--${s.tone}-400)`} />
                 </span>
                 <span style={{ fontSize: 12.5, lineHeight: 1.45, color: 'var(--text-muted)' }}>{q}</span>
@@ -3259,8 +3142,10 @@ const ActionBtn = ({
       display: 'inline-flex',
       alignItems: 'center',
       gap: 6,
-      height: 26,
-      padding: '0 9px',
+      height: 30,
+      width: 30,
+      justifyContent: 'center',
+      padding: 0,
       borderRadius: 7,
       cursor: 'pointer',
       background: 'transparent',
@@ -3272,7 +3157,6 @@ const ActionBtn = ({
     }}
   >
     <NNIcon name={icon} size={13} />
-    {label}
   </button>
 );
 
@@ -3702,7 +3586,7 @@ const ToolActivityStep = ({
         : t('chat.tool.running');
 
   // Awaiting-confirmation steps must show their Apply/Reject body without a click.
-  const bodyOpen = open || !!toolCall.awaitingConfirmation;
+  const bodyOpen = open || pendingConfirm;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -3772,9 +3656,7 @@ const ToolActivityStep = ({
               color={toolCall.status === 'ok' ? 'var(--lime-400)' : 'var(--rose-400)'}
             />
           )}
-          <NNBadge tone={statusTone} size="xs">
-            {statusText}
-          </NNBadge>
+          {toolCall.status === 'ok' && !pendingConfirm ? <span className="reomi-visually-hidden">{statusText}</span> : <NNBadge tone={statusTone} size="xs">{statusText}</NNBadge>}
           {hasBody && (
             <span
               style={{
@@ -3791,7 +3673,7 @@ const ToolActivityStep = ({
 
       {/* Step body — NNCard is reserved for the BODY (AC1.4). */}
       {hasBody && bodyOpen && (
-        <NNCard padding={12} style={{ background: 'var(--surface-2)' }}>
+        <NNCard className={pendingConfirm ? 'reomi-confirm-surface' : 'reomi-read-surface'} padding={12} style={{ background: 'var(--surface-2)' }}>
           {/* Phase B: confirm-before-write controls (reused verbatim). */}
           {toolCall.awaitingConfirmation && (
             <ConfirmControls toolCall={toolCall} onConfirm={onConfirm} t={t} />
@@ -3838,11 +3720,11 @@ const ToolActivityStep = ({
             {!isWebSearch &&
               cardCitations.length === 0 &&
               (toolCall.result ?? '').length > 0 && (
-                <WebSearchResultText text={toolCall.result ?? ''} />
+                <CompactToolResult text={toolCall.result ?? ''} toolName={toolCall.name} t={t} />
               )}
             {/* web_search → UNTRUSTED: plain-text result with scheme-validated links. */}
             {isWebSearch && (toolCall.result ?? '').length > 0 && (
-              <WebSearchResultText text={toolCall.result ?? ''} />
+              <CompactToolResult text={toolCall.result ?? ''} toolName={toolCall.name} t={t} />
             )}
           </div>
         </NNCard>
@@ -3972,15 +3854,15 @@ const ToolActivityGroup = ({
   const singleStep = toolCalls.length === 1;
   // Force open when ANY step is awaiting confirmation so Apply/Reject is never
   // hidden behind a closed multi-step group (AC1.4).
-  const anyAwaiting = toolCalls.some((c) => c.awaitingConfirmation);
+  const anyAwaiting = toolCalls.some((c) => c.awaitingConfirmation && !c.decision);
   const { status, live, initialOpen } = groupHeaderState(toolCalls, {
     streaming,
     answerStarted,
-    singleStepAutoOpen: singleStep,
+    singleStepAutoOpen: singleStep && !answerStarted,
     anyAwaiting,
   });
   // Effective open state: a manual choice wins; else auto (initialOpen || live || anyAwaiting).
-  const open = manualOpen ?? (initialOpen || live || anyAwaiting);
+  const open = anyAwaiting || (manualOpen ?? (initialOpen || live));
 
   const groups = summarizeSteps(toolCalls);
   const totalSteps = toolCalls.length;
@@ -3999,7 +3881,8 @@ const ToolActivityGroup = ({
   const timeText =
     elapsedMs != null && !live ? t('chat.activity.worked', { time: formatElapsed(elapsedMs, t) }) : null;
   const countText = dominantPhrase ?? (singleStep ? '' : t('chat.activity.steps', { count: totalSteps }));
-  const summaryText = live ? t('chat.activity.working') : (timeText ?? countText);
+  const singleLabel = singleStep ? toolLabel(toolCalls[0]!.name, toolCalls[0]!.args) : null;
+  const summaryText = live ? t('chat.activity.working') : (timeText ?? (singleLabel ? t(singleLabel.labelKey, singleLabel.params) : countText));
   // For a finished turn that ALSO has timing, surface the count/phrase as a suffix.
   const stepSuffix = !live && timeText && countText ? countText : null;
 
@@ -4010,18 +3893,21 @@ const ToolActivityGroup = ({
         ? 'var(--text-dim)'
         : 'var(--lime-400)';
 
+  const renderStep = (tc: ToolCallVM) => <ToolActivityStep key={tc.id} toolCall={tc} resolveCard={resolveCard} deckNameById={deckNameById}
+    onConfirm={(decision, payload) => onConfirm(tc.id, decision, payload)} onOpenCard={onOpenCard} onOpenDeckCards={onOpenDeckCards} onSourceCitation={onSourceCitation} t={t} />;
+  if (anyAwaiting) {
+    const pending = toolCalls.filter(call => call.awaitingConfirmation && !call.decision);
+    const completed = toolCalls.filter(call => !pending.includes(call));
+    return <div className="reomi-activity-stack">
+      {completed.length > 0 && <details className="reomi-completed-actions"><summary><NNIcon name="check" size={13} />{t('chat.activity.completedSteps', { count: completed.length })}</summary>
+        <div>{completed.map(renderStep)}</div>
+      </details>}
+      {pending.map(renderStep)}
+    </div>;
+  }
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 8,
-        border: '1px solid var(--border)',
-        borderRadius: 'var(--r-md)',
-        background: 'var(--surface)',
-        padding: '8px 12px',
-      }}
-    >
+    <div className="reomi-chat-activity" data-live={live || undefined} data-open={open} data-settled={!live && !anyAwaiting || undefined}>
       {/* Header — the single collapse toggle for the whole work block. */}
       <button
         type="button"
@@ -4193,7 +4079,7 @@ const ConfirmControls = ({ toolCall, onConfirm, t }: ConfirmControlsProps) => {
     (Object.values(fv).find((v) => v.trim()) ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
 
   return (
-    <div
+    <div className="reomi-confirm-content"
       style={{
         marginTop: 10,
         paddingTop: 10,
@@ -4219,6 +4105,16 @@ const ConfirmControls = ({ toolCall, onConfirm, t }: ConfirmControlsProps) => {
       {/* What exactly changes / will be written — degrades silently when the
           payload is absent (old persisted rows, reload mid-pause). */}
       <ConfirmDiff rows={diffRows} proposalOnly={toolCall.name === 'create_card'} t={t} />
+      {impact?.resourcePreview && !impact.proposedNote && <div className="reomi-resource-preview">
+        {impact.resourcePreview.title && <strong>{impact.resourcePreview.title}</strong>}
+        {impact.resourcePreview.destructive && <p className="reomi-resource-warning">{t('chat.confirm.resourceDeleteWarning')}</p>}
+        <dl>{impact.resourcePreview.fields.map((field, index) => <div key={index}>
+          <dt>{t(`chat.resourceFields.${field.field}`)}</dt>
+          <dd>{field.before !== undefined && <del>{field.before}</del>}{field.after !== undefined && <span>{field.after}</span>}</dd>
+        </div>)}</dl>
+        {impact.resourcePreview.affected?.map(item => <span className="reomi-resource-count" key={item.kind}>{t(`chat.resourceKinds.${item.kind}`)}: {item.count}</span>)}
+      </div>}
+
 
       {/* save_note proposal (Р14 / N3): a flat preview — title + a capped content
           excerpt. NOT the create_card wizard (notes aren't cards), no −/+ diff
@@ -4652,6 +4548,34 @@ const WebSearchResultText = ({ text }: { text: string }) => {
   );
 };
 
+function CompactToolResult({ text, toolName, t }: { text: string; toolName: string; t: (key: string, params?: Record<string, string | number>) => string }) {
+  const [expanded, setExpanded] = useState(false);
+  const router = useAppNavigation();
+  const deckRows = Array.from(text.matchAll(/^\s*-\s+(.+?)\s+\[deck:([^\]]+)\]\s*[—–-]\s*(\d+) card\(s\), (\d+) due/gm), match => ({ title: match[1], id: match[2], total: match[3], due: match[4] }));
+  let parsed: any = null;
+  try { parsed = JSON.parse(text); } catch { /* Existing plain-text tools. */ }
+  const rawItems: any[] = Array.isArray(parsed?.items) ? parsed.items.filter((item: unknown) => item && typeof item === 'object' && !Array.isArray(item)) : [];
+  const items: any[] = deckRows.length ? deckRows : rawItems.filter(item => typeof item.title === 'string' || typeof item.name === 'string');
+  if (items.length) return <div className="reomi-tool-result-list">
+    <div className="reomi-tool-result-count">{t('chat.activity.results', { count: typeof parsed?.total === 'number' ? parsed.total : items.length })}</div>
+    {(expanded ? items : items.slice(0, 5)).map((item, index) => {
+      const title = typeof item.title === 'string' ? item.title : item.name;
+      const path = typeof item.id !== 'string' ? null : toolName === 'list_library' ? `/library/${encodeURIComponent(item.id)}` : toolName === 'list_notebooks' ? `/notebooks/${encodeURIComponent(item.id)}` : deckRows.length ? `/cards?q=${encodeURIComponent(`deck:"${title}"`)}` : null;
+      return <div className="reomi-tool-result-row" key={item.id ?? index}>
+        {path ? <button type="button" onClick={() => router.push(path)}>{title}</button> : <span>{title}</span>}
+        {deckRows.length > 0 && <span className="reomi-tool-result-numbers">{t('chat.activity.cardsCount', { count: item.total })}<small>{t('chat.activity.dueCount', { count: item.due })}</small></span>}
+        {item.kind && <small>{String(item.kind).toUpperCase()}</small>}
+      </div>;
+    })}
+    {items.length > 5 && <button type="button" className="reomi-tool-more" onClick={() => setExpanded(value => !value)}>{t(expanded ? 'chat.activity.collapseResults' : 'chat.activity.moreResults', { count: items.length - 5 })}</button>}
+  </div>;
+  const printable = rawItems.some(item => typeof item.text === 'string') ? rawItems.filter(item => typeof item.text === 'string').map(item => item.text).join('\n\n') : text;
+  const result = compactToolText(printable);
+  return <div className="reomi-tool-result"><WebSearchResultText text={expanded ? result.full : result.preview} />
+    {result.truncated && <button type="button" className="reomi-tool-more" onClick={() => setExpanded(value => !value)}>{t(expanded ? 'chat.activity.collapseResults' : 'chat.tool.resultDetails')}</button>}
+  </div>;
+}
+
 // ── Compact dropdown menu (hand-rolled — no UI lib, Principle 4) ──────────────
 // Shared by the model + deck-scope pickers. A trigger button opens a small
 // absolutely-positioned popover above the composer; clicking outside or picking
@@ -4704,22 +4628,7 @@ const PickerMenu = ({
         title={triggerLabel}
         aria-label={triggerLabel}
         aria-expanded={open}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '5px 10px',
-          borderRadius: 'var(--r-pill)',
-          border: '1px solid var(--border-2)',
-          background: open ? 'var(--surface-3)' : 'var(--surface-2)',
-          color: 'var(--text)',
-          fontFamily: 'var(--font-sans)',
-          fontSize: 12.5,
-          fontWeight: 600,
-          cursor: 'pointer',
-          maxWidth: 220,
-          transition: 'background 120ms ease',
-        }}
+        className="reomi-composer-picker"
       >
         <NNIcon name={icon} size={13} color="var(--text-dim)" />
         <span
@@ -4840,33 +4749,9 @@ interface ResearchToggleProps {
 }
 
 const ResearchToggle = ({ active, onToggle, t }: ResearchToggleProps) => (
-  <button
-    type="button"
-    onClick={onToggle}
-    title={t('chat.composer.researchHint')}
-    aria-pressed={active}
-    style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 6,
-      padding: '5px 10px',
-      borderRadius: 'var(--r-pill)',
-      border: active
-        ? '1px solid color-mix(in srgb, var(--violet-400) 55%, transparent)'
-        : '1px solid var(--border-2)',
-      background: active
-        ? 'color-mix(in srgb, var(--violet-500) 16%, var(--surface-2))'
-        : 'var(--surface-2)',
-      color: active ? 'var(--violet-300)' : 'var(--text)',
-      fontFamily: 'var(--font-sans)',
-      fontSize: 12.5,
-      fontWeight: 600,
-      cursor: 'pointer',
-      transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease',
-    }}
-  >
-    <NNIcon name="doc" size={13} color={active ? 'var(--violet-300)' : 'var(--text-dim)'} />
-    <span>{t('chat.composer.research')}</span>
+  <button type="button" onClick={onToggle} className="reomi-composer-research"
+    title={t('chat.composer.researchHint')} aria-label={t('chat.composer.research')} aria-pressed={active}>
+    <NNIcon name="doc" size={16} />
   </button>
 );
 

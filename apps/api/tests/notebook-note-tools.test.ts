@@ -4,7 +4,7 @@
 // CONTRACT (read from apps/api/src/ai/tools.ts + the /resume apply path, NOT
 // invented):
 //   * Registry shape: in NOTEBOOK mode list_notes/read_note/save_note ARE
-//     offered; in GLOBAL mode they are NOT (calling them → unknown-tool error).
+//     offered; GLOBAL mode requires an explicit owned notebookId.
 //   * list_notes returns pinned-first notes (id/title/kind/excerpt). read_note
 //     returns one note's full markdown; a foreign/missing noteId is a
 //     self-correcting error (ok:false, loop continues). Note content does NOT
@@ -196,16 +196,16 @@ function executedTools(frames: SseFrame[]): string[] {
 // ── registry shape ──────────────────────────────────────────────────────────────
 
 describe('note tools — registry shape', () => {
-  test('notebook mode offers list_notes/read_note/save_note; global mode does not', () => {
+  test('notebook mode offers scoped note tools; global mode requires explicit notebookId', () => {
     const notebookNames = buildToolRegistry({ notebook: true }).map((t) => t.name);
     expect(notebookNames).toContain('list_notes');
     expect(notebookNames).toContain('read_note');
     expect(notebookNames).toContain('save_note');
 
     const globalNames = buildToolRegistry({}).map((t) => t.name);
-    expect(globalNames).not.toContain('list_notes');
-    expect(globalNames).not.toContain('read_note');
-    expect(globalNames).not.toContain('save_note');
+    expect(globalNames).toContain('list_notes');
+    expect(globalNames).toContain('read_note');
+    expect(globalNames).toContain('save_note');
   });
 
   test('save_note is a write tool with validate + dryRun', () => {
@@ -310,7 +310,7 @@ describe('note tools — list_notes / read_note', () => {
     expect(frames.some((f) => f.event === 'done')).toBe(true);
   });
 
-  test('list_notes is NOT offered in a GLOBAL conversation → unknown tool', async () => {
+  test('global list_notes rejects missing notebookId without reading notes', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
 
     __setAiClientForTests({
@@ -326,7 +326,7 @@ describe('note tools — list_notes / read_note', () => {
 
     const result = frames.find((f) => f.event === 'tool_result')!;
     expect((result.data as { ok: boolean }).ok).toBe(false);
-    expect((result.data as { summary: string }).summary).toContain('unknown tool');
+    expect((result.data as { summary: string }).summary).toContain('invalid_arguments');
   });
 });
 

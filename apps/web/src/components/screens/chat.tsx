@@ -9,4 +9,4 @@
 
 import { ChatPanel } from '@/components/chat/chat-panel';
 
-export const NNChat = () => <ChatPanel mode="global" />;
+export const NNChat = () => <div className="reomi-chat-workspace"><ChatPanel mode="global" /></div>;

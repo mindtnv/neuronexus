@@ -1,6 +1,8 @@
 const m = {
   // Thread list (left rail)
   threads: {
+    actions: 'Conversation actions',
+    resize: 'Conversation list width',
     title: 'Conversations',
     newThread: 'New chat',
     empty: 'No conversations yet.',
@@ -34,7 +36,7 @@ const m = {
     you: 'You',
     assistant: 'Assistant',
     // Assistant name in the answer header (A2 redesign).
-    assistantName: 'NeuroNexus',
+    assistantName: 'Reomi',
     // «by N sources» meta in a notebook answer header (N = scope size).
     bySources: 'by {count} sources',
     thinking: 'Thinking…',
@@ -102,13 +104,14 @@ const m = {
     quiz: 'Quiz me on {name}',
   },
   // Setup notice (chatEnabled === false)
-  setup: {
-    title: 'Chat isn\'t configured yet.',
-    body:
-      'Grounded chat needs an OpenAI-compatible chat model. Set CHAT_API_KEY (and optionally CHAT_BASE_URL / CHAT_MODEL) in the server environment, then restart the API.',
-    indexNote:
-      'Embeddings (for retrieval) are configured separately via OPENAI_API_KEY — leave both unset to keep AI features off.',
-    docsHint: 'See the AI / RAG section of the project README for the full variable list.',
+  unavailable: {
+    title: 'Chat is unavailable',
+    service: 'The chat service is currently unavailable. Try again later — your cards and library are still available.',
+    connection: 'We could not connect to the chat service. Check your connection and try again.',
+    retry: 'Try again',
+    checking: 'Checking chat availability…',
+    cards: 'Go to cards',
+    reference: 'Support reference: {id}',
   },
   // Streamed reasoning trace (collapsible, ephemeral — never persisted)
   reasoning: {
@@ -139,6 +142,54 @@ const m = {
   },
   // Agentic tool calls (search_cards / web_search) surfaced as cards in the stream
   tool: {
+    get_capabilities: 'Check AI capabilities',
+    list_cards: 'List cards',
+    list_tags: 'List tags',
+    get_review_queue: 'Read review queue',
+    get_card_sources: 'Read card sources',
+    get_similar_cards: 'Find similar cards',
+    get_semantic_graph: 'Read knowledge graph',
+    list_note_types: 'List note types',
+    list_deck_options: 'Read deck options',
+    list_filtered_decks: 'List saved study decks',
+    get_retention: 'Read retention',
+    list_library: 'List library materials',
+    search_library: 'Search library',
+    get_library_item: 'Read material details',
+    read_source_chunks: 'Read material',
+    get_source_cards: 'Read source cards',
+    get_source_marks: 'Read highlights and bookmarks',
+    get_source_annotations: 'Read PDF annotations',
+    list_notebooks: 'List notebooks',
+    get_notebook: 'Read notebook details',
+    list_notebook_sources: 'List notebook sources',
+    list_notebook_notes: 'List notebook notes',
+    list_artifacts: 'List studio artifacts',
+    get_artifact: 'Read studio artifact',
+    list_quiz_attempts: 'Read quiz attempts',
+    get_notebook_coverage: 'Read card coverage',
+    get_concept_map: 'Read concept map',
+    create_deck: 'Create deck',
+    update_deck: 'Update deck',
+    delete_deck: 'Delete deck',
+    create_notebook: 'Create notebook',
+    update_notebook: 'Update notebook',
+    delete_notebook: 'Delete notebook',
+    update_note: 'Update note',
+    delete_note: 'Delete note',
+    attach_source: 'Attach material',
+    detach_source: 'Detach material',
+    update_source: 'Update material',
+    set_reading_status: 'Set reading status',
+    delete_card: 'Delete card',
+    delete_flashcard_note: 'Delete flashcard note',
+    create_text_source: 'Add library text',
+    create_url_source: 'Add library web page',
+    list_notes: 'List notes',
+    read_note: 'Read note',
+
+    deckCount: 'Decks: {count}',
+    resultDetails: 'Show full result',
     search_cards: 'Searched your cards',
     web_search: 'Searched the web',
     card_progress: 'Checked card progress',
@@ -175,14 +226,23 @@ const m = {
   },
   // Condensed activity group (Codex-like redesign) — the timed, collapsible work
   // block that wraps an assistant turn's reasoning + tool steps.
+  resourceFields: {title: 'Title', name: 'Name', description: 'Description', content: 'Note content', text: 'Source text', url: 'URL', color: 'Color', emoji: 'Icon', parentId: 'Parent deck', archived: 'Archived', pinned: 'Pinned', status: 'Status', language: 'Language', tags: 'Tags', notebook: 'Notebook', source: 'Material', icon: 'Icon'},
+  resourceKinds: {cards: 'Cards', decks: 'Decks', notes: 'Notes', artifacts: 'Studio artifacts', conversations: 'Conversations', reviews: 'Reviews'},
   activity: {
+    completedSteps: 'Completed actions: {count}',
+    results: 'Results: {count}',
+    cardsCount: 'Cards: {count}',
+    dueCount: 'Due: {count}',
+    moreResults: 'Show {count} more',
+    collapseResults: 'Show less',
+
     worked: 'Worked for {time}',
     working: 'Working…',
     workedSub: '<1s',
     workedSeconds: '{count}s',
     workedMinutes: '{m}m {s}s',
     workedHours: '{h}h {m}m',
-    steps: '{count} steps',
+    steps: 'Activity · {count}',
     step: '{count} step',
     appliedCreated: 'Created {count} cards in {deck} · open',
     appliedCreatedNodeck: 'Created {count} cards · open',
@@ -193,6 +253,7 @@ const m = {
   // Confirm-before-write controls (Phase B) — a write/SRS tool pauses the turn
   // and asks for explicit human approval, rendered inside the pending tool card.
   confirm: {
+    resourceDeleteWarning: 'The listed data will be deleted. Check the affected resources before confirming.',
     pendingTitle: 'Awaiting your confirmation',
     apply: 'Apply',
     reject: 'Reject',

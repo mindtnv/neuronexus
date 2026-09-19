@@ -27,6 +27,7 @@ import {
   type SourceStatus,
 } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNBadge, NNInlineRefresh, NNLoadError, NNSkeleton } from '@/components/ui';
+import { TextInput, PageSurface } from '@/components/design-system/primitives';
 import { api, ok } from '@/lib/api';
 import { useNN } from '@/lib/store';
 import type { Notebook, NotebookCoverSource, Source } from '@/lib/types';
@@ -415,57 +416,24 @@ export const NotebooksScreen = () => {
   const continueNb = !archived && !search.trim() && notebooks.length > 0 ? notebooks[0] : null;
 
   return (
-    <div
+    <PageSurface className="reomi-notebooks"
       aria-busy={notebooksResource.status === 'loading' || notebooksResource.status === 'refreshing'}
-      style={{ padding: isMobile ? 16 : 24, maxWidth: 1040, margin: '0 auto', width: '100%' }}
     >
       {createOpen && (
         <CreateNotebookDialog onCreate={onCreate} onClose={() => setCreateOpen(false)} t={t} />
       )}
 
-      {/* Screen topbar: title + mono count + search + archive toggle + create */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
-        <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 10, marginRight: 'auto' }}>
-          <h2
-            style={{
-              fontSize: 17,
-              fontWeight: 600,
-              letterSpacing: -0.3,
-              fontFamily: 'var(--font-sans)',
-              color: 'var(--text)',
-              margin: 0,
-            }}
-          >
-            {t('notebooks.list.title')}
-          </h2>
-          <span className="mono" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-            {notebooks.length}
-          </span>
-        </span>
-
-        {/* Live title-filter search (no ⌘K — that's owned by the global palette) */}
+      <div className="reomi-page-toolbar">
         <span className="nn-nb-search">
           <NNIcon name="search" size={14} color="var(--text-dim)" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('notebooks.list.search')}
-            aria-label={t('notebooks.list.search')}
-          />
+          <TextInput value={search} onChange={e => setSearch(e.target.value)} placeholder={t('notebooks.list.search')} aria-label={t('notebooks.list.search')} />
         </span>
-
-        <NNBtn
-          variant={archived ? 'soft' : 'ghost'}
-          size="md"
-          icon="stack"
-          active={archived}
-          onClick={() => setArchived((v) => !v)}
-        >
-          {archived ? t('notebooks.list.showActive') : t('notebooks.list.showArchive')}
-        </NNBtn>
-        <NNBtn variant="primary" size="md" icon="plus" onClick={() => setCreateOpen(true)}>
-          {t('notebooks.list.create')}
-        </NNBtn>
+        <span className="reomi-result-count">{notebooks.length}</span>
+        <NNBtn variant={archived ? 'soft' : 'ghost'} icon="stack"
+          aria-pressed={archived} ariaLabel={archived ? t('notebooks.list.showActive') : t('notebooks.list.showArchive')}
+          title={archived ? t('notebooks.list.showActive') : t('notebooks.list.showArchive')}
+          onClick={() => setArchived(value => !value)} />
+        <NNBtn className="reomi-create-icon" variant="soft" icon="plus" ariaLabel={t('notebooks.list.create')} title={t('notebooks.list.create')} onClick={() => setCreateOpen(true)} />
       </div>
 
       {notebooksResource.status === 'refreshing' && (
@@ -489,7 +457,7 @@ export const NotebooksScreen = () => {
       {/* «Продолжить» strip */}
       {continueNb && (
         <>
-          <div className="nn-nb-section-label">{t('notebooks.meta.sectionContinue')}</div>
+          <div className="nn-nb-section-label">{t('notebooks.list.sectionContinue')}</div>
           <ContinueCard
             notebook={continueNb}
             onOpen={() => navigation.push(`/notebooks/${continueNb.id}`)}
@@ -500,7 +468,7 @@ export const NotebooksScreen = () => {
 
       {/* «Все блокноты» section label (only with a populated grid) */}
       {!archived && filtered.length > 0 && (
-        <div className="nn-nb-section-label">{t('notebooks.meta.sectionAll')}</div>
+        <div className="nn-nb-section-label">{t('notebooks.list.sectionAll')}</div>
       )}
 
       {!notebooksLoaded ? (
@@ -545,7 +513,7 @@ export const NotebooksScreen = () => {
           {!archived && <CreateTile onClick={() => setCreateOpen(true)} t={t} />}
         </div>
       )}
-    </div>
+    </PageSurface>
   );
 };
 
@@ -635,9 +603,7 @@ const ContinueCard = ({
           {generatingLabel}
         </span>
       )}
-      <NNBtn size="sm" variant="soft" iconRight="arrow" onClick={onOpen}>
-        {t('notebooks.meta.open')}
-      </NNBtn>
+      <NNBtn variant="ghost" icon="arrow" ariaLabel={t('notebooks.list.open')} title={t('notebooks.list.open')} onClick={onOpen} />
     </div>
   );
 };
@@ -650,10 +616,10 @@ const CreateTile = ({ onClick, t }: { onClick: () => void; t: Tfn }) => (
       <NNIcon name="plus" size={16} color="var(--lime-400)" />
     </span>
     <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)' }}>
-      {t('notebooks.meta.newCardTitle')}
+      {t('notebooks.list.newCardTitle')}
     </span>
     <span style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: -4 }}>
-      {t('notebooks.meta.newCardHint')}
+      {t('notebooks.list.newCardHint')}
     </span>
   </button>
 );

@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
 import { NNCardForm } from '@/components/card-form';
+import { useT } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
 
 // ─────────────────────────────────────────────
@@ -13,6 +14,7 @@ import { useNN } from '@/lib/store';
 // ─────────────────────────────────────────────
 export const NNEditor = () => {
   const router = useAppNavigation();
+  const t = useT();
   const searchParams = useSearchParams();
   const cardId = searchParams?.get('card') ?? null;
   const deckQuery = searchParams?.get('deck') ?? null;
@@ -31,7 +33,10 @@ export const NNEditor = () => {
   }, [deckQuery, decks]);
 
   return (
+    <div className="reomi-page-surface reomi-editor-workspace">
     <NNCardForm
+      compactHeader
+      heading={editing ? t('editor.editCardTitle') : t('editor.newCard')}
       key={editing?.id ?? 'new'}
       card={editing}
       defaultDeckId={defaultDeckId}
@@ -40,5 +45,6 @@ export const NNEditor = () => {
       onSaved={(c) => router.replace(`/editor?card=${encodeURIComponent(c.id)}`, { track: false })}
       onDeleted={() => router.push('/decks')}
     />
+    </div>
   );
 };

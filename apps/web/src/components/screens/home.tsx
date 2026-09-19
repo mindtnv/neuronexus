@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useAppNavigation } from '@/components/navigation';
 import { State } from 'ts-fsrs';
 import { addDays, format, isSameDay, startOfDay, startOfMonth, subDays } from 'date-fns';
+import { PageSurface } from '@/components/design-system/primitives';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNPlant, NNSkeleton } from '@/components/ui';
 import { countDueCards } from '@/lib/cards';
 import { useNN } from '@/lib/store';
@@ -213,29 +214,18 @@ export const NNHome = () => {
   }
 
   return (
-    <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px 80px' : '24px 32px 80px' }}>
+    <PageSurface className="reomi-home">
       <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1.6fr 1fr', gap: isMobile ? 10 : 16, marginBottom: isMobile ? 14 : 20 }}>
         <div
           style={{
             padding: isMobile ? 16 : 24,
             borderRadius: 16,
-            background: 'linear-gradient(140deg, var(--surface) 0%, var(--surface-2) 100%)',
+            background: 'var(--surface)',
             border: '1px solid var(--border)',
             position: 'relative',
             overflow: 'hidden',
           }}
         >
-          <div
-            style={{
-              position: 'absolute',
-              right: -40,
-              top: -40,
-              width: 200,
-              height: 200,
-              borderRadius: '50%',
-              background: 'radial-gradient(circle, var(--tone-lime-bg-strong), transparent 70%)',
-            }}
-          />
           <div
             style={{
               fontSize: 11,
@@ -286,7 +276,7 @@ export const NNHome = () => {
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
             <NNBtn size="lg" variant="primary" icon="bolt" onClick={() => router.push('/review')}>{t('home.startReview')}</NNBtn>
-            <NNBtn size="lg" variant="outline" icon="plus" onClick={() => router.push('/editor')}>{t('home.addCard')}</NNBtn>
+            <NNBtn size="lg" variant="soft" icon="plus" ariaLabel={t('home.addCard')} title={t('home.addCard')} onClick={() => router.push('/editor')} />
             <div style={{ flex: 1 }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-dim)', fontSize: 12 }}>
               <NNIcon name="clock" size={13} /> {t('home.lastSession', { label: lastSessionLabel })}
@@ -382,7 +372,7 @@ export const NNHome = () => {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 10 : 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: isMobile ? 10 : 16 }}>
         <NNCard padding={0}>
           <div
             style={{
@@ -437,7 +427,7 @@ export const NNHome = () => {
           t={t}
         />
       )}
-    </div>
+    </PageSurface>
   );
 };
 
@@ -655,12 +645,7 @@ function HomeKnowledge({
 function HomeSkeleton({ isMobile }: { isMobile: boolean }) {
   return (
     <div
-      className="nn-scroll"
-      style={{
-        flex: 1,
-        overflow: 'auto',
-        padding: isMobile ? '16px 14px 80px' : '24px 32px 80px',
-      }}
+      className="reomi-page-surface nn-scroll reomi-home" aria-busy="true"
     >
       <div
         style={{
@@ -688,7 +673,7 @@ function HomeSkeleton({ isMobile }: { isMobile: boolean }) {
           <NNSkeleton width={isMobile ? '100%' : '55%'} height={6} style={{ marginTop: 18 }} />
           <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
             <NNSkeleton width={160} height={40} radius={10} />
-            <NNSkeleton width={140} height={40} radius={10} />
+            <NNSkeleton width={42} height={40} radius={10} />
           </div>
         </div>
 
@@ -735,6 +720,12 @@ function HomeSkeleton({ isMobile }: { isMobile: boolean }) {
         </div>
       </div>
 
+      <NNCard padding={20}>
+        <NNSkeleton width={100} height={16} style={{ marginBottom: 20 }} />
+        {Array.from({ length: 7 }, (_, index) => <div key={index} style={{ display: 'flex', gap: 20, alignItems: 'center', height: 32 }}>
+          <NNSkeleton width={90} height={12} /><NNSkeleton height={6} style={{ flex: 1 }} /><NNSkeleton width={24} height={12} />
+        </div>)}
+      </NNCard>
     </div>
   );
 }

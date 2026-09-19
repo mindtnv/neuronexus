@@ -1,0 +1,873 @@
+/* Theme-independent geometry; every colour comes from existing theme roles. */
+:root {
+  --shell-inset: 12px;
+  --page-gutter: 24px;
+  --control-radius: 10px;
+  --panel-radius: 18px;
+  --control-motion: 140ms;
+  --panel-motion: 200ms;
+  --panel-edge: color-mix(in srgb, var(--text) 9%, var(--surface));
+  --panel-shadow: 0 8px 24px color-mix(in srgb, var(--bg) 32%, transparent);
+}
+.reomi-button {
+  --button-h: 34px; --button-px: 12px; --button-fs: 13.5px; --button-gap: 7px;
+  --button-bg: transparent; --button-fg: var(--text); --button-edge: transparent;
+  display: inline-flex; align-items: center; justify-content: center;
+  height: var(--button-h); padding: 0 var(--button-px); gap: var(--button-gap);
+  background: var(--button-bg); color: var(--button-fg); border: 1px solid var(--button-edge);
+  border-radius: var(--control-radius); font: 500 var(--button-fs)/1.2 var(--font-sans);
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  transition: background-color var(--control-motion) ease, border-color var(--control-motion) ease, opacity var(--control-motion) ease, transform var(--control-motion) ease;
+}
+.reomi-button[data-size='sm'] { --button-h: 28px; --button-px: 10px; --button-fs: 12.5px; --button-gap: 6px; --control-radius: 8px; }
+.reomi-button[data-size='lg'] { --button-h: 42px; --button-px: 18px; --button-fs: 15px; --button-gap: 9px; --control-radius: 12px; }
+.reomi-button[data-size='xl'] { --button-h: 52px; --button-px: 24px; --button-fs: 16px; --button-gap: 10px; --control-radius: 14px; }
+.reomi-button[data-variant='primary'] { --button-bg: var(--accent-500); --button-fg: var(--text-on-accent); }
+.reomi-button[data-variant='violet'] { --button-bg: var(--violet-500); --button-fg: var(--text-on-violet); }
+.reomi-button[data-variant='amber'] { --button-bg: var(--amber-500); --button-fg: var(--text-on-amber); }
+.reomi-button[data-variant='soft'] { --button-bg: var(--surface-3); }
+.reomi-button[data-variant='outline'] { --button-edge: var(--border-2); }
+.reomi-button[data-variant='danger'] { --button-fg: var(--rose-500); --button-edge: var(--border); }
+.reomi-button[data-block] { width: 100%; }
+.reomi-button[data-active] { box-shadow: inset 0 0 0 1px var(--button-fg); }
+.reomi-button:disabled { cursor: not-allowed; opacity: .5; }
+.reomi-button[aria-busy='true'] { opacity: .8; }
+.reomi-button:not(:disabled):hover { background: color-mix(in srgb, var(--button-bg) 92%, var(--button-fg) 8%); }
+.reomi-button[data-variant='ghost']:not(:disabled):hover { background: var(--surface-3); }
+.reomi-button:not(:disabled):active { transform: translateY(1px); }
+.reomi-button-stack { display: inline-grid; grid-template-areas: 'content'; align-items: center; justify-items: center; }
+.reomi-button-content { grid-area: content; display: inline-flex; align-items: center; gap: var(--button-gap); }
+.reomi-button-spinner { grid-area: content; width: 1em; height: 1em; border: 1.7px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: reomi-spin .7s linear infinite; }
+@keyframes reomi-spin { to { transform: rotate(360deg); } }
+.reomi-surface { background: var(--surface); color: var(--text); border: 1px solid var(--panel-edge); border-radius: var(--panel-radius); min-width: 0; }
+.reomi-surface[data-level='subtle'] { background: var(--surface-2); border-color: transparent; }
+.reomi-surface[data-level='floating'] { background: var(--surface-2); box-shadow: var(--panel-shadow); }
+.reomi-surface[data-interactive] { cursor: pointer; transition: background-color var(--panel-motion) ease, border-color var(--panel-motion) ease; }
+.reomi-surface[data-interactive]:hover { background: var(--surface-2); border-color: var(--border-2); }
+.reomi-field { display: grid; gap: 7px; min-width: 0; }
+.reomi-field > label { font: 500 13px/1.4 var(--font-sans); color: var(--text); }
+.reomi-field-help { font-size: 12px; color: var(--text-muted); }
+.reomi-field-error { font-size: 12px; color: var(--rose-500); }
+.reomi-input {
+  box-sizing: border-box; width: 100%; min-width: 0; min-height: 38px; padding: 9px 12px;
+  border: 1px solid var(--border-2); border-radius: var(--control-radius); background: var(--input-fill, var(--surface-2));
+  color: var(--text); font: 400 14px/1.4 var(--font-sans); transition: border-color var(--control-motion) ease;
+}
+.reomi-input::placeholder { color: var(--text-muted); opacity: .8; }
+.reomi-input[aria-invalid='true'] { border-color: var(--rose-500); }
+.reomi-input:disabled { opacity: .5; cursor: not-allowed; }
+.reomi-textarea { min-height: 105px; resize: vertical; }
+.reomi-segments { display: flex; gap: 3px; padding: 4px; background: var(--surface-3); border: 0; border-radius: 12px; min-width: 0; }
+.reomi-segments > button { flex: 1; min-width: 0; border: 0; border-radius: 9px; padding: 8px 12px; background: transparent; color: var(--text-muted); font: 500 12.5px/1.3 var(--font-sans); cursor: pointer; transition: background-color var(--control-motion), color var(--control-motion); }
+.reomi-segments > button[aria-checked='true'] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px var(--ambient-shadow); }
+.reomi-segments > button:disabled { opacity: .45; cursor: not-allowed; }
+.reomi-button:focus-visible,.reomi-input:focus-visible,.reomi-segments > button:focus-visible,.reomi-surface:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 3px; }
+.reomi-reading { font-family: var(--font-serif); font-size: 17px; line-height: 1.75; overflow-wrap: anywhere; }
+.reomi-reading :is(button,input,textarea,select) { font-family: var(--font-sans); }
+.reomi-reading :is(pre,code,kbd) { font-family: var(--font-mono); }
+.reomi-reading > :first-child { margin-top: 0; }
+.reomi-reading > :last-child { margin-bottom: 0; }
+@media (pointer: coarse) { .reomi-button,.reomi-segments > button { min-height: 44px; } .reomi-input { min-height: 44px; font-size: 16px; } }
+@media (prefers-reduced-motion: reduce) {
+  .reomi-button,.reomi-input,.reomi-segments > button,.reomi-surface { transition: none; }
+  .reomi-button:not(:disabled):active { transform: none; }
+  .reomi-button-spinner { animation: none; border-style: dotted; }
+}
+.nn-nb-search > .reomi-input { border: 0; border-radius: 0; background: transparent; min-height: 30px; padding: 0; }
+
+/* Transparent brand mark follows the current theme; app icons retain their tile. */
+.reomi-brand-mark { display: inline-block; flex-shrink: 0; background: var(--accent-500); mask: url('/icons/reomi-mark.png') center / 210% no-repeat; -webkit-mask: url('/icons/reomi-mark.png') center / 210% no-repeat; }
+.nn-sidebar-brand { gap: 12px; }
+.nn-sidebar-toggle { margin-left: auto; flex-shrink: 0; }
+.nn-sidebar-footer { padding: 10px; margin: 0 4px; }
+.nn-account { width: 100%; position: relative; }
+.nn-account-trigger { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 14px; cursor: pointer; list-style: none; color: var(--text); }
+.nn-account-trigger::-webkit-details-marker { display: none; }
+.nn-account-trigger:hover,.nn-account[open] > summary { background: var(--surface); }
+.nn-account-avatar { display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; background: var(--surface-3); color: var(--text-muted); font-size: 11px; font-weight: 600; }
+.nn-account-copy { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.nn-account-copy strong { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nn-account-copy > span { font-size: 11px; color: var(--text-muted); }
+.nn-account-chevron { display: flex; color: var(--text-muted); }
+.nn-account[open] .nn-account-chevron { transform: rotate(180deg); }
+.nn-account-panel { position: absolute; z-index: 50; bottom: calc(100% + 8px); left: 0; width: max(100%, 200px); padding: 5px; background: var(--surface); border: 1px solid var(--panel-edge); border-radius: 12px; box-shadow: var(--panel-shadow); }
+.nn-account-panel :is(a,button) { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); text-decoration: none; font: 400 13px var(--font-sans); cursor: pointer; }
+.nn-account-panel :is(a,button):hover { background: var(--surface-2); }
+.nn-account-divider { height: 1px; margin: 4px 6px; background: var(--border); }
+.nn-account-trigger:focus-visible,.nn-account-panel :is(a,button):focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+
+@media (pointer: coarse) { .nn-account-panel :is(a,button) { min-height: 44px; } }
+
+/* One contained workspace: a full-width toolbar, local filters, then results. */
+.reomi-cards-workspace {
+  flex: 1; min-height: 0; min-width: 0; display: grid;
+  grid-template-columns: 196px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr);
+  margin: 0 var(--page-gutter) var(--shell-inset); overflow: hidden;
+  border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--surface);
+}
+.reomi-cards-workspace[data-filters='closed'] { grid-template-columns: minmax(0, 1fr); }
+.reomi-cards-toolbar { grid-column: 1 / -1; grid-row: 1; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--panel-edge); }
+.reomi-cards-search { position: relative; flex: 1; min-width: 140px; }
+.reomi-cards-search .reomi-input { background: var(--workspace-glass); border-color: var(--glass-edge); }
+.reomi-cards-search .reomi-input[aria-invalid='true'] { border-color: var(--rose-500); }
+.reomi-cards-filters { grid-column: 1; grid-row: 2; min-height: 0; overflow: auto; border-right: 1px solid var(--panel-edge); background: color-mix(in srgb, var(--surface-2) 30%, var(--surface)); }
+.reomi-cards-filter-list { padding: 10px 8px 20px; }
+.reomi-cards-filter-list > button:hover { background: var(--surface-3) !important; }
+.reomi-cards-filter-list button:focus-visible { outline: 2px solid var(--accent-500); outline-offset: -2px; }
+.reomi-cards-main { grid-column: 2; grid-row: 2; min-height: 0; }
+.reomi-cards-workspace[data-filters='closed'] .reomi-cards-main { grid-column: 1; }
+.reomi-cards-query-help { margin-left: auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 10px var(--font-mono); }
+@media (max-width: 1100px) { :root { --page-gutter: 16px; } .reomi-cards-workspace { grid-template-columns: 180px minmax(0, 1fr); } }
+@media (max-width: 719.98px) {
+  :root { --page-gutter: 8px; --shell-inset: 8px; }
+  .reomi-cards-workspace { border-radius: 14px; }
+  .reomi-cards-toolbar { flex-wrap: wrap; gap: 8px; padding: 10px; }
+  .reomi-cards-search { order: 1; flex-basis: 100%; }
+}
+
+/* Shared outer edges: header, workspace and sidebar end on the same baseline. */
+.nn-topbar:not([data-wco='1']) {
+  height: 60px; box-sizing: border-box;
+  margin: var(--shell-inset) var(--page-gutter);
+  padding: 0 18px; border: 1px solid var(--panel-edge); border-radius: 20px;
+  background: color-mix(in srgb, var(--surface) 80%, var(--surface-2));
+  box-shadow: 0 3px 14px color-mix(in srgb, var(--text) 2%, transparent);
+}
+.nn-topbar-page-actions { display: flex; align-items: center; gap: 8px; }
+.reomi-decks-content { flex: 1; min-height: 0; overflow: auto; padding: 0 var(--page-gutter) var(--shell-inset); }
+@media (min-width: 720px) {
+  .nn-app-sidebar-slot:has(.nn-sidebar-brand:not([data-wco='1'])) { padding-top: var(--shell-inset); padding-bottom: var(--shell-inset); }
+}
+@media (max-width: 719.98px) {
+  .nn-topbar:not([data-wco='1']) { height: 56px; padding-right: 10px; padding-left: 10px; border-radius: 16px; }
+  .nn-topbar-title-group { gap: 6px; }
+}
+
+/* Settings share the workspace edges; sections are rows in one quiet surface. */
+.reomi-settings {
+  flex: 1; min-height: 0; overflow: auto;
+  margin: 0 var(--page-gutter) var(--shell-inset);
+  border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--surface);
+}
+.reomi-settings-section { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 28px; padding: 26px; border-bottom: 1px solid var(--panel-edge); }
+.reomi-settings-section-heading { min-width: 0; }
+.reomi-settings-section-heading h2 { margin: 0; font-size: 14px; line-height: 1.5; font-weight: 600; }
+.reomi-settings-section-heading p { margin: 6px 0 12px; font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+.reomi-settings-section-heading > span { white-space: normal !important; }
+.reomi-settings-section-body { min-width: 0; }
+.reomi-settings-field { min-width: 0; }
+.reomi-settings-field-label { margin-bottom: 9px; font-size: 12px; font-weight: 500; color: var(--text-muted); }
+.reomi-theme-option { min-height: 66px; padding: 11px; border-radius: 12px; border: 1px solid transparent; background: var(--surface-2); color: var(--text); font: 500 12px var(--font-sans); text-align: left; cursor: pointer; }
+.reomi-theme-option:hover { background: var(--surface-3); }
+.reomi-theme-option[aria-pressed='true'] { border-color: var(--accent-500); background: color-mix(in srgb, var(--accent-500) 6%, var(--surface)); }
+.reomi-theme-option:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+.reomi-settings-danger { padding: 26px; }
+@media (max-width: 1200px) { .reomi-settings-section { grid-template-columns: minmax(0, 1fr); gap: 14px; } }
+@media (max-width: 719.98px) {
+  .reomi-settings { border-radius: 14px; }
+  .reomi-settings-section,.reomi-settings-danger { padding: 18px; }
+}
+
+.reomi-create-icon { width: 34px; height: 34px; padding: 0; border-radius: 50%; }
+.reomi-chat-workspace {
+  flex: 1; display: flex; min-width: 0; min-height: 0; overflow: hidden;
+  margin: 0 var(--page-gutter) var(--shell-inset);
+  border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--surface);
+}
+.reomi-thread-rail { background: color-mix(in srgb, var(--surface-2) 30%, var(--surface)); }
+.reomi-thread-rail .reomi-input { border-color: transparent; background: var(--surface-2); }
+.reomi-chat-welcome { margin: auto; width: 100%; max-width: 520px; display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; padding: 12px 0; }
+.reomi-chat-welcome-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 18px; margin-bottom: 4px; background: color-mix(in srgb, var(--accent-500) 7%, var(--surface)); }
+.reomi-chat-welcome h2 { margin: 0; font: 400 28px/1.35 var(--font-serif); letter-spacing: -.5px; text-wrap: balance; color: var(--text); }
+.reomi-chat-suggestions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; width: 100%; margin-top: 10px; }
+.reomi-chat-suggestion { min-height: 48px; border-radius: 12px; background: var(--surface-2); border: 1px solid transparent; text-align: left; }
+.reomi-chat-suggestion:hover:not(:disabled) { background: var(--surface-3); }
+.reomi-chat-suggestion:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+.reomi-chat-workspace .nn-nb-composer { background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); box-shadow: 0 4px 16px color-mix(in srgb, var(--text) 3%, transparent); border-radius: 22px; }
+@media (max-width: 719.98px) {
+  .reomi-chat-workspace { border-radius: 14px; }
+  .reomi-chat-welcome h2 { font-size: 24px; }
+  .reomi-chat-suggestions { grid-template-columns: minmax(0,1fr); }
+}
+@media (pointer: coarse) { .reomi-create-icon { width: 44px; height: 44px; } }
+
+/* A single material for chrome and workspaces in every selected palette. */
+:root { --workspace-fill: var(--surface); --page-padding: 22px; }
+.reomi-page-surface {
+  flex: 1; min-height: 0; min-width: 0; overflow: auto;
+  margin: 0 var(--page-gutter) var(--shell-inset); padding: var(--page-padding);
+  border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--workspace-fill);
+}
+.nn-topbar:not([data-wco='1']),
+.nn-app-sidebar-slot:has(.nn-sidebar-brand:not([data-wco='1'])) > .nn-sidebar,
+.reomi-chat-workspace,.reomi-cards-workspace,.reomi-settings { background: var(--workspace-fill); }
+.nn-sidebar-nav-item[aria-current='page'] { background: var(--surface-2); box-shadow: none; }
+.reomi-thread-rail { background: transparent; }
+.reomi-chat-workspace > div > section { background: transparent; }
+.reomi-page-toolbar { display: flex; align-items: center; gap: 10px; padding-bottom: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--panel-edge); }
+.reomi-page-toolbar .nn-nb-search { flex: 1; min-width: 120px; max-width: 480px; border: 0; background: var(--surface-2); border-radius: 12px; }
+.reomi-result-count { margin-right: auto; font-size: 12px; color: var(--text-muted); }
+.reomi-notebooks .nn-nb-section-label { text-transform: none; font-size: 12px; font-weight: 500; letter-spacing: 0; }
+.reomi-notebooks .nn-nb-card,.reomi-notebooks .nn-nb-continue { border-color: transparent; background: var(--surface-2); border-radius: 16px; box-shadow: none; }
+.reomi-notebooks .nn-nb-card:hover,.reomi-notebooks .nn-nb-continue:hover { transform: none; background: var(--surface-3); border-color: transparent; }
+.reomi-notebooks .nn-nb-continue-glow { display: none; }
+.reomi-notebooks .nn-nb-create { border: 0; border-radius: 16px; background: color-mix(in srgb, var(--surface-2) 50%, var(--surface)); }
+.reomi-notebooks .nn-nb-create:hover { background: var(--surface-2); }
+.reomi-notebooks .nn-nb-create-plus { border: 0; }
+.reomi-home > div:first-child > div { background: var(--surface-2) !important; border-color: transparent !important; border-radius: 18px !important; }
+.reomi-home .reomi-surface { border-color: var(--panel-edge); box-shadow: none; }
+.reomi-library-toolbar { display: flex; flex-direction: column; gap: 14px; padding-bottom: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--panel-edge); }
+.reomi-library .nn-lib-chip { border-color: transparent; background: transparent; min-height: 30px; padding: 5px 10px; font-weight: 500; }
+.reomi-library .nn-lib-chip:hover { background: var(--surface-2); }
+.reomi-library .nn-lib-chip.active { background: var(--surface-3); color: var(--text); border-color: transparent; }
+.reomi-library .nn-lib-grid { grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 18px; }
+.reomi-library .nn-lib-card { padding: 10px; background: var(--surface-2); border-radius: 16px; min-width: 0; }
+.reomi-library .nn-lib-card:hover { transform: none; background: var(--surface-3); }
+.reomi-library .nn-lib-card > div { width: 100%; }
+.reomi-library-status { position: absolute; top: 6px; left: 6px; right: 38px; }
+.reomi-library-status > span { display: block !important; height: auto !important; max-width: 100%; padding: 4px 6px !important; white-space: normal !important; line-height: 1.3; }
+.reomi-library .reomi-segments { flex-shrink: 0; }
+.reomi-library .reomi-segments > button { white-space: nowrap; }
+.reomi-chat-welcome { max-width: 560px; gap: 16px; }
+.reomi-chat-welcome h2 { font: 550 28px/1.3 var(--font-sans); letter-spacing: -.7px; }
+.reomi-chat-welcome > p { max-width: 460px; }
+.reomi-chat-welcome-icon { background: var(--surface-2); border-radius: 50%; }
+.reomi-chat-suggestion { background: color-mix(in srgb, var(--surface-2) 65%, var(--surface)); padding: 14px !important; min-height: 58px; border-radius: 14px; }
+.reomi-composer-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-top: 6px; }
+.reomi-chat-workspace .nn-nb-composer { background: var(--surface-2); border-color: transparent; box-shadow: none; padding: 14px !important; border-radius: 24px; }
+.reomi-chat-workspace .nn-nb-composer:focus-within { border-color: var(--panel-edge); box-shadow: none; }
+.reomi-composer-picker,.reomi-composer-research { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 9px; border: 0; border-radius: 10px; background: transparent; color: var(--text-muted); font: 500 12px var(--font-sans); cursor: pointer; max-width: 220px; }
+.reomi-composer-picker:hover,.reomi-composer-picker[aria-expanded='true'],.reomi-composer-research:hover { background: var(--surface-3); color: var(--text); }
+.reomi-composer-research { width: 32px; padding: 0; }
+.reomi-composer-research[aria-pressed='true'] { color: var(--accent-500); background: var(--tone-accent-bg); }
+.reomi-composer-picker:focus-visible,.reomi-composer-research:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+.reomi-composer-controls .nn-nb-send { border-radius: 50% !important; }
+@media (max-width: 719.98px) {
+  :root { --page-padding: 16px; }
+  .reomi-page-surface { border-radius: 14px; }
+  .reomi-page-toolbar { gap: 6px; }
+  .reomi-library-toolbar > div:first-child { flex-wrap: wrap; }
+  .reomi-library-toolbar > div:first-child > div:nth-child(2) { flex-basis: calc(100% - 52px); }
+  .reomi-library .nn-lib-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .reomi-library .nn-lib-card { padding: 7px; }
+  .reomi-chat-welcome h2 { font-size: 24px; }
+}
+@media (pointer: coarse) { .reomi-composer-picker,.reomi-composer-research { min-height: 44px; } }
+
+.nn-topbar:not([data-wco='1']) .nn-topbar-title { font-size: 18px; letter-spacing: -.35px; }
+.nn-app-sidebar-slot { position: relative; }
+.nn-sidebar-resizer { position: absolute; right: -5px; top: 20px; bottom: 20px; width: 10px; cursor: col-resize; touch-action: none; z-index: 25; }
+.nn-sidebar-resizer::after { content: ''; position: absolute; width: 2px; top: 8px; bottom: 8px; left: 4px; border-radius: 2px; background: transparent; }
+.nn-sidebar-resizer:hover::after,.nn-sidebar-resizer[data-dragging='true']::after,.nn-sidebar-resizer:focus-visible::after { background: var(--accent-500); opacity: .6; }
+.nn-sidebar-resizer:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 1px; border-radius: 4px; }
+body:has(.nn-sidebar-resizer[data-dragging='true']) { user-select: none; cursor: col-resize; }
+@media(max-width:719.98px) { .nn-sidebar-resizer { display:none; } }
+
+.reomi-modal { width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); margin: auto; padding: 0; overflow: auto; color: var(--text); background: var(--surface); border: 1px solid var(--panel-edge); border-radius: 22px; box-shadow: var(--panel-shadow); }
+.reomi-modal::backdrop { background: var(--scrim); }
+.reomi-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px 10px; }
+.reomi-modal-header h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.3px; }
+.reomi-modal-header .reomi-button { font-size: 23px; color: var(--text-muted); }
+.reomi-modal-body { display: grid; gap: 22px; padding: 10px 24px 24px; }
+.reomi-modal-description { margin: 0; font-size: 13px; color: var(--text-muted); }
+.reomi-modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 24px; border-top: 1px solid var(--panel-edge); }
+.reomi-color-field { min-width: 0; margin: 0; padding: 0; border: 0; }
+.reomi-color-field legend { margin-bottom: 10px; font-size: 13px; font-weight: 500; }
+.reomi-color-options { display: flex; gap: 12px; }
+.reomi-color-options button { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; border: 0; cursor: pointer; color: var(--text); }
+.reomi-color-options button[aria-pressed='true'] { outline: 2px solid var(--text-muted); outline-offset: 3px; }
+.reomi-color-options button:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 3px; }
+
+.reomi-review-workspace { flex: 1; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; margin: 0 var(--page-gutter) var(--shell-inset); background: var(--workspace-fill); border: 1px solid var(--panel-edge); border-radius: 20px; }
+.reomi-review-workspace[data-zen='true'] { margin-top: var(--shell-inset); }
+.reomi-review-scroll { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 0 24px 20px; }
+.reomi-review-actions { justify-content: center; flex-shrink: 0; padding: 16px 24px; border-top: 1px solid var(--panel-edge); background: var(--workspace-fill); }
+@media(max-width:719.98px) { .reomi-review-workspace { border-radius: 14px; } .reomi-review-scroll { padding: 0 14px 16px; } .reomi-review-actions { padding: 12px 14px; } }
+
+.nn-sidebar[data-compact='true'] .nn-sidebar-brand { flex-direction: column; padding: 18px 8px 10px; height: 96px; gap: 10px; }
+.nn-sidebar[data-compact='true'] .nn-sidebar-toggle { margin: 0; }
+.nn-sidebar[data-compact='true'] :is(.nn-sidebar-label,.nn-sidebar-badge,.nn-sidebar-section-label,.nn-sidebar-logo-expanded,.nn-account-copy,.nn-account-chevron) { display: none !important; }
+.nn-sidebar[data-compact='true'] :is(.nn-sidebar-logo-compact,.nn-sidebar-badge-dot) { display: inline-flex !important; }
+.nn-sidebar[data-compact='true'] .nn-sidebar-section-divider { display: block !important; margin: 14px 8px; }
+.nn-sidebar[data-compact='true'] .nn-sidebar-navigation { padding: 6px; }
+.nn-sidebar[data-compact='true'] .nn-sidebar-nav-item { justify-content: center; padding: 6px 0; }
+.nn-sidebar[data-compact='true'] .nn-sidebar-footer { margin: 0; padding: 8px 4px; }
+.nn-sidebar[data-compact='true'] .nn-account-trigger { justify-content: center; padding: 8px 0; }
+.nn-sidebar[data-compact='true'] .nn-sidebar-brand[data-wco='1'] { padding-top: 40px; }
+
+/* Consistent toolbar control geometry. */
+.reomi-cards-toolbar { --toolbar-height: 38px; }
+.reomi-cards-toolbar > .reomi-button { --button-h: var(--toolbar-height); width: var(--toolbar-height); padding: 0; border-radius: 11px; }
+.reomi-cards-toolbar .reomi-input { height: var(--toolbar-height); min-height: var(--toolbar-height); }
+.reomi-view-switcher { height: 38px; flex-shrink: 0; display: inline-flex; padding: 3px; gap: 2px; border-radius: 11px; background: var(--surface-2); }
+.reomi-view-switcher a { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border-radius: 8px; font-size: 12px; font-weight: 500; color: var(--text-muted); }
+.reomi-view-switcher a[aria-current='page'] { background: var(--surface); color: var(--text); box-shadow: 0 1px 4px var(--ambient-shadow); }
+.reomi-view-switcher a:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 1px; }
+.reomi-cards-status { background: var(--surface); }
+.reomi-cards-filter-list { padding: 12px; }
+.reomi-cards-filter-list > button { background: transparent; margin-bottom: 2px; transition: background 120ms ease; }
+.reomi-cards-filter-list > button[aria-pressed='true'] { background: var(--surface-3) !important; color: var(--text) !important; }
+.reomi-filter-all { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 38px; padding: 10px; border: 0; border-radius: 11px; font: 500 13px var(--font-sans); color: var(--text); cursor: pointer; }
+.reomi-cards-filter-list > div[style] { font-weight: 500; }
+.reomi-cards-filters { background: color-mix(in srgb, var(--surface-2) 18%, var(--surface)); }
+.reomi-library-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.reomi-library-filters label { display: flex; flex-direction: column; gap: 6px; min-width: 120px; }
+.reomi-library-filters label > span { font-size: 11px; color: var(--text-muted); padding-left: 2px; }
+.reomi-library-filters select { min-height: 36px; max-width: 210px; padding: 0 28px 0 10px; border: 1px solid transparent; border-radius: 10px; background: var(--surface-2); color: var(--text); font: 400 12px var(--font-sans); cursor: pointer; }
+.reomi-library-filters select:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+.reomi-library-sort { margin-left: auto; }
+.reomi-library-views { display: flex; gap: 2px; }
+.reomi-filter-toggle { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; color: var(--text-muted); font: 400 12px var(--font-sans); cursor: pointer; }
+.reomi-filter-toggle[aria-pressed='true'],.reomi-filter-toggle:hover { background: var(--surface-2); color: var(--text); }
+.reomi-deck-menu { border-color: var(--panel-edge) !important; border-radius: 14px !important; padding: 5px !important; background: var(--surface) !important; min-width: 216px !important; }
+.reomi-deck-menu button { background: transparent; transition: background 100ms ease; }
+.reomi-deck-menu button:hover,.reomi-deck-menu button:focus-visible { background: var(--surface-3); outline: none; }
+.reomi-chat-workspace { --chat-column-width: 720px; }
+.reomi-chat-date > span:not(:empty) { font-size: 10px !important; font-weight: 400 !important; letter-spacing: 0 !important; text-transform: none !important; }
+.reomi-assistant { padding: 6px 0 18px; }
+.reomi-user-message { border-color: transparent !important; background: var(--surface-2) !important; }
+.reomi-chat-activity { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; background: color-mix(in srgb, var(--surface-2) 65%, var(--surface)); border: 0; border-radius: 12px; }
+.reomi-chat-activity > button span { font-weight: 500 !important; color: var(--text-muted) !important; }
+.reomi-chat-activity > button { min-height: 22px; }
+.reomi-chat-activity button:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 3px; }
+.reomi-stats .reomi-surface { border-color: transparent; background: color-mix(in srgb, var(--surface-2) 55%, var(--surface)); box-shadow: none; border-radius: 18px; }
+
+/* Session loading uses the real shell's saved geometry and capsule surfaces. */
+.nn-auth-gate-skeleton { height: 100dvh; overflow: hidden; }
+.nn-auth-gate-sidebar { width: calc(var(--nn-sidebar-width, 232px) - 12px); flex: 0 0 calc(var(--nn-sidebar-width, 232px) - 12px); margin: 12px 0 12px 12px; border: 1px solid var(--panel-edge); border-radius: 22px; background: var(--workspace-fill); }
+.nn-auth-gate-logo { border: 0; }
+.nn-auth-gate-topbar { height: 60px; flex-shrink: 0; margin: var(--shell-inset) var(--page-gutter); padding: 0 18px; border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--workspace-fill); }
+.nn-auth-gate-skeleton[data-compact='true'] .nn-auth-gate-logo { padding: 0 12px; overflow: hidden; }
+.nn-auth-gate-skeleton[data-compact='true'] .nn-auth-gate-sidebar > :not(.nn-auth-gate-logo) { padding: 18px 8px !important; }
+@media(min-width:720px) and (max-width:1100px) {
+  .nn-auth-gate-sidebar { width: calc(var(--nn-sidebar-width, 232px) - 12px); flex-basis: calc(var(--nn-sidebar-width, 232px) - 12px); }
+  .nn-auth-gate-sidebar > :not(.nn-auth-gate-logo) { display: flex !important; }
+}
+@media(max-width:719.98px) {
+  .nn-auth-gate-topbar { height: 56px; border-radius: 16px; }
+  .reomi-library-sort { margin-left: 0; }
+  .reomi-library-filters { gap: 10px; }
+  .reomi-library-filters label { flex: 1; }
+  .reomi-library-filters select { width: 100%; max-width: none; }
+}
+@media(pointer:coarse) { .reomi-cards-toolbar { --toolbar-height: 44px; } .reomi-view-switcher { height: 44px; } }
+
+/* The logo divider and topbar share the same lower edge. */
+.nn-sidebar .nn-sidebar-brand:not([data-wco='1']),.nn-auth-gate-logo { height: 59px; border-bottom: 1px solid var(--panel-edge); position: relative; }
+.nn-sidebar[data-compact='true'] .nn-sidebar-brand:not([data-wco='1']) { height: 59px; padding: 0; display: grid; place-items: center; }
+.nn-sidebar[data-compact='true'] .nn-sidebar-brand:not([data-wco='1']) .nn-sidebar-toggle { position: absolute; opacity: 0; }
+.nn-sidebar[data-compact='true'] .nn-sidebar-brand:not([data-wco='1']):is(:hover,:focus-within) .nn-sidebar-toggle { opacity: 1; background: var(--surface-2); }
+.nn-sidebar[data-compact='true'] .nn-sidebar-brand:not([data-wco='1']):is(:hover,:focus-within) .nn-sidebar-logo-compact { opacity: 0; }
+.nn-sidebar-navigation { padding-top: 12px; }
+
+.reomi-notebook-workspace { flex: 1; display: flex; min-height: 0; min-width: 0; overflow: hidden; margin: 0 var(--page-gutter) var(--shell-inset); border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--workspace-fill); }
+.reomi-notebook-workspace > .reomi-page-surface { margin: 0; border: 0; }
+.reomi-notebook-workspace .nn-nb-ws-header { min-height: 68px; padding: 12px 16px !important; border-bottom-color: var(--panel-edge) !important; }
+.reomi-notebook-workspace .nn-nb-ws-back { height: 34px; border-radius: 10px; background: var(--surface-2); margin-right: 4px; }
+.reomi-notebook-workspace .nn-nb-ws-tile { width: 32px; height: 32px; border: 0 !important; border-radius: 10px; }
+.reomi-notebook-workspace .nn-nb-connect { background: var(--surface-2); border: 0; min-height: 38px; }
+.reomi-notebook-workspace .nn-nb-welcome-icon { width: 44px; height: 44px; border-radius: 50%; }
+.reomi-notebook-workspace .nn-nb-composer { background: var(--surface-2); box-shadow: none; border-color: transparent; border-radius: 22px; }
+.reomi-notebook-workspace .nn-nb-composer:focus-within { border-color: var(--panel-edge); }
+.reomi-notebook-sources,.reomi-notebook-dock { background: color-mix(in srgb, var(--surface-2) 20%, var(--surface)) !important; }
+.reomi-notebook-workspace .nn-source-row { padding: 10px 8px; border-radius: 11px; }
+.reomi-notebook-workspace .nn-nb-cover { box-shadow: none; border-radius: 6px; }
+.reomi-review-workspace { background: color-mix(in srgb, var(--surface-2) 24%, var(--surface)); }
+.reomi-review-card .nn-rendered :is(h1,h2,h3) { font-weight: 550; letter-spacing: -.45px; line-height: 1.4; }
+.reomi-review-card .nn-rendered pre { padding: 16px 18px; border: 0; border-radius: 3px; }
+.reomi-review-meta-row { justify-content: space-between; margin-bottom: 12px; }
+.reomi-review-details { min-width: 0; flex: 1; color: var(--text-muted); font-size: 11px; }
+.reomi-review-details summary { cursor: pointer; padding: 6px 0; width: fit-content; }
+.reomi-review-detail-content { display: flex; flex-wrap: wrap; gap: 12px; padding: 10px 0; line-height: 1.6; }
+.reomi-review-meta-row > a { display: grid !important; place-items: center; height: 30px; width: 30px; border-radius: 9px; }
+.reomi-review-meta-row > a:hover { background: var(--surface-2); }
+.reomi-review-actions { padding: 14px 24px; background: transparent; border-top-color: var(--panel-edge); }
+.reomi-rating { padding: 13px 16px; min-height: 64px; border: 1px solid transparent; border-radius: 14px; background: var(--surface); color: var(--text); display: flex; flex-direction: column; align-items: flex-start; gap: 7px; font-family: var(--font-sans); cursor: pointer; transition: background 140ms ease, border-color 140ms ease; }
+.reomi-rating:hover { background: color-mix(in srgb, var(--rating-color) 8%, var(--surface)); border-color: color-mix(in srgb, var(--rating-color) 45%, var(--surface)); }
+.reomi-rating:focus-visible { outline: 2px solid var(--rating-color); outline-offset: 2px; }
+@media(max-width:719.98px) { .reomi-notebook-workspace { border-radius: 14px; } .reomi-rating { min-height: 60px; padding: 10px 8px; } }
+@media(prefers-reduced-motion:reduce) { .reomi-rating { transition: none; } }
+
+.reomi-notebook-workspace .nn-nb-welcome-icon + h1 { font-family: var(--font-sans) !important; font-weight: 550 !important; font-size: 26px !important; letter-spacing: -.5px !important; }
+
+.reomi-palette { width: min(660px, calc(100vw - 24px)); max-height: min(700px, 84dvh); margin: min(8dvh, 72px) auto 0; padding: 0; color: var(--text); background: var(--workspace-fill); border: 1px solid var(--panel-edge); border-radius: 22px; box-shadow: 0 24px 64px var(--scrim); overflow: hidden; }
+.reomi-palette[open] { display: flex; flex-direction: column; }
+.reomi-palette::backdrop { background: var(--scrim); }
+.reomi-palette-search { display: flex; align-items: center; flex-shrink: 0; gap: 12px; min-height: 64px; padding: 12px 18px; border-bottom: 1px solid var(--panel-edge); color: var(--text-muted); }
+.reomi-palette-search > input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: 400 15px var(--font-sans); caret-color: var(--accent-500); }
+.reomi-palette-search > input::placeholder { color: var(--text-muted); }
+.reomi-palette-close { border: 0; padding: 4px; background: transparent; cursor: pointer; color: var(--text-muted); }
+.reomi-palette-results { flex: 1; min-height: 80px; overflow-y: auto; padding: 8px 0; }
+.reomi-palette-group { padding: 12px 22px 6px; font-size: 11px; font-weight: 500; color: var(--text-muted); }
+.reomi-palette-option { display: flex; align-items: center; gap: 12px; min-height: 48px; margin: 2px 8px; padding: 10px 12px; border-radius: 12px; cursor: pointer; }
+.reomi-palette-option[aria-selected='true'] { background: var(--surface-2); }
+.reomi-palette-icon { display: grid; place-items: center; width: 26px; height: 28px; flex-shrink: 0; color: var(--text-muted); }
+.reomi-palette-option[aria-selected='true'] .reomi-palette-icon { color: var(--accent-500); }
+.reomi-palette-option > svg { opacity: 0; flex-shrink: 0; color: var(--text-muted); }
+.reomi-palette-option[aria-selected='true'] > svg { opacity: 1; }
+.reomi-palette-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.reomi-palette-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
+.reomi-palette-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.reomi-palette-empty { padding: 32px 22px; text-align: center; font-size: 13px; color: var(--text-muted); }
+.reomi-palette-status { display: flex; align-items: center; gap: 8px; padding: 6px 20px; min-height: 28px; font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.reomi-palette-status button { border: 0; padding: 0; background: transparent; color: var(--text); font: inherit; text-decoration: underline; cursor: pointer; }
+.reomi-palette-footer { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-top: 1px solid var(--panel-edge); flex-shrink: 0; font-size: 10px; color: var(--text-muted); }
+.reomi-palette-footer > span { display: inline-flex; align-items: center; gap: 6px; }
+.reomi-palette-footer > span:last-child { margin-left: auto; }
+.reomi-palette button:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; border-radius: 5px; }
+@media(max-width:719.98px) { .reomi-palette { margin-top: 12px; max-height: calc(100dvh - 24px); } .reomi-palette-search > input { font-size: 16px; } .reomi-palette-footer { flex-wrap: wrap; gap: 10px; } .reomi-palette-footer > span:last-child { margin-left: 0; } }
+
+.reomi-decks-page { padding: 0; }
+.reomi-decks-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--panel-edge); }
+.reomi-decks-search { display: flex; align-items: center; position: relative; flex: 1; min-width: 180px; max-width: 440px; }
+.reomi-decks-search > svg { position: absolute; left: 12px; color: var(--text-muted); pointer-events: none; }
+.reomi-decks-search > input { padding-left: 36px; background: var(--surface-2); border-color: transparent; }
+.reomi-decks-count { margin-left: auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.reomi-decks-toolbar .reomi-segments { flex-shrink: 0; }
+.reomi-deck-list { border: 0; border-radius: 0; background: transparent; }
+.reomi-decks-empty { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 56px 20px; color: var(--text-muted); font-size: 14px; }
+.reomi-decks-empty p { margin: 0; }
+@media(max-width:719.98px) { .reomi-decks-toolbar { padding: 12px; gap: 8px; } .reomi-decks-search { max-width: none; flex-basis: 100%; } .reomi-decks-count { display: none; } }
+.reomi-decks-toolbar { --deck-control-height: 38px; }
+.reomi-decks-toolbar .reomi-segments { height: var(--deck-control-height); padding: 3px; }
+.reomi-decks-toolbar .reomi-segments > button { flex: 0 0 auto; min-width: max-content; padding: 0 14px; white-space: nowrap; }
+.reomi-decks-toolbar .reomi-input { height: var(--deck-control-height); }
+.reomi-decks-toolbar > .reomi-button { --button-h: var(--deck-control-height); width: var(--deck-control-height); padding: 0; }
+.reomi-decks-toolbar .reomi-decks-count { display: inline-flex; align-items: center; height: var(--deck-control-height); }
+@media(max-width:719.98px) { .reomi-decks-toolbar .reomi-decks-count { display: none; } }
+@media(pointer:coarse) { .reomi-decks-toolbar { --deck-control-height: 50px; } }
+
+.reomi-resize-handle { position: absolute; right: -5px; top: 0; bottom: 0; width: 10px; z-index: 12; cursor: col-resize; touch-action: none; }
+.reomi-resize-handle::after { content: ''; position: absolute; left: 4px; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: transparent; }
+.reomi-resize-handle:hover::after,.reomi-resize-handle:focus-visible::after,.reomi-resize-handle[data-dragging='true']::after { background: var(--accent-500); opacity: .5; }
+body:has(.reomi-resize-handle[data-dragging='true']) { user-select: none; cursor: col-resize; }
+.reomi-thread-item { position: relative; border-radius: 12px !important; min-height: 56px; }
+.reomi-thread-item[data-active='true'] { background: var(--surface-2) !important; }
+.reomi-thread-item-actions { position: absolute; right: 8px; top: 9px; opacity: 0; pointer-events: none; padding: 4px; border-radius: 7px; background: var(--surface-3); }
+.reomi-thread-item:hover .reomi-thread-item-actions,.reomi-thread-item:focus-within .reomi-thread-item-actions { opacity: 1; pointer-events: auto; }
+.reomi-thread-item-actions button { min-width: 24px; min-height: 24px; justify-content: center; align-items: center; }
+.reomi-tool-result > div { font-size: 12px !important; line-height: 1.6 !important; }
+.reomi-tool-result summary { margin-top: 8px; cursor: pointer; color: var(--text-muted); font-size: 11px; }
+.reomi-tool-result-full { max-height: 240px; overflow: auto; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel-edge); }
+.reomi-chat-activity { padding: 8px 10px; gap: 6px; background: transparent; border: 1px solid var(--panel-edge); }
+.reomi-chat-activity .reomi-surface { padding: 10px !important; border: 0; border-radius: 10px; }
+.reomi-review-tools { width: 100%; max-width: 880px; min-height: 52px; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+.reomi-review-shortcuts { font-size: 10px; color: var(--text-dim); }
+.reomi-review-inspector { display: none; }
+.reomi-review-info-mobile { width: 100%; max-width: 880px; margin: 0 0 12px; font-size: 12px; }
+.reomi-review-info-mobile > summary { padding: 8px 0; cursor: pointer; color: var(--text-muted); }
+.reomi-card-info h2 { margin: 0 0 18px; font: 600 14px var(--font-sans); }
+.reomi-card-info dl { margin: 0; display: grid; gap: 0; }
+.reomi-card-info dl > div { display: flex; flex-direction: column; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--panel-edge); }
+.reomi-card-info dt { font-size: 11px; color: var(--text-muted); }
+.reomi-card-info dd { margin: 0; font-size: 13px; line-height: 1.5; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.reomi-card-info-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; font-size: 11px; color: var(--text-muted); }
+.reomi-card-info-tags > span { padding: 4px 7px; border-radius: 7px; background: var(--surface-2); }
+/* Use available route width: resizing the main sidebar can hide the capsule too. */
+.reomi-review-layout { container-type: inline-size; flex: 1; min-width: 0; min-height: 0; display: flex; margin: 0 var(--page-gutter) var(--shell-inset); }
+.reomi-review-layout[data-zen='true'] { margin-top: var(--shell-inset); }
+.reomi-review-panels { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-width: 0; min-height: 0; gap: 16px; }
+.reomi-review-panels > .reomi-review-workspace { margin: 0; }
+.reomi-review-inspector { align-self: start; max-height: 100%; overflow: auto; padding: 22px 20px; border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--surface); box-shadow: 0 6px 24px color-mix(in srgb, var(--ambient-shadow) 35%, transparent); }
+@container (min-width: 960px) {
+  .reomi-review-layout:not([data-zen='true']) .reomi-review-panels { grid-template-columns: minmax(0, 1fr) 256px; }
+  .reomi-review-layout:not([data-zen='true']) .reomi-review-inspector { display: block; }
+  .reomi-review-layout:not([data-zen='true']) .reomi-review-info-mobile { display: none; }
+}
+
+.reomi-graph-workspace { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; margin: 0 var(--page-gutter) var(--shell-inset); overflow: hidden; border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--workspace-fill); }
+.reomi-graph-toolbar { display: flex; padding: 12px 16px; border-bottom: 1px solid var(--panel-edge); }
+@media(max-width:719.98px) { .reomi-graph-workspace { border-radius: 14px; } .reomi-thread-item-actions { opacity: 1; pointer-events: auto; position: static; background: transparent; } }
+
+.reomi-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.reomi-card-info dl > div { flex-direction: row; justify-content: space-between; gap: 12px; align-items: baseline; }
+.reomi-card-info dt { flex: 1; min-width: 0; }
+.reomi-card-info dd { max-width: 128px; text-align: right; }
+
+/* The standalone reader follows the same inset header and workspace as the library. */
+.reomi-library-reader { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.reomi-reader-header { display: flex; align-items: center; gap: 14px; flex-shrink: 0; min-height: 60px; padding: 8px 16px; margin: var(--shell-inset) var(--page-gutter); border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--surface); }
+.reomi-reader-workspace { display: flex; flex: 1; min-height: 0; min-width: 0; position: relative; overflow: hidden; margin: 0 var(--page-gutter) var(--shell-inset); border: 1px solid var(--panel-edge); border-radius: 20px; background: var(--surface); }
+.reomi-reader-workspace .nn-reader-bg { background: var(--surface-2); }
+.reomi-reader-workspace .nn-reader-toolbar { min-height: 52px; background: var(--surface); border-bottom: 1px solid var(--panel-edge); box-shadow: none; }
+.reomi-reader-workspace .nn-tb-btn { border-radius: 9px; }
+.reomi-reader-workspace .nn-tb-btn.active { background: color-mix(in srgb, var(--accent-500) 12%, var(--surface)); color: var(--accent-500); }
+.reomi-reader-empty { padding: 32px; text-align: center; gap: 14px; }
+.reomi-reader-empty h3 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+.reomi-reader-empty .nn-empty-state-hint { max-width: 400px; line-height: 1.6; }
+@media (max-width: 719px) {
+  .reomi-reader-header { gap: 8px; border-radius: 16px; flex-wrap: wrap; }
+  .reomi-reader-workspace { border-radius: 16px; }
+}
+.reomi-text-reader-toolbar { min-height: 52px; background: var(--surface); }
+
+.reomi-settings-tabs { display: flex; align-items: center; gap: 6px; padding: 12px 18px; overflow-x: auto; border-bottom: 1px solid var(--panel-edge); background: var(--surface); position: sticky; top: 0; z-index: 2; }
+.reomi-settings-tabs > button { flex-shrink: 0; min-height: 38px; padding: 0 15px; border: 0; border-radius: 10px; background: transparent; color: var(--text-muted); font: 500 13px var(--font-sans); cursor: pointer; white-space: nowrap; }
+.reomi-settings-tabs > button:hover { background: var(--surface-2); color: var(--text); }
+.reomi-settings-tabs > button[aria-selected='true'] { background: color-mix(in srgb, var(--accent-500) 12%, var(--surface)); color: var(--accent-500); }
+.reomi-settings-tabs > button:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+.reomi-settings [hidden] { display: none !important; }
+.reomi-settings [role='tabpanel']:focus-visible { outline: 2px solid var(--accent-500); outline-offset: -3px; }
+@media(max-width:719px) { .reomi-settings-tabs { padding: 10px; } .reomi-settings-tabs > button { min-height: 44px; } }
+.reomi-tooltip { position: fixed; z-index: 10000; width: max-content; max-width: min(296px, calc(100vw - 24px)); padding: 8px 11px; border: 1px solid var(--border-2); border-radius: 10px; background: var(--surface-3); color: var(--text); box-shadow: 0 5px 20px var(--ambient-shadow); font: 400 12px/1.45 var(--font-sans); pointer-events: none; overflow-wrap: anywhere; }
+
+/* Quiet glass on floating chrome. */
+:root {
+  --shell-background: radial-gradient(ellipse at 88% 4%, color-mix(in srgb, var(--accent-500) 7%, transparent), transparent 48%), radial-gradient(ellipse at 8% 96%, color-mix(in srgb, var(--accent-500) 4%, transparent), transparent 42%), var(--bg);
+  --glass-fill: color-mix(in srgb, var(--surface) 90%, transparent);
+  --glass-edge: color-mix(in srgb, var(--accent-500) 13%, var(--panel-edge));
+  --glass-halo: color-mix(in srgb, var(--accent-500) 7%, transparent);
+  --glass-highlight: color-mix(in srgb, white 35%, transparent);
+}
+[data-theme-mode='dark'] {
+  --glass-fill: color-mix(in srgb, var(--surface) 86%, transparent);
+  --glass-halo: color-mix(in srgb, var(--accent-500) 9%, transparent);
+  --glass-highlight: color-mix(in srgb, white 5%, transparent);
+}
+.nn-topbar:not([data-wco='1']),
+.nn-app-sidebar-slot:has(.nn-sidebar-brand:not([data-wco='1'])) > .nn-sidebar,
+.reomi-reader-header,
+.reomi-review-inspector {
+  background: var(--surface);
+  border-color: var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 6px 24px color-mix(in srgb, var(--ambient-shadow) 45%, transparent), 0 0 32px var(--glass-halo);
+}
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .nn-topbar:not([data-wco='1']),
+  .nn-app-sidebar-slot:has(.nn-sidebar-brand:not([data-wco='1'])) > .nn-sidebar,
+  .reomi-reader-header,
+  .reomi-review-inspector {
+    background: var(--glass-fill);
+    backdrop-filter: blur(18px) saturate(1.12);
+    -webkit-backdrop-filter: blur(18px) saturate(1.12);
+  }
+}
+.nn-sidebar-nav-item[aria-current='page'] {
+  background: color-mix(in srgb, var(--accent-500) 9%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-500) 8%, transparent), 0 0 18px color-mix(in srgb, var(--accent-500) 7%, transparent);
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :root { --shell-background: var(--bg); }
+  .nn-topbar:not([data-wco='1']),
+  .nn-app-sidebar-slot:has(.nn-sidebar-brand:not([data-wco='1'])) > .nn-sidebar,
+  .reomi-reader-header,
+  .reomi-review-inspector {
+    background: var(--surface); border-color: var(--panel-edge); box-shadow: none;
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  .nn-sidebar-nav-item[aria-current='page'] { background: var(--surface-2); box-shadow: none; }
+}
+
+/* Translucent working panels: let the soft accent field show through the canvas. */
+:root {
+  --shell-background: radial-gradient(ellipse at 78% 18%, color-mix(in srgb, var(--accent-500) 15%, transparent), transparent 58%), radial-gradient(ellipse at 22% 90%, color-mix(in srgb, var(--accent-500) 8%, transparent), transparent 52%), var(--bg);
+  --workspace-glass: color-mix(in srgb, var(--surface) 74%, transparent);
+  --reading-panel-fill: color-mix(in srgb, var(--surface) 62%, transparent);
+}
+[data-theme-mode='dark'] {
+  --workspace-glass: color-mix(in srgb, var(--surface) 62%, transparent);
+  --reading-panel-fill: color-mix(in srgb, var(--surface) 48%, transparent);
+}
+.reomi-review-workspace,
+.reomi-page-surface,
+.reomi-chat-workspace,
+.reomi-cards-workspace,
+.reomi-settings,
+.reomi-notebook-workspace,
+.reomi-reader-workspace,
+.reomi-graph-workspace {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--glass-highlight) 35%, transparent), transparent 60%), var(--workspace-glass);
+  border-color: var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 0 28px var(--glass-halo);
+}
+.reomi-review-scroll, .reomi-review-actions { background: transparent; }
+.reomi-review-card { backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :root, [data-theme-mode] { --shell-background: var(--bg); --workspace-glass: var(--surface); --reading-panel-fill: var(--surface); }
+  .reomi-review-workspace, .reomi-page-surface, .reomi-chat-workspace,
+  .reomi-cards-workspace, .reomi-settings, .reomi-notebook-workspace,
+  .reomi-reader-workspace, .reomi-graph-workspace {
+    background: var(--surface); border-color: var(--panel-edge); box-shadow: none;
+  }
+  .reomi-review-card { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* A little depth at the reading surface and tactile feedback on rating controls. */
+:root { --reading-panel-shadow: 0 8px 26px color-mix(in srgb, var(--ambient-shadow) 55%, transparent), inset 0 1px 0 var(--glass-highlight); }
+.reomi-review-card::before { content: ''; position: absolute; pointer-events: none; height: 1px; top: 0; left: 8%; right: 8%; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 12%, transparent), transparent); }
+.reomi-rating { transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease; }
+@media (hover: hover) and (pointer: fine) {
+  .reomi-rating:hover { transform: translateY(-2px); box-shadow: 0 5px 18px color-mix(in srgb, var(--rating-color) 10%, transparent); }
+}
+.reomi-rating:active { transform: translateY(0); box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .reomi-rating { transition: none; } .reomi-rating:hover { transform: none; } }
+@media (prefers-contrast: more), (forced-colors: active), (prefers-reduced-transparency: reduce) {
+  :root { --reading-panel-shadow: none; }
+  .reomi-review-card::before { display: none; }
+  .reomi-rating:hover { box-shadow: none; }
+}
+/* Inspector uses the same material as the main canvas, rather than dense chrome. */
+.reomi-review-inspector { background: var(--workspace-glass); }
+.reomi-assistant { padding: 4px 0 10px; }
+.reomi-assistant .nn-rendered p { margin-top: 6px; margin-bottom: 8px; }
+.reomi-assistant .nn-rendered :is(ul, ol) { margin-top: 6px; margin-bottom: 8px; }
+.reomi-assistant .nn-rendered > :first-child { margin-top: 0; }
+.reomi-assistant .nn-rendered > :last-child { margin-bottom: 0; }
+.reomi-cards-workspace { position: relative; container-type: inline-size; }
+.reomi-card-detail { position: absolute; inset: 0 0 0 auto; z-index: 15; width: min(760px, 72%); display: flex; flex-direction: column; min-height: 0; background: var(--surface); border-left: 1px solid var(--glass-edge); box-shadow: -12px 0 36px var(--ambient-shadow); }
+.reomi-card-detail-header { display: flex; align-items: center; gap: 6px; min-height: 64px; padding: 12px 18px; border-bottom: 1px solid var(--panel-edge); }
+.reomi-card-detail-header > div { flex: 1; min-width: 0; }
+.reomi-card-detail-header h2 { margin: 0 0 4px; font: 600 15px var(--font-sans); }
+.reomi-card-detail-header > div > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.reomi-card-detail-position { font: 11px var(--font-mono); color: var(--text-muted); margin-right: 6px; }
+.reomi-card-detail-tabs { padding: 12px 18px; }
+.reomi-card-detail-tabs .reomi-segments { width: fit-content; }
+.reomi-card-detail-tabs .reomi-segments > button { flex: 0 0 auto; white-space: nowrap; }
+.reomi-card-detail-preview { flex: 1; min-height: 0; overflow: auto; padding: 12px 28px 32px; }
+.reomi-card-detail-preview > section { padding: 8px 0 22px; margin-bottom: 22px; border-bottom: 1px solid var(--panel-edge); }
+.reomi-card-detail-preview h3 { font-size: 11px; font-weight: 500; color: var(--text-muted); margin: 0 0 14px; }
+.reomi-card-detail-preview .nn-rendered { font-size: 16px; line-height: 1.65; overflow-wrap: anywhere; }
+.reomi-card-detail-tags { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--text-muted); margin-bottom: 20px; }
+.reomi-card-detail-related { padding: 12px 0; }
+.reomi-card-detail-related > summary { cursor: pointer; font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+.reomi-card-detail-form { flex: 1; display: flex; min-height: 0; }
+.reomi-card-detail [hidden] { display: none !important; }
+@container (max-width: 900px) { .reomi-card-detail { width: 100%; border-left: 0; } }
+@media(max-width:719px) { .reomi-card-detail-header { padding: 10px 12px; } .reomi-card-detail-preview { padding: 12px 18px 24px; } }
+.reomi-card-detail-header h2:focus { outline: none; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-card-form-actions { position: sticky; top: 0; z-index: 3; padding: 10px 0; background: var(--surface); border-bottom: 1px solid var(--panel-edge); }
+.reomi-theme-toggle { width: 36px; height: 36px; flex-shrink: 0; border: 1px solid var(--panel-edge); border-radius: 50%; background: color-mix(in srgb, var(--surface) 50%, transparent); color: var(--text-muted); }
+.reomi-theme-toggle:hover { color: var(--accent-500); border-color: var(--glass-edge); }
+@media(pointer:coarse) { .reomi-theme-toggle { width: 44px; height: 44px; } }
+
+/* Syntax uses distinct semantic colours, independent of the UI accent. */
+:root { --syntax-keyword: #b38dff; --syntax-string: #9ed78c; --syntax-number: #f5b87a; --syntax-type: #77d4ce; --syntax-function: #87bcff; --syntax-comment: #99a4b5; --syntax-property: #e6b6ef; }
+[data-theme-mode='light'] { --syntax-keyword: #7837a9; --syntax-string: #32652e; --syntax-number: #9a4917; --syntax-type: #17666c; --syntax-function: #2058a0; --syntax-comment: #626b79; --syntax-property: #973d68; }
+.nn-rendered .hljs { color: var(--text); }
+.nn-rendered :is(.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag) { color: var(--syntax-keyword); }
+.nn-rendered :is(.hljs-string, .hljs-regexp, .hljs-addition, .hljs-symbol, .hljs-bullet) { color: var(--syntax-string); }
+.nn-rendered :is(.hljs-number, .hljs-meta, .hljs-link) { color: var(--syntax-number); }
+.nn-rendered :is(.hljs-type, .hljs-built_in, .hljs-builtin-name, .hljs-title.class_) { color: var(--syntax-type); }
+.nn-rendered :is(.hljs-title, .hljs-title.function_, .hljs-function .hljs-title, .hljs-selector-id, .hljs-selector-class) { color: var(--syntax-function); }
+.nn-rendered :is(.hljs-attr, .hljs-attribute, .hljs-property, .hljs-template-variable) { color: var(--syntax-property); }
+.nn-rendered :is(.hljs-comment, .hljs-quote) { color: var(--syntax-comment); font-style: italic; }
+.nn-rendered pre:has(> code.hljs) { box-shadow: none; }
+.nn-rendered pre > code.hljs { font-size: 12.5px; line-height: 1.7; tab-size: 4; }
+/* One opacity token for every structural panel, including library tiles. */
+:root { --panel-opacity: 74%; --workspace-glass: color-mix(in srgb, var(--surface) var(--panel-opacity), transparent); --glass-fill: var(--workspace-glass); --reading-panel-fill: var(--workspace-glass); }
+[data-theme-mode='dark'] { --panel-opacity: 62%; --workspace-glass: color-mix(in srgb, var(--surface) var(--panel-opacity), transparent); --glass-fill: var(--workspace-glass); --reading-panel-fill: var(--workspace-glass); }
+.reomi-surface,
+.reomi-library .nn-lib-card,
+.reomi-library .nn-lib-row,
+.reomi-library .nn-lib-continue-card,
+.reomi-notebooks .nn-nb-card,
+.reomi-settings-tabs { background: var(--workspace-glass); border-color: var(--glass-edge); }
+.reomi-library .nn-lib-card:hover { background: var(--workspace-glass); border-color: var(--accent-500); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :root, [data-theme-mode] { --panel-opacity: 100%; --workspace-glass: var(--surface); --glass-fill: var(--surface); --reading-panel-fill: var(--surface); }
+}
+.reomi-library .nn-lib-shelf-card { background: var(--workspace-glass); border-color: var(--glass-edge); }
+/* Conversation reading rhythm: the answer leads, finished tool work follows. */
+.reomi-chat-workspace { --chat-column-width: 680px; }
+.reomi-chat-prose { min-width: 0; }
+.reomi-chat-prose .nn-rendered p { margin: 0 0 12px; }
+.reomi-chat-prose .nn-rendered :is(ul, ol) { margin: 6px 0 12px; padding-left: 24px; }
+.reomi-chat-prose .nn-rendered li { margin: 4px 0; padding-left: 2px; }
+.reomi-chat-prose .nn-rendered > :last-child { margin-bottom: 0; }
+.reomi-chat-prose .nn-rendered :is(h1,h2,h3) { margin: 22px 0 10px; line-height: 1.4; letter-spacing: -.02em; }
+.reomi-chat-prose .nn-rendered :not(pre) > code { padding: 1px 4px; border-color: transparent; background: color-mix(in srgb, var(--surface-3) 55%, transparent); font-size: .88em; }
+.reomi-chat-prose .nn-rendered pre { margin: 14px 0; }
+.reomi-assistant { padding: 4px 0 16px; }
+.reomi-chat-activity[data-settled='true'][data-open='false'] { align-self: flex-start; width: auto; border: 0; background: transparent; padding: 2px 0; margin-top: 2px; }
+.reomi-chat-activity[data-settled='true'][data-open='false'] > button { width: auto !important; gap: 7px !important; }
+.reomi-chat-activity[data-settled='true'][data-open='false'] > button > span > span { font-size: 11.5px !important; }
+.reomi-message-footer { margin-top: -4px; }
+.reomi-chat-date { justify-content: center; }
+.reomi-chat-date > span:empty { display: none; }
+.reomi-chat-date > span:not(:empty) { font-size: 11px !important; }
+@media(max-width:719px) { .reomi-chat-prose .nn-rendered { font-size: 15px !important; } }
+.reomi-thread-item > button.reomi-thread-item-actions { width: 28px; height: 28px; display: grid; place-items: center; top: 13px; right: 8px; padding: 0; border: 0; color: var(--text-muted); cursor: pointer; background: var(--surface-2); }
+.reomi-thread-item-actions:hover, .reomi-thread-item-actions[aria-expanded='true'] { color: var(--text); background: var(--surface-3); opacity: 1; pointer-events: auto; }
+.reomi-thread-item:has(.reomi-thread-item-actions[aria-expanded='true']) { background: var(--surface-2); }
+.reomi-thread-menu { position: fixed; z-index: 200; width: 216px; max-width: calc(100vw - 16px); padding: 5px; border: 1px solid var(--glass-edge); border-radius: 13px; background: var(--surface); box-shadow: 0 12px 36px var(--ambient-shadow); }
+.reomi-thread-menu > button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 11px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: 400 13px var(--font-sans); text-align: left; cursor: pointer; }
+.reomi-thread-menu > button:hover, .reomi-thread-menu > button:focus-visible { outline: none; background: var(--surface-2); }
+.reomi-thread-menu > button[data-danger] { color: var(--rose-500); margin-top: 5px; border-top: 1px solid var(--panel-edge); border-radius: 0 0 8px 8px; }
+@media(pointer:coarse) { .reomi-thread-item > button.reomi-thread-item-actions { opacity: 1; pointer-events: auto; position: static; width: 36px; height: 36px; } .reomi-thread-menu > button { min-height: 44px; } }
+.reomi-palette-group + .reomi-palette-group { margin-top: 26px; }
+.reomi-palette-group h3 { display: flex; align-items: center; gap: 8px; margin: 8px 0 12px; font: 500 12px var(--font-sans); color: var(--text-muted); }
+.reomi-palette-group h3 > span { font-size: 10px; padding: 2px 6px; border-radius: 6px; background: var(--surface-2); color: var(--text-dim); }
+.reomi-chat-unavailable { display: grid; place-items: center; flex: 1; min-height: 0; overflow: auto; padding: 40px 24px; }
+.reomi-chat-unavailable-content { width: min(100%, 440px); display: flex; align-items: center; flex-direction: column; text-align: center; gap: 22px; }
+.reomi-chat-unavailable-icon { display: grid; place-items: center; position: relative; width: 72px; height: 72px; border-radius: 24px; background: color-mix(in srgb, var(--accent-500) 9%, transparent); border: 1px solid var(--glass-edge); color: var(--accent-500); }
+.reomi-chat-unavailable-icon > span { position: absolute; bottom: -4px; right: -4px; display: grid; place-items: center; width: 26px; height: 26px; border: 3px solid var(--surface); border-radius: 50%; background: var(--surface-3); color: var(--amber-500); }
+.reomi-chat-unavailable h2 { margin: 0 0 12px; color: var(--text); font: 600 24px/1.3 var(--font-sans); letter-spacing: -.04em; }
+.reomi-chat-unavailable p { margin: 0; font-size: 14px; line-height: 1.65; color: var(--text-muted); }
+.reomi-chat-unavailable-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.reomi-chat-unavailable small { color: var(--text-dim); font-size: 10px; overflow-wrap: anywhere; }
+@media(max-width:719px) { .reomi-chat-unavailable { padding: 24px 18px; } .reomi-chat-unavailable h2 { font-size: 21px; } }
+/* Reviewer: one reading surface, with context above and clear actions below. */
+.reomi-review-scroll { padding: 0 clamp(20px, 4vw, 52px) 28px; }
+.reomi-review-tools { max-width: 760px; min-height: 56px; margin-bottom: 0; gap: 6px; flex-shrink: 0; }
+.reomi-review-context { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; flex: 1; min-width: 0; padding-right: 12px; }
+.reomi-review-edit { display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; border-radius: 8px; color: var(--text-muted); }
+.reomi-review-edit:hover { color: var(--text); background: var(--surface-2); }
+.reomi-review-edit:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+.reomi-review-card { width: 100%; max-width: 760px; padding: 14px 0 12px; border: 0; border-radius: 0; background: transparent; box-shadow: none; position: relative; flex-shrink: 0; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.reomi-review-card::before { display: none; }
+.reomi-review-question > :first-child { margin-top: 0; }
+.reomi-review-question > :last-child { margin-bottom: 0; }
+.reomi-review-question { line-height: 1.4 !important; text-wrap: pretty; }
+.reomi-review-answer { margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--panel-edge); }
+.reomi-review-answer-content { overflow-x: auto; }
+.reomi-review-answer-content > :first-child { margin-top: 0; }
+.reomi-review-answer-content > :last-child { margin-bottom: 0; }
+.reomi-review-answer-content table { display: table; width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--panel-edge); border-radius: 12px; overflow: hidden; font-size: 14px; line-height: 1.5; margin: 18px 0; }
+.reomi-review-answer-content :is(th,td) { padding: 11px 14px; border: 0; border-bottom: 1px solid var(--panel-edge); }
+.reomi-review-answer-content th { background: color-mix(in srgb, var(--surface-3) 65%, transparent); }
+.reomi-review-answer-content tr:last-child td { border-bottom: 0; }
+.reomi-review-answer-content tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+.reomi-review-info-mobile { max-width: 760px; }
+.reomi-review-actions { padding: 16px clamp(20px, 4vw, 52px); }
+.reomi-review-action-content { width: 100%; max-width: 760px; pointer-events: auto; }
+.reomi-review-action-caption { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; font-size: 12px; color: var(--text-muted); }
+.reomi-review-action-caption .reomi-review-shortcuts { white-space: nowrap; }
+.reomi-review-actions .reomi-rating { background: var(--workspace-glass); border-color: var(--panel-edge); }
+.reomi-review-actions .reomi-rating:hover { background: color-mix(in srgb, var(--rating-color) 9%, var(--surface)); border-color: var(--rating-color); }
+@media(max-width:719px) {
+  .reomi-review-scroll { padding: 0 18px 20px; }
+  .reomi-review-tools { min-height: 60px; }
+  .reomi-review-card { padding-top: 14px; }
+  .reomi-review-answer { margin-top: 22px; padding-top: 18px; }
+  .reomi-review-actions { padding: 12px 14px; }
+  .reomi-review-action-caption { font-size: 11px; }
+  .reomi-review-action-caption .reomi-review-shortcuts { display: none; }
+}
+.reomi-resize-handle[data-edge='left'] { left: -5px; right: auto; }
+.reomi-card-detail { width: min(var(--card-detail-width, 720px), calc(100% - 160px)); background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
+.reomi-card-detail > .reomi-resize-handle::after { top: 12px; bottom: 12px; opacity: .25; background: var(--accent-500); }
+.reomi-card-detail > .reomi-resize-handle:hover::after, .reomi-card-detail > .reomi-resize-handle[data-dragging='true']::after { opacity: .85; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-card-form-heading { color: var(--text-muted); font-size: 12px; font-weight: 500; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-card-form-actions { padding: 0 0 14px; border-bottom: 1px solid var(--panel-edge); }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-card-form-actions > .reomi-button { --button-h: 34px; --control-radius: 10px; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-editor-label { text-transform: none !important; letter-spacing: 0 !important; color: var(--text-muted) !important; font-size: 12px !important; margin-bottom: 8px !important; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-rich-field { overflow: hidden; border: 1px solid var(--panel-edge); border-radius: 14px; background: color-mix(in srgb, var(--surface-2) 65%, transparent); }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-rich-field:focus-within { border-color: var(--accent-500); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-500) 9%, transparent); }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-rich-field-toolbar { padding: 6px 9px; gap: 3px !important; margin-bottom: 0 !important; border-bottom: 1px solid var(--panel-edge); }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-rich-field-toolbar > button { border: 0 !important; background: transparent !important; border-radius: 7px !important; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-rich-field-toolbar > button:hover { background: var(--surface-3) !important; color: var(--text) !important; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-rich-field textarea { background: transparent !important; border: 0 !important; border-radius: 0 !important; padding: 14px 16px !important; line-height: 1.65 !important; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-rich-field[data-front='true'] textarea { font-family: var(--font-sans) !important; font-size: 15px !important; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) input:not([type='file']) { border-color: var(--panel-edge) !important; border-radius: 12px !important; background: color-mix(in srgb, var(--surface-2) 65%, transparent) !important; }
+:is(.reomi-card-detail-form, .reomi-editor-workspace) :is(input,button):focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+@container (max-width: 900px) { .reomi-card-detail { width: 100%; } }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) { .reomi-card-detail { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+.reomi-card-detail { container: card-detail / inline-size; }
+@container card-detail (max-width: 560px) {
+  :is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-card-form-meta { grid-template-columns: minmax(0, 1fr) !important; gap: 16px !important; }
+  :is(.reomi-card-detail-form, .reomi-editor-workspace) .reomi-card-form-heading { display: none; }
+}
+.reomi-cloze-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.reomi-cloze-preview-header h3 { margin: 0; }
+
+/* Standalone creation and editing share the same form material as the side panel. */
+.reomi-editor-workspace { display: flex; padding: 0; overflow: hidden; container: standalone-editor / inline-size; }
+.reomi-editor-workspace .reomi-card-form { min-width: 0; min-height: 0; }
+.reomi-editor-workspace .reomi-card-form-scroll { width: 100%; max-width: 940px; margin-inline: auto; padding: 24px 32px 36px !important; min-height: 0; }
+.reomi-editor-workspace .reomi-card-form-actions { min-height: 56px; padding: 4px 0 16px; margin-bottom: 24px !important; }
+.reomi-editor-workspace .reomi-card-form-heading { font-size: 17px; font-weight: 600; color: var(--text); letter-spacing: -.025em; }
+.reomi-editor-workspace .reomi-card-form-actions > .reomi-button { --button-h: 38px; --button-px: 16px; }
+.reomi-editor-workspace .reomi-card-form-meta { gap: 18px !important; margin-bottom: 24px !important; }
+@container standalone-editor (max-width: 600px) {
+  .reomi-editor-workspace .reomi-card-form-meta { grid-template-columns: minmax(0, 1fr) !important; gap: 16px !important; }
+  .reomi-editor-workspace .reomi-card-form-scroll { padding: 16px 18px 24px !important; }
+  .reomi-editor-workspace .reomi-card-form-heading { font-size: 15px; }
+}
+.reomi-cards-table-scroll { scrollbar-gutter: stable; overscroll-behavior-x: contain; }
+.reomi-cards-table-scroll:focus-visible { outline: 2px solid var(--accent-500); outline-offset: -2px; }
+.reomi-cards-table-header > button { min-width: 0; white-space: nowrap; }
+.reomi-columns-control { display: inline-flex; flex-shrink: 0; }
+.reomi-column-picker { position: fixed; z-index: 200; width: 256px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto; border: 1px solid var(--glass-edge); border-radius: 15px; background: var(--surface); color: var(--text); box-shadow: 0 12px 36px var(--ambient-shadow); padding: 6px; }
+.reomi-column-picker header { display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 12px; font-size: 13px; }
+.reomi-column-picker header > span { color: var(--text-muted); font-size: 11px; }
+.reomi-column-picker label { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 9px; cursor: pointer; font-size: 13px; }
+.reomi-column-picker label:hover { background: var(--surface-2); }
+.reomi-column-picker input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent-500); }
+.reomi-column-picker small { margin-left: auto; color: var(--text-dim); font-size: 10px; }
+.reomi-column-picker footer { border-top: 1px solid var(--panel-edge); padding: 9px 5px 3px; margin-top: 5px; }
+@media(pointer:coarse) { .reomi-column-picker label { min-height: 44px; } }
+/* Reader tools share one control height; drawing options get a contextual row. */
+.reomi-pdf-toolbar, .reomi-reader-workspace .reomi-pdf-toolbar {
+  --reader-control: 30px;
+  display: block; min-height: 0; padding: 0; flex-shrink: 0; background: var(--workspace-glass); border-bottom: 1px solid var(--panel-edge); box-shadow: none;
+}
+.reomi-reader-toolbar-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; overflow-x: auto; overflow-y: hidden; }
+.reomi-reader-group { display: inline-flex; align-items: center; gap: 2px; padding: 2px; flex-shrink: 0; height: calc(var(--reader-control) + 4px); }
+.reomi-pdf-toolbar .nn-tb-btn { width: var(--reader-control); height: var(--reader-control); min-width: var(--reader-control); min-height: var(--reader-control); border: 0; border-radius: 8px; color: var(--text-muted); box-shadow: none; }
+.reomi-pdf-toolbar .nn-tb-btn.active { color: var(--accent-500); background: color-mix(in srgb, var(--accent-500) 12%, transparent); }
+.reomi-reader-tools { background: color-mix(in srgb, var(--surface-2) 65%, transparent); border-radius: 10px; }
+.reomi-reader-mode { display: inline-flex; gap: 2px; }
+.reomi-reader-mode > button { height: var(--reader-control); padding: 0 11px; border: 0; border-radius: 8px; font: 500 12px var(--font-sans); background: transparent; color: var(--text-muted); cursor: pointer; }
+.reomi-reader-mode > button[aria-pressed='true'] { background: var(--surface-2); color: var(--text); }
+.reomi-reader-navigation { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
+.reomi-reader-zoom, .reomi-reader-page { background: color-mix(in srgb, var(--surface-2) 65%, transparent); border-radius: 10px; }
+.reomi-reader-zoom-value { height: var(--reader-control); min-width: 48px; padding: 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font: 11px var(--font-mono); cursor: pointer; }
+.reomi-reader-zoom-value:hover { background: var(--surface-3); }
+.reomi-reader-page { padding-right: 10px; gap: 5px; }
+.reomi-reader-page input { width: 36px; height: var(--reader-control); padding: 0 3px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font: 12px var(--font-mono); text-align: center; appearance: textfield; -moz-appearance: textfield; }
+.reomi-reader-page input::-webkit-inner-spin-button, .reomi-reader-page input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.reomi-reader-page > span { font: 11px var(--font-mono); color: var(--text-muted); white-space: nowrap; }
+.reomi-reader-marks-icon { position: relative; display: inline-flex; }
+.reomi-reader-marks-icon > span { position: absolute; top: -7px; right: -7px; min-width: 13px; padding: 1px 3px; border-radius: 6px; font: 600 9px var(--font-sans); background: var(--accent-500); color: var(--text-on-accent); }
+.reomi-reader-ink-options { display: flex; align-items: center; gap: 10px; padding: 3px 12px 6px; overflow-x: auto; border-top: 1px solid var(--panel-edge); }
+.reomi-reader-options-label { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.reomi-reader-color { display: grid; place-items: center; height: var(--reader-control); width: var(--reader-control); border: 0; background: transparent; border-radius: 8px; cursor: pointer; }
+.reomi-reader-color > span { width: 16px; height: 16px; border-radius: 50%; box-shadow: var(--mark-swatch-shadow); }
+.reomi-reader-color[aria-pressed='true'] { box-shadow: inset 0 0 0 1px var(--border-2); background: var(--surface-2); }
+.reomi-pdf-toolbar :is(button,input):focus-visible { outline: 2px solid var(--accent-500); outline-offset: -2px; }
+@media(pointer:coarse) { .reomi-pdf-toolbar, .reomi-reader-workspace .reomi-pdf-toolbar { --reader-control: 40px; } }
+@media(prefers-reduced-transparency:reduce), (prefers-contrast:more), (forced-colors:active) { .reomi-pdf-toolbar, .reomi-reader-workspace .reomi-pdf-toolbar { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+/* Actions sit outside the editable scroll area, so they never cover field content. */
+.reomi-card-form[data-actions='footer'] { min-height: 0; overflow: hidden !important; }
+.reomi-card-form[data-actions='footer'] > .reomi-card-form-scroll { flex: 1; min-height: 0; overflow: auto !important; padding-top: 12px !important; }
+.reomi-card-form-footer { flex-shrink: 0; padding: 12px 20px; border-top: 1px solid var(--panel-edge); background: var(--surface); }
+.reomi-card-form-footer-actions { display: flex; align-items: center; gap: 10px; }
+.reomi-card-form-footer-actions > .reomi-button { --button-h: 38px; --control-radius: 11px; }
+.reomi-card-form-footer-actions > .reomi-button:last-child { margin-left: auto; min-width: 130px; }
+.reomi-card-form-footer-error { margin: 0 0 10px; color: var(--rose-500); font-size: 12px; line-height: 1.45; }
+@media(max-width:719px) { .reomi-card-form-footer { padding: 10px 14px; } }
+@media(pointer:coarse) { .reomi-card-form-footer-actions > .reomi-button { --button-h: 44px; } }
+/* Code is a small editor-like block, with line numbers outside copied content. */
+.nn-rendered .nn-code-block { border: 1px solid var(--panel-edge); border-radius: 3px; background: var(--surface-2); margin: 16px 0; overflow: hidden; }
+.nn-code-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 12px; min-height: 32px; border-bottom: 1px solid var(--panel-edge); font: 500 10px var(--font-sans); color: var(--text-muted); user-select: none; }
+.nn-code-header .nn-code-copy { position: static; display: inline-flex; align-items: center; gap: 6px; width: auto; height: 24px; padding: 0 6px; opacity: 1; border: 0; border-radius: 3px; background: transparent; color: var(--text-muted); font: 400 11px var(--font-sans); cursor: pointer; }
+.nn-code-header .nn-code-copy:hover { background: var(--surface-3); color: var(--text); }
+.nn-code-copy:focus-visible { outline: 2px solid var(--accent-500); }
+.nn-rendered .nn-code-block > pre { position: relative; border: 0; border-radius: 0; box-shadow: none; margin: 0; padding: 12px 16px 12px 52px; font: 12.5px/1.7 var(--font-mono); overflow-x: auto; }
+.nn-rendered .nn-code-block > pre > code { font: inherit; white-space: pre; }
+.nn-code-lines { position: absolute; left: 0; top: 12px; width: 36px; padding-right: 9px; border-right: 1px solid var(--panel-edge); color: var(--text-dim); text-align: right; white-space: pre; font: inherit; pointer-events: none; user-select: none; }
+.reomi-activity-stack { display: flex; flex-direction: column; gap: 12px; }
+.reomi-completed-actions > summary { display: flex; gap: 7px; align-items: center; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 5px 0; }
+.reomi-completed-actions > div { padding: 8px 0; display: flex; flex-direction: column; gap: 8px; }
+.reomi-read-surface { background: transparent !important; border: 0; border-left: 1px solid var(--panel-edge); border-radius: 0; padding: 3px 0 3px 14px !important; }
+.reomi-confirm-surface { border: 1px solid var(--glass-edge); border-radius: 12px; padding: 16px !important; }
+.reomi-confirm-content { border-top: 0 !important; margin-top: 0 !important; padding-top: 0 !important; }
+.reomi-confirm-content > span:first-child { letter-spacing: 0 !important; text-transform: none !important; font-size: 12px !important; color: var(--text-muted) !important; }
+.reomi-resource-preview { display: flex; flex-direction: column; gap: 10px; }
+.reomi-resource-preview dl { margin: 0; }
+.reomi-resource-preview dl > div { padding: 9px 0; border-bottom: 1px solid var(--panel-edge); }
+.reomi-resource-preview dt { font-size: 11px; color: var(--text-muted); margin-bottom: 5px; }
+.reomi-resource-preview dd { margin: 0; display: flex; flex-direction: column; gap: 5px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reomi-resource-preview del { color: var(--rose-500); }
+.reomi-resource-warning { color: var(--rose-500); font-size: 12px; }
+.reomi-resource-count { font-size: 12px; color: var(--text-muted); }
+.reomi-tool-result-count { font-size: 11px; color: var(--text-muted); padding-bottom: 7px; }
+.reomi-tool-result-row { display: flex; align-items: center; gap: 12px; min-height: 35px; padding: 7px 0; border-bottom: 1px solid var(--panel-edge); font-size: 12px; }
+.reomi-tool-result-row > :first-child { flex: 1; text-align: left; }
+.reomi-tool-result-row > button { border: 0; padding: 0; background: none; color: var(--text); font: inherit; cursor: pointer; }
+.reomi-tool-result-row > button:hover { color: var(--accent-500); }
+.reomi-tool-result-row small { color: var(--text-muted); font-size: 10px; }
+.reomi-tool-result-numbers { display: flex; align-items: flex-end; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
+.reomi-tool-more { margin-top: 8px; padding: 3px 0; border: 0; background: none; color: var(--text-muted); font: 400 11px var(--font-sans); cursor: pointer; }
+.nn-rendered .nn-code-block > pre:has(> code.hljs) { box-shadow: none; border-radius: 0; }
+.reomi-confirm-diff > span, .reomi-confirm-diff > div > span { letter-spacing: 0 !important; text-transform: none !important; font-size: 11px !important; }

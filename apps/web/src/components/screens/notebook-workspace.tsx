@@ -66,6 +66,8 @@ import { prefillKey } from '@/lib/library-handoff';
 import { api, ok } from '@/lib/api';
 import type { LibraryItem, SuggestedSource, SuggestSourcesResult } from '@/lib/types';
 
+import { SegmentedControl } from '@/components/design-system/primitives';
+
 type WorkspaceTab = 'sources' | 'chat' | 'dock';
 
 // Right-dock tabs (Р12): «Обзор» (default) / «Заметки» / «Студия» (N2).
@@ -981,18 +983,12 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         minHeight: 44,
       }}
     >
-      <div className="nn-nb-seg" style={{ flex: 1, minWidth: 0 }}>
-        {DOCK_TABS.map(({ key, labelKey }) => (
-          <button
-            key={key}
-            type="button"
-            className={`nn-nb-seg-tab${dockTab === key ? ' active' : ''}`}
-            onClick={() => selectDockTab(key)}
-          >
-            {t(labelKey)}
-          </button>
-        ))}
-      </div>
+      <SegmentedControl
+        label={t('notebooks.overview.tab') + ' / ' + t('notebooks.notes.tab') + ' / ' + t('notebooks.studio.tab')}
+        value={dockTab} onChange={selectDockTab}
+        options={DOCK_TABS.map(({ key, labelKey }) => ({ value: key, label: t(labelKey) }))}
+        style={{ flex: 1, minWidth: 0 }}
+      />
       <NNBtn
         variant="ghost"
         size="sm"
@@ -1006,11 +1002,11 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   const dockColumn = (
     <div
-      className="nn-dock-col"
+      className="nn-dock-col reomi-notebook-dock"
       style={{
-        width: 340,
+        width: 304,
         flexShrink: 0,
-        borderLeft: '1px solid var(--border)',
+        borderLeft: '1px solid var(--panel-edge)',
         display: 'flex',
         flexDirection: 'column',
         minHeight: 0,
@@ -1101,7 +1097,6 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         <NNIcon name="chevl" size={14} color="currentColor" />
         {t('notebooks.sources.back')}
       </button>
-      <span className="nn-nb-ws-sep" aria-hidden />
       <span
         className="nn-nb-ws-tile"
         style={{
@@ -1187,10 +1182,11 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         {header}
         <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <div
+            className="reomi-notebook-sources"
             style={{
-              width: 260,
+              width: 224,
               flexShrink: 0,
-              borderRight: '1px solid var(--border)',
+              borderRight: '1px solid var(--panel-edge)',
               display: 'flex',
               flexDirection: 'column',
               minHeight: 0,
@@ -1221,23 +1217,17 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
                 display: 'flex',
                 flexDirection: 'column',
                 background: 'var(--surface)',
-                borderLeft: '1px solid var(--border)',
+                borderLeft: '1px solid var(--panel-edge)',
                 boxShadow: 'var(--shadow-lg)',
               }}
             >
               <div className="nn-chrome" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0, minHeight: 44 }}>
-                <div className="nn-nb-seg" style={{ flex: 1, minWidth: 0 }}>
-                  {DOCK_TABS.map(({ key, labelKey }) => (
-                    <button
-                      key={key}
-                      type="button"
-                      className={`nn-nb-seg-tab${dockTab === key ? ' active' : ''}`}
-                      onClick={() => selectDockTab(key)}
-                    >
-                      {t(labelKey)}
-                    </button>
-                  ))}
-                </div>
+                <SegmentedControl
+                  label={t('notebooks.overview.tab') + ' / ' + t('notebooks.notes.tab') + ' / ' + t('notebooks.studio.tab')}
+                  value={dockTab} onChange={selectDockTab}
+                  options={DOCK_TABS.map(({ key, labelKey }) => ({ value: key, label: t(labelKey) }))}
+                  style={{ flex: 1, minWidth: 0 }}
+                />
                 <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} title={t('library.details.close')} onClick={() => setDockSheetOpen(false)} />
               </div>
               <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -1259,10 +1249,11 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         {header}
         <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <div
+            className="reomi-notebook-sources"
             style={{
-              width: 292,
+              width: 240,
               flexShrink: 0,
-              borderRight: '1px solid var(--border)',
+              borderRight: '1px solid var(--panel-edge)',
               display: 'flex',
               flexDirection: 'column',
               minHeight: 0,
@@ -1336,18 +1327,12 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
                 flexShrink: 0,
               }}
             >
-              <div className="nn-nb-seg" style={{ flex: 1, minWidth: 0 }}>
-                {DOCK_TABS.map(({ key, labelKey }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`nn-nb-seg-tab${dockTab === key ? ' active' : ''}`}
-                    onClick={() => selectDockTab(key)}
-                  >
-                    {t(labelKey)}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                label={t('notebooks.overview.tab') + ' / ' + t('notebooks.notes.tab') + ' / ' + t('notebooks.studio.tab')}
+                value={dockTab} onChange={selectDockTab}
+                options={DOCK_TABS.map(({ key, labelKey }) => ({ value: key, label: t(labelKey) }))}
+                style={{ flex: 1, minWidth: 0 }}
+              />
             </div>
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               {dockBody(dockTab)}
@@ -1370,7 +1355,7 @@ const DockExpandRail = ({ label, onExpand }: { label: string; onExpand: () => vo
     style={{
       width: 40,
       flexShrink: 0,
-      borderLeft: '1px solid var(--border)',
+      borderLeft: '1px solid var(--panel-edge)',
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
@@ -1467,7 +1452,7 @@ const CitationViewer = ({
         style={{
           width: 440,
           flexShrink: 0,
-          borderLeft: '1px solid var(--border)',
+          borderLeft: '1px solid var(--panel-edge)',
           display: 'flex',
           flexDirection: 'column',
           minHeight: 0,

@@ -7,7 +7,7 @@
 // restore after each).
 
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { useUI, readSidebarCollapsed } from './ui-store';
+import { useUI, readSidebarCollapsed, readSidebarWidth } from './ui-store';
 
 const SIDEBAR_KEY = 'nn:sidebar-collapsed';
 
@@ -157,5 +157,42 @@ describe('ui-store — SSR / storage-failure safety', () => {
     expect(useUI.getState().sidebarCollapsed).toBe(true);
     expect(() => readSidebarCollapsed()).not.toThrow();
     expect(readSidebarCollapsed()).toBeNull();
+  });
+});
+
+describe('sidebar width preference', () => {
+  test('bounds and persists width without affecting collapsed state', () => {
+    const { storage, data } = makeMemoryStorage();
+    setWindow({ localStorage: storage });
+    useUI.getState().setSidebarWidth(900);
+    expect(useUI.getState().sidebarWidth).toBe(360);
+    expect(data['nn:sidebar-width']).toBe('360');
+    useUI.getState().setSidebarWidth(100);
+    expect(useUI.getState().sidebarWidth).toBe(72);
+    expect(useUI.getState().sidebarCollapsed).toBe(false);
+  });
+  test('manual compact width survives reload', () => {
+    const { storage, data } = makeMemoryStorage();
+    setWindow({ localStorage: storage });
+    useUI.getState().setSidebarWidth(120);
+    expect(readSidebarWidth()).toBe(72);
+    useUI.getState().setSidebarWidth(180);
+    expect(readSidebarWidth()).toBe(208);
+  });
+  test('restores valid preferences and falls back for malformed storage', () => {
+    const { storage, data } = makeMemoryStorage();
+    setWindow({ localStorage: storage });
+    data['nn:sidebar-width'] = '284';
+    expect(readSidebarWidth()).toBe(284);
+    data['nn:sidebar-width'] = 'broken';
+    expect(readSidebarWidth()).toBe(232);
+    data['nn:sidebar-width'] = 'Infinity';
+    expect(readSidebarWidth()).toBe(232);
+  });
+  test('unavailable storage never breaks resizing', () => {
+    setWindow({ get localStorage() { throw new Error('blocked'); } });
+    expect(readSidebarWidth()).toBe(232);
+    expect(() => useUI.getState().setSidebarWidth(280)).not.toThrow();
+    expect(useUI.getState().sidebarWidth).toBe(280);
   });
 });

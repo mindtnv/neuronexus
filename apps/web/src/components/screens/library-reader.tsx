@@ -17,9 +17,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
-import { NNBadge, NNBtn, NNIcon, NNLoadError, NNSkeleton } from '@/components/ui';
+import { NNBtn, NNIcon, NNLoadError, NNSkeleton } from '@/components/ui';
 import { api, ok, type ApiError } from '@/lib/api';
 import { toApiError } from '@/lib/resource-state';
+import { canReadSource } from '@/lib/source-reading';
+import { ThemeToggle } from '@/components/theme-toggle';
 import { useNN } from '@/lib/store';
 import type {
   LibraryItemDetail,
@@ -551,11 +553,11 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
     );
   }
 
-  const isPdfReady = source?.kind === 'pdf' && readerMode === 'pdf' && source.status === 'ready';
+  const isPdfReady = source?.kind === 'pdf' && readerMode === 'pdf' && canReadSource(source, 'pdf');
   const tocAvailable = (tocEntries?.length ?? 0) > 0;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+    <div className="reomi-library-reader">
       <ReaderHeader
         source={source}
         author={detail?.author ?? null}
@@ -566,7 +568,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
         onDetails={() => router.push(`/library?focus=${sourceId}`)}
         t={t}
       />
-      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+      <div className="reomi-reader-workspace">
         {/* TOC panel (left slide-out) */}
         {tocOpen && (
           <TocPanel
@@ -578,10 +580,8 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
         )}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           {!loaded || !source ? (
-            <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 680, margin: '0 auto', width: '100%' }}>
-              <NNSkeleton style={{ height: 80 }} />
-              <NNSkeleton style={{ height: 80 }} />
-              <NNSkeleton style={{ height: 80 }} />
+            <div aria-busy="true" style={{ padding: 24, display: 'flex', justifyContent: 'center', flex: 1, overflow: 'hidden', background: 'var(--surface-2)' }}>
+              <NNSkeleton width="min(760px, 100%)" height="min(900px, 78vh)" radius={8} />
             </div>
           ) : isPdfReady ? (
             <PdfReader
@@ -672,21 +672,13 @@ const ReaderHeader = ({
   onDetails: () => void;
   t: Tr;
 }) => {
-  // The reader is a full-bleed route (no inline sidebar) — in a WCO window this
-  // header IS the titlebar: drag region + clearance for the window controls.
-  const { wco, left: wcoLeft, right: wcoRight } = useWcoTopInsets(true);
+  const { wco, left: wcoLeft, right: wcoRight } = useWcoTopInsets();
   return (
   <div
-    className="nn-chrome"
+    className="nn-chrome reomi-reader-header"
     data-wco={wco ? '1' : undefined}
     style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: 8,
-      padding: `7px ${12 + wcoRight}px 7px ${12 + wcoLeft}px`,
-      borderBottom: '1px solid var(--border)',
-      flexShrink: 0,
-      minHeight: 44,
+paddingLeft: 16 + wcoLeft, paddingRight: 16 + wcoRight,
     }}
   >
     <NNBtn variant="ghost" size="sm" icon="chevl" onClick={onBack}>
@@ -731,11 +723,6 @@ const ReaderHeader = ({
         </span>
       )}
     </div>
-    {source && source.status !== 'ready' && (
-      <NNBadge tone={source.status === 'error' ? 'rose' : 'sky'} size="xs">
-        {t(`library.status.${source.status}`)}
-      </NNBadge>
-    )}
     {cardCount > 0 && (
       <button
         type="button"
@@ -766,6 +753,7 @@ const ReaderHeader = ({
         {t('library.reader.cardsBadge', { n: cardCount })}
       </button>
     )}
+    <ThemeToggle />
     <NNBtn variant="ghost" size="sm" icon="dots" ariaLabel={t('library.reader.details')} title={t('library.reader.details')} onClick={onDetails} />
   </div>
   );
@@ -796,63 +784,34 @@ const TextReaderShell = ({
   onMode: (m: 'pdf' | 'text') => void;
   t: Tr;
 }) => {
-  if (source.status !== 'ready') {
+  if (!canReadSource(source, 'text')) {
+    const failed = source.status === 'error';
     return (
-      <div className="nn-empty-state" style={{ flex: 1 }}>
-        <span className="nn-empty-state-icon"><NNIcon name="doc" size={30} color="var(--text-dim)" /></span>
-        <p className="nn-empty-state-hint">{t('notebooks.reader.notReady')}</p>
+      <div className="nn-empty-state reomi-reader-empty" style={{ flex: 1 }}>
+        <span className="nn-empty-state-icon"><NNIcon name="doc" size={30} color="var(--accent-500)" /></span>
+        <h3>{t(failed ? 'library.reader.unavailable' : source.status === 'deleting' ? 'library.status.deleting' : 'library.reader.preparing')}</h3>
+        <p className="nn-empty-state-hint">{t(failed ? 'library.reader.unavailableHint' : 'notebooks.reader.notReady')}</p>
+        {source.kind === 'pdf' && source.status !== 'deleting' && (
+          <NNBtn variant="soft" size="sm" onClick={() => onMode('pdf')}>{t('notebooks.reader.modePdf')}</NNBtn>
+        )}
       </div>
     );
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      {/* Light text-mode toolbar: TOC + (PDF|Text) for PDF sources. */}
-      <div
-        className="nn-chrome"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '5px 12px',
-          borderBottom: '1px solid var(--border)',
-          flexShrink: 0,
-        }}
-      >
-        <button
-          type="button"
-          onClick={onToggleToc}
-          className={`nn-tb-btn${tocOpen ? ' active' : ''}`}
-          title={t('library.reader.toc')}
-          aria-label={t('library.reader.toc')}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8 6h13M8 12h13M8 18h13" />
-            <circle cx="3.5" cy="6" r="1" />
-            <circle cx="3.5" cy="12" r="1" />
-            <circle cx="3.5" cy="18" r="1" />
-          </svg>
-        </button>
-        {source.kind === 'pdf' && (
-          <button
-            type="button"
-            onClick={() => onMode('pdf')}
-            style={{
-              height: 26,
-              padding: '0 10px',
-              borderRadius: 'var(--r-sm)',
-              border: '1px solid var(--border)',
-              background: 'var(--surface-2)',
-              color: 'var(--text-muted)',
-              cursor: 'pointer',
-              fontSize: 11.5,
-              fontWeight: 600,
-              fontFamily: 'var(--font-sans)',
-            }}
-          >
-            {t('notebooks.reader.modePdf')}
-          </button>
-        )}
-        <span style={{ flex: 1 }} />
+      <div className="nn-chrome nn-reader-toolbar reomi-pdf-toolbar" role="toolbar" aria-label={t('notebooks.reader.toolbar')}>
+        <div className="reomi-reader-toolbar-row nn-scroll">
+          <div className="reomi-reader-group">
+            <button type="button" onClick={onToggleToc} className={`nn-tb-btn${tocOpen ? ' active' : ''}`}
+              aria-pressed={tocOpen} data-tooltip={t('library.reader.toc')} aria-label={t('library.reader.toc')}>
+              <NNIcon name="menu" size={16} />
+            </button>
+            {source.kind === 'pdf' && <div className="reomi-reader-mode">
+              <button type="button" onClick={() => onMode('pdf')} aria-pressed={false}>{t('notebooks.reader.modePdf')}</button>
+              <button type="button" aria-pressed={true}>{t('notebooks.reader.modeText')}</button>
+            </div>}
+          </div>
+        </div>
       </div>
       <TextChunkReader
         ref={textReaderRef}

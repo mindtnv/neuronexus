@@ -1,4 +1,6 @@
 const m = {
+  columnPicker: {title: 'Columns', required: 'Required', reset: 'Reset to default'},
+  createInDeck: 'Create a card in {name}',
   title: 'Cards',
   subtitle: 'Browse and manage your card collection',
   search: {
@@ -32,6 +34,7 @@ const m = {
     suspended: 'Suspended',
   },
   sidebar: {
+    filters: 'Filters',
     decks: 'Decks',
     tags: 'Tags',
     states: 'States',
@@ -64,6 +67,19 @@ const m = {
     invalidDate: 'Enter a valid date',
   },
   panel: {
+    clozeCard: 'Cloze card',
+    revealCloze: 'Reveal blanks',
+    hideCloze: 'Hide answers',
+
+    resizeWidth: 'Resize card editor',
+    content: 'Card content',
+    discardAction: 'Discard changes',
+    title: 'Card',
+    mode: 'Card mode',
+    view: 'View',
+    edit: 'Edit',
+    discard: 'Discard unsaved changes?',
+
     prev: 'Previous card',
     next: 'Next card',
     close: 'Close panel',

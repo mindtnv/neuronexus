@@ -4,6 +4,7 @@ import React, { useCallback, useMemo } from 'react';
 import { AppLink } from '@/components/navigation';
 import { State } from 'ts-fsrs';
 import { format, startOfDay, subDays } from 'date-fns';
+import { PageSurface } from '@/components/design-system/primitives';
 import { NNCard, NNIcon, NNInlineRefresh, NNLoadError, NNSkeleton } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
@@ -327,10 +328,8 @@ export const NNStats = () => {
   }
 
   return (
-    <div
-      className="nn-scroll"
+    <PageSurface className="reomi-stats"
       aria-busy={statsResource.status === 'refreshing'}
-      style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : 24 }}
     >
       {statsResource.status === 'refreshing' && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
@@ -356,8 +355,8 @@ export const NNStats = () => {
           gap: 12,
           padding: '10px 14px',
           borderRadius: 12,
-          background: 'linear-gradient(135deg, color-mix(in srgb, var(--amber-500) 10%, transparent), color-mix(in srgb, var(--amber-400) 4%, transparent))',
-          border: '1px solid color-mix(in srgb, var(--amber-400) 18%, transparent)',
+          background: 'var(--surface-2)',
+          border: '1px solid transparent',
           marginBottom: isMobile ? 12 : 16,
           flexWrap: 'wrap',
         }}
@@ -708,7 +707,7 @@ export const NNStats = () => {
           {t('stats.weekLine', { time: weekTimeLabel, avg: avgDaily })}
         </div>
       )}
-    </div>
+    </PageSurface>
   );
 };
 
@@ -716,12 +715,10 @@ export const NNStats = () => {
 // old opacity dimmer (P2.4), mirroring the home.tsx pattern.
 function StatsSkeleton({ isMobile }: { isMobile: boolean }) {
   const panel = (children: React.ReactNode): React.ReactNode => (
-    <div style={{ padding: 20, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--border)' }}>
-      {children}
-    </div>
+    <NNCard padding={20}>{children}</NNCard>
   );
   return (
-    <div className="nn-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : 24 }}>
+    <PageSurface className="reomi-stats" aria-busy="true">
       {/* streak strip */}
       <NNSkeleton width="100%" height={44} radius={12} style={{ marginBottom: isMobile ? 12 : 16 }} />
       {/* KPI grid */}
@@ -734,11 +731,11 @@ function StatsSkeleton({ isMobile }: { isMobile: boolean }) {
         }}
       >
         {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} style={{ padding: 16, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <NNCard key={i} padding={16}>
             <NNSkeleton width={80} height={10} />
             <NNSkeleton width={100} height={28} style={{ marginTop: 8 }} />
             <NNSkeleton width={60} height={10} style={{ marginTop: 8 }} />
-          </div>
+          </NNCard>
         ))}
       </div>
       {/* two 2fr/1fr panel rows */}
@@ -775,6 +772,6 @@ function StatsSkeleton({ isMobile }: { isMobile: boolean }) {
           <NNSkeleton width="100%" height={120} radius={10} style={{ marginTop: 16 }} />
         </>,
       )}
-    </div>
+    </PageSurface>
   );
 }

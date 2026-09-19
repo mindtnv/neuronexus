@@ -18,6 +18,7 @@
 //  • Card-coverage bars (N3) + the concept map (N4) render below the overview.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReadingText } from '@/components/design-system/primitives';
 import { NNBtn, NNIcon, NNSkeleton } from '@/components/ui';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { CoverageBars } from '@/components/notebook/coverage-bars';
@@ -211,16 +212,16 @@ export const OverviewPanel = ({
                   </NNBtn>
                 </div>
               )}
-              <SafeHtml
+              <ReadingText><SafeHtml
                 html={overviewHtml}
                 style={{
-                  fontFamily: 'var(--font-sans)',
-                  fontSize: 13.5,
-                  lineHeight: 1.62,
+                  fontFamily: 'inherit',
+                  fontSize: 'inherit',
+                  lineHeight: 'inherit',
                   color: 'var(--text)',
                   wordBreak: 'break-word',
                 }}
-              />
+              /></ReadingText>
             </>
           ) : error ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>

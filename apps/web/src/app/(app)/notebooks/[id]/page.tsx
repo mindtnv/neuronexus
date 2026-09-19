@@ -17,9 +17,11 @@ export default function Page() {
   const id = typeof params?.id === 'string' ? params.id : undefined;
   return (
     <NNAppPage title={t('nav.notebooks')}>
+      <div className="reomi-notebook-workspace">
       <Suspense fallback={<RouteContentFallback />}>
         {id ? <NotebookWorkspace key={id} notebookId={id} /> : null}
       </Suspense>
+      </div>
     </NNAppPage>
   );
 }

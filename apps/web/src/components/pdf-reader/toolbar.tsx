@@ -3,13 +3,13 @@
 // M4 — the floating reader toolbar (inside the reader panel, thumb-reachable on
 // iPad: ≥40 px touch targets). Tools hand/pen/highlighter/eraser, 6 colors, 3
 // widths, undo/redo, finger-draw toggle, zoom −/%/＋, page jump, and the
-// «PDF | Текст» mode toggle. All labels i18n (notebooks.reader.*). The local
+// reading controls. All labels i18n (notebooks.reader.*). The local
 // inline SVGs cover the ink tools the global NNIcon set doesn't have.
 //
 // M5-T3 — visual polish: one compact sticky row, frosted backdrop, segmented
-// groups with 1-px separators, 36-px icon buttons (.nn-tb-btn), save-status
+// aligned control groups, compact icon buttons (.nn-tb-btn), save-status
 // as a tiny pulsing/idle dot with tooltip. Colors+widths collapsed into the
-// main row (no flyout needed for 5 colors + 3 widths).
+// a contextual second row while drawing, leaving navigation stable.
 
 import React, { useState } from 'react';
 import type { InkTool, SaveState } from './types';
@@ -49,7 +49,7 @@ const ToolIcon = ({ name, size = 16 }: { name: InkTool | 'undo' | 'redo' | 'zin'
   );
 };
 
-// 36-px toolbar button using the .nn-tb-btn CSS class.
+// Shared-size toolbar button using the .nn-tb-btn CSS class.
 const TBtn = ({
   active,
   disabled,
@@ -67,7 +67,7 @@ const TBtn = ({
     type="button"
     onClick={onClick}
     disabled={disabled}
-    title={title}
+    data-tooltip={title}
     aria-label={title}
     aria-pressed={active}
     className={`nn-tb-btn${active ? ' active' : ''}`}
@@ -75,9 +75,6 @@ const TBtn = ({
     {children}
   </button>
 );
-
-// 1-px group separator
-const Sep = () => <span className="nn-tb-sep" />;
 
 export interface ReaderToolbarProps {
   tool: InkTool;
@@ -90,7 +87,6 @@ export interface ReaderToolbarProps {
   saveState: SaveState;
   canUndo: boolean;
   canRedo: boolean;
-  mode: 'pdf' | 'text';
   marksCount?: number;
   marksPanelOpen?: boolean;
   onToggleMarksPanel?: () => void;
@@ -108,7 +104,6 @@ export interface ReaderToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
   onJumpPage: (page: number) => void;
-  onMode: (m: 'pdf' | 'text') => void;
   onRetrySave: () => void;
   t: T;
 }
@@ -124,7 +119,6 @@ export const ReaderToolbar = ({
   saveState,
   canUndo,
   canRedo,
-  mode,
   marksCount = 0,
   marksPanelOpen = false,
   onToggleMarksPanel,
@@ -140,7 +134,6 @@ export const ReaderToolbar = ({
   onUndo,
   onRedo,
   onJumpPage,
-  onMode,
   onRetrySave,
   t,
 }: ReaderToolbarProps) => {
@@ -150,263 +143,68 @@ export const ReaderToolbar = ({
   // Keep jump input in sync with programmatic page changes.
   React.useEffect(() => { setJumpVal(String(page)); }, [page]);
 
+  const commitPage = () => {
+    const value = Number(jumpVal);
+    if (!jumpVal.trim() || !Number.isFinite(value) || value < 1) { setJumpVal(String(page)); return; }
+    const next = Math.min(total || 1, Math.round(value));
+    setJumpVal(String(next));
+    onJumpPage(next);
+  };
+
   return (
-    <div
-      role="toolbar"
-      aria-label={t('notebooks.reader.toolbar')}
-      className="nn-chrome nn-reader-toolbar"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 2,
-        padding: '4px 10px',
-        flexShrink: 0,
-        overflowX: 'auto',
-        overflowY: 'hidden',
-      }}
-    >
-      {/* ── Group 0: table of contents (library reader; hidden when no outline) ── */}
-      {onToggleToc && tocAvailable && (
-        <>
-          <TBtn active={tocOpen} onClick={onToggleToc} title={t('library.reader.toc')}>
-            <ToolIcon name="toc" />
-          </TBtn>
-          <Sep />
-        </>
-      )}
+    <div role="toolbar" aria-label={t('notebooks.reader.toolbar')} className="nn-chrome nn-reader-toolbar reomi-pdf-toolbar">
+      <div className="reomi-reader-toolbar-row nn-scroll">
+        {onToggleToc && tocAvailable && <div className="reomi-reader-group" role="group" aria-label={t('notebooks.reader.readingGroup')}>
+          <TBtn active={tocOpen} onClick={onToggleToc} title={t('library.reader.toc')}><ToolIcon name="toc" /></TBtn>
+        </div>}
 
-      {/* ── Group 1: mode toggle PDF | Текст ── */}
-      <div
-        style={{
-          display: 'inline-flex',
-          borderRadius: 'var(--r-sm)',
-          overflow: 'hidden',
-          border: '1px solid var(--border)',
-          flexShrink: 0,
-        }}
-      >
-        {(['pdf', 'text'] as const).map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => onMode(m)}
-            aria-pressed={mode === m}
-            title={m === 'pdf' ? t('notebooks.reader.modePdf') : t('notebooks.reader.modeText')}
-            style={{
-              height: 28,
-              padding: '0 10px',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: 11.5,
-              fontWeight: 700,
-              fontFamily: 'var(--font-sans)',
-              letterSpacing: '0.02em',
-              background: mode === m
-                ? 'color-mix(in srgb, var(--lime-500) 20%, var(--surface-2))'
-                : 'var(--surface-2)',
-              color: mode === m ? 'var(--lime-300)' : 'var(--text-muted)',
-              transition: 'background 100ms, color 100ms',
-              flexShrink: 0,
-            }}
-          >
-            {m === 'pdf' ? t('notebooks.reader.modePdf') : t('notebooks.reader.modeText')}
-          </button>
-        ))}
+        <div className="reomi-reader-group reomi-reader-tools" role="group" aria-label={t('notebooks.reader.inkGroup')}>
+          <TBtn active={tool === 'hand'} onClick={() => onTool('hand')} title={t('notebooks.reader.toolHand')}><ToolIcon name="hand" /></TBtn>
+          <TBtn active={tool === 'pen'} onClick={() => onTool('pen')} title={t('notebooks.reader.toolPen')}><ToolIcon name="pen" /></TBtn>
+          <TBtn active={tool === 'highlighter'} onClick={() => onTool('highlighter')} title={t('notebooks.reader.toolHighlighter')}><ToolIcon name="highlighter" /></TBtn>
+          <TBtn active={tool === 'eraser'} onClick={() => onTool('eraser')} title={t('notebooks.reader.toolEraser')}><ToolIcon name="eraser" /></TBtn>
+          <TBtn active={tool === 'smart-card'} onClick={() => onTool('smart-card')} title={t('notebooks.reader.toolSmartCard')}><ToolIcon name="smart-card" /></TBtn>
+        </div>
+        <div className="reomi-reader-group">
+          <TBtn disabled={!canUndo} onClick={onUndo} title={t('notebooks.reader.undo')}><ToolIcon name="undo" /></TBtn>
+          <TBtn disabled={!canRedo} onClick={onRedo} title={t('notebooks.reader.redo')}><ToolIcon name="redo" /></TBtn>
+          {onToggleMarksPanel && <TBtn active={marksPanelOpen} onClick={onToggleMarksPanel} title={t('notebooks.marks.panelTitle')}>
+            <span className="reomi-reader-marks-icon"><ToolIcon name="markup" />{marksCount > 0 && <span>{marksCount > 99 ? '99+' : marksCount}</span>}</span>
+          </TBtn>}
+        </div>
+
+        <div className="reomi-reader-navigation" role="group" aria-label={t('notebooks.reader.navigationGroup')}>
+          <div className="reomi-reader-group reomi-reader-zoom">
+            <TBtn onClick={() => onZoom(-0.2)} title={t('notebooks.reader.zoomOut')}><ToolIcon name="zout" /></TBtn>
+            <button type="button" className="reomi-reader-zoom-value" onClick={onZoomReset} aria-label={t('notebooks.reader.zoomReset')}
+              data-tooltip={t('notebooks.reader.zoomReset')}>{Math.round(scale * 100)}%</button>
+            <TBtn onClick={() => onZoom(0.2)} title={t('notebooks.reader.zoomIn')}><ToolIcon name="zin" /></TBtn>
+          </div>
+          <div className="reomi-reader-group reomi-reader-page">
+            <input type="number" min={1} max={total || 1} value={jumpVal}
+              onChange={event => setJumpVal(event.target.value)} onBlur={commitPage}
+              onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commitPage(); } }}
+              aria-label={t('notebooks.reader.pageJump')} data-tooltip={t('notebooks.reader.pageJump')} />
+            <span>/ {total || '—'}</span>
+          </div>
+          <SaveDot saveState={saveState} onRetry={onRetrySave} t={t} />
+        </div>
       </div>
 
-      <Sep />
-
-      {/* ── Group 2: ink tools ── */}
-      <TBtn active={tool === 'hand'} onClick={() => onTool('hand')} title={t('notebooks.reader.toolHand')}>
-        <ToolIcon name="hand" />
-      </TBtn>
-      <TBtn active={tool === 'pen'} onClick={() => onTool('pen')} title={t('notebooks.reader.toolPen')}>
-        <ToolIcon name="pen" />
-      </TBtn>
-      <TBtn active={tool === 'highlighter'} onClick={() => onTool('highlighter')} title={t('notebooks.reader.toolHighlighter')}>
-        <ToolIcon name="highlighter" />
-      </TBtn>
-      <TBtn active={tool === 'eraser'} onClick={() => onTool('eraser')} title={t('notebooks.reader.toolEraser')}>
-        <ToolIcon name="eraser" />
-      </TBtn>
-      <TBtn active={tool === 'smart-card'} onClick={() => onTool('smart-card')} title={t('notebooks.reader.toolSmartCard')}>
-        <ToolIcon name="smart-card" />
-      </TBtn>
-
-      {/* ── Group 3: colors + widths (only when an ink tool is active) ── */}
-      {showInkExtras && (
-        <>
-          <Sep />
-          {/* Color dots */}
-          {INK_COLORS.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => onColor(c.hex)}
-              aria-label={t(`notebooks.reader.color_${c.id}`)}
-              title={t(`notebooks.reader.color_${c.id}`)}
-              aria-pressed={color === c.hex}
-              style={{
-                width: 22,
-                height: 22,
-                borderRadius: '50%',
-                background: c.hex,
-                cursor: 'pointer',
-                border: color === c.hex
-                  ? '2px solid var(--text)'
-                  : '2px solid transparent',
-                boxShadow: color === c.hex
-                  ? '0 0 0 2px var(--surface-2), 0 0 0 3px var(--text)'
-                  : 'var(--mark-swatch-shadow)',
-                padding: 0,
-                flexShrink: 0,
-                transition: 'box-shadow 100ms',
-              }}
-            />
-          ))}
-          <Sep />
-          {/* Width buttons */}
-          {INK_WIDTHS.map((_, i) => (
-            <TBtn
-              key={i}
-              active={widthIdx === i}
-              onClick={() => onWidth(i)}
-              title={t('notebooks.reader.width', { n: i + 1 })}
-            >
-              <span
-                style={{
-                  width: 14 + i * 2,
-                  height: (i + 1) * 2 + 1,
-                  borderRadius: 99,
-                  background: 'currentColor',
-                  display: 'block',
-                }}
-              />
-            </TBtn>
-          ))}
-        </>
-      )}
-
-      <Sep />
-
-      {/* ── Group 4: undo / redo ── */}
-      <TBtn disabled={!canUndo} onClick={onUndo} title={t('notebooks.reader.undo')}>
-        <ToolIcon name="undo" />
-      </TBtn>
-      <TBtn disabled={!canRedo} onClick={onRedo} title={t('notebooks.reader.redo')}>
-        <ToolIcon name="redo" />
-      </TBtn>
-
-      <Sep />
-
-      {/* ── Group 5: marks panel toggle ── */}
-      {onToggleMarksPanel && (
-        <TBtn
-          active={marksPanelOpen}
-          onClick={onToggleMarksPanel}
-          title={t('notebooks.marks.panelTitle')}
-        >
-          <span style={{ position: 'relative', display: 'inline-flex' }}>
-            <ToolIcon name="markup" />
-            {marksCount > 0 && (
-              <span
-                style={{
-                  position: 'absolute',
-                  top: -5,
-                  right: -6,
-                  minWidth: 14,
-                  height: 14,
-                  borderRadius: 7,
-                  background: marksPanelOpen ? 'var(--lime-500)' : 'var(--ink-600)',
-                  color: marksPanelOpen ? 'var(--text-on-accent)' : 'var(--text)',
-                  fontSize: 9,
-                  fontWeight: 700,
-                  fontFamily: 'var(--font-sans)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: '0 3px',
-                  lineHeight: 1,
-                }}
-              >
-                {marksCount > 99 ? '99+' : marksCount}
-              </span>
-            )}
-          </span>
-        </TBtn>
-      )}
-
-      {/* ── Group 6: zoom ── */}
-      <Sep />
-      <TBtn onClick={() => onZoom(-0.2)} title={t('notebooks.reader.zoomOut')}>
-        <ToolIcon name="zout" />
-      </TBtn>
-      <button
-        type="button"
-        onClick={onZoomReset}
-        title={t('notebooks.reader.zoomReset')}
-        style={{
-          height: 28,
-          minWidth: 46,
-          padding: '0 6px',
-          borderRadius: 'var(--r-sm)',
-          border: '1px solid var(--border)',
-          background: 'var(--surface-2)',
-          color: 'var(--text-muted)',
-          cursor: 'pointer',
-          fontSize: 11,
-          fontFamily: 'var(--font-mono)',
-          flexShrink: 0,
-        }}
-      >
-        {Math.round(scale * 100)}%
-      </button>
-      <TBtn onClick={() => onZoom(0.2)} title={t('notebooks.reader.zoomIn')}>
-        <ToolIcon name="zin" />
-      </TBtn>
-
-      {/* ── Group 7: page jump ── */}
-      <Sep />
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
-        <input
-          type="number"
-          min={1}
-          max={total || 1}
-          value={jumpVal}
-          onChange={(e) => setJumpVal(e.target.value)}
-          onBlur={() => {
-            const v = Number(jumpVal);
-            if (Number.isFinite(v) && v >= 1) onJumpPage(v);
-            else setJumpVal(String(page));
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              const v = Number(jumpVal);
-              if (Number.isFinite(v) && v >= 1) onJumpPage(v);
-            }
-          }}
-          aria-label={t('notebooks.reader.pageJump')}
-          title={t('notebooks.reader.pageJump')}
-          style={{
-            width: 42,
-            height: 28,
-            textAlign: 'center',
-            borderRadius: 'var(--r-sm)',
-            border: '1px solid var(--border)',
-            background: 'var(--surface-2)',
-            color: 'var(--text)',
-            fontSize: 12,
-            fontFamily: 'var(--font-mono)',
-          }}
-        />
-        <span style={{ fontSize: 11.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-          / {total || '—'}
-        </span>
-      </div>
-
-      {/* ── Save status dot (right-aligned) ── */}
-      <span style={{ flex: 1, minWidth: 4 }} />
-      <SaveDot saveState={saveState} onRetry={onRetrySave} t={t} />
+      {showInkExtras && <div className="reomi-reader-ink-options nn-scroll" role="group" aria-label={t('notebooks.reader.inkOptions')}>
+        <span className="reomi-reader-options-label">{t(tool === 'pen' ? 'notebooks.reader.toolPen' : 'notebooks.reader.toolHighlighter')}</span>
+        <div className="reomi-reader-group">
+          {INK_COLORS.map(c => <button key={c.id} type="button" className="reomi-reader-color" onClick={() => onColor(c.hex)}
+            aria-label={t(`notebooks.reader.color_${c.id}`)} data-tooltip={t(`notebooks.reader.color_${c.id}`)} aria-pressed={color === c.hex}>
+            <span style={{ background: c.hex }} />
+          </button>)}
+        </div>
+        <div className="reomi-reader-group reomi-reader-widths">
+          {INK_WIDTHS.map((_, i) => <TBtn key={i} active={widthIdx === i} onClick={() => onWidth(i)} title={t('notebooks.reader.width', { n: i + 1 })}>
+            <span style={{ width: 14 + i * 2, height: (i + 1) * 2 + 1, borderRadius: 99, background: 'currentColor' }} />
+          </TBtn>)}
+        </div>
+      </div>}
     </div>
   );
 };
@@ -418,12 +216,12 @@ const SaveDot = ({ saveState, onRetry, t }: { saveState: SaveState; onRetry: () 
       <button
         type="button"
         onClick={onRetry}
-        title={t('notebooks.reader.saveError')}
+        data-tooltip={t('notebooks.reader.saveError')}
         style={{
           display: 'inline-flex',
           alignItems: 'center',
           gap: 4,
-          height: 26,
+          height: 'var(--reader-control)',
           padding: '0 8px',
           borderRadius: 'var(--r-sm)',
           border: '1px solid var(--rose-400)',
@@ -445,7 +243,7 @@ const SaveDot = ({ saveState, onRetry, t }: { saveState: SaveState; onRetry: () 
   const dotClass = saveState === 'saving' ? 'nn-save-dot-saving' : '';
   return (
     <span
-      title={t(saveState === 'saving' ? 'notebooks.reader.saving' : 'notebooks.reader.saved')}
+      data-tooltip={t(saveState === 'saving' ? 'notebooks.reader.saving' : 'notebooks.reader.saved')}
       style={{
         display: 'inline-flex',
         alignItems: 'center',

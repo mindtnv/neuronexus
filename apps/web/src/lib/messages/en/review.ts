@@ -1,4 +1,23 @@
 const m = {
+  ratePrompt: 'How easily did you recall the answer?',
+  recallPrompt: 'Try to recall the answer first',
+  info: {
+    title: 'Card information',
+    deck: 'Deck',
+    type: 'Type',
+    state: 'State',
+    reviews: 'Reviews',
+    lapses: 'Lapses',
+    lastReview: 'Last review',
+    nextReview: 'Next review',
+    interval: 'Interval',
+    stability: 'Stability',
+    difficulty: 'Difficulty',
+    created: 'Created',
+    updated: 'Updated',
+    days: '{n} days',
+  },
+  cardDetails: 'Card details and shortcuts',
   ratings: {
     again: 'Again',
     hard: 'Hard',

@@ -20,13 +20,13 @@ describe('root viewport export', () => {
 
 describe('root metadata export', () => {
   test('applicationName is set', () => {
-    expect(metadata.applicationName).toBe('NeuroNexus');
+    expect(metadata.applicationName).toBe('Reomi');
   });
 
   test('appleWebApp matches the PWA shape', () => {
     expect(metadata.appleWebApp).toEqual({
       capable: true,
-      title: 'NeuroNexus',
+      title: 'Reomi',
       statusBarStyle: 'black-translucent',
     });
   });

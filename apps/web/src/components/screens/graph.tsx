@@ -39,6 +39,7 @@ import { useT } from '@/lib/i18n';
 import { useSessionResource } from '@/lib/session-resource';
 
 // Fallback initial viewport (used before ResizeObserver fires).
+const graphTone = (color: string, shade = 500) => color === 'neutral' || color === 'ink' ? 'var(--text-muted)' : `var(--${color}-${shade})`;
 const INITIAL_W = 1200;
 const INITIAL_H = 700;
 
@@ -522,7 +523,7 @@ export const NNGraphForce = () => {
       style={{
         flex: 1,
         display: isMobile ? 'block' : 'grid',
-        gridTemplateColumns: isMobile ? undefined : '1fr 320px',
+        gridTemplateColumns: isMobile ? undefined : 'minmax(0, 1fr) 280px',
         gridTemplateRows: isMobile ? undefined : '1fr',
         overflow: 'hidden',
         position: 'relative',
@@ -535,7 +536,7 @@ export const NNGraphForce = () => {
         style={{
           position: isMobile ? 'absolute' : 'relative',
           inset: isMobile ? 0 : undefined,
-          background: 'var(--ink-950)',
+          background: 'var(--surface)',
           overflow: 'hidden',
           width: isMobile ? undefined : '100%',
           height: isMobile ? undefined : '100%',
@@ -552,7 +553,7 @@ export const NNGraphForce = () => {
               display: 'grid',
               placeItems: 'center',
               padding: 24,
-              background: 'var(--ink-950)',
+              background: 'var(--surface)',
             }}
           >
             <div style={{ width: 'min(520px, 80%)', display: 'grid', gap: 14 }}>
@@ -765,7 +766,7 @@ export const NNGraphForce = () => {
                     width: 9,
                     height: 9,
                     borderRadius: '50%',
-                    background: `var(--${d.color}-500)`,
+                    background: graphTone(d.color, 500),
                     flexShrink: 0,
                     boxShadow: hidden ? 'none' : `0 0 0 2px var(--${d.color}-500)33`,
                   }}
@@ -818,7 +819,7 @@ export const NNGraphForce = () => {
           />
           <button
             onClick={resetZoom}
-            title={t('graph.controls.reset')}
+            data-tooltip={t('graph.controls.reset')}
             style={{
               padding: '6px 10px',
               textAlign: 'center',
@@ -882,7 +883,7 @@ export const NNGraphForce = () => {
         >
           <defs>
             <radialGradient id="nn-graph-glow" cx="50%" cy="50%" r="50%">
-              <stop offset="0" stopColor="var(--chart-area-stop)" stopOpacity="0.35" />
+              <stop offset="0" stopColor="var(--chart-area-stop)" stopOpacity="0.16" />
               <stop offset="1" stopColor="var(--chart-area-stop)" stopOpacity="0" />
             </radialGradient>
           </defs>
@@ -903,7 +904,7 @@ export const NNGraphForce = () => {
                     if (el) lineRefs.current.set(k, el);
                     else lineRefs.current.delete(k);
                   }}
-                  stroke={sameDeck ? `var(--${a.color}-500)` : 'var(--ink-600)'}
+                  stroke={sameDeck ? graphTone(a.color, 500) : 'var(--border-2)'}
                   strokeWidth={0.5}
                   opacity={0.3}
                   pointerEvents="none"
@@ -915,17 +916,17 @@ export const NNGraphForce = () => {
             {simNodes.map((n) => {
               const isSel = selectedId === n.id;
               const fill = n.mastered
-                ? `var(--${n.color}-500)`
+                ? graphTone(n.color, 500)
                 : n.isNew
-                  ? 'var(--ink-700)'
-                  : `var(--${n.color}-600)`;
+                  ? 'var(--surface-3)'
+                  : graphTone(n.color, 600);
               const stroke = isSel
                 ? 'var(--text)'
                 : n.mastered
                   ? 'var(--lime-400)'
                   : n.isNew
                     ? 'var(--border-2)'
-                    : `var(--${n.color}-500)`;
+                    : graphTone(n.color, 500);
               return (
                 <g
                   key={n.id}
@@ -942,7 +943,7 @@ export const NNGraphForce = () => {
                   }}
                 >
                   {n.mastered && <circle r={n.r + 12} fill="url(#nn-graph-glow)" />}
-                  <circle r={n.r + 3} fill={`var(--${n.color}-500)`} opacity={0.15} />
+                  <circle r={n.r + 3} fill={graphTone(n.color, 500)} opacity={0.15} />
                   <circle
                     r={n.r}
                     fill={fill}
@@ -968,12 +969,12 @@ export const NNGraphForce = () => {
                 <text
                   textAnchor="middle"
                   fontSize={isMobile ? 10 : 14}
-                  fontFamily="var(--font-mono)"
-                  fill={`var(--${d.color}-400)`}
+                  fontFamily="var(--font-sans)"
+                  fill={graphTone(d.color, 400)}
                   fontWeight={500}
-                  letterSpacing={isMobile ? 0.5 : 1}
+                  letterSpacing={0}
                 >
-                  {d.name.toUpperCase()}
+                  {d.name}
                 </text>
               </g>
             ))}
@@ -1093,7 +1094,7 @@ const EmptyDetail = ({ totalCards, totalEdges }: { totalCards: number; totalEdge
       <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>
         {t('graph.detail.selected')}
       </div>
-      <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, color: 'var(--text-muted)', letterSpacing: -0.5 }}>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 22, color: 'var(--text-muted)', letterSpacing: -0.5 }}>
         {t('graph.detail.nothing')}
       </div>
       <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
@@ -1148,7 +1149,7 @@ const NodeDetail = ({
         <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>
           {t('graph.detail.selected')}
         </div>
-        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 26, color: 'var(--text)', letterSpacing: -0.5, lineHeight: 1.2 }}>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 26, color: 'var(--text)', letterSpacing: -0.5, lineHeight: 1.2 }}>
           {card.renderFrontText}
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6 }}>

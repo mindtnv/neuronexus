@@ -13,6 +13,8 @@ const library = {
 
   // ── Header ────────────────────────────────────────────────────────────────────
   header: {
+    formatLabel: 'Format',
+    readingLabel: 'Reading',
     searchPlaceholder: 'Search by title or author…',
     add: 'Add',
     addFiles: 'Files (PDF / EPUB)',
@@ -188,6 +190,8 @@ const library = {
 
   // ── Status badge + machine error codes (errorCode → status.<code>) ────────────
   status: {
+    indexWaiting: 'Text has been extracted. AI search and grounded answers will be available after indexing.',
+    readable: 'Available to read',
     pending: 'Queued',
     parsing: 'Parsing…',
     indexing: 'Indexing…',
@@ -196,6 +200,7 @@ const library = {
     deleting: 'Removing…',
     too_large: 'File is too large.',
     too_many_chunks: 'Material is too long to index.',
+    index_failed: 'AI indexing failed. The file is available to read.',
     parse_failed: 'Could not read this material.',
     fetch_failed: 'Could not fetch this URL.',
     unsupported_mime: 'Unsupported file type.',
@@ -217,6 +222,11 @@ const library = {
 
   // ── Full-screen reader (/library/[id]) ────────────────────────────────────────
   reader: {
+    indexError: 'Indexing unavailable',
+    unavailable: 'Text is unavailable',
+    unavailableHint: 'Processing failed. Open the material details to check the source.',
+    preparing: 'Preparing your material',
+
     back: 'Library',
     loading: 'Loading…',
     notFound: 'This material is no longer in your library.',
