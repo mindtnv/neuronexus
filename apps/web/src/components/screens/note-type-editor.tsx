@@ -5,7 +5,7 @@ import { normalizeFieldName, validFieldNames, validateTemplates, typedAnswerFiel
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
-import { NNBtn, NNBadge, NNCard, NNIcon } from '@/components/ui';
+import { NNBtn, NNBadge, NNCard, NNIcon, NNPageSkeleton } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import type { NoteType } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -16,6 +16,10 @@ import { RichCard } from '@/components/rich-card';
 import type { RenderKind, CardRegenerationPreview, CardTemplate, FieldValues, NoteField } from '@neuronexus/shared';
 import { api, ApiError, ok } from '@/lib/api';
 import { NoteTypeDeletionDialog } from '@/components/note-type-deletion';
+import { useEditorDraft } from '@/lib/use-editor-draft';
+import { draftFingerprint } from '@/lib/editor-drafts';
+import { isTypeDraftValue } from '@/lib/editor-draft-values';
+import { EditorDraftNotice } from '@/components/editor-draft-notice';
 import { noteTypeFromApi } from '@/lib/mappers';
 
 // ─────────────────────────────────────────────
@@ -140,6 +144,7 @@ const NoteTypeList = ({
   onBack: () => void;
 }) => {
   const t = useT();
+  const nav = useAppNavigation();
   const sorted = useMemo(
     () => [...noteTypes].sort((a, b) => Number(b.isBuiltin) - Number(a.isBuiltin) || a.name.localeCompare(b.name)),
     [noteTypes],
@@ -147,12 +152,13 @@ const NoteTypeList = ({
 
   return (
     <div style={{ padding: 24, maxWidth: 760, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
         <NNBtn size="sm" variant="ghost" icon="chevl" onClick={onBack}>
           {t('noteTypes.list.back')}
         </NNBtn>
         <div style={sectionTitleStyle}>{t('noteTypes.list.title')}</div>
         <div style={{ flex: 1 }} />
+        <NNBtn size="sm" variant="soft" onClick={() => nav.push('/editor?drafts=1')}>{t('editor.draft.shortTitle')}</NNBtn>
         <NNBtn size="sm" variant="primary" icon="plus" onClick={onCreate}>
           {t('noteTypes.list.newType')}
         </NNBtn>
@@ -459,15 +465,19 @@ const NoteTypeForm = ({
   onCancel: () => void;
 }) => {
   const t = useT();
+  const router = useAppNavigation();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const addNoteType = useNN((s) => s.addNoteType);
   const updateNoteType = useNN((s) => s.updateNoteType);
   const { confirm } = useDialog();
   const saveLock = useRef(false);
+  const formRoot = useRef<HTMLDivElement>(null);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const ownerId = useNN(state => state.profile?.userId) ?? '';
   const [baseVersion, setBaseVersion] = useState(editing?.updatedAt);
+  const [baseKind, setBaseKind] = useState(editing?.kind ?? 'custom');
   const [latest, setLatest] = useState<NoteType | null>(null);
   const [offerCopy, setOfferCopy] = useState(false);
 
@@ -583,12 +593,12 @@ const NoteTypeForm = ({
     return null;
   };
 
-  const handleSave = async (saveCopy = false) => {
-    if (saveLock.current) return;
+  const handleSave = async (saveCopy = false, notify = true): Promise<boolean> => {
+    if ((ownerId && useNN.getState().profile?.userId !== ownerId) || saveLock.current || localDraft.blocked) return false;
     const v = validate();
     if (v) {
       setError(v);
-      return;
+      return false;
     }
     setError(null);
     saveLock.current = true;
@@ -608,21 +618,21 @@ const NoteTypeForm = ({
         const preview = await ok(await (api as any)['note-types']({ id: editing.id }).preview.post({
           ...payload, preview: true, expectedUpdatedAt: baseVersion,
         })) as CardRegenerationPreview;
-        if (!alive.current) return;
+        if (!alive.current) return false;
         const impact = preview.impact;
         const sampleDetails = preview.validation?.samples.map((sample) => `• ${sample.front || '—'} → ${sample.error ? t(sample.error === 'typein_answer_placement' ? 'editor.errors.typeinPlacement' : 'noteTypes.validation.invalid') : sample.questions.join(' / ') || t('noteTypes.validation.media')}${sample.answer ? ` — ${t('noteTypes.answerField')}: ${sample.answer}` : ''}${sample.omittedTemplates.length ? ` (${t('noteTypes.validation.omitted', { names: sample.omittedTemplates.join(', ') })})` : ''}`).join('\n');
         if (preview.validation?.invalidNotes) {
           setError(`${t('noteTypes.validation.blocked', { n: preview.validation.invalidNotes })}\n${sampleDetails ?? ''}`);
-          return;
+          return false;
         }
         if (impact.willCreateCards || impact.willDeleteCards || preview.validation?.checkedNotes) {
           const details = impact.removedCards.map((card) => `• ${card.front || t('noteTypes.preview.noCard')} (${card.reviews})`).join('\n');
           if (!(await confirm({ title: t('noteTypes.impact.title'), danger: impact.willDeleteCards > 0,
             message: `${t('noteTypes.impact.counts', { create: impact.willCreateCards, keep: impact.willKeepCards,
               remove: impact.willDeleteCards, reviews: impact.willDeleteReviews })}${sampleDetails ? `\n\n${t('noteTypes.validation.samples')}\n${sampleDetails}` : ''}${details ? `\n\n${t('noteTypes.impact.removed')}\n${details}` : ''}`,
-          }))) return;
+          }))) return false;
         }
-        if (!alive.current) return;
+        if (!alive.current) return false;
         saved = await updateNoteType(editing.id, { ...payload, expectedUpdatedAt: preview.sourceVersion,
           confirmationToken: preview.confirmationToken });
       } else if (editing && editing.isBuiltin) {
@@ -633,9 +643,10 @@ const NoteTypeForm = ({
         // New custom type.
         saved = await addNoteType({ ...payload, kind: 'custom' });
       }
-      if (alive.current) onDone(saved);
+      localDraft.markSaved();
+      if (alive.current) { setBaseVersion(saved.updatedAt); setBaseKind(saved.kind); if (notify) onDone(saved); return true; }
     } catch (err) {
-      if (!alive.current) return;
+      if (!alive.current) return false;
       if (err instanceof ApiError && err.safeMessage === 'note_type_operation_too_large') {
         setError(t('noteTypes.errors.tooLarge')); setOfferCopy(true);
       } else if (err instanceof ApiError && ['note_type_operation_busy', 'note_type_operation_timeout'].includes(err.safeMessage)) {
@@ -652,7 +663,14 @@ const NoteTypeForm = ({
       saveLock.current = false;
       if (alive.current) setSaving(false);
     }
+    return false;
   };
+
+  const localDraft = useEditorDraft({ scope: { ownerId, kind: 'type', entityId: editing?.id ?? 'new' },
+    value: { ...draft, baseVersion, kind: baseKind }, fingerprint: draftFingerprint(draft), validate: isTypeDraftValue,
+    busy: saving, onSave: () => handleSave(false, false),
+    onRestore: ({ baseVersion, kind, ...value }) => { setDraft(value); setBaseVersion(baseVersion); setBaseKind(kind ?? editing?.kind ?? 'custom'); setLatest(editing && baseVersion !== editing.updatedAt ? editing : null); setError(null); requestAnimationFrame(() => formRoot.current?.querySelector<HTMLInputElement>('input')?.focus()); },
+  });
 
   const title = !editing
     ? t('noteTypes.editor.newTitle')
@@ -661,21 +679,23 @@ const NoteTypeForm = ({
       : t('noteTypes.editor.editTitle', { name: editing.name });
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
+    <div ref={formRoot} style={{ padding: 24, maxWidth: 1100, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
+      <EditorDraftNotice draft={localDraft} stale={Boolean(localDraft.pending && localDraft.pending.value.baseVersion !== editing?.updatedAt)} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
         <NNBtn size="sm" variant="ghost" icon="chevl" onClick={onCancel} disabled={saving}>
           {t('noteTypes.editor.back')}
         </NNBtn>
         <div style={sectionTitleStyle}>{title}</div>
+        <NNBtn size="sm" variant="ghost" onClick={() => router.push('/editor?drafts=1')}>{t('editor.draft.libraryTitle')}</NNBtn>
         <div style={{ flex: 1 }} />
-        <NNBtn size="sm" variant="primary" icon="check" onClick={() => handleSave()} disabled={saving}>
+        <NNBtn size="sm" variant="primary" icon="check" onClick={() => handleSave()} disabled={saving || localDraft.blocked}>
           {saving
             ? t('noteTypes.actions.saving')
             : isClone
               ? t('noteTypes.actions.saveCopy')
               : t('noteTypes.actions.save')}
         </NNBtn>
-        {editing && !isClone && <NNBtn size="sm" disabled={saving} onClick={() => handleSave(true)}>{t('noteTypes.actions.saveCopy')}</NNBtn>}
+        {editing && !isClone && <NNBtn size="sm" disabled={saving || localDraft.blocked} onClick={() => handleSave(true)}>{t('noteTypes.actions.saveCopy')}</NNBtn>}
       </div>
 
       {offerCopy && editing && <NNCard style={{ marginBottom: 16 }}>
@@ -700,12 +720,13 @@ const NoteTypeForm = ({
         </details>)}
         <NNBtn disabled={saving} size="sm" onClick={async () => {
           if (await confirm({ title: t('noteTypes.impact.replaceDraft'), danger: true })) {
-            setDraft(draftFromNoteType(latest)); setBaseVersion(latest.updatedAt); setLatest(null); setError(null);
+            localDraft.markSaved(draftFingerprint(draftFromNoteType(latest)));
+            setDraft(draftFromNoteType(latest)); setBaseVersion(latest.updatedAt); setBaseKind(latest.kind); setLatest(null); setError(null);
           }
         }}>{t('noteTypes.impact.loadLatest')}</NNBtn>
       </NNCard>}
 
-      <fieldset disabled={saving} style={{ border: 0, margin: 0, padding: 0, minWidth: 0, display: isMobile ? 'flex' : 'grid', flexDirection: 'column', gridTemplateColumns: isMobile ? undefined : '1fr 380px', gap: 20 }}>
+      <fieldset disabled={saving || localDraft.blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0, display: isMobile ? 'flex' : 'grid', flexDirection: 'column', gridTemplateColumns: isMobile ? undefined : '1fr 380px', gap: 20 }}>
         {/* Left: editor */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           {/* Name */}
@@ -724,7 +745,7 @@ const NoteTypeForm = ({
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
               <div style={sectionTitleStyle}>{t('noteTypes.fields.title')}</div>
               <div style={{ flex: 1 }} />
-              <NNBtn size="sm" variant="soft" icon="plus" onClick={addField}>
+              <NNBtn size="sm" variant="soft" icon="plus" onClick={addField} disabled={draft.fields.length >= 64}>
                 {t('noteTypes.fields.addField')}
               </NNBtn>
             </div>
@@ -758,7 +779,7 @@ const NoteTypeForm = ({
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
               <div style={sectionTitleStyle}>{t('noteTypes.templates.title')}</div>
               <div style={{ flex: 1 }} />
-              <NNBtn size="sm" variant="soft" icon="plus" onClick={addTemplate}>
+              <NNBtn size="sm" variant="soft" icon="plus" onClick={addTemplate} disabled={draft.templates.length >= 32}>
                 {t('noteTypes.templates.addTemplate')}
               </NNBtn>
             </div>
@@ -910,6 +931,8 @@ export const NNNoteTypeEditor = () => {
   const isNew = searchParams?.get('new') === '1';
 
   const noteTypes = useNN((s) => s.noteTypes);
+  const ownerId = useNN(state => state.profile?.userId) ?? '';
+  const bootstrapped = useNN(state => state.bootstrapped);
   const [deleting, setDeleting] = useState<NoteType | null>(null);
   const [cloneResult, setCloneResult] = useState<{ source: NoteType; target: NoteType } | null>(null);
 
@@ -931,12 +954,14 @@ export const NNNoteTypeEditor = () => {
     [router],
   );
 
+  if (!bootstrapped) return <NNPageSkeleton />;
+
   if (kindId && editing && !editing.isBuiltin) return <NoteTypeKindForm key={editing.id} editing={editing} onDone={goList} />;
 
   // Form mode: explicit ?new=1 OR ?edit=<id> resolving to a known type.
   if (isNew || editing) {
     return (
-      <NoteTypeForm
+      <NoteTypeForm key={`${ownerId}:${editing?.id ?? 'new'}`}
         editing={editing}
         onDone={(saved) => { if (editing && saved.id !== editing.id) setCloneResult({ source: editing, target: saved }); else setCloneResult(null); goList(); }}
         onCancel={goList}

@@ -1,4 +1,29 @@
 const m = {
+  draft: {
+    shortTitle: "Drafts",
+    manageInNewTab: "Manage drafts in a new tab",
+    extraFields: 'These retained fields are not used by the current type. Copy the text you need into the fields above; nothing is removed automatically.',
+    removeField: 'Remove “{name}” from this draft?', removeExtra: 'Remove additional field', tooManyFields: 'A note can have at most 64 fields. Copy the text you need and remove unused additional fields.',
+    downloadFailed: 'Could not download the draft. Its text remains in the list and can be copied.',
+
+    libraryTitle: 'Local drafts', libraryHint: 'Drafts for this account in this browser. Copy or download their text here even if the original note has been deleted.',
+    empty: 'No local drafts yet.', untitled: 'Untitled', download: 'Download draft', showText: 'View text',
+    openOriginal: 'Open editor', removeConfirm: 'Discard the selected local draft?', refresh: 'Refresh list',
+
+    found: 'A local draft from {date} is available. Restore your changes?',
+    stale: 'The saved version has changed. Restoring brings back your text; compare the changes before saving.',
+    restore: 'Restore draft', discard: 'Discard draft',
+    saved: 'Draft saved in this browser for your account.', saving: 'Saving draft…',
+    unavailable: 'Could not save the draft in this browser. Save your changes to the server before leaving.',
+    too_large: 'The draft exceeds 256 KB. Your text remains in the editor; save it to the server before leaving.',
+    capacity: 'The local limit is reached (10 drafts or 1 MB). Save these changes to the server; existing drafts were not removed.',
+    invalid: 'The local draft could not be read. You can discard it; the saved note will stay unchanged.',
+    changed: 'Another tab changed this draft. Your text remains in the editor; save it to the server or reload to open the current draft.',
+    leaveTitle: 'What should happen to your changes?', leaveBody: 'Your changes have not been saved to the server yet.',
+    saveAndLeave: 'Save to server', keepAndLeave: 'Keep a local draft', discardAndLeave: 'Discard changes',
+    continue: 'Continue', stay: 'Stay in editor',
+  },
+
   typein: {
     target: "Compare against plain text of {field}",
     alternatives: "Accepted alternatives — one per line",

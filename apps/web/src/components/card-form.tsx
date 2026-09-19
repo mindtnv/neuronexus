@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppNavigation } from '@/components/navigation';
-import { NNBtn, NNBadge, NNTag, NNCard, NNIcon } from '@/components/ui';
+import { NNBtn, NNBadge, NNTag, NNCard, NNIcon, NNPageSkeleton } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import type { Card, NoteType } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -11,6 +11,10 @@ import { useDialog } from '@/components/dialog';
 import { NNSelect, type NNSelectOption } from '@/components/nn-select';
 import { buildDeckTree, deckPathLabel, flattenTree } from '@/lib/decks';
 import { renderCardHtml } from '@/lib/render-card';
+import { useEditorDraft } from '@/lib/use-editor-draft';
+import { draftFingerprint } from '@/lib/editor-drafts';
+import { isNoteDraftValue, type NoteDraftValue } from '@/lib/editor-draft-values';
+import { EditorDraftNotice } from './editor-draft-notice';
 import { NoteConversionDialog } from './note-conversion';
 import { RichCard } from '@/components/rich-card';
 import { api, ApiError, ok } from '@/lib/api';
@@ -414,7 +418,7 @@ export interface NNCardFormProps {
   layout?: 'panel' | 'dock';
 }
 
-export const NNCardForm = ({
+const CardFormEditor = ({
   card,
   defaultDeckId,
   defaultNoteTypeId,
@@ -439,6 +443,8 @@ export const NNCardForm = ({
   const deleteNote = useNN((s) => s.deleteNote);
 
   const editing = card ?? null;
+  const ownerId = useNN((state) => state.profile?.userId) ?? '';
+  const [restoredType, setRestoredType] = useState<NoteType | undefined>();
   const [baseVersion, setBaseVersion] = useState(editing?.note?.updatedAt);
   const [latest, setLatest] = useState<Card | null>(null);
   const [latestType, setLatestType] = useState<NoteType | null>(null);
@@ -462,6 +468,7 @@ export const NNCardForm = ({
     if (editing.noteType) {
       return {
         id: editing.noteType.id,
+        updatedAt: editing.noteType.updatedAt,
         name: editing.noteType.name || editing.noteType.kind,
         fields: editing.noteType.fields ?? [],
         templates: editing.noteType.templates,
@@ -484,7 +491,8 @@ export const NNCardForm = ({
   }, [editing, defaultDeckId, decks]);
 
   const [deckId, setDeckId] = useState<string>(resolvedDefaultDeckId);
-  const [fieldValues, setFieldValues] = useState<FieldValues>({});
+  const [baseDeckId, setBaseDeckId] = useState<string>(resolvedDefaultDeckId);
+  const [fieldValues, setFieldValues] = useState<FieldValues>(() => ({ ...(editing?.note?.fieldValues ?? {}) }));
   const [acceptedAnswersText, setAcceptedAnswersText] = useState(editing?.note?.acceptedAnswers?.join('\n') ?? '');
   const [tagsText, setTagsText] = useState<string>(editing?.tags?.join(', ') ?? '');
   const [converting, setConverting] = useState(false);
@@ -494,6 +502,7 @@ export const NNCardForm = ({
   const uploadCount = useRef(0);
   const [uploadingFields, setUploadingFields] = useState(0);
   const mounted = useRef(true);
+  const formRoot = useRef<HTMLDivElement>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const onUploadChange = useCallback((pending: boolean) => {
     uploadCount.current = Math.max(0, uploadCount.current + (pending ? 1 : -1));
@@ -510,8 +519,8 @@ export const NNCardForm = ({
 
   // The active note-type: the store entry for `noteTypeId`, or the editing one.
   const activeNoteType = useMemo<NoteType | undefined>(() => {
-    return noteTypes.find((nt) => nt.id === noteTypeId) ?? editingNoteType;
-  }, [noteTypes, noteTypeId, editingNoteType]);
+    return restoredType?.id === noteTypeId ? restoredType : noteTypes.find((nt) => nt.id === noteTypeId) ?? editingNoteType;
+  }, [noteTypes, noteTypeId, editingNoteType, restoredType]);
 
   // The field set to render inputs for. When editing a synthesized type with no
   // fields, fall back to the field names present in the note's values.
@@ -524,27 +533,6 @@ export const NNCardForm = ({
   }, [activeNoteType, editing]);
 
   const isCloze = activeNoteType?.kind === 'cloze';
-
-  // Re-sync field state when the selected card / note-type changes.
-  useEffect(() => {
-    if (editing) {
-      setDeckId(editing.deckId);
-      setNoteTypeId(editing.noteType?.id ?? defaultNoteType?.id ?? '');
-      setFieldValues({ ...(editing.note?.fieldValues ?? {}) });
-      setAcceptedAnswersText(editing.note?.acceptedAnswers?.join('\n') ?? '');
-      setTagsText(editing.tags.join(', '));
-    } else {
-      setDeckId(resolvedDefaultDeckId);
-      setNoteTypeId(defaultNoteType?.id ?? '');
-      setFieldValues({});
-      setAcceptedAnswersText('');
-      setTagsText('');
-    }
-    setError(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing?.id, resolvedDefaultDeckId, defaultNoteType?.id]);
-
-  useEffect(() => { setBaseVersion(editing?.note?.updatedAt); setLatest(null); setLatestType(null); }, [editing?.id]);
 
   const setField = useCallback((name: string, markdown: string) => {
     setFieldValues((prev) => ({ ...prev, [name]: markdown }));
@@ -621,53 +609,56 @@ export const NNCardForm = ({
     : code === 'typein_answer_placement' ? 'editor.errors.typeinPlacement'
     : 'editor.errors.invalidTemplate');
   const answerField = typedAnswerField(fields);
-  const handleSave = async () => {
-    if (mutationLock.current || uploadCount.current > 0) return;
+  const handleSave = async (notify = true): Promise<boolean> => {
+    if ((ownerId && useNN.getState().profile?.userId !== ownerId) || mutationLock.current || uploadCount.current > 0 || localDraft.blocked) return false;
     setError(null);
     if (!deckId || !decks.some((deck) => deck.id === deckId)) {
       setError(t('editor.errors.pickDeck'));
-      return;
+      return false;
     }
+    if (Object.keys(fieldValues).length > 64) { setError(t('editor.draft.tooManyFields')); return false; }
     if (!activeNoteType) {
       setError(t('editor.errors.pickNoteType'));
-      return;
+      return false;
     }
-    if (generation.error) { setError(contentError(generation.error)); return; }
+    if (generation.error) { setError(contentError(generation.error)); return false; }
     let acceptedAnswers: string[];
     try { acceptedAnswers = acceptedAnswerVariants(acceptedAnswersText.split('\n').map((line) => line.trim()).filter(Boolean)); }
-    catch { setError(t('editor.errors.invalidAnswers')); return; }
+    catch { setError(t('editor.errors.invalidAnswers')); return false; }
     if (clozeRetainHistoryFor !== undefined && !splitChoices.every((choice) => choice.numbers.includes(clozeRetainHistoryFor[String(choice.templateOrd)]))) {
-      setError(t('editor.errors.invalidClozeSplit')); return;
+      setError(t('editor.errors.invalidClozeSplit')); return false;
     }
     if (generation.cards.length === 0) {
       setError(t(isCloze ? 'editor.errors.clozeRequired' : 'editor.errors.noCards'));
-      return;
+      return false;
     }
     mutationLock.current = true;
     setSaving(true);
     try {
       if (editing) {
-        const patch = { fieldValues, tags, acceptedAnswers, expectedTypeUpdatedAt: activeNoteType.updatedAt, ...(deckId !== editing.deckId ? { deckId } : {}),
+        const patch = { fieldValues, tags, acceptedAnswers, expectedTypeUpdatedAt: activeNoteType.updatedAt, ...(deckId !== baseDeckId ? { deckId } : {}),
           ...(clozeRetainHistoryFor !== undefined ? { clozeRetainHistoryFor } : {}) };
         const preview = await ok(await (api as any).notes({ id: editing.noteId }).preview.post({
           ...patch, preview: true, expectedUpdatedAt: baseVersion,
         })) as CardRegenerationPreview;
-        if (!mounted.current) return;
+        if (!mounted.current) return false;
         if (preview.impact.willDeleteCards || clozeRetainHistoryFor !== undefined) {
           const details = preview.impact.removedCards.map((card) => `• ${card.front} (${card.reviews})`).join('\n');
           if (!(await confirm({ title: t('noteTypes.impact.title'), danger: preview.impact.willDeleteCards > 0,
             confirmLabel: clozeRetainHistoryFor !== undefined ? t('editor.cloze.split') : undefined,
             message: `${t('noteTypes.impact.counts', { create: preview.impact.willCreateCards, keep: preview.impact.willKeepCards,
               remove: preview.impact.willDeleteCards, reviews: preview.impact.willDeleteReviews })}${clozeRetainHistoryFor !== undefined ? `\n${splitExplanation}` : ''}\n\n${details}`,
-          }))) return;
+          }))) return false;
         }
-        if (!mounted.current) return;
+        if (!mounted.current) return false;
         const updated = await updateNote(editing.noteId, { ...patch,
           expectedUpdatedAt: preview.sourceVersion, confirmationToken: preview.confirmationToken });
         const saved = updated.find((c) => c.id === editing.id) ?? updated[0];
+        if (saved) localDraft.markSaved();
         if (mounted.current) {
-          if (saved) { setBaseVersion(saved.note?.updatedAt); setLatest(null); setLatestType(null); }
-          if (saved) onSaved?.(saved);
+          if (saved) { setBaseDeckId(saved.deckId); setBaseVersion(saved.note?.updatedAt); setLatest(null); setLatestType(null); }
+          if (saved && notify) onSaved?.(saved);
+          if (saved) return true;
           else setError(t('editor.errors.noCards'));
         }
       } else {
@@ -679,8 +670,9 @@ export const NNCardForm = ({
           acceptedAnswers,
           tags,
         });
+        if (created[0]) localDraft.markSaved();
         if (mounted.current) {
-          if (created[0]) onSaved?.(created[0]);
+          if (created[0]) { if (notify) onSaved?.(created[0]); return true; }
           else setError(t('editor.errors.noCards'));
         }
       }
@@ -689,13 +681,15 @@ export const NNCardForm = ({
         if (err instanceof ApiError && err.status === 409) {
           setError(t('editor.errors.changed'));
           try {
+            let currentTypeId = activeNoteType.id;
             if (editing) {
               const current = cardFromApi(await ok(await (api as any).cards({ id: editing.id }).get()));
+              currentTypeId = current.noteType?.id ?? currentTypeId;
               if (mounted.current) setLatest(current);
             }
-            if (err.safeMessage === 'note_type_changed') {
+            if (err.safeMessage === 'note_type_changed' || currentTypeId !== activeNoteType.id) {
               const rows = await ok(await (api as any)['note-types'].get()) as any[];
-              const current = rows.find((row) => row.id === activeNoteType.id);
+              const current = rows.find((row) => row.id === currentTypeId);
               if (current && mounted.current) setLatestType(noteTypeFromApi(current));
             }
           } catch { /* Preserve the local draft if reloading is unavailable. */ }
@@ -705,7 +699,29 @@ export const NNCardForm = ({
       mutationLock.current = false;
       if (mounted.current) setSaving(false);
     }
+    return false;
   };
+
+  const draftValue: NoteDraftValue = { fieldValues, deckId, noteTypeId, tagsText, acceptedAnswersText,
+    baseVersion, baseDeckId, cardId: editing?.id, label: selectedPreview?.renderFrontText.slice(0, 160), noteType: activeNoteType, clozeRetainHistoryFor };
+  const localDraft = useEditorDraft({ scope: { ownerId, kind: 'note', entityId: editing?.noteId ?? 'new' },
+    value: draftValue, fingerprint: draftFingerprint({ fieldValues, deckId, noteTypeId, tagsText, acceptedAnswersText, clozeRetainHistoryFor }),
+    validate: isNoteDraftValue, busy: saving || deleting || uploadingFields > 0, onSave: () => handleSave(false),
+    onRestore: (value) => {
+      // An unchanged deck selection was not an instruction to move sibling
+      // cards back after an external move or opening another direction.
+      const originalDeck = value.baseDeckId ?? value.deckId;
+      const restoredDeck = editing && value.deckId === originalDeck ? editing.deckId : value.deckId;
+      setFieldValues(value.fieldValues); setDeckId(restoredDeck); setBaseDeckId(value.deckId === originalDeck ? editing?.deckId ?? originalDeck : originalDeck); setNoteTypeId(value.noteTypeId);
+      setTagsText(value.tagsText); setAcceptedAnswersText(value.acceptedAnswersText); setBaseVersion(value.baseVersion);
+      setRestoredType(value.noteType); setClozeRetainHistoryFor(value.clozeRetainHistoryFor);
+      const currentType = noteTypes.find(type => type.id === editing?.noteType?.id);
+      setError(null);
+      setLatest(editing && value.baseVersion !== editing.note?.updatedAt ? editing : null);
+      setLatestType(currentType && (currentType.id !== value.noteTypeId || currentType.updatedAt !== value.noteType?.updatedAt) ? currentType : null);
+      requestAnimationFrame(() => formRoot.current?.querySelector<HTMLTextAreaElement>('textarea[data-nn-field]')?.focus());
+    },
+  });
 
   const handleDelete = async () => {
     if (!editing || mutationLock.current) return;
@@ -716,7 +732,7 @@ export const NNCardForm = ({
       setDeleting(true);
       setError(null);
       await deleteNote(editing.noteId);
-      if (mounted.current) onDeleted?.(editing.id);
+      if (mounted.current) { localDraft.markSaved(); onDeleted?.(editing.id); }
     } catch (err) {
       console.error('deleteNote failed', err);
       if (mounted.current) setError(t('editor.errors.deleteFailed'));
@@ -743,6 +759,7 @@ export const NNCardForm = ({
 
   return (
     <div
+      ref={formRoot}
       onKeyDown={handleKeyDown}
       style={{
         flex: 1,
@@ -754,6 +771,8 @@ export const NNCardForm = ({
       {converting && editing && <NoteConversionDialog cards={[editing]} onClose={() => setConverting(false)} onConverted={(converted) => {
         setConverting(false); const saved = converted.find((card) => card.id === editing.id) ?? converted[0];
         if (saved) {
+          localDraft.markSaved(draftFingerprint({ fieldValues: saved.note?.fieldValues ?? {}, deckId: saved.deckId, noteTypeId: saved.noteType?.id ?? noteTypeId, tagsText: saved.tags.join(', '), acceptedAnswersText: (saved.note?.acceptedAnswers ?? []).join('\n'), clozeRetainHistoryFor: undefined }));
+          setRestoredType(undefined); setDeckId(saved.deckId); setBaseDeckId(saved.deckId);
           setNoteTypeId(saved.noteType?.id ?? noteTypeId); setFieldValues({ ...(saved.note?.fieldValues ?? {}) });
           setTagsText(saved.tags.join(', ')); setAcceptedAnswersText((saved.note?.acceptedAnswers ?? []).join('\n'));
           setBaseVersion(saved.note?.updatedAt); setLatest(null); setLatestType(null); setError(null);
@@ -761,6 +780,8 @@ export const NNCardForm = ({
         }
       }} />}
       <div style={{ padding: isMobile ? '16px 14px' : 24, overflow: isMobile ? 'visible' : 'auto' }}>
+        <EditorDraftNotice draft={localDraft} stale={Boolean(localDraft.pending && (localDraft.pending.value.baseVersion !== editing?.note?.updatedAt || localDraft.pending.value.noteType?.updatedAt !== (noteTypes.find(type => type.id === localDraft.pending!.value.noteTypeId) ?? editingNoteType)?.updatedAt))} />
+        <fieldset disabled={localDraft.blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: 20, flexWrap: 'wrap' }}>
           <NNBadge tone={deckTone} size="sm">{currentDeck?.name ?? t('editor.noDeck')}</NNBadge>
           <span style={{ color: 'var(--text-dim)', fontSize: 13 }}>/</span>
@@ -769,6 +790,7 @@ export const NNCardForm = ({
           </span>
           <div style={{ flex: 1 }}/>
           {footerExtra}
+          <NNBtn size="sm" variant="ghost" onClick={() => router.push('/editor?drafts=1')}>{t('editor.draft.libraryTitle')}</NNBtn>
           {editing && layout !== 'dock' && <NNBtn size="sm" variant="soft" disabled={saving || deleting || uploadingFields > 0} onClick={() => {
             if (JSON.stringify(fieldValues) !== JSON.stringify(editing.note?.fieldValues ?? {}) || tagsText !== editing.tags.join(', ') || deckId !== editing.deckId || acceptedAnswersText !== (editing.note?.acceptedAnswers ?? []).join('\n')) {
               setError(t('noteTypes.convert.saveFirst')); return;
@@ -778,7 +800,7 @@ export const NNCardForm = ({
           {editing && (
             <NNBtn size="sm" variant="danger" icon="x" onClick={handleDelete} loading={deleting} disabled={saving}>{t('actions.delete')}</NNBtn>
           )}
-          <NNBtn size="sm" variant="primary" icon="check" onClick={handleSave} loading={saving} disabled={deleting || uploadingFields > 0}>
+          <NNBtn size="sm" variant="primary" icon="check" onClick={() => handleSave()} loading={saving} disabled={deleting || uploadingFields > 0 || localDraft.blocked}>
             {saving ? t('editor.saving') : saveLabel ?? (editing ? t('actions.save') : t('actions.create'))}
           </NNBtn>
         </div>
@@ -943,6 +965,16 @@ export const NNCardForm = ({
           </div>
         )}
 
+        {Object.entries(fieldValues).some(([name]) => !fields.some(field => field.name === name)) && <NNCard padding={14} style={{ marginTop: 12 }}>
+          <p>{t('editor.draft.extraFields')}</p>
+          {Object.entries(fieldValues).filter(([name]) => !fields.some(field => field.name === name)).map(([name, value]) => <div key={name} style={{ marginTop: 12 }}>
+            <label>{name}<textarea readOnly aria-label={name} value={value} style={{ width: '100%', minHeight: 80, background: 'var(--surface)', color: 'var(--text)' }} /></label>
+            <NNBtn size="sm" variant="ghost" disabled={saving || deleting} onClick={async () => {
+              if (await confirm({ title: t('editor.draft.removeField', { name }), danger: true })) setFieldValues(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== name)));
+            }}>{t('editor.draft.removeExtra')}</NNBtn>
+          </div>)}
+        </NNCard>}
+
         {(latest?.note || latestType) && <NNCard padding={14} style={{ marginTop: 12 }}>
           <div>{t('editor.conflict.latest')}</div>
           {Object.entries(latest?.note?.fieldValues ?? {}).map(([name, value]) => <div key={name} style={{ marginTop: 8 }}>
@@ -964,7 +996,7 @@ export const NNCardForm = ({
                 const mapped = renameFieldValues(fieldValues, renames);
                 if (!mapped) { setError(t('editor.errors.schemaCollision')); return; }
                 useNN.setState((state) => ({ noteTypes: [...state.noteTypes.filter((type) => type.id !== latestType.id), latestType] }));
-                setFieldValues(mapped);
+                setFieldValues({ ...(latest?.note?.fieldValues ?? {}), ...mapped }); setNoteTypeId(latestType.id); setRestoredType(latestType);
               }
               setBaseVersion(latest?.note?.updatedAt); setLatest(null); setLatestType(null); setError(null);
             }
@@ -1180,7 +1212,17 @@ export const NNCardForm = ({
             </NNCard>
           )}
         </div>
+        </fieldset>
       </div>
     </div>
   );
 };
+
+
+/** Account and card identity changes remount field state; sibling cards share a note draft slot. */
+export function NNCardForm(props: NNCardFormProps) {
+  const owner = useNN(state => state.profile?.userId) ?? '';
+  const ready = useNN(state => state.bootstrapped);
+  if (!ready) return <NNPageSkeleton />;
+  return <CardFormEditor key={`${owner}:${props.card?.id ?? `new:${props.defaultDeckId ?? ''}:${props.defaultNoteTypeId ?? ''}`}`} {...props} />;
+}

@@ -238,6 +238,8 @@ export const NNCardsBrowser = () => {
         const card = cached ?? cardFromApi(await ok(await api.cards({ id: focusParam }).get()));
         if (!active) return;
         if (!cached) useNN.setState((state) => ({ cards: [...state.cards.filter((c) => c.id !== card.id), card] }));
+        if (focusedId !== card.id && !(await router.confirmLeave())) return;
+        if (!active) return;
         setFocusedId(card.id);
         const params = new URLSearchParams(Array.from(searchParams.entries()));
         params.delete('focus');
@@ -464,6 +466,11 @@ export const NNCardsBrowser = () => {
     setServerError(null);
   };
 
+  const changeFocused = async (id: string | null) => {
+    if (id === focusedId) return;
+    if (await router.confirmLeave()) setFocusedId(id);
+  };
+
   // Row click. Three distinct intents:
   //  • Shift+click   → range-add to `selected` (bulk), leaves the dock untouched.
   //  • Ctrl/Cmd+click → toggle `id` in `selected` (bulk), leaves the dock untouched.
@@ -491,7 +498,7 @@ export const NNCardsBrowser = () => {
         return next;
       });
     } else {
-      setFocusedId(id);
+      void changeFocused(id);
     }
     lastClickedRef.current = id;
   };
@@ -523,7 +530,7 @@ export const NNCardsBrowser = () => {
     const nextIdx = idx + delta;
     if (nextIdx < 0 || nextIdx >= ids.length) return;
     const nextId = ids[nextIdx]!;
-    setFocusedId(nextId);
+    void changeFocused(nextId);
     lastClickedRef.current = nextId;
   };
 
@@ -540,7 +547,7 @@ export const NNCardsBrowser = () => {
       const el = e.target as HTMLElement | null;
       const tag = el?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
-      setFocusedId(null);
+      void changeFocused(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -716,6 +723,7 @@ export const NNCardsBrowser = () => {
             alignItems: 'center',
             gap: 8,
             padding: isMobile ? '10px 12px' : '12px 16px',
+            flexWrap: 'wrap',
             borderBottom: '1px solid var(--border)',
             flexShrink: 0,
           }}
@@ -757,6 +765,10 @@ export const NNCardsBrowser = () => {
               {t('cards.search.help')}
             </span>
           )}
+          <NNBtn size="sm" variant="soft" icon="clock" onClick={() => router.push('/editor?drafts=1')}
+            title={t('editor.draft.libraryTitle')} ariaLabel={t('editor.draft.libraryTitle')}>
+            {!isMobile ? t('editor.draft.shortTitle') : undefined}
+          </NNBtn>
           <NNBtn
             size="sm"
             variant="soft"
@@ -1060,7 +1072,7 @@ export const NNCardsBrowser = () => {
               <div style={{ flex: 1 }} />
               <NNBtn size="sm" variant="ghost" icon="chevl" ariaLabel={t('cards.panel.prev')} onClick={() => movePanel(-1)} />
               <NNBtn size="sm" variant="ghost" icon="chevr" ariaLabel={t('cards.panel.next')} onClick={() => movePanel(1)} />
-              <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('cards.panel.close')} onClick={() => setFocusedId(null)} />
+              <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('cards.panel.close')} onClick={() => void changeFocused(null)} />
             </div>
             <div
               style={{
@@ -1114,7 +1126,7 @@ export const NNCardsBrowser = () => {
                 <SimilarCardsPanel
                   cardId={focusedCard.id}
                   onOpen={(id) => {
-                    void refetchCard(id).then(() => setFocusedId(id));
+                    void router.confirmLeave().then(allowed => { if (allowed) void refetchCard(id).then(() => setFocusedId(id)); });
                   }}
                 />
                 {/* Source backlinks (NotebookLM M3) — renders nothing for cards

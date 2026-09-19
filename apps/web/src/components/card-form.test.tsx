@@ -4,7 +4,8 @@ import React, { act } from 'react';
 import type { Root } from 'react-dom/client';
 import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 import { PathnameContext, SearchParamsContext } from 'next/dist/shared/lib/hooks-client-context.shared-runtime';
-import { AppNavigationProvider } from './navigation';
+import { AppNavigationProvider, useAppNavigation } from './navigation';
+import { readEditorDraft, writeEditorDraft, type DraftScope } from '../lib/editor-drafts';
 import { DialogProvider } from './dialog';
 import { BASIC_NOTE_TYPE, CLOZE_NOTE_TYPE } from '@neuronexus/shared';
 import { useNN } from '../lib/store';
@@ -40,6 +41,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await act(async () => root.unmount()); container.remove();
+  for (let i = localStorage.length - 1; i >= 0; i--) { const key = localStorage.key(i)!; if (key.startsWith('nn:editor-draft:')) localStorage.removeItem(key); }
   globalThis.fetch = originalFetch; useNN.getState().reset();
   useNN.setState({ uploadMedia: originalUpload });
   delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
@@ -390,4 +392,208 @@ test('a successful conversion removes the old scoped rows even when refreshing t
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   expect(useNN.getState().cards[0].noteType?.id).toBe(target.id);
   expect(container.textContent).not.toContain('Question');
+});
+
+
+const draftScope: DraftScope = { ownerId: 'draft-owner', kind: 'note', entityId: 'note' };
+function LeaveEditor() { const nav = useAppNavigation(); return <button onClick={() => nav.push('/cards')}>Leave editor</button>; }
+async function changeFront(value: string) {
+  const field = container.querySelector('textarea[data-nn-field]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, value);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+async function flushDraft() { await act(async () => { window.dispatchEvent(new Event('pagehide')); }); }
+async function remountForm(props: Partial<React.ComponentProps<typeof NNCardForm>> = {}) {
+  await act(async () => root.render(null)); await render(props);
+}
+describe('editor draft recovery', () => {
+  beforeEach(() => { useNN.setState({ profile: { userId: draftScope.ownerId } as any }); });
+  test('reload offers exact unsaved source without replacing the server text before consent', async () => {
+    await render();
+    const source = 'Unsaved **Markdown**\n\n```ts\nconst value: Array<T> = [];\n```';
+    await changeFront(source); await flushDraft();
+    expect((readEditorDraft(draftScope)?.value as any).fieldValues.Front).toBe(source);
+    await remountForm();
+    expect(container.textContent).toContain('editor.draft.found');
+    expect(container.querySelector('textarea[data-nn-field]')!.textContent).toBe('Question');
+    expect(button('actions.save').disabled).toBe(true);
+    await act(async () => button('editor.draft.restore').click());
+    expect((container.querySelector('textarea[data-nn-field]') as HTMLTextAreaElement).value).toBe(source);
+    expect(button('actions.save').disabled).toBe(false);
+  });
+  test('restored source keeps its original version when the server changed during absence', async () => {
+    await render(); await changeFront('My old-base changes'); await flushDraft();
+    const fresh = cardFromApi({ ...row, note: { ...row.note, updatedAt: '2026-09-20T00:00:00.000Z', fieldValues: { Front: 'Changed elsewhere', Back: 'Answer' } } });
+    await remountForm({ card: fresh });
+    expect(container.textContent).toContain('editor.draft.stale');
+    await act(async () => button('editor.draft.restore').click());
+    let body: any;
+    globalThis.fetch = (async (url: any, init: any) => {
+      if (String(url).endsWith('/preview')) { body = JSON.parse(init.body); return Response.json({ error: 'note_changed' }, { status: 409 }); }
+      return Response.json({ ...row, note: { ...row.note, fieldValues: { Front: 'Changed elsewhere', Back: 'Answer' } } });
+    }) as typeof fetch;
+    await act(async () => button('actions.save').click());
+    expect(body.expectedUpdatedAt).toBe(row.note.updatedAt);
+    expect(body.fieldValues.Front).toBe('My old-base changes');
+    expect(readEditorDraft(draftScope)).not.toBeNull();
+  });
+  test('failed save retains the draft; a confirmed save removes it and cleanup does not recreate it', async () => {
+    await render(); await changeFront('Saved draft'); await flushDraft();
+    let fail = true;
+    globalThis.fetch = (async (url: any) => fail ? Response.json({ error: 'offline' }, { status: 503 }) : Response.json(String(url).endsWith('/preview')
+      ? { confirmationToken: 'current', sourceVersion: row.note.updatedAt, impact: { willDeleteCards: 0 } }
+      : { note: { ...row.note, fieldValues: { Front: 'Saved draft', Back: 'Answer' } }, cards: [row] })) as unknown as typeof fetch;
+    await act(async () => button('actions.save').click());
+    expect(readEditorDraft(draftScope)).not.toBeNull();
+    fail = false;
+    await act(async () => button('actions.save').click());
+    expect(readEditorDraft(draftScope)).toBeNull();
+    await act(async () => root.render(null));
+    expect(readEditorDraft(draftScope)).toBeNull();
+  });
+  test('account switching cannot restore another owner draft and keeps each slot separate', async () => {
+    await render(); await changeFront('Private Alice draft'); await flushDraft();
+    await act(async () => useNN.setState({ profile: { userId: 'other-owner' } as any }));
+    expect(container.textContent).not.toContain('editor.draft.found');
+    expect((container.querySelector('textarea[data-nn-field]') as HTMLTextAreaElement).value).toBe('Question');
+    await changeFront('Bob draft'); await flushDraft();
+    expect((readEditorDraft(draftScope)?.value as any).fieldValues.Front).toBe('Private Alice draft');
+    expect((readEditorDraft({ ...draftScope, ownerId: 'other-owner' })?.value as any).fieldValues.Front).toBe('Bob draft');
+  });
+  test('leave can be cancelled or keep the local draft without a server write', async () => {
+    let calls = 0;
+    globalThis.fetch = (async (_url: any, _init: any) => { calls++; return Response.json({}); }) as typeof fetch;
+    await render({ footerExtra: <LeaveEditor /> }); await changeFront('Keep locally');
+    await act(async () => button('Leave editor').click());
+    expect(container.textContent).toContain('editor.draft.leaveTitle');
+    expect(navigations).toEqual([]);
+    await act(async () => button('editor.draft.stay').click());
+    expect(navigations).toEqual([]);
+    await act(async () => button('Leave editor').click());
+    await act(async () => button('editor.draft.continue').click());
+    expect(navigations).toEqual(['/cards']);
+    expect((readEditorDraft(draftScope)?.value as any).fieldValues.Front).toBe('Keep locally');
+    expect(calls).toBe(0);
+  });
+  test('discard before leaving removes the draft without recreating it on unmount', async () => {
+    await render({ footerExtra: <LeaveEditor /> }); await changeFront('Discard this'); await flushDraft();
+    await act(async () => button('Leave editor').click());
+    await act(async () => button('editor.draft.discardAndLeave').click());
+    await act(async () => button('editor.draft.continue').click());
+    expect(navigations).toEqual(['/cards']);
+    expect(readEditorDraft(draftScope)).toBeNull();
+    await act(async () => root.render(null));
+    expect(readEditorDraft(draftScope)).toBeNull();
+  });
+  test('reverting the text to its original value removes an obsolete local draft', async () => {
+    await render(); await changeFront('Temporary'); await flushDraft();
+    expect(readEditorDraft(draftScope)).not.toBeNull();
+    await changeFront('Question'); await flushDraft();
+    expect(readEditorDraft(draftScope)).toBeNull();
+  });
+  test('pending drafts can be discarded without changing the server or displayed source', async () => {
+    await render(); await changeFront('Old local draft'); await flushDraft(); await remountForm();
+    await act(async () => button('editor.draft.discard').click());
+    expect(readEditorDraft(draftScope)).toBeNull();
+    expect((container.querySelector('textarea[data-nn-field]') as HTMLTextAreaElement).value).toBe('Question');
+  });
+  test('new-note reload restores its selected type, deck, tags and complete text', async () => {
+    const other = noteTypeFromApi({ ...BASIC_NOTE_TYPE, id: 'other-type', name: 'Other type', isBuiltin: false });
+    useNN.setState({ noteTypes: [noteTypeFromApi(BASIC_NOTE_TYPE), other], decks: [...useNN.getState().decks, { id: 'deck-2', name: 'Second', color: 'sky', species: 'fern', createdAt: 0 }] });
+    writeEditorDraft({ ...draftScope, entityId: 'new' }, { fieldValues: { Front: 'A new unsaved question', Back: 'Answer' }, deckId: 'deck-2', noteTypeId: other.id,
+      tagsText: 'two, tags', acceptedAnswersText: '', noteType: other }, null);
+    await render({ card: null });
+    await act(async () => button('editor.draft.restore').click());
+    expect((container.querySelector('textarea[data-nn-field]') as HTMLTextAreaElement).value).toBe('A new unsaved question');
+    let created: any;
+    globalThis.fetch = (async (_url: any, init: any) => { created = JSON.parse(init.body); return Response.json({ error: 'offline' }, { status: 503 }); }) as typeof fetch;
+    await act(async () => button('actions.create').click());
+    expect(created).toMatchObject({ deckId: 'deck-2', noteTypeId: other.id, tags: ['two', 'tags'], fieldValues: { Front: 'A new unsaved question', Back: 'Answer' } });
+    expect(readEditorDraft(draftScope)).toBeNull();
+  });
+  test('restoring through another direction does not move the note back to its old deck', async () => {
+    useNN.setState({ decks: [...useNN.getState().decks, { id: 'deck-2', name: 'Second', color: 'sky', species: 'fern', createdAt: 0 }] });
+    await render(); await changeFront('Shared note draft'); await flushDraft();
+    await remountForm({ card: cardFromApi({ ...row, id: 'second-direction', deckId: 'deck-2' }) });
+    await act(async () => button('editor.draft.restore').click());
+    let request: any;
+    globalThis.fetch = (async (_url: any, init: any) => { request = JSON.parse(init.body); return Response.json({ error: 'offline' }, { status: 503 }); }) as typeof fetch;
+    await act(async () => button('actions.save').click());
+    expect(request.fieldValues.Front).toBe('Shared note draft');
+    expect(request.deckId).toBeUndefined();
+  });
+  test('save-and-leave waits for a confirmed write; failures stay in the editor', async () => {
+    let fail = true; let writes = 0;
+    globalThis.fetch = (async (url: any, init: any) => {
+      if (String(url).endsWith('/preview')) return Response.json({ confirmationToken: 'current', sourceVersion: row.note.updatedAt, impact: { willDeleteCards: 0 } });
+      if (init.method === 'PATCH') writes++;
+      return fail ? Response.json({ error: 'offline' }, { status: 503 }) : Response.json({ note: { ...row.note, fieldValues: { Front: 'Save before exit', Back: 'Answer' } }, cards: [row] });
+    }) as typeof fetch;
+    await render({ footerExtra: <LeaveEditor /> }); await changeFront('Save before exit');
+    for (const attempt of [1, 2]) {
+      await act(async () => button('Leave editor').click());
+      await act(async () => button('editor.draft.saveAndLeave').click());
+      await act(async () => button('editor.draft.continue').click());
+      if (attempt === 1) { expect(navigations).toEqual([]); fail = false; }
+    }
+    expect(writes).toBe(2);
+    expect(navigations).toEqual(['/cards']);
+    expect(readEditorDraft(draftScope)).toBeNull();
+  });
+  test('storage denial is visible and triggers native protection instead of claiming a saved draft', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')!;
+    const original = localStorage;
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+      get length() { return original.length; }, key: original.key.bind(original), getItem: original.getItem.bind(original),
+      removeItem: original.removeItem.bind(original), setItem() { throw new Error('quota'); },
+    } });
+    try {
+      await render(); await changeFront('Cannot store locally'); await flushDraft();
+      expect(container.textContent).toContain('editor.draft.unavailable');
+      expect(container.textContent).not.toContain('editor.draft.saved');
+      const unload = new Event('beforeunload', { cancelable: true });
+      await act(async () => { window.dispatchEvent(unload); });
+      expect(unload.defaultPrevented).toBe(true);
+    } finally { Object.defineProperty(globalThis, 'localStorage', descriptor); }
+  });
+  test('a restored draft renders the original field definition and sends its original type version', async () => {
+    const oldType = noteTypeFromApi({ ...BASIC_NOTE_TYPE, updatedAt: '2026-09-18T00:00:00.000Z' });
+    writeEditorDraft(draftScope, { fieldValues: { Front: 'Old schema draft', Back: 'Answer' }, deckId: 'deck', noteTypeId: oldType.id,
+      tagsText: '', acceptedAnswersText: '', baseVersion: row.note.updatedAt, noteType: oldType }, null);
+    const changedType = noteTypeFromApi({ ...oldType, updatedAt: '2026-09-20T00:00:00.000Z', fields: oldType.fields.map(f => f.name === 'Front' ? { ...f, name: 'Prompt' } : f),
+      templates: oldType.templates.map(t => ({ ...t, frontTemplate: '{{Prompt}}' })) });
+    useNN.setState({ noteTypes: [changedType] });
+    await render(); await act(async () => button('editor.draft.restore').click());
+    expect((container.querySelector('textarea[data-nn-field]') as HTMLTextAreaElement).value).toBe('Old schema draft');
+    let preview: any;
+    globalThis.fetch = (async (url: any, init: any) => {
+      if (String(url).endsWith('/preview')) { preview = JSON.parse(init.body); return Response.json({ error: 'note_type_changed' }, { status: 409 }); }
+      return Response.json(String(url).endsWith('/note-types') ? [changedType] : row);
+    }) as typeof fetch;
+    await act(async () => button('actions.save').click());
+    expect(preview.expectedTypeUpdatedAt).toBe(oldType.updatedAt);
+    expect(preview.fieldValues.Front).toBe('Old schema draft');
+  });
+
+  test('a late confirmed save clears only its original owner slot after account reset', async () => {
+    const response = Promise.withResolvers<Response>();
+    const started = Promise.withResolvers<void>();
+    globalThis.fetch = (async (url: any) => {
+      if (String(url).endsWith('/preview')) return Response.json({ confirmationToken: 'current', sourceVersion: row.note.updatedAt, impact: { willDeleteCards: 0 } });
+      started.resolve(); return response.promise;
+    }) as unknown as typeof fetch;
+    await render(); await changeFront('Private pending save'); await flushDraft();
+    await act(async () => { button('actions.save').click(); await started.promise; });
+    await act(async () => root.render(null));
+    useNN.getState().reset(); useNN.setState({ profile: { userId: 'other-owner' } as any });
+    const otherScope = { ...draftScope, ownerId: 'other-owner' };
+    writeEditorDraft(otherScope, { fieldValues: { Front: 'Other account draft' } }, null);
+    await act(async () => response.resolve(Response.json({ note: { ...row.note, fieldValues: { Front: 'Private pending save', Back: 'Answer' } }, cards: [row] })));
+    expect(readEditorDraft(draftScope)).toBeNull();
+    expect((readEditorDraft(otherScope)?.value as any).fieldValues.Front).toBe('Other account draft');
+    expect(useNN.getState().cards).toEqual([]);
+  });
+
 });

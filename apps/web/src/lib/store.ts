@@ -751,6 +751,7 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async addNoteType(def) {
+    const generation = bootstrapGeneration;
     const created = noteTypeFromApi(
       await ok(
         await (api as any)['note-types'].post({
@@ -762,7 +763,7 @@ export const useNN = create<State>()((set, get) => ({
         }),
       ),
     );
-    set((s) => ({ noteTypes: [...s.noteTypes, created] }));
+    if (generation === bootstrapGeneration) set((s) => ({ noteTypes: [...s.noteTypes, created] }));
     return created;
   },
 

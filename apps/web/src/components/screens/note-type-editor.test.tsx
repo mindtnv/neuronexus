@@ -7,6 +7,7 @@ import { PathnameContext, SearchParamsContext } from 'next/dist/shared/lib/hooks
 import { AppNavigationProvider } from '../navigation';
 import { DialogProvider } from '../dialog';
 import { useNN } from '../../lib/store';
+import { readEditorDraft } from '../../lib/editor-drafts';
 import { noteTypeFromApi } from '../../lib/mappers';
 
 ensureTestDom();
@@ -200,4 +201,37 @@ test('budget timeout preserves draft and reports a retryable error', async () =>
   expect(host.textContent).toContain('noteTypes.errors.busy');
   expect((host.querySelector('fieldset') as HTMLFieldSetElement).disabled).toBe(false);
   expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe(type.templates[0]!.frontTemplate);
+});
+
+
+test('type draft reload preserves template source and the original definition version', async () => {
+  const scope = { ownerId: 'type-draft-owner', kind: 'type' as const, entityId: type.id };
+  useNN.setState({ profile: { userId: scope.ownerId } as any });
+  try {
+    await render();
+    const front = host.querySelector('textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(front, '<b>{{Q}}</b>');
+      front.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { window.dispatchEvent(new Event('pagehide')); });
+    expect((readEditorDraft(scope)?.value as any).templates[0].frontTemplate).toBe('<b>{{Q}}</b>');
+    await act(async () => root.render(null));
+    useNN.setState({ noteTypes: [noteTypeFromApi({ ...type, updatedAt: '2026-09-20T00:00:00.000Z' })] });
+    await render();
+    expect(host.textContent).toContain('editor.draft.stale');
+    await act(async () => button('editor.draft.restore').click());
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('<b>{{Q}}</b>');
+    let request: any;
+    globalThis.fetch = (async (_url: any, init: any) => {
+      if (init.method === 'GET') return Response.json([{ ...type, updatedAt: '2026-09-20T00:00:00.000Z' }]);
+      request = JSON.parse(init.body); return Response.json({ error: 'note_type_changed' }, { status: 409 });
+    }) as typeof fetch;
+    await act(async () => button('noteTypes.actions.save').click());
+    expect(request.expectedUpdatedAt).toBe(type.updatedAt);
+    expect(readEditorDraft(scope)).not.toBeNull();
+  } finally {
+    await act(async () => root.render(null));
+    for (let i = localStorage.length - 1; i >= 0; i--) { const key = localStorage.key(i)!; if (key.startsWith('nn:editor-draft:')) localStorage.removeItem(key); }
+  }
 });

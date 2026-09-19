@@ -75,6 +75,7 @@ export const NNSidebar = ({
   const resetStore = useNN((s) => s.reset);
 
   const handleSignOut = async () => {
+    if (!(await router.confirmLeave())) return;
     try {
       await signOut();
     } finally {

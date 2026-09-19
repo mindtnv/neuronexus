@@ -30,6 +30,9 @@ type NavigationContextValue = {
   push: (href: string, options?: NavigationOptions) => void;
   replace: (href: string, options?: NavigationOptions) => void;
   back: () => void;
+  confirmLeave: (href?: string) => Promise<boolean>;
+  registerGuard: (guard: (href?: string) => Promise<boolean>) => () => void;
+  hasGuard: () => boolean;
 };
 
 const NavigationContext = createContext<NavigationContextValue | null>(null);
@@ -92,6 +95,26 @@ export function AppNavigationProvider({ children }: { children: ReactNode }) {
     controllerRef.current = new NavigationProgressController(setProgress);
   }
 
+  const guardRef = useRef<{ run: (href?: string) => Promise<boolean> } | null>(null);
+  const checkingGuard = useRef(false);
+  const registerGuard = useCallback((guard: (href?: string) => Promise<boolean>) => {
+    const entry = { run: guard }; guardRef.current = entry;
+    return () => { if (guardRef.current === entry) guardRef.current = null; };
+  }, []);
+  const confirmLeave = useCallback(async (href?: string) => {
+    const entry = guardRef.current;
+    if (!entry) return true;
+    if (checkingGuard.current) return false;
+    checkingGuard.current = true;
+    try { return await entry.run(href) && guardRef.current === entry; }
+    finally { checkingGuard.current = false; }
+  }, []);
+  const hasGuard = useCallback(() => guardRef.current !== null, []);
+  const guarded = useCallback((action: () => void, href?: string) => {
+    if (!guardRef.current) { action(); return; }
+    void confirmLeave(href).then(allowed => { if (allowed) action(); });
+  }, [confirmLeave]);
+
   const beginResolved = useCallback((target: URL, track = true) => {
     if (!track) return;
 
@@ -109,18 +132,16 @@ export function AppNavigationProvider({ children }: { children: ReactNode }) {
   }, [beginResolved]);
 
   const push = useCallback((href: string, options?: NavigationOptions) => {
-    begin(href, options?.track);
-    startTransition(() => router.push(href, { scroll: options?.scroll }));
-  }, [begin, router]);
+    guarded(() => { begin(href, options?.track); startTransition(() => router.push(href, { scroll: options?.scroll })); }, href);
+  }, [begin, router, guarded]);
 
   const replace = useCallback((href: string, options?: NavigationOptions) => {
-    begin(href, options?.track);
-    startTransition(() => router.replace(href, { scroll: options?.scroll }));
-  }, [begin, router]);
+    guarded(() => { begin(href, options?.track); startTransition(() => router.replace(href, { scroll: options?.scroll })); }, href);
+  }, [begin, router, guarded]);
 
   const back = useCallback(() => {
-    startTransition(() => router.back());
-  }, [router]);
+    guarded(() => startTransition(() => router.back()));
+  }, [router, guarded]);
 
   useEffect(() => {
     pathnameRef.current = pathname;
@@ -147,7 +168,7 @@ export function AppNavigationProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => () => controllerRef.current?.dispose(), []);
 
-  const value = useMemo(() => ({ begin, push, replace, back }), [begin, push, replace, back]);
+  const value = useMemo(() => ({ begin, push, replace, back, confirmLeave, registerGuard, hasGuard }), [begin, push, replace, back, confirmLeave, registerGuard, hasGuard]);
   return (
     <NavigationContext.Provider value={value}>
       <NavigationProgress snapshot={progress} />
@@ -156,10 +177,17 @@ export function AppNavigationProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useAppNavigation(): Pick<NavigationContextValue, 'push' | 'replace' | 'back'> {
+export function useAppNavigation(): Pick<NavigationContextValue, 'push' | 'replace' | 'back' | 'confirmLeave'> {
   const context = useContext(NavigationContext);
   if (!context) throw new Error('useAppNavigation must be used inside AppNavigationProvider');
   return context;
+}
+
+/** One active editor registers a stable callback; state stays in its own hook. */
+export function useNavigationGuard(guard: (href?: string) => Promise<boolean>) {
+  const context = useContext(NavigationContext);
+  const latest = useRef(guard); latest.current = guard;
+  useEffect(() => context?.registerGuard(href => latest.current(href)), [context?.registerGuard]);
 }
 
 export type AppLinkProps = LinkProps &
@@ -180,7 +208,10 @@ export function AppLink({ track = true, onNavigate, ...props }: AppLinkProps) {
             event.preventDefault();
           },
         });
-        if (!prevented) context?.begin(props.href, track);
+        if (!prevented && context?.hasGuard()) {
+          event.preventDefault();
+          (props.replace ? context.replace : context.push)(hrefText(props.href), { scroll: props.scroll, track });
+        } else if (!prevented) context?.begin(props.href, track);
       }}
     />
   );

@@ -86,3 +86,13 @@ test('a late type refresh or conversion does not restore data after account rese
   conversion.resolve(Response.json({ noteIds: ['note-deep'], cards: [row('deep')] })); await converting;
   expect(useNN.getState().cards).toEqual([]);
 });
+
+
+test('a late type creation cannot populate the next account after reset', async () => {
+  const response = Promise.withResolvers<Response>();
+  globalThis.fetch = (async (_url: any, _init: any) => response.promise) as typeof fetch;
+  const creating = useNN.getState().addNoteType(type as any);
+  useNN.getState().reset();
+  response.resolve(Response.json({ ...type, id: 'late-created' })); await creating;
+  expect(useNN.getState().noteTypes).toEqual([]);
+});

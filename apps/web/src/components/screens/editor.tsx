@@ -3,6 +3,7 @@
 import { useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
+import { EditorDraftLibrary } from '@/components/editor-draft-library';
 import { NNCardForm } from '@/components/card-form';
 import { NNBtn, NNLoadError, NNPageSkeleton } from '@/components/ui';
 import { raiseToast } from '@/components/toasts';
@@ -18,6 +19,7 @@ export const NNEditor = () => {
   const router = useAppNavigation();
   const params = useSearchParams();
   const cardId = params.get('card');
+  const showDrafts = params.get('drafts') === '1';
   const deckQuery = params.get('deck');
   const noteTypeQuery = params.get('noteType') ?? undefined;
   const rawReturn = params.get('returnTo');
@@ -29,10 +31,12 @@ export const NNEditor = () => {
   const editing = resource.data?.id === cardId ? resource.data : null;
   const defaultDeckId = deckQuery && decks.some((deck) => deck.id === deckQuery) ? deckQuery : decks[0]?.id ?? '';
 
+  if (bootstrapped && showDrafts) return <EditorDraftLibrary />;
   if (!bootstrapped || (cardId && !editing && !resource.error)) return <NNPageSkeleton />;
   if (cardId && resource.error) return <div style={{ padding: 24 }}>
     <NNLoadError title={t('editor.errors.loadFailed')} description={t(resource.error.status === 404 ? 'editor.errors.notFound' : 'review.loadFailedBody')}
       retryLabel={t('review.retry')} onRetry={resource.refresh} requestId={resource.error.requestId} />
+    <NNBtn variant="soft" onClick={() => router.push('/editor?drafts=1')}>{t('editor.draft.libraryTitle')}</NNBtn>
     <NNBtn variant="ghost" onClick={() => router.push(returnTo ?? '/cards')}>{t('actions.cancel')}</NNBtn>
   </div>;
 
