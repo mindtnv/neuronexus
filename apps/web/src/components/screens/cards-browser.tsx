@@ -706,7 +706,7 @@ export const NNCardsBrowser = () => {
           setConversionCards(null); setSelected(new Set()); void latestSearch.current(queryRef.current);
         }} />}
         {(noteTypeScope || conversionTarget) && <div role="status" style={{ padding: 12, fontSize: 13, borderBottom: '1px solid var(--border)' }}>
-          {t(noteTypeScope ? 'noteTypes.convert.selectionHint' : 'noteTypes.convert.targetHint', { source: noteTypes.find((type) => type.id === noteTypeScope)?.name ?? '', target: noteTypes.find((type) => type.id === conversionTarget)?.name ?? '' })}
+          {t(noteTypeScope ? conversionTarget ? 'noteTypes.convert.selectionHint' : 'noteTypes.convert.sourceHint' : 'noteTypes.convert.targetHint', { source: noteTypes.find((type) => type.id === noteTypeScope)?.name ?? '', target: noteTypes.find((type) => type.id === conversionTarget)?.name ?? '' })}
           <NNBtn size="sm" variant="ghost" onClick={() => { const params = new URLSearchParams(searchParams.toString()); params.delete('noteTypeId'); params.delete('convertTo'); router.replace(`/cards?${params.toString()}`, { track: false }); }}>{t('noteTypes.convert.clearScope')}</NNBtn>
         </div>}
         {/* Query bar */}

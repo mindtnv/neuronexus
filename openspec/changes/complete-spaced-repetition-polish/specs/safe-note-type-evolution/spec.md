@@ -25,6 +25,18 @@ The system SHALL show complete user-scoped deletion counts and allow preserving 
 - **WHEN** a user deletes an in-use type
 - **THEN** all affected notes and histories are disclosed and no other user is affected
 
+#### Scenario: Complete deletion impact and current consent
+- **WHEN** an owner opens deletion for a type used beyond the loaded card page
+- **THEN** a read-only consistent snapshot reports all owned notes, cards and reviews, including notes without cards; delete requires its exact token and rejects changed membership, content or study history without partial deletion
+
+#### Scenario: Preserve before deleting
+- **WHEN** the owner chooses conversion or JSON export from the deletion preview
+- **THEN** no deletion runs, selection is scoped by source type ID, JSON includes persisted notes without cards, and converted notes/cards/reviews survive subsequent deletion of the old type
+
+#### Scenario: Interrupted deletion
+- **WHEN** deletion times out during a cascade or the browser loses its response
+- **THEN** a database timeout rolls back the entire operation, while an uncertain browser result requires state reconciliation before further action
+
 ### Requirement: Isolated and recoverable operation
 The system SHALL scope all data to the authenticated owner and preserve usable study and editing controls when an optional service fails.
 

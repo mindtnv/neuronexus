@@ -33,7 +33,7 @@ describe('note type cache reconciliation', () => {
     }) as typeof fetch;
     const updating = useNN.getState().updateNoteType(type.id, { name: 'After' });
     await started.promise;
-    await useNN.getState().deleteNoteType(type.id);
+    await useNN.getState().deleteNoteType(type.id, 'confirmed-preview');
     reads.resolve(Response.json({ items: [row('deep', 'After')] }));
     await updating;
     expect(useNN.getState().noteTypes).toEqual([]);
@@ -53,7 +53,7 @@ describe('note type cache reconciliation', () => {
     globalThis.fetch = (async (_url: any, init: any) => init.method === 'DELETE'
       ? Response.json({ ok: true }) : response.promise) as typeof fetch;
     const searching = useNN.getState().searchCards('question');
-    await useNN.getState().deleteNoteType(type.id);
+    await useNN.getState().deleteNoteType(type.id, 'confirmed-preview');
     response.resolve(Response.json({ items: [row('deep')], nextCursor: null }));
     await searching;
     expect(useNN.getState().cards).toEqual([]);

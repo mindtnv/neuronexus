@@ -146,7 +146,7 @@ interface State {
   convertNotes: (input: NoteConversionInput) => Promise<Card[]>;
 
   /** Delete an own note-type (DELETE /note-types/:id). Cascades notes+cards. */
-  deleteNoteType: (id: string) => Promise<void>;
+  deleteNoteType: (id: string, confirmationToken: string) => Promise<void>;
 
   /**
    * Search cards via the server (GET /cards/search). Maps rows via cardFromApi,
@@ -828,11 +828,11 @@ export const useNN = create<State>()((set, get) => ({
     return converted;
   },
 
-  async deleteNoteType(id) {
+  async deleteNoteType(id, confirmationToken) {
     const generation = bootstrapGeneration;
     const operation = ++typeMutationSequence;
     latestTypeMutation.set(id, operation);
-    await ok(await (api as any)['note-types']({ id }).delete());
+    await ok(await (api as any)['note-types']({ id }).delete({ confirmationToken }));
     if (generation !== bootstrapGeneration || latestTypeMutation.get(id) !== operation) return;
     cardReadGeneration += 1;
     set((s) => ({ noteTypes: s.noteTypes.filter((nt) => nt.id !== id), cards: s.cards.filter((card) => card.noteType?.id !== id) }));

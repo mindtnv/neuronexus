@@ -11,6 +11,7 @@ The second spaced-repetition audit found content/history loss paths and substant
 - Add versioned portable study exports/imports, safe media lifecycle and accessible study controls.
 - Verify realistic data volumes, failure recovery, privacy, supported browsers and operational recovery before marking their audit items complete.
 - **BREAKING:** new saves preserve Markdown source rather than treating it as HTML. Rendering remains sanitized; literal HTML is text. Correcting retention to include Hard changes reported metric values. Migration-sensitive relationships and additive fields are covered by rollout/rollback plans.
+- **BREAKING:** note-type DELETE requires an exact token from the new deletion preview endpoint, even for unused types. Older clients fail safely without deleting data; deploy the API before the updated web.
 - **BREAKING:** removing generated cards through note/type PATCH now requires a current preview token. Structural field/template renames use stable IDs; ambiguous legacy edits are rejected safely. Existing pending AI note edits without server preview metadata must be proposed again. Deploy the API before the web; preview uses dedicated read-only URLs so an older API cannot accidentally apply a preview request.
 
 ## Capabilities

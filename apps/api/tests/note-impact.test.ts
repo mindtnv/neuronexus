@@ -101,7 +101,7 @@ describe('note impact and concurrency', () => {
       generated: resolved.generated, expectedUpdatedAt: resolved.note.updatedAt, expectedTypeUpdatedAt: resolved.typeUpdatedAt };
     await callApp(app, 'PATCH', `/note-types/${type.id}`, { cookie, body: { templates: type.templates.toReversed().map((template: any, ord: number) => ({ ...template, ord })) } });
     await expect(db.transaction((tx) => applyNoteUpdate(tx, input))).rejects.toThrow('note_type_changed');
-    await callApp(app, 'DELETE', `/note-types/${type.id}`, { cookie });
+    await callApp(app, 'DELETE', `/note-types/${type.id}`, { cookie, body: { confirmationToken: (await (await callApp(app, 'GET', `/note-types/${type.id}/delete-preview`, { cookie })).json<any>()).confirmationToken } });
     await expect(db.transaction((tx) => applyNoteUpdate(tx, input))).rejects.toThrow('note_changed');
   });
 });

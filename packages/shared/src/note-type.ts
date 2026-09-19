@@ -109,3 +109,15 @@ export interface NoteConversionPreview extends CardRegenerationPreview {
   discardedValues: number;
   discardedAlternatives: number;
 }
+
+/** Complete owner-scoped impact; consent is bound to the current collection. */
+export interface NoteTypeDeletionPreview {
+  noteTypeId: string;
+  name: string;
+  sourceVersion: string;
+  notes: number;
+  cards: number;
+  reviews: number;
+  notesWithoutCards: number;
+  confirmationToken: string;
+}

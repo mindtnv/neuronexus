@@ -47,6 +47,7 @@ const m = {
     saveFirst: "Save your note changes first.",
     afterClone: "The type copy is saved. Existing notes still use their previous type.",
     selectNotes: "Select notes to convert",
+    sourceHint: "Select cards of type “{source}”, then choose Convert type and select a destination for their notes.",
     selectionHint: "Select cards of {source} to convert their notes to {target}.",
     clearScope: "Show all note types",
   },
@@ -151,6 +152,23 @@ const m = {
     noCard: 'No card generated (front renders empty).',
     template: 'Template',
   },
+  deletion: {
+    title: 'Delete “{name}”?',
+    counts: 'Across the collection: {notes} notes, {cards} cards, {reviews} reviews.',
+    warning: 'The type and all listed data, including schedules, will be deleted permanently. You can first convert notes to another type or download your data as JSON.',
+    empty: 'This type is unused. Only its definition will be deleted.',
+    orphans: '{n} notes have no cards. They are included in the JSON export but cannot be selected through the card browser for conversion.',
+    preserve: 'Convert notes first',
+    export: 'Download data as JSON',
+    exported: 'The account JSON export was sent for download. Nothing has been deleted yet.',
+    apply: 'Delete type and its data',
+    refresh: 'Refresh impact',
+    changed: 'The type or its data changed. Nothing was deleted. Refresh the impact and confirm again.',
+    busy: 'The data is busy or the operation took too long. Deletion was rolled back. Refresh the impact and try again later.',
+    unavailable: 'The type was deleted or is no longer available. Reload the list.',
+    loadFailed: 'Could not load the deletion impact. Retry loading; deletion is not available yet.',
+    checkState: 'The deletion result could not be confirmed. Reload the actual state before another action.',
+  },
   // Actions
   actions: {
     save: 'Save note type',
@@ -179,8 +197,6 @@ const m = {
     saveFailed: 'Could not save the note type.',
     deleteFailed: 'Could not delete the note type.',
   },
-  // Delete confirmation
-  deleteConfirm:
-    'Delete “{name}”? This also deletes every note and card created with it. This cannot be undone.',
+
 };
 export default m;

@@ -15,6 +15,7 @@ import { renderCardHtml } from '@/lib/render-card';
 import { RichCard } from '@/components/rich-card';
 import type { RenderKind, CardRegenerationPreview, CardTemplate, FieldValues, NoteField } from '@neuronexus/shared';
 import { api, ApiError, ok } from '@/lib/api';
+import { NoteTypeDeletionDialog } from '@/components/note-type-deletion';
 import { noteTypeFromApi } from '@/lib/mappers';
 
 // ─────────────────────────────────────────────
@@ -902,7 +903,6 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
 
 export const NNNoteTypeEditor = () => {
   const t = useT();
-  const { confirm, alert } = useDialog();
   const router = useAppNavigation();
   const searchParams = useSearchParams();
   const kindId = searchParams?.get('kind') ?? null;
@@ -910,7 +910,7 @@ export const NNNoteTypeEditor = () => {
   const isNew = searchParams?.get('new') === '1';
 
   const noteTypes = useNN((s) => s.noteTypes);
-  const deleteNoteType = useNN((s) => s.deleteNoteType);
+  const [deleting, setDeleting] = useState<NoteType | null>(null);
   const [cloneResult, setCloneResult] = useState<{ source: NoteType; target: NoteType } | null>(null);
 
   const editing = useMemo(
@@ -929,21 +929,6 @@ export const NNNoteTypeEditor = () => {
   const goEdit = useCallback(
     (nt: NoteType) => router.replace(`/note-types?edit=${encodeURIComponent(nt.id)}`, { track: false }),
     [router],
-  );
-
-  const handleDelete = useCallback(
-    async (nt: NoteType) => {
-      if (!(await confirm({ title: t('noteTypes.deleteConfirm', { name: nt.name }), danger: true }))) {
-        return;
-      }
-      try {
-        await deleteNoteType(nt.id);
-      } catch (err) {
-        console.error('deleteNoteType failed', err);
-        await alert({ title: t('noteTypes.errors.deleteFailed') });
-      }
-    },
-    [deleteNoteType, t, confirm, alert],
   );
 
   if (kindId && editing && !editing.isBuiltin) return <NoteTypeKindForm key={editing.id} editing={editing} onDone={goList} />;
@@ -966,14 +951,18 @@ export const NNNoteTypeEditor = () => {
   </div>;
 
   return (
+    <>
+    {deleting && <NoteTypeDeletionDialog key={deleting.id} type={deleting} onClose={() => setDeleting(null)}
+      onPreserve={() => { setDeleting(null); router.push(`/cards?noteTypeId=${encodeURIComponent(deleting.id)}`); }} />}
     <NoteTypeList
       noteTypes={noteTypes}
       onCreate={goNew}
       onEdit={goEdit}
-      onDelete={handleDelete}
+      onDelete={setDeleting}
       onApply={(type) => router.push(`/cards?convertTo=${encodeURIComponent(type.id)}`)}
       onKind={(type) => router.replace(`/note-types?kind=${encodeURIComponent(type.id)}`, { track: false })}
       onBack={goBack}
     />
+    </>
   );
 };

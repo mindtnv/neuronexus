@@ -167,7 +167,7 @@ describe('note-types CRUD', () => {
     expect(builtinDel.status).toBe(404);
 
     // a deletes its own.
-    const ok = await callApp(app, 'DELETE', `/note-types/${created.id}`, { cookie: a });
+    const ok = await callApp(app, 'DELETE', `/note-types/${created.id}`, { cookie: a, body: { confirmationToken: (await (await callApp(app, 'GET', `/note-types/${created.id}/delete-preview`, { cookie: a })).json<any>()).confirmationToken } });
     expect(ok.status).toBe(200);
   });
 
@@ -227,7 +227,7 @@ describe('note-types CRUD', () => {
     }>();
     expect(before.items.length).toBe(1);
 
-    await callApp(app, 'DELETE', `/note-types/${nt.id}`, { cookie });
+    await callApp(app, 'DELETE', `/note-types/${nt.id}`, { cookie, body: { confirmationToken: (await (await callApp(app, 'GET', `/note-types/${nt.id}/delete-preview`, { cookie })).json<any>()).confirmationToken } });
 
     const after = await (await callApp(app, 'GET', '/cards', { cookie })).json<{
       items: unknown[];

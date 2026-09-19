@@ -3,7 +3,8 @@
 //   GET    /note-types      → rows owned by the user OR global builtins
 //   POST   /note-types      → create a user-owned note-type
 //   PATCH  /note-types/:id   → edit own; CLONE-ON-EDIT for builtins/global rows
-//   DELETE /note-types/:id   → delete own (cascade: notes → cards via FK)
+//   GET    /note-types/:id/delete-preview → complete deletion impact + token
+//   DELETE /note-types/:id   → delete own after exact current consent
 //
 // All routes pass `{ auth: true }` and scope by `user.id`. Builtins (userId NULL,
 // isBuiltin=true) are visible to everyone but never mutated — editing one creates
@@ -39,6 +40,7 @@ import {
   type NoteTypeDef,
   type RenderKind,
 } from '@neuronexus/shared';
+import { removeNoteType } from './note-type-deletion';
 import { authPlugin } from '../auth-plugin.ts';
 import { logCorrelation, requestLogFromContext, safeError } from '../logger.ts';
 import { enqueueIndex } from '../ai/index-queue';
@@ -434,17 +436,12 @@ export const noteTypesModule = new Elysia({ prefix: '/note-types' })
   .post('/:id/kind', (context) => convertKind(context, false), kindEditOptions)
   .patch('/:id', (context) => editNoteType(context), noteTypeEditOptions)
   .post('/:id/preview', (context) => editNoteType({ ...context, body: { ...context.body, preview: true } }), noteTypeEditOptions)
-  .delete(
-    '/:id',
-    async ({ user, params, status }) => {
-      // Own rows only — builtins (userId NULL) are never deletable. Cascade drops
-      // notes → cards via FK ON DELETE CASCADE.
-      const [deleted] = await db
-        .delete(noteTypes)
-        .where(and(eq(noteTypes.id, params.id), eq(noteTypes.userId, user.id)))
-        .returning({ id: noteTypes.id });
-      if (!deleted) return status(404, { error: 'not_found' });
-      return { ok: true };
-    },
-    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
-  );
+  .get('/:id/delete-preview', ({ user, params, set }) => {
+    set.headers['cache-control'] = 'no-store';
+    return removeNoteType(user.id, params.id, true);
+  },
+    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) })
+  .delete('/:id', ({ user, params, body }) => removeNoteType(user.id, params.id, false, body?.confirmationToken), {
+    auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }),
+    body: t.Optional(t.Object({ confirmationToken: t.String({ minLength: 64, maxLength: 64 }) })),
+  });

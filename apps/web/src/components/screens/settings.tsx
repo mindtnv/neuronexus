@@ -1,5 +1,7 @@
 'use client';
 
+import { downloadProfileExport } from '@/lib/profile-export';
+
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppNavigation } from '@/components/navigation';
 import { ANKI_DEFAULTS, MIN_RETENTION, MAX_RETENTION, isValidLearningSteps } from '@neuronexus/shared';
@@ -257,14 +259,7 @@ export const NNSettings = () => {
     setExporting(true);
     setExportError('');
     try {
-      const data = await ok(await (api as any).profile.export.get());
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'neuronexus-export.json';
-      a.click();
-      URL.revokeObjectURL(url);
+      await downloadProfileExport();
     } catch {
       setExportError(t('settings.data.exportError'));
     } finally {
