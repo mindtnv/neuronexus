@@ -2240,11 +2240,12 @@ const editCard: Tool = {
     };
     const resolved = await resolveNoteUpdate(ctx.userId, noteRes.noteId, { fieldValues, tags });
     if (!resolved.ok) return { ...previews, affectsSiblings: true };
-    const prepared = await db.transaction((tx) => prepareNoteUpdate(tx, {
+    const prepare = (tx: Tx) => prepareNoteUpdate(tx, {
       userId: ctx.userId, noteId: noteRes.noteId, nextFieldValues: resolved.nextFieldValues,
       nextTags: resolved.nextTags, generated: resolved.generated,
       expectedUpdatedAt: resolved.note.updatedAt, expectedTypeUpdatedAt: resolved.typeUpdatedAt,
-    }));
+    });
+    const prepared = ctx.tx ? await prepare(ctx.tx) : await db.transaction(prepare);
     return { ...prepared.preview.impact, confirmationToken: prepared.preview.confirmationToken, ...previews, affectsSiblings: true };
   },
   async execute(ctx, rawArgs): Promise<ToolResult> {
@@ -2391,7 +2392,7 @@ const suspend: Tool = {
     const p = requireCardId(rawArgs);
     if (!p.ok) return { ok: false, error: `suspend: ${p.error}` };
     const suspended = typeof p.args.suspended === 'boolean' ? p.args.suspended : true;
-    const res = await patchCard(ctx.userId, p.cardId, { suspended });
+    const res = await patchCard(ctx.userId, p.cardId, { suspended }, ctx.tx);
     if (!res.ok) return { ok: false, error: `suspend: ${res.error}` };
     return { ok: true, text: `Card ${p.cardId} ${suspended ? 'suspended' : 'unsuspended'}.` };
   },
@@ -2427,7 +2428,7 @@ const setDue: Tool = {
     if (!p.ok) return { ok: false, error: `set_due: ${p.error}` };
     const due = typeof p.args.due === 'string' ? p.args.due : '';
     if (!due) return { ok: false, error: 'set_due: missing "due" ISO timestamp' };
-    const res = await patchCard(ctx.userId, p.cardId, { setDue: due });
+    const res = await patchCard(ctx.userId, p.cardId, { setDue: due }, ctx.tx);
     if (!res.ok) return { ok: false, error: `set_due: ${res.error}` };
     return { ok: true, text: `Card ${p.cardId} due date set to ${due}.` };
   },
@@ -2455,7 +2456,7 @@ const forget: Tool = {
   async execute(ctx, rawArgs): Promise<ToolResult> {
     const p = requireCardId(rawArgs);
     if (!p.ok) return { ok: false, error: `forget: ${p.error}` };
-    const res = await patchCard(ctx.userId, p.cardId, { forget: true });
+    const res = await patchCard(ctx.userId, p.cardId, { forget: true }, ctx.tx);
     if (!res.ok) return { ok: false, error: `forget: ${res.error}` };
     return { ok: true, text: `Card ${p.cardId} reset to new (forgotten).` };
   },

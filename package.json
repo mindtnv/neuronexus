@@ -26,22 +26,26 @@
     "db:generate": "bun run --filter @neuronexus/db db:generate",
     "db:migrate": "bun run --filter @neuronexus/db db:migrate",
     "db:seed": "bun run --filter @neuronexus/db db:seed",
-    "db:studio": "bun run --filter @neuronexus/db db:studio"
+    "db:studio": "bun run --filter @neuronexus/db db:studio",
+    "mcp:smoke": "bun apps/api/scripts/mcp-smoke.ts",
+    "mcp:stdio": "bun apps/api/scripts/mcp-stdio.ts"
   },
   "devDependencies": {
-    "@fission-ai/openspec": "1.8.0",
-    "@types/node": "^26.2.0",
+    "@fission-ai/openspec": "1.13.1",
+    "@types/node": "^26.6.2",
     "typescript": "^7.0.2"
   },
   "overrides": {
-    "brace-expansion": "5.0.9",
+    "brace-expansion": "5.0.12",
     "esbuild": "0.28.2",
     "nanoid": "6.0.1",
-    "postcss": "8.5.26",
-    "shell-quote": "1.10.0"
+    "postcss": "8.5.28",
+    "shell-quote": "1.10.0",
+    "sharp": "0.35.4",
+    "browserslist": "4.29.0"
   },
-  "packageManager": "bun@1.3.14",
+  "packageManager": "bun@1.4.2",
   "engines": {
-    "bun": ">=1.3.14"
+    "bun": ">=1.4.2"
   }
 }

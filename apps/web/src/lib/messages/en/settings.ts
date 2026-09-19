@@ -1,4 +1,17 @@
 const m = {
+  mcp: {
+    title: 'MCP & personal tokens', subtitle: 'Connect external agents to your knowledge base.',
+    hint: 'Each token grants access only to your data. Changes require a preview and your confirmation in the agent client.',
+    name: 'Token name', permissions: 'Permissions', read: 'Read only', write: 'Read and manage',
+    expires: 'Expires after', days: '{n} days', create: 'Generate token', working: 'Working…',
+    oneTime: 'Copy this token now. It will not be shown again.', copyToken: 'Copy token', saved: 'I saved the token', copied: 'Copied',
+    empty: 'No personal tokens yet.', validUntil: 'Valid until', lastUsed: 'Last used', never: 'Never',
+    revoked: 'Revoked', expired: 'Expired', revoke: 'Revoke', revokeConfirm: 'Revoke access for “{name}”?',
+    error: 'Could not complete the operation. Try again.', retry: 'Reload', connect: 'Connect an agent',
+    environment: 'This URL connects to the current environment. Local and production data and tokens are separate.',
+    copyUrl: 'Copy MCP URL', codexHelp: 'For Codex, make the token available in the NEURONEXUS_MCP_TOKEN environment variable, then run:',
+    copyCommand: 'Copy command', otherClients: 'Other clients: use Streamable HTTP with Authorization: Bearer <your token>. This server uses personal tokens; OAuth sign-in is not available.',
+  },
   nav: {
     account: 'Account',
     learning: 'Learning',

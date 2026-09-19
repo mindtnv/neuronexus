@@ -4,7 +4,6 @@ import {
   cardSources,
   cards,
   db,
-  type Db,
   deckOptionsPreset,
   decks,
   filteredDeck,
@@ -14,6 +13,7 @@ import {
   profile,
   sourceChunks,
   sources,
+  type Db,
 } from '@neuronexus/db';
 import {
   parseCardQuery,

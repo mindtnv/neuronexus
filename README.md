@@ -2,7 +2,9 @@
 
 Anki reimagined — graph learning, garden gamification, grounded AI chat, and notebook-style source study.
 
-NeuroNexus is a Bun-workspace monorepo with an Elysia/Better Auth/Drizzle API and a Next.js 16/React 19 frontend. The current toolchain baseline is Bun 1.3.14, TypeScript 7.0.2, Node 26 Current for the standalone web image, and PostgreSQL 18 with pgvector 0.8.2.
+NeuroNexus is a Bun-workspace monorepo with an Elysia/Better Auth/Drizzle API and a Next.js 16/React 19 frontend. The current toolchain baseline is Bun 1.4.2, TypeScript 7.0.2, Node 26 Current for the standalone web image, and PostgreSQL 18 with pgvector 0.8.2.
+
+The September 2026 dependency refresh uses Elysia 1.4.30, Next.js 16.3.5, React 19.3.0, and OpenSpec 1.13.1. Better Auth stays on `~1.6.33`: [1.7 requires an account-identity migration](https://github.com/better-auth/better-auth/releases/tag/v1.7.0), so a routine install must not cross that boundary. Mermaid stays on `^11.17.2`: [12 changes diagram defaults and requires Safari 17.4+](https://github.com/mermaid-js/mermaid/releases/tag/mermaid%4012.0.0). Both upgrades need a separate compatibility review.
 
 ## Layout
 
@@ -17,7 +19,7 @@ docker-compose.yml # Local PostgreSQL 18 + pgvector 0.8.2
 
 ## Requirements
 
-- Bun 1.3.14 (the version pinned by `packageManager`, CI, and Docker)
+- Bun 1.4.2 (the version pinned by `packageManager`, CI, and Docker)
 - Node 26 when running Node-based tooling outside Bun/Docker (`.node-version`)
 - Docker with Compose v2
 - A root `.env`, initially copied from `.env.example`
@@ -74,8 +76,8 @@ Production-bound schema changes use `db:generate`, reviewed/committed SQL, and `
 
 ## Containers
 
-- `apps/api/Dockerfile` builds and runs on `oven/bun:1.3.14-alpine` and applies pending migrations before API startup.
-- `apps/web/Dockerfile` builds with Bun 1.3.14 and runs the Next standalone output on Node 26 Alpine.
+- `apps/api/Dockerfile` builds and runs on `oven/bun:1.4.2-alpine` and applies pending migrations before API startup.
+- `apps/web/Dockerfile` builds with Bun 1.4.2 and runs the Next standalone output on Node 26 Alpine.
 - Both Compose files use `pgvector/pgvector:0.8.2-pg18`. PostgreSQL 18 volumes mount at `/var/lib/postgresql`; upgrading from an older major requires `pg_upgrade` or a fresh disposable volume.
 
 Production logging, readiness, request-correlation, and shutdown operations are documented in [`docs/observability.md`](docs/observability.md).

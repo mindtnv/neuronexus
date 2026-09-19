@@ -21,6 +21,8 @@ import { aiModule, chatModule } from './modules/ai.ts';
 import { cardsSimilarModule, graphModule } from './modules/semantic.ts';
 import { notebooksModule, sourcesModule } from './modules/notebooks.ts';
 import { libraryModule } from './modules/library.ts';
+import { personalTokensModule } from './modules/personal-tokens.ts';
+import { handleMcp } from './mcp/server.ts';
 import { AUTH_RATE_RULES, clientIpFromRequest, rateLimitCheck } from './rate-limit.ts';
 import { pickRequestId, requestLogger, rootLogger, safeError } from './logger.ts';
 import type { Logger } from 'pino';
@@ -50,16 +52,17 @@ export function buildApp(options: BuildAppOptions = {}) {
   const baseLogger = options.logger ?? rootLogger;
   const pingDb = options.pingDb ?? dbPing;
   const embeddingIsDegraded = options.embeddingIsDegraded ?? embeddingDegraded;
+  let readHandle: (request: Request) => Promise<Response>;
   // Global request body ceiling (DoS hardening): cap any single request body at
   // 2 MiB. `serve.maxRequestBodySize` is the Bun.serve option Elysia forwards
   // (Elysia 1.4 `ElysiaConfig.serve: Partial<Serve>` → Bun `Serve.Options`).
-  return new Elysia({ serve: { maxRequestBodySize: 2 * 1024 * 1024 } })
+  const app = new Elysia({ serve: { maxRequestBodySize: 2 * 1024 * 1024 } })
     .use(
       cors({
         origin: env.WEB_ORIGIN,
         credentials: true,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-request-id'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-request-id', 'mcp-protocol-version'],
         exposeHeaders: ['x-request-id'],
       }),
     )
@@ -231,6 +234,7 @@ export function buildApp(options: BuildAppOptions = {}) {
       return status(500, { error: 'InternalServerError' });
     })
     .use(profileModule)
+    .use(personalTokensModule)
     .use(decksModule)
     .use(noteTypesModule)
     .use(notesModule)
@@ -248,12 +252,15 @@ export function buildApp(options: BuildAppOptions = {}) {
     .use(notebooksModule)
     .use(sourcesModule)
     .use(libraryModule)
+    .all('/mcp', ({ request, log }) => handleMcp(request, (req) => readHandle(req), log), { parse: 'none' })
     // Explicit fallback keeps the completion hook's final status accurate for
     // unmatched routes too (Elysia's implicit 404 is mapped after analytics).
     .all('/*', ({ set }) => {
       set.status = 404;
       return { error: 'NotFound' as const };
     });
+  readHandle = (request) => app.handle(request);
+  return app;
 }
 
 export type App = ReturnType<typeof buildApp>;

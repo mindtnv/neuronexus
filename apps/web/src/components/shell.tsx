@@ -2,7 +2,7 @@
 
 import React, { CSSProperties, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
-import { NNBtn, NNIcon, NNLogo } from './ui';
+import { NNIcon, NNLogo } from './ui';
 import { AppLink, useAppNavigation } from './navigation';
 import { APP_NAV, FOOTER_NAV, NAV_SECTIONS, NAV_SECTION_LABEL, getActiveNavId, type AppNavItem } from './nav-config';
 import { useStudyOverview } from '@/lib/use-study-overview';
@@ -39,60 +39,20 @@ const renderNavItem = ({
     key={item.id}
     href={item.href}
     className="nn-sidebar-nav-item"
-    title={collapsed ? label : undefined}
-    aria-label={collapsed || responsive ? label : undefined}
+    title={label}
+    aria-label={label}
+    aria-current={isActive ? 'page' : undefined}
     onClick={() => window.dispatchEvent(new CustomEvent('nn:close-drawer'))}
-    style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      padding: collapsed ? '9px 0' : '8px 10px',
-      justifyContent: collapsed ? 'center' : 'flex-start',
-      borderRadius: 8,
-      marginBottom: 2,
-      cursor: 'pointer',
-      background: isActive ? 'var(--surface-3)' : 'transparent',
-      color: isActive ? 'var(--text)' : 'var(--text-muted)',
-      fontSize: 13,
-      fontWeight: 500,
-      letterSpacing: -0.1,
-      position: 'relative',
-      textDecoration: 'none',
-    }}
   >
-    <NNIcon name={item.icon} size={16} />
-    {(!collapsed || responsive) && <span className="nn-sidebar-label" style={{ flex: 1 }}>{label}</span>}
+    <span className="nn-sidebar-nav-icon" aria-hidden="true">
+      <NNIcon name={item.icon} size={20} strokeWidth={1.75} />
+    </span>
+    {(!collapsed || responsive) && <span className="nn-sidebar-label">{label}</span>}
     {(!collapsed || responsive) && badge != null && (
-      <span
-        className="nn-sidebar-badge"
-        style={{
-          fontSize: 10.5,
-          fontWeight: 600,
-          background: 'var(--accent-500)',
-          color: 'var(--text-on-accent)',
-          padding: '2px 6px',
-          borderRadius: 999,
-          minWidth: 20,
-          textAlign: 'center',
-        }}
-      >
-        {badge}
-      </span>
+      <span className="nn-sidebar-badge">{badge}</span>
     )}
     {(collapsed || responsive) && badge != null && (
-      <span
-        className="nn-sidebar-badge-dot"
-        aria-hidden="true"
-        style={{
-          position: 'absolute',
-          top: 4,
-          right: 4,
-          width: 6,
-          height: 6,
-          borderRadius: 3,
-          background: 'var(--accent-500)',
-        }}
-      />
+      <span className="nn-sidebar-badge-dot" aria-hidden="true" />
     )}
   </AppLink>
 );
@@ -127,10 +87,7 @@ export const NNSidebar = ({
   const dueCount = study.data?.overall.totalAvailable ?? 0;
   const profile = useNN((s) => s.profile);
 
-  // Window Controls Overlay: the logo plate is the window's top-left corner, so
-  // the macOS traffic lights land ON it. Native apps (Linear/Notion/Slack) keep
-  // that corner bare — the logo hides entirely and the plate stays a clean
-  // 45px drag strip under the lights. Branding lives in the workspace chip.
+  // Leave the installed PWA's traffic-light area clear and draggable.
   const { active: wcoActive } = useWindowControlsOverlay();
 
   const totalCards = study.data?.overall.total ?? '—';
@@ -140,31 +97,12 @@ export const NNSidebar = ({
   return (
     <aside
       className={`nn-chrome nn-sidebar${responsive ? ' nn-sidebar-responsive' : ''}`}
+      data-collapsed={collapsed ? '1' : undefined}
       style={{
         width: fullWidth ? '100%' : responsive ? undefined : collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,
-        flexShrink: 0,
-        background: 'var(--surface)',
-        borderRight: '1px solid var(--border)',
-        display: 'flex',
-        flexDirection: 'column',
-        transition: 'width 180ms ease',
-        height: '100%',
       }}
     >
-      <div
-        data-wco={wcoActive ? '1' : undefined}
-        style={{
-          // Match the NNTopbar height (44px content + 1px border = 45px total,
-          // border-box here) so the sidebar logo plate and the toolbar share one
-          // continuous bottom hairline instead of a 16px step at the corner.
-          padding: collapsed ? '0 12px' : '0 18px',
-          borderBottom: '1px solid var(--border)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          height: 45,
-        }}
-      >
+      <div className="nn-sidebar-brand" data-wco={wcoActive ? '1' : undefined}>
         {!wcoActive && responsive ? (
           <>
             <span className="nn-sidebar-logo-expanded"><NNLogo /></span>
@@ -174,111 +112,61 @@ export const NNSidebar = ({
       </div>
 
       {(!collapsed || responsive) && (
-        <div className="nn-sidebar-expanded-only" style={{ padding: '12px 14px 4px' }}>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              padding: '8px 10px',
-              borderRadius: 8,
-              background: 'var(--surface-2)',
-              border: '1px solid var(--border)',
-            }}
-          >
-            <div
-              style={{
-                width: 22,
-                height: 22,
-                borderRadius: 6,
-                background: 'var(--workspace-avatar-bg)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 11,
-                fontWeight: 700,
-                color: 'var(--text-on-accent)',
-              }}
-            >
-              {workspaceInitials}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text)' }}>{workspaceName}</div>
-              <div style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>
-                {t('app.cardCount', { n: totalCards })}
-              </div>
+        <div className="nn-sidebar-expanded-only nn-sidebar-workspace">
+          <div className="nn-sidebar-avatar" aria-hidden="true">{workspaceInitials}</div>
+          <div className="nn-sidebar-workspace-copy">
+            <div className="nn-sidebar-workspace-name" title={workspaceName}>{workspaceName}</div>
+            <div className="nn-sidebar-workspace-meta">
+              {t('app.cardCount', { n: totalCards })}
             </div>
           </div>
         </div>
       )}
 
-      <nav style={{ padding: collapsed ? '8px 6px' : '8px 10px', flex: 1, overflowY: 'auto' }}>
-        {NAV_SECTIONS.map((section) => {
-          const items = APP_NAV.filter((item) => item.section === section);
-          if (items.length === 0) return null;
-          const labelKey = NAV_SECTION_LABEL[section];
-          return (
-            <React.Fragment key={section}>
-              {(!collapsed || responsive) && labelKey && (
-                <div
-                  className="nn-sidebar-section-label"
-                  style={{
-                    fontSize: 10.5,
-                    fontWeight: 500,
-                    color: 'var(--text-dim)',
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.8,
-                    padding: '14px 8px 6px',
-                  }}
-                >
-                  {t(labelKey)}
-                </div>
-              )}
-              {(collapsed || responsive) && labelKey && (
-                <div className="nn-sidebar-section-divider" style={{ height: 1, background: 'var(--border)', margin: '8px 6px' }} />
-              )}
-              {items.map((item) =>
-                renderNavItem({ item, isActive: currentId === item.id, badge: item.id === 'review' && dueCount > 0 ? dueCount : undefined, collapsed, responsive, label: t(item.labelKey) }),
-              )}
-            </React.Fragment>
-          );
-        })}
+      <nav className="nn-sidebar-navigation" aria-label={t('topbar.menuLabel')}>
+        <div className="nn-sidebar-primary">
+          {NAV_SECTIONS.map((section) => {
+            const items = APP_NAV.filter((item) => item.section === section);
+            if (items.length === 0) return null;
+            const labelKey = NAV_SECTION_LABEL[section];
+            return (
+              <React.Fragment key={section}>
+                {(!collapsed || responsive) && labelKey && (
+                  <div className="nn-sidebar-section-label">
+                    {t(labelKey)}
+                  </div>
+                )}
+                {(collapsed || responsive) && labelKey && (
+                  <div className="nn-sidebar-section-divider" />
+                )}
+                {items.map((item) =>
+                  renderNavItem({ item, isActive: currentId === item.id, badge: item.id === 'review' && dueCount > 0 ? dueCount : undefined, collapsed, responsive, label: t(item.labelKey) }),
+                )}
+              </React.Fragment>
+            );
+          })}
 
-        {/* Stats + Settings — pinned below the sections behind a thin divider. */}
-        <div style={{ height: 1, background: 'var(--border)', margin: collapsed ? '10px 6px' : '12px 4px' }} />
-        {FOOTER_NAV.map((item) =>
-          renderNavItem({ item, isActive: currentId === item.id, collapsed, responsive, label: t(item.labelKey) }),
-        )}
+        </div>
+        <div className="nn-sidebar-secondary">
+          {FOOTER_NAV.map((item) =>
+            renderNavItem({ item, isActive: currentId === item.id, collapsed, responsive, label: t(item.labelKey) }),
+          )}
+        </div>
       </nav>
 
       {(!collapsed || responsive) && (
-        <div className="nn-sidebar-expanded-only" style={{ padding: 10, borderTop: '1px solid var(--border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 2px 0' }}>
-            <LocaleToggle size="sm" />
-            <button
-              type="button"
-              onClick={handleSignOut}
-              title={t('auth.signOut')}
-              aria-label={t('auth.signOut')}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '6px 10px',
-                background: 'transparent',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                color: 'var(--text-muted)',
-                fontSize: 11.5,
-                cursor: 'pointer',
-                letterSpacing: 0.1,
-                fontFamily: 'inherit',
-              }}
-            >
-              <NNIcon name="x" size={12} color="var(--text-muted)" />
-              <span>{t('auth.signOut')}</span>
-            </button>
-          </div>
+        <div className="nn-sidebar-expanded-only nn-sidebar-footer">
+          <LocaleToggle size="sm" />
+          <button
+            type="button"
+            className="nn-sidebar-signout"
+            onClick={handleSignOut}
+            title={t('auth.signOut')}
+            aria-label={t('auth.signOut')}
+          >
+            <NNIcon name="logout" size={16} />
+            <span>{t('auth.signOut')}</span>
+          </button>
         </div>
       )}
     </aside>
@@ -297,6 +185,7 @@ export const NNTopbar = ({
   const t = useT();
   const zenMode = useUI((s) => s.zenMode);
   const toggleSidebar = useUI((s) => s.toggleSidebar);
+  const sidebarCollapsed = useUI((s) => s.sidebarCollapsed);
   const displayMode = useDisplayMode();
   // Window Controls Overlay (installed desktop PWA): the topbar doubles as the
   // OS titlebar — draggable via data-wco, padded clear of the overlaid window
@@ -307,24 +196,6 @@ export const NNTopbar = ({
   // Zen is only ever true on /review (guarded in app-shell), so this is safe.
   if (zenMode) return null;
 
-  // Toolbar buttons: bordered squares in a browser tab; borderless 32px ghost
-  // icons (hover tint via .nn-tb-ghost — inline background would beat CSS :hover)
-  // when the strip doubles as the OS titlebar. Native macOS toolbars are tighter,
-  // hence the smaller gap too.
-  const tbBtnClass = wco ? 'nn-tb-ghost' : undefined;
-  const tbBtn: CSSProperties = {
-    width: wco ? 32 : 36,
-    height: wco ? 32 : 36,
-    borderRadius: wco ? 8 : 9,
-    background: wco ? undefined : 'transparent',
-    border: wco ? 'none' : '1px solid var(--border)',
-    color: 'var(--text)',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    cursor: 'pointer',
-    flexShrink: 0,
-  };
   return (
     <header
       className="nn-chrome nn-topbar"
@@ -332,116 +203,58 @@ export const NNTopbar = ({
       style={{
         '--nn-topbar-wco-left': `${wcoLeft}px`,
         '--nn-topbar-wco-right': `${wcoRight}px`,
-        borderBottom: '1px solid var(--border)',
-        display: 'flex',
-        alignItems: 'center',
-        gap: wco ? 8 : 16,
-        background: 'var(--surface)',
-        backdropFilter: 'blur(18px)',
-        WebkitBackdropFilter: 'blur(18px)',
-        // Standalone PWA only: pad past the device top inset. A normal browser
-        // tab already places the status/URL bar inside that inset, so padding it
-        // unconditionally on mobile would double-pad.
+        // Only installed mobile apps need the device's top safe area.
         paddingTop: displayMode === 'standalone' ? 'env(safe-area-inset-top, 0px)' : undefined,
-        boxSizing: 'content-box',
-        flexShrink: 0,
-      } as CSSProperties & Record<'--nn-topbar-wco-left' | '--nn-topbar-wco-right', string>}
+      } as CSSProperties}
     >
-      <button
-        type="button"
-        aria-label={t('chrome.toggleSidebar')}
-        title={`${t('chrome.toggleSidebar')} (⌘B)`}
-        onClick={() => toggleSidebar()}
-        className={`${tbBtnClass ?? ''} nn-topbar-desktop-only`}
-        style={tbBtn}
-      >
-        <NNIcon name="stack" size={16} color="var(--text)" />
-      </button>
-      <button
-        type="button"
-        aria-label={t('topbar.menuLabel')}
-        onClick={() => window.dispatchEvent(new CustomEvent('nn:open-drawer'))}
-        className={`${tbBtnClass ?? ''} nn-topbar-mobile-only`}
-        style={tbBtn}
-      >
-        <NNIcon name="stack" size={16} color="var(--text)" />
-      </button>
-      <div className="nn-topbar-title-group" style={{ flex: 1, display: 'flex', minWidth: 0 }}>
-        <h1
-          className="nn-topbar-title"
-          style={{
-            margin: 0,
-            fontSize: wco ? 13 : 14,
-            fontWeight: wco ? 590 : 500,
-            letterSpacing: wco ? -0.2 : 0,
-            color: 'var(--text)',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            maxWidth: '100%',
-          }}
+      <div className="nn-topbar-leading">
+        <button
+          type="button"
+          aria-label={t('chrome.toggleSidebar')}
+          aria-expanded={!sidebarCollapsed}
+          title={`${t('chrome.toggleSidebar')} (⌘B)`}
+          onClick={() => toggleSidebar()}
+          className="nn-topbar-icon-button nn-topbar-desktop-only"
         >
-          {title}
-        </h1>
-        {subtitle && (
-          <span
-            className="mono nn-topbar-subtitle"
-            style={{
-              fontSize: 11,
-              color: 'var(--text-dim)',
-              whiteSpace: 'nowrap',
-              flexShrink: 0,
-            }}
-          >
-            {subtitle}
-          </span>
-        )}
+          <NNIcon name="panel" size={20} strokeWidth={1.75} />
+        </button>
+        <button
+          type="button"
+          aria-label={t('topbar.menuLabel')}
+          onClick={() => window.dispatchEvent(new CustomEvent('nn:open-drawer'))}
+          className="nn-topbar-icon-button nn-topbar-mobile-only"
+        >
+          <NNIcon name="menu" size={20} strokeWidth={1.75} />
+        </button>
+        <span className="nn-topbar-divider" aria-hidden="true" />
+        <div className="nn-topbar-title-group">
+          <h1 className="nn-topbar-title">{title}</h1>
+          {subtitle && <span className="nn-topbar-subtitle">{subtitle}</span>}
+        </div>
       </div>
-      <button
-        type="button"
-        aria-label={t('topbar.searchLabel')}
-        title={t('topbar.searchPlaceholder')}
-        onClick={() => window.dispatchEvent(new CustomEvent('nn:open-palette'))}
-        className={tbBtnClass}
-        style={tbBtn}
-      >
-        <NNIcon name="search" size={16} color="var(--text)" />
-      </button>
-      {actions ? <span className="nn-topbar-desktop-only">{actions}</span> : null}
-      <span className="nn-topbar-desktop-only">
-        <AppLink href="/editor" style={{ display: 'inline-flex' }}>
-          <NNBtn
-            size="md"
-            variant="soft"
-            icon="plus"
-            title={t('topbar.newCard')}
-            ariaLabel={t('topbar.newCard')}
-            style={wco ? { width: 32, height: 32, padding: 0, border: 'none', borderRadius: 8 } : { width: 36, padding: 0 }}
-          />
+      <div className="nn-topbar-actions">
+        <button
+          type="button"
+          aria-label={t('topbar.searchLabel')}
+          title={t('topbar.searchPlaceholder')}
+          onClick={() => window.dispatchEvent(new CustomEvent('nn:open-palette'))}
+          className="nn-topbar-search"
+        >
+          <NNIcon name="search" size={18} strokeWidth={1.75} />
+          <span className="nn-topbar-search-label">{t('topbar.searchLabel')}</span>
+          <kbd className="nn-topbar-search-shortcut" aria-hidden="true">⌘ K</kbd>
+        </button>
+        {actions && <div className="nn-topbar-desktop-only nn-topbar-page-actions">{actions}</div>}
+        <AppLink
+          href="/editor"
+          className="nn-topbar-create"
+          title={t('topbar.newCard')}
+          aria-label={t('topbar.newCardLabel')}
+        >
+          <NNIcon name="plus" size={18} strokeWidth={2} />
+          <span>{t('topbar.newCard')}</span>
         </AppLink>
-      </span>
-      <span className="nn-topbar-mobile-only">
-        <AppLink href="/editor" aria-label={t('topbar.newCardLabel')} style={{ display: 'inline-flex' }}>
-          <button
-            type="button"
-            style={{
-              width: wco ? 32 : 36,
-              height: wco ? 32 : 36,
-              borderRadius: wco ? 8 : 9,
-              background: 'var(--accent-500)',
-              color: 'var(--text-on-accent)',
-              border: '1px solid var(--accent-500)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          >
-            <NNIcon name="plus" size={16} color="var(--text-on-accent)" />
-          </button>
-        </AppLink>
-      </span>
+      </div>
     </header>
   );
 };

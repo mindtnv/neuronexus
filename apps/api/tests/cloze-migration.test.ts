@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { sql } from 'drizzle-orm';
 import { db } from '@neuronexus/db';
 
-const migration = readFileSync(new URL('../../../packages/db/src/migrations/0026_dazzling_madame_masque.sql', import.meta.url), 'utf8')
+const migration = readFileSync(new URL('../../../packages/db/src/migrations/0027_dazzling_madame_masque.sql', import.meta.url), 'utf8')
   .split('--> statement-breakpoint').map((part) => part.trim()).filter(Boolean);
 
 describe('cloze migration preserves existing data', () => {

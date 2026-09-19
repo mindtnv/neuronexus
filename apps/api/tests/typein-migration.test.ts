@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { sql } from 'drizzle-orm';
 import { db } from '@neuronexus/db';
 
-const statements = readFileSync(new URL('../../../packages/db/src/migrations/0027_broad_blizzard.sql', import.meta.url), 'utf8')
+const statements = readFileSync(new URL('../../../packages/db/src/migrations/0028_broad_blizzard.sql', import.meta.url), 'utf8')
   .split('--> statement-breakpoint').map((part) => part.trim()).filter(Boolean);
 
 test('typed-answer migration pins the old last field without reordering or changing content', async () => {
