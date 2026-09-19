@@ -10,7 +10,7 @@
 #   API_PORT (default 3000), SHUTDOWN_TIMEOUT_MS (default 8000),
 #   NODE_ENV=production
 
-FROM oven/bun:1.3.14-alpine AS deps
+FROM oven/bun:1.4.2-alpine AS deps
 WORKDIR /repo
 COPY package.json bun.lock ./
 COPY apps/api/package.json apps/api/
@@ -37,7 +37,7 @@ RUN cd apps/api && bun build src/index.ts --target bun --outdir ./dist --minify
 # migrations in __drizzle_migrations).
 RUN cd packages/db && bun build src/migrate.ts --target bun --outdir ./dist --minify
 
-FROM oven/bun:1.3.14-alpine AS runtime
+FROM oven/bun:1.4.2-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV API_PORT=3000

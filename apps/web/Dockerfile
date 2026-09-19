@@ -4,7 +4,7 @@
 #
 #   docker build -f apps/web/Dockerfile -t neuronexus-web:latest .
 
-FROM oven/bun:1.3.14-alpine AS deps
+FROM oven/bun:1.4.2-alpine AS deps
 WORKDIR /repo
 COPY package.json bun.lock ./
 COPY apps/web/package.json apps/web/
