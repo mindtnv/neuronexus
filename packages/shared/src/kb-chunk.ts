@@ -335,6 +335,8 @@ export interface MessageMention {
  * no impact at all (frame carries `impact: undefined`).
  */
 export interface ConfirmImpact {
+  /** Server consistency token; never supplied by the model. */
+  confirmationToken?: string;
   /** Server-generated fingerprint for stale-approval checks, never model-authored. */
   snapshotHash?: string;
   resourcePreview?: {
@@ -343,6 +345,7 @@ export interface ConfirmImpact {
     affected?: { kind: string; count: number }[];
     destructive?: boolean;
   };
+
   willDeleteCards?: number;
   willCreateCards?: number;
   affectsSiblings?: boolean;
@@ -431,6 +434,7 @@ export interface ToolCallRecord {
   id: string;
   name: string;
   arguments: string;
+  confirmationToken?: string;
 }
 
 /** Discriminated union of SSE frames emitted by the chat stream endpoint. */

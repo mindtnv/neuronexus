@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useSession } from './auth';
 import { useNN } from './store';
-import { countDueCards } from './cards';
+import { useStudyOverview } from './use-study-overview';
 import { setBadge } from './app-badge';
 import { notifyDue } from './notify';
 import { applyTheme, getTheme, subscribeSystemTheme, THEME_LS_KEY } from './theme';
@@ -44,7 +44,8 @@ export function Bootstrap() {
   // Value-keyed selector: returns a NUMBER so the effect re-runs only when the
   // count changes — not on cards-array identity. Flat countDueCards (not
   // aggregateCounts which is per-deck-subtree).
-  const due = useNN((s) => countDueCards(s.cards));
+  const study = useStudyOverview();
+  const due = study.data?.overall.totalAvailable ?? 0;
 
   useEffect(() => {
     setBadge(due);
@@ -88,11 +89,11 @@ export function Bootstrap() {
   // the populated cards in the same render snapshot — both effects observe it.
   const bootstrapped = useNN((s) => s.bootstrapped);
   useEffect(() => {
-    if (!bootstrapped) return;
+    if (!bootstrapped || !study.data) return;
     if (notifiedThisSession) return;
     notifiedThisSession = true;
     notifyDue(due);
-  }, [bootstrapped, due]);
+  }, [bootstrapped, due, study.data]);
 
   return null;
 }

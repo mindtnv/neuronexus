@@ -79,6 +79,29 @@ describe('POST /cards/bulk', () => {
     expect((await getCard(cookie, c2))!.deckId).toBe(deckB);
   });
 
+  test('manual scheduling updates the entire owned selection in one request', async () => {
+    const c1 = await newCard(cookie, deckA);
+    const c2 = await newCard(cookie, deckA);
+    const other = await signUpAndCookie(app, uniqueEmail());
+    const foreign = await newCard(other.cookie, await freshDeck(other.cookie));
+    for (const cardId of [c1, c2]) await callApp(app, 'POST', '/reviews', { cookie, body: { cardId, rating: 3 } });
+    const changed = await bulk(cookie, { action: 'setDue', cardIds: [c1, c2, foreign], payload: { setDue: '2030-01-01T00:00:00.000Z' } });
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toMatchObject({ updated: 2 });
+    expect((await getCard(cookie, c1))!.due).toBe('2030-01-01T00:00:00.000Z');
+    expect((await getCard(cookie, c2))!.reps).toBe(1);
+    expect((await getCard(other.cookie, foreign))!.due).not.toBe('2030-01-01T00:00:00.000Z');
+    const invalid = await bulk(cookie, { action: 'setDue', cardIds: [c1, c2], payload: { setDue: 'invalid' } });
+    expect(invalid.status).toBe(400);
+    expect((await getCard(cookie, c1))!.due).toBe('2030-01-01T00:00:00.000Z');
+    const reset = await bulk(cookie, { action: 'forget', cardIds: [c1, c2] });
+    expect(reset.status).toBe(200);
+    const body = await reset.json<any>();
+    expect(body.cards).toHaveLength(2);
+    expect(body.cards.every((card: any) => card.state === 'new' && card.reps === 0)).toBe(true);
+    expect((await callApp(app, 'POST', '/reviews/undo', { cookie })).status).toBe(409);
+  });
+
   test('move → 400 deck_not_found for unknown/foreign deck', async () => {
     const c1 = await newCard(cookie, deckA);
     const res = await bulk(cookie, {

@@ -328,7 +328,7 @@ describe('filtered-decks (custom study / cram)', () => {
 
   // ── suspended toggle ─────────────────────────────────────────────────────────
 
-  test('includeSuspended:false excludes suspended cards, true includes them', async () => {
+  test('suspended cards stay out of gradeable sessions even for legacy includeSuspended:true', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
     const deck = await makeDeck(cookie, 'D');
     const open = await seedBasicCard(app, cookie, { deckId: deck, front: 'a', back: 'x', tags: ['sus'] });
@@ -345,7 +345,7 @@ describe('filtered-decks (custom study / cram)', () => {
     const included = await runSession(cookie, includeId);
     const inIds = included.due.map((c) => c.id);
     expect(inIds).toContain(open.id);
-    expect(inIds).toContain(susp.id);
+    expect(inIds).not.toContain(susp.id);
   });
 
   // ── cram AC (Decision 5) ──────────────────────────────────────────────────────

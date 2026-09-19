@@ -597,6 +597,48 @@ describe('agentic chat — confirm-before-write (Phase B)', () => {
   });
 
   // ── 5. ownership / unknown id → 404, never executes ──────────────────────────
+  test('edit_card refuses a persisted confirmation after the note changed elsewhere', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+    const created = await (await callApp(app, 'POST', '/notes', { cookie, body: {
+      noteTypeId: '96bb6f6a-ad97-4e2d-9044-78a173d3df51', deckId,
+      fieldValues: { Front: 'Original', Back: 'Answer' },
+    } })).json<any>();
+    __setAiClientForTests({ embed: fakeEmbed, chatStreamAgentic: scriptedAgentStream([
+      writeTurn({ id: 'w_stale_note', name: 'edit_card', args: { noteId: created.note.id, fieldValues: { Front: 'AI proposal' } } }),
+      answerTurn('The note changed; please review a new proposal.'),
+    ]) });
+    const convId = await createConversation(cookie);
+    const initial = await readSse(await streamReq(cookie, convId, 'edit the front'));
+    expect(initial.some((frame) => frame.event === 'await_confirmation')).toBe(true);
+    expect((await callApp(app, 'PATCH', `/notes/${created.note.id}`, { cookie,
+      body: { fieldValues: { Front: 'Manual edit', Back: 'Answer' } } })).status).toBe(200);
+    const resumed = await readSse(await resumeReq(cookie, convId, { resumeToolCallId: 'w_stale_note', decision: 'apply' }));
+    expect((resumed.find((frame) => frame.event === 'tool_result')!.data as { ok: boolean }).ok).toBe(false);
+    const saved = await (await callApp(app, 'GET', `/cards/${created.cards[0].id}`, { cookie })).json<any>();
+    expect(saved.note.fieldValues.Front).toBe('Manual edit');
+  });
+
+  test('edit_card combines fields and a deck move inside the confirmed transaction', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const deckId = await freshDeck(cookie);
+    const destination = await freshDeck(cookie);
+    const created = await (await callApp(app, 'POST', '/notes', { cookie, body: {
+      noteTypeId: '96bb6f6a-ad97-4e2d-9044-78a173d3df51', deckId,
+      fieldValues: { Front: 'Original', Back: 'Answer' },
+    } })).json<any>();
+    __setAiClientForTests({ embed: fakeEmbed, chatStreamAgentic: scriptedAgentStream([
+      writeTurn({ id: 'w_combined', name: 'edit_card', args: { cardId: created.cards[0].id, fieldValues: { Front: 'Changed' }, deckId: destination } }),
+      answerTurn('Updated and moved.'),
+    ]) });
+    const convId = await createConversation(cookie);
+    await readSse(await streamReq(cookie, convId, 'edit and move'));
+    const resumed = await readSse(await resumeReq(cookie, convId, { resumeToolCallId: 'w_combined', decision: 'apply' }));
+    expect((resumed.find((frame) => frame.event === 'tool_result')!.data as { ok: boolean }).ok).toBe(true);
+    const saved = await (await callApp(app, 'GET', `/cards/${created.cards[0].id}`, { cookie })).json<any>();
+    expect(saved).toMatchObject({ deckId: destination, renderFrontText: 'Changed' });
+  });
+
   test('resume with an id not in the user conversation → 404 and no mutation', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const deckId = await freshDeck(cookie);

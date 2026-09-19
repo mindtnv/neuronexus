@@ -74,11 +74,11 @@ export function CardDetailPanel({ card, deckName, index, total, onMove, onClose,
           </NNBtn>
         </div>
         {previewNoteType && previewFields ? <RichCard noteType={previewNoteType} fieldValues={previewFields}
-          templateOrd={card.templateOrd} side={clozeRevealed ? 'back' : 'front'} />
+          templateOrd={card.templateOrd} clozeNumber={card.clozeNumber} side={clozeRevealed ? 'back' : 'front'} />
           : <p>{clozeRevealed ? card.renderBackText : card.renderFrontText}</p>}
       </section> : (['front', 'back'] as const).map(side => <section key={`${card.id}-${side}`}>
         <h3>{t(side === 'front' ? 'review.questionLabel' : 'review.answerLabel')}</h3>
-        {previewNoteType && previewFields ? <RichCard noteType={previewNoteType} fieldValues={previewFields} templateOrd={card.templateOrd} side={side} /> : <p>{side === 'front' ? card.renderFrontText : card.renderBackText}</p>}
+        {previewNoteType && previewFields ? <RichCard noteType={previewNoteType} fieldValues={previewFields} templateOrd={card.templateOrd} clozeNumber={card.clozeNumber} side={side} /> : <p>{side === 'front' ? card.renderFrontText : card.renderBackText}</p>}
       </section>)}
       {previewTags.length > 0 && <div className="reomi-card-detail-tags">{previewTags.map(tag => <span key={tag}>#{tag}</span>)}</div>}
       <details className="reomi-card-detail-related" key={card.id}><summary>{t('cards.panel.similar.title')}</summary><SimilarCardsPanel cardId={card.id} onOpen={onOpen} /></details>

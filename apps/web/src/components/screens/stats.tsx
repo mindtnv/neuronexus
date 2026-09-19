@@ -183,7 +183,7 @@ export const NNStats = () => {
 
   // Per-deck breakdown.
   const perDeck = useMemo(() => {
-    const reviewsByDeck = new Map<string, Review[]>();
+    const reviewsByDeck = new Map<string | null, Review[]>();
     for (const r of reviews30) {
       const arr = reviewsByDeck.get(r.deckId) ?? [];
       arr.push(r);

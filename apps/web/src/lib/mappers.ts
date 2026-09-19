@@ -1,3 +1,4 @@
+import { isLegacyClozeCard } from '@neuronexus/shared';
 // Map API responses (ISO date strings, server column names) into the UI shape
 // that apps/web components already expect. Keeps the component surface stable
 // while the source of truth shifts from Dexie to the server.
@@ -93,6 +94,8 @@ export function cardFromApi(row: any): Card {
   const note = row.note
     ? {
         id: row.note.id,
+        updatedAt: row.note.updatedAt ? new Date(row.note.updatedAt).toISOString() : undefined,
+        acceptedAnswers: row.note.acceptedAnswers ?? [],
         fieldValues: (row.note.fieldValues ?? {}) as Record<string, string>,
         tags: (row.note.tags ?? []) as string[],
       }
@@ -100,8 +103,10 @@ export function cardFromApi(row: any): Card {
   const noteType = row.noteType
     ? {
         id: row.noteType.id,
+        updatedAt: row.noteType.updatedAt ? new Date(row.noteType.updatedAt).toISOString() : undefined,
         name: row.noteType.name ?? '',
         kind: (row.noteType.kind ?? 'basic') as RenderKind,
+        fields: row.noteType.fields,
         templates: row.noteType.templates ?? [],
         styling: row.noteType.styling ?? '',
       }
@@ -111,6 +116,7 @@ export function cardFromApi(row: any): Card {
     deckId: row.deckId,
     noteId: row.noteId,
     templateOrd: row.templateOrd ?? 0,
+    clozeNumber: isLegacyClozeCard({ renderKind: row.renderKind ?? row.noteType?.kind ?? 'basic', clozeNumber: row.clozeNumber }) ? 0 : row.clozeNumber ?? null,
     renderText: row.renderText ?? '',
     renderFrontText: row.renderFrontText ?? '',
     renderBackText: row.renderBackText ?? '',
@@ -123,6 +129,18 @@ export function cardFromApi(row: any): Card {
     fsrs,
     note,
     noteType,
+  };
+}
+
+/** Grade/undo return bare scheduling rows, without the embedded content. */
+export function mergeReviewedCard(row: any, previous?: Card): Card {
+  const mapped = cardFromApi(row);
+  if (previous?.id !== mapped.id) return mapped;
+  return {
+    ...mapped,
+    note: row.note === undefined ? previous.note : mapped.note,
+    noteType: row.noteType === undefined ? previous.noteType : mapped.noteType,
+    tags: row.note === undefined && row.tags === undefined ? previous.tags : mapped.tags,
   };
 }
 
@@ -139,6 +157,7 @@ export function noteFromApi(row: any): Note {
 export function noteTypeFromApi(row: any): NoteType {
   return {
     id: row.id,
+    updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : undefined,
     name: row.name,
     fields: row.fields ?? [],
     templates: row.templates ?? [],
@@ -152,6 +171,7 @@ export function profileFromApi(row: any): Profile {
   const plantStage = Math.max(0, Math.min(5, row.plantStage ?? 0)) as Profile['plantStage'];
   return {
     id: 'me',
+    userId: row.userId ?? undefined,
     name: row.name ?? 'Friend',
     level: row.level ?? 1,
     xp: row.xp ?? 0,

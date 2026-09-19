@@ -26,26 +26,31 @@ import { authPlugin } from '../auth-plugin.ts';
 import { buildCardWhere } from './card-query-sql.ts';
 import { resolveDeckConfig } from './deck-config.ts';
 import { SORT_ORDERS, type SortOrder } from './filtered-decks.ts';
+import { loadStudyCounts, loadStudyOverview, studyAvailability, sumStudyCounts } from './study-summary.ts';
+
+export const MAX_STUDY_QUEUE = 500;
 
 // ── Card read-payload enrichment (M1 Phase 5a) ────────────────────────────────
 //
 // The web review/browser screens render display HTML lazily from the note's
-// SANITIZED field values + the note-type template (then DOMPurify in the
+// lossless Markdown field values + the note-type template (then DOMPurify in the
 // browser). They consume CARD payloads, so the card read endpoints must embed,
 // per card, the minimal render descriptor:
 //   note:     { id, fieldValues, tags }
 //   noteType: { id, name, kind, templates, styling }
-// Field values are sanitized-at-save, so the payload HTML is safe-at-source; the
-// client still DOMPurifies (defense in depth). Plaintext render* columns stay on
+// Field values are untrusted source. The client parses with html:false and
+// always DOMPurifies the rendered output. Plaintext render* columns stay on
 // the card row for SQL search + the browser table (no client render there).
 
 type CardRow = typeof cards.$inferSelect;
 type EnrichedCard = CardRow & {
-  note: { id: string; fieldValues: Record<string, string>; tags: string[] } | null;
+  note: { id: string; fieldValues: Record<string, string>; acceptedAnswers: string[]; tags: string[]; updatedAt?: Date } | null;
   noteType: {
     id: string;
+    updatedAt?: Date;
     name: string;
     kind: string;
+    fields: (typeof noteTypes.$inferSelect)['fields'];
     templates: (typeof noteTypes.$inferSelect)['templates'];
     styling: string;
   } | null;
@@ -57,15 +62,17 @@ type EnrichedCard = CardRow & {
  * with the embedded descriptors merged in — the card columns stay top-level so
  * existing consumers (cursor logic, tests) are untouched.
  */
-async function enrichCards(rows: CardRow[]): Promise<EnrichedCard[]> {
+export async function enrichCards(rows: CardRow[], executor: Pick<typeof db, 'select'> = db): Promise<EnrichedCard[]> {
   if (rows.length === 0) return [];
   const noteIds = [...new Set(rows.map((r) => r.noteId))];
-  const noteRows = await db
+  const noteRows = await executor
     .select({
       id: notes.id,
       fieldValues: notes.fieldValues,
+      acceptedAnswers: notes.acceptedAnswers,
       tags: notes.tags,
       noteTypeId: notes.noteTypeId,
+      updatedAt: notes.updatedAt,
     })
     .from(notes)
     .where(inArray(notes.id, noteIds));
@@ -74,13 +81,15 @@ async function enrichCards(rows: CardRow[]): Promise<EnrichedCard[]> {
   const noteTypeIds = [...new Set(noteRows.map((n) => n.noteTypeId))];
   const noteTypeRows =
     noteTypeIds.length > 0
-      ? await db
+      ? await executor
           .select({
             id: noteTypes.id,
             name: noteTypes.name,
             kind: noteTypes.kind,
             templates: noteTypes.templates,
+            fields: noteTypes.fields,
             styling: noteTypes.styling,
+            updatedAt: noteTypes.updatedAt,
           })
           .from(noteTypes)
           .where(inArray(noteTypes.id, noteTypeIds))
@@ -93,14 +102,16 @@ async function enrichCards(rows: CardRow[]): Promise<EnrichedCard[]> {
     return {
       ...row,
       note: note
-        ? { id: note.id, fieldValues: note.fieldValues, tags: note.tags }
+        ? { id: note.id, fieldValues: note.fieldValues, acceptedAnswers: note.acceptedAnswers, tags: note.tags, updatedAt: note.updatedAt }
         : null,
       noteType: noteType
         ? {
             id: noteType.id,
+            updatedAt: noteType.updatedAt,
             name: noteType.name,
             kind: noteType.kind,
             templates: noteType.templates,
+            fields: noteType.fields,
             styling: noteType.styling,
           }
         : null,
@@ -313,6 +324,7 @@ export interface SearchCardsInput {
    * route's behavior, unchanged).
    */
   deckScope?: string[];
+  noteTypeId?: string;
 }
 
 /**
@@ -341,6 +353,7 @@ export async function searchCardsQuery(
   const col = SORT_COLUMNS[sortField];
   const cmp = dir === 'asc' ? gt : lt;
   const conditions = [where];
+  if (input.noteTypeId) conditions.push(inArray(cards.noteId, db.select({ id: notes.id }).from(notes).where(and(eq(notes.userId, userId), eq(notes.noteTypeId, input.noteTypeId)))));
   // Optional deck-id scope (browse_cards). An empty array → match nothing (a
   // foreign deck is empty, not global); a populated array → deck-id membership.
   if (input.deckScope !== undefined) {
@@ -475,13 +488,15 @@ export async function patchCard(
   userId: string,
   cardId: string,
   body: CardPatch,
-  executor: Db | Parameters<Parameters<Db['transaction']>[0]>[0] = db,
+  executor: Pick<Db, 'select' | 'update'> = db,
 ): Promise<CardPatchResult> {
   if (body.forget === true && body.setDue !== undefined) {
     return { ok: false, code: 400, error: 'forget_and_setdue_exclusive' };
   }
 
-  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  const patch: Record<string, unknown> = {
+    updatedAt: sql`greatest(${cards.updatedAt} + interval '1 millisecond', ${new Date().toISOString()}::timestamptz)`,
+  };
 
   // If moving the card to a different deck, verify ownership of the target deck.
   if (body.deckId !== undefined) {
@@ -519,6 +534,7 @@ export async function patchCard(
 
 export const cardsModule = new Elysia({ prefix: '/cards' })
   .use(authPlugin)
+  .get('/study-summary', ({ user }) => loadStudyOverview(user.id), { auth: true })
   // List cards. Cursor-paginated: ordered by `(created_at, id) DESC`, cursor is
   // `<ISO createdAt>_<id>` for the last item you saw. Legacy bare-ISO cursors
   // remain accepted during the transition.
@@ -542,6 +558,8 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       );
       const conditions = [eq(cards.userId, user.id)];
       if (query.deckId) conditions.push(eq(cards.deckId, query.deckId));
+      if (query.noteTypeId) conditions.push(inArray(cards.noteId,
+        db.select({ id: notes.id }).from(notes).where(and(eq(notes.userId, user.id), eq(notes.noteTypeId, query.noteTypeId)))));
       if (query.due === 'true') conditions.push(lte(cards.due, new Date()));
       if (query.includeSuspended !== 'true') conditions.push(eq(cards.suspended, false));
       if (query.cursor) {
@@ -573,6 +591,7 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       auth: true,
       query: t.Object({
         deckId: t.Optional(t.String({ format: 'uuid' })),
+        noteTypeId: t.Optional(t.String({ format: 'uuid' })),
         due: t.Optional(t.String()),
         includeSuspended: t.Optional(t.String()),
         limit: t.Optional(t.String()),
@@ -580,6 +599,12 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       }),
     },
   )
+  // Bounded read-only refresh of already-loaded cards, including suspended rows.
+  .post('/lookup', async ({ user, body }) => {
+    if (!body.ids.length) return { items: [] };
+    const rows = await db.select().from(cards).where(and(eq(cards.userId, user.id), inArray(cards.id, [...new Set(body.ids)])));
+    return { items: await enrichCards(rows) };
+  }, { auth: true, body: t.Object({ ids: t.Array(t.String({ format: 'uuid' }), { maxItems: 200 }) }) })
   // Today's review queue (M3 Phase 4 — REGULAR paths). Returns, in order:
   //   1. Due cards (state != new, due <= now), ordered by earliest due first
   //   2. New cards
@@ -602,6 +627,12 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
   .get(
     '/queue',
     async ({ user, query, status }) => {
+      if (query.deckId && query.filteredDeckId) return status(400, { error: 'invalid_scope' });
+      for (const value of [query.newLimit, query.reviewLimit]) {
+        if (value !== undefined && (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)))) {
+          return status(400, { error: 'invalid_limit' });
+        }
+      }
       // ── Filtered branch (M3 Phase 7, `?filteredDeckId=`, Decision 4/5/7) ──────
       //
       // An EARLY return ABOVE the regular logic: load the saved filtered-deck row
@@ -645,8 +676,9 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         // WHERE: query predicate AND (suspended gate unless includeSuspended) AND
         // (an `overdue` due-gate when sortOrder === 'overdue'). `cram` intentionally
         // drops the due-gate (Decision 5 — future-due cards are returned).
-        const conditions = [where];
-        if (!row.includeSuspended) conditions.push(eq(cards.suspended, false));
+        // Suspended cards cannot be graded. Keep legacy saved-filter fields
+        // readable, but never build an impossible-to-complete study session.
+        const conditions = [where, eq(cards.suspended, false)];
         if (sortOrder === 'overdue') conditions.push(lte(cards.due, now));
 
         const orderBy =
@@ -665,8 +697,8 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
           .select()
           .from(cards)
           .where(and(...conditions))
-          .orderBy(orderBy)
-          .limit(row.cardLimit);
+          .orderBy(orderBy, asc(cards.id))
+          .limit(Math.min(row.cardLimit, 1000));
 
         const sessionCards = await enrichCards(sessionRows);
         return {
@@ -678,10 +710,14 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       }
 
       const deckId = query.deckId;
+      const now = new Date();
 
       // Snapshot for the resolver (Principle 1): the user's decks, presets, and
       // profile — a few cheap selects, mirroring the grade handler's batch.
       const userDecks = await db.select().from(decks).where(eq(decks.userId, user.id));
+      if (deckId && !userDecks.some((deck) => deck.id === deckId)) {
+        return status(404, { error: 'deck_not_found' });
+      }
       const userPresets = await db
         .select()
         .from(deckOptionsPreset)
@@ -697,7 +733,7 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       // GLOBAL consumed-today, with the same-day reset guard: if the stored
       // counter date isn't today, treat consumption as 0 (a stale counter from a
       // previous day — the next grade's nextDailyCounts rolls it over).
-      const today = todayISO(new Date());
+      const today = todayISO(now);
       const consumedNew =
         existingProfile?.dailyCountsDate === today ? existingProfile.newIntroducedToday : 0;
       const consumedReviews =
@@ -711,55 +747,63 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
 
       // Explicit query params clamp DOWN to the daily-remaining (never above it).
       if (query.newLimit !== undefined) {
-        const requested = Number(query.newLimit);
-        if (Number.isFinite(requested)) newLimit = Math.min(newLimit, Math.max(0, requested));
+        newLimit = Math.min(newLimit, Number(query.newLimit));
       }
       if (query.reviewLimit !== undefined) {
-        const requested = Number(query.reviewLimit);
-        if (Number.isFinite(requested)) reviewLimit = Math.min(reviewLimit, Math.max(0, requested));
+        reviewLimit = Math.min(reviewLimit, Number(query.reviewLimit));
       }
 
       const base = [eq(cards.userId, user.id), eq(cards.suspended, false)];
+      const subtree = deckId ? [deckId, ...descendantIds(deckId, userDecks)] : null;
       if (deckId) {
         // Scoped path: aggregate the deck + its whole subtree (descendants).
-        const subtree = [deckId, ...descendantIds(deckId, userDecks)];
-        base.push(inArray(cards.deckId, subtree));
+        base.push(inArray(cards.deckId, subtree!));
       }
       // Whole-collection path (no deckId): no extra filter — spans all the
       // user's non-suspended cards.
 
-      // Due (not-new) cards first — sorted by due ASC.
-      const due = await db
+      // Learning steps are already introduced cards, not another daily review.
+      const learning = await db.select().from(cards)
+        .where(and(...base, inArray(cards.state, ['learning', 'relearning']), lte(cards.due, now)))
+        .orderBy(asc(cards.due), asc(cards.id))
+        .limit(MAX_STUDY_QUEUE);
+      const mature = await db
         .select()
         .from(cards)
-        .where(and(...base, ne(cards.state, 'new'), lte(cards.due, new Date())))
-        .orderBy(asc(cards.due))
-        .limit(reviewLimit);
+        .where(and(...base, eq(cards.state, 'review'), lte(cards.due, now)))
+        .orderBy(asc(cards.due), asc(cards.id))
+        .limit(Math.min(reviewLimit, MAX_STUDY_QUEUE - learning.length));
+      const due = [...learning, ...mature];
 
       // New cards — capped.
       const fresh = await db
         .select()
         .from(cards)
         .where(and(...base, eq(cards.state, 'new')))
-        .orderBy(asc(cards.createdAt))
-        .limit(newLimit);
+        .orderBy(asc(cards.createdAt), asc(cards.id))
+        .limit(Math.min(newLimit, MAX_STUDY_QUEUE - due.length));
 
-      const [dueEnriched, freshEnriched] = await Promise.all([
+      const [dueEnriched, freshEnriched, countsByDeck] = await Promise.all([
         enrichCards(due),
         enrichCards(fresh),
+        loadStudyCounts(user.id, now),
       ]);
+      const scopeCounts = subtree
+        ? subtree.flatMap((id) => { const counts = countsByDeck.get(id); return counts ? [counts] : []; })
+        : countsByDeck.values();
       return {
         due: dueEnriched,
         new: freshEnriched,
         total: dueEnriched.length + freshEnriched.length,
         mode: 'regular' as const,
+        summary: studyAvailability(sumStudyCounts(scopeCounts), newLimit, reviewLimit, now),
       };
     },
     {
       auth: true,
       query: t.Object({
         deckId: t.Optional(t.String({ format: 'uuid' })),
-        filteredDeckId: t.Optional(t.String()),
+        filteredDeckId: t.Optional(t.String({ format: 'uuid' })),
         newLimit: t.Optional(t.String()),
         reviewLimit: t.Optional(t.String()),
       }),
@@ -818,6 +862,7 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         limit,
         now,
         cursor: query.cursor,
+        noteTypeId: query.noteTypeId,
       });
 
       return { items: await enrichCards(rows), nextCursor };
@@ -826,6 +871,7 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       auth: true,
       query: t.Object({
         q: t.Optional(t.String()),
+        noteTypeId: t.Optional(t.String({ format: 'uuid' })),
         limit: t.Optional(t.String()),
         cursor: t.Optional(t.String()),
         sort: t.Optional(t.String()),
@@ -873,6 +919,7 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
     '/bulk',
     async ({ user, body, status }) => {
       const scope = and(eq(cards.userId, user.id), inArray(cards.id, body.cardIds))!;
+      const updatedAt = sql`greatest(${cards.updatedAt} + interval '1 millisecond', ${new Date().toISOString()}::timestamptz)`;
 
       switch (body.action) {
         case 'move': {
@@ -887,7 +934,7 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
           if (deck.length === 0) return status(400, { error: 'deck_not_found' });
           const updated = await db
             .update(cards)
-            .set({ deckId, updatedAt: new Date() })
+            .set({ deckId, updatedAt })
             .where(scope)
             .returning({ id: cards.id });
           return { updated: updated.length };
@@ -902,10 +949,22 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         case 'unsuspend': {
           const updated = await db
             .update(cards)
-            .set({ suspended: body.action === 'suspend', updatedAt: new Date() })
+            .set({ suspended: body.action === 'suspend', updatedAt })
             .where(scope)
             .returning({ id: cards.id });
           return { updated: updated.length };
+        }
+
+        case 'forget': {
+          const updated = await db.update(cards).set({ ...fsrsResetColumns(), updatedAt }).where(scope).returning();
+          return { updated: updated.length, cards: updated };
+        }
+
+        case 'setDue': {
+          const due = new Date(body.payload?.setDue ?? '');
+          if (!Number.isFinite(due.getTime())) return status(400, { error: 'invalid_date' });
+          const updated = await db.update(cards).set({ due, updatedAt }).where(scope).returning();
+          return { updated: updated.length, cards: updated };
         }
 
         case 'addTag': {
@@ -957,12 +1016,15 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
           t.Literal('unsuspend'),
           t.Literal('addTag'),
           t.Literal('removeTag'),
+          t.Literal('forget'),
+          t.Literal('setDue'),
         ]),
         cardIds: t.Array(t.String({ format: 'uuid' }), { minItems: 1, maxItems: 1000 }),
         payload: t.Optional(
           t.Object({
             deckId: t.Optional(t.String({ format: 'uuid' })),
             tag: t.Optional(t.String({ minLength: 1, maxLength: 128 })),
+            setDue: t.Optional(t.String()),
           }),
         ),
       }),

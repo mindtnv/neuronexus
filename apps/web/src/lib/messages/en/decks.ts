@@ -1,4 +1,5 @@
 const m = {
+  firstCard: 'Add your first card',
   filterHints: {all: 'All decks, including sub-decks', due: 'Decks with cards ready to review', empty: 'Decks without cards, including sub-decks'},
   reviewCount: 'Review {n} cards',
   filters: {
@@ -13,6 +14,7 @@ const m = {
     collapseAll: 'Collapse all',
     expandAll: 'Expand all',
   },
+
   newDeck: 'New deck',
   newSubDeck: 'New sub-deck',
   underParent: 'Under',

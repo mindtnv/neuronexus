@@ -6,9 +6,8 @@
 // Display HTML is rendered LAZILY from the note's field values (MARKDOWN source)
 // + the note-type template (via the shared pure-TS `renderTemplate`), then
 // markdown → HTML, then DOMPurified before it ever touches the DOM. Field values
-// are sanitized at the server save edge (`apps/api/src/sanitize.ts`), so the
-// payload is safe-at-source — the client DOMPurify is defense-in-depth, the
-// SECOND sanitizer pass and the last line of defense after markdown.
+// are lossless, untrusted Markdown source. html:false keeps literal HTML inert;
+// DOMPurify is the mandatory HTML boundary, never optional safe-source polish.
 //
 // `<SafeHtml>` is the SINGLE place in the web app where `dangerouslySetInnerHTML`
 // is allowed. Every HTML render site (review, browser detail panel, note-editor
@@ -36,7 +35,8 @@ import yaml from 'highlight.js/lib/languages/yaml';
 import csharp from 'highlight.js/lib/languages/csharp';
 import cpp from 'highlight.js/lib/languages/cpp';
 import java from 'highlight.js/lib/languages/java';
-import { MATH_RE, renderTemplate, type NoteTypeDef, type FieldValues } from '@neuronexus/shared';
+import { cardClozePlugin, cardMathPlugin, cardMediaPlugin, ClozeSyntaxError, MATH_RE, renderTemplate, type NoteTypeDef, type FieldValues } from '@neuronexus/shared';
+
 
 // ── Syntax highlighting (Step 6a, plan A2) ───────────────────────────────────
 //
@@ -134,6 +134,8 @@ const md = new MarkdownIt({
     return `<pre><code>${escapeFence(str)}</code></pre>`;
   },
 });
+
+md.use(cardMathPlugin, MATH_RE).use(cardClozePlugin).use(cardMediaPlugin);
 
 // The STRICT canonical-UUID relative-token regex (M2 Phase 3, plan C-6). This is
 // the SAME literal as the server edge (`apps/api/src/sanitize.ts` MEDIA_TOKEN_RE)
@@ -392,13 +394,13 @@ function newPlaceholderPrefix(): string {
 
 /**
  * Render one LaTeX formula to KaTeX HTML and DOMPurify the result with the
- * KaTeX-only allowlist. `trust:false` + `strict:'ignore'` + `throwOnError:false`
+ * KaTeX-only allowlist. `trust:false` + `strict:'ignore'`
  * neutralize `\href{javascript:}`/`\includegraphics`/`\htmlData` at the KaTeX
  * layer; the DOMPurify pass is defense-in-depth (Principle 5). Returns a SAFE
  * `<span class="katex">…` string — already sanitized, never re-run through the
  * main config.
  */
-function renderOneMath(formula: string, display: boolean): string {
+function renderOneMath(formula: string, display: boolean): string | null {
   let rendered: string;
   try {
     rendered = katex.renderToString(formula, {
@@ -406,57 +408,21 @@ function renderOneMath(formula: string, display: boolean): string {
       displayMode: display,
       trust: false,
       strict: 'ignore',
-      throwOnError: false,
+      throwOnError: true,
     });
   } catch {
-    // throwOnError:false already renders a styled error node, but guard anyway so
-    // a malformed formula can never break the whole card render.
-    return '';
+    // Preserve the source in a diagnostic island rather than dropping the formula.
+    return null;
   }
   return DOMPurify.sanitize(rendered, KATEX_DOMPURIFY_CONFIG);
 }
 
 /** One stashed raw-math source: its inner LaTeX + whether it is display mode. */
-type RawMath = { source: string; display: boolean };
-
-/**
- * Tokenize RAW `\(…\)`/`\[…\]` math in a FIELD VALUE (markdown source, BEFORE
- * markdown) and replace each span with an inert per-render placeholder, appending
- * the raw `{source, display}` to the shared `sources` map (keyed off its current
- * size so keys stay unique across every field of the card). Running BEFORE
- * markdown is the H2-ordered invariant: markdown-it must never see a `\(` (it
- * would treat the backslash as a markdown escape and mangle the formula). The
- * placeholder is markdown-inert, so it rides through markdown + the main sanitize
- * as plain text, then `renderOneMath` turns it into a KaTeX island at restore.
- *
- * CRITICAL (plan: "text nodes only"): the tokenizer runs ONLY on the text
- * segments OUTSIDE any `<…>` runs in the source. A field's markdown source rarely
- * contains raw HTML (markdown-it would escape it anyway), but if it does, a
- * delimiter inside an attribute is left untouched.
- */
-function stashRawMath(value: string, prefix: string, sources: Map<string, RawMath>): string {
-  const segments = value.split(/(<[^>]*>)/);
-  const reSrc = MATH_RE.source;
-  return segments
-    .map((seg) => {
-      if (seg.startsWith('<') && seg.endsWith('>')) return seg; // tag — leave as-is
-      const re = new RegExp(reSrc, 'g');
-      return seg.replace(re, (full, disp: string | undefined, inline: string | undefined) => {
-        // The `\\` escape-skip branch (both groups undefined): a literal escaped
-        // backslash-pair, NOT a formula — pass it through untouched.
-        if (disp === undefined && inline === undefined) return full;
-        const isDisplay = disp !== undefined;
-        const formula = isDisplay ? disp : (inline ?? '');
-        const key = `${prefix}m${sources.size}${PLACEHOLDER_TERM}`;
-        sources.set(key, { source: formula, display: isDisplay });
-        return key;
-      });
-    })
-    .join('');
-}
+type RawMath = { source: string; display: boolean; field: string; block: number };
 
 /** One stashed mermaid source: its raw (HTML-entity-decoded) diagram text. */
-export type MermaidSource = { key: string; source: string };
+export type ContentBlock = { key: string; source: string; field: string; block: number };
+export type MermaidSource = ContentBlock;
 
 // markdown-it default fence renderer for a ` ```mermaid ` block (the highlight
 // callback returns '' for `mermaid`, so the default fence path runs) →
@@ -488,11 +454,12 @@ function decodeFenceEntities(s: string): string {
  * Runs AFTER `md.render` (step 3 of `renderFieldMarkdown`): the fence only exists
  * once markdown has produced the `<pre><code class="language-mermaid">` shape.
  */
-function stashMermaid(html: string, prefix: string, blocks: MermaidSource[]): string {
+function stashMermaid(html: string, prefix: string, blocks: MermaidSource[], field: string): string {
+  let block = 0;
   const re = new RegExp(MERMAID_BLOCK_RE.source, 'g');
   return html.replace(re, (_full, escaped: string) => {
     const key = `${prefix}d${blocks.length}${PLACEHOLDER_TERM}`;
-    blocks.push({ key, source: decodeFenceEntities(escaped) });
+    blocks.push({ key, source: decodeFenceEntities(escaped), field, block: ++block });
     return key;
   });
 }
@@ -547,8 +514,8 @@ function stashRenderedKatex(
  * its raw math into the shared `sources` map (restored to KaTeX at the END, after
  * the whole-card sanitize). Steps:
  *
- *   1. STASH raw `\(…\)`/`\[…\]` math → inert placeholders, BEFORE markdown
- *      (markdown-it must never see a `\(` — H2).
+ *   1. Parse math into inert placeholders as Markdown syntax, outside code,
+ *      before the default escape rule consumes its delimiters.
  *   2. MARKDOWN → HTML (markdown-it singleton, html:false/linkify:false). A raw
  *      HTML tag typed into the FIELD is escaped (only the markdown-generated tags
  *      survive). The placeholders ride through as plain text.
@@ -564,16 +531,24 @@ function stashRenderedKatex(
  */
 function renderFieldMarkdown(
   value: string,
+  field: string,
   prefix: string,
   sources: Map<string, RawMath>,
   mermaid: MermaidSource[],
+  cloze?: { side: 'front' | 'back'; number: number; legacy?: boolean },
 ): string {
-  // 1. stash raw math BEFORE markdown (H2 — markdown must not see `\(`).
-  const mathStashed = stashRawMath(value ?? '', prefix, sources);
-  // 2. markdown → HTML.
-  const rendered = md.render(mathStashed);
+  let block = 0;
+  // Math participates in inline parsing; code and URL contents remain literal.
+  const rendered = md.render(value ?? '', {
+    cloze,
+    renderMath(source: string, display: boolean) {
+      const key = `${prefix}m${sources.size}${PLACEHOLDER_TERM}`;
+      sources.set(key, { source, display, field, block: ++block });
+      return key;
+    },
+  });
   // 3. stash mermaid blocks → inert placeholders (async RichCard island swap).
-  return stashMermaid(rendered, prefix, mermaid);
+  return stashMermaid(rendered, prefix, mermaid, field);
 }
 
 /**
@@ -616,6 +591,9 @@ export function sanitizeHtml(html: string): string {
 
 /** The full render result: the safe HTML + the mermaid sources still pending. */
 export interface RenderedCard {
+  error?: 'invalid_cloze';
+  /** Visible invalid formulas only; hidden answer fields never produce diagnostics. */
+  mathErrors?: ContentBlock[];
   /**
    * Safe HTML with KaTeX restored and mermaid blocks left as INERT placeholders
    * (one per `mermaid[n].key`). The `RichCard` wrapper swaps each placeholder for
@@ -661,6 +639,7 @@ export function renderCardHtmlWithMermaid(
   fieldValues: FieldValues,
   side: 'front' | 'back',
   templateOrd = 0,
+  clozeNumber: number | null = 0,
 ): RenderedCard {
   const template =
     noteType.templates.find((tpl) => tpl.ord === templateOrd) ?? noteType.templates[0];
@@ -672,25 +651,34 @@ export function renderCardHtmlWithMermaid(
   const mathSources = new Map<string, RawMath>();
   const mermaid: MermaidSource[] = [];
   // 1. markdown-render each field value (NOT the template); stash math + mermaid.
-  const renderedFields: FieldValues = {};
-  for (const [name, value] of Object.entries(fieldValues)) {
-    renderedFields[name] = renderFieldMarkdown(value ?? '', prefix, mathSources, mermaid);
+  let renderedFields: FieldValues;
+  try {
+    renderedFields = Object.fromEntries(Object.entries(fieldValues).map(([name, value]) => [name,
+      renderFieldMarkdown(value ?? '', name, prefix, mathSources, mermaid, noteType.kind === 'cloze' ? { side, number: clozeNumber ?? 0, legacy: !clozeNumber } : undefined),
+    ]));
+  } catch (error) {
+    if (error instanceof ClozeSyntaxError) return { html: '', mermaid: [], error: 'invalid_cloze' };
+    throw error;
   }
   // 2. substitute rendered fields into the trusted template HTML (+ cloze rewrite).
   const templated = renderTemplate(tpl, renderedFields, {
     side,
-    cloze: noteType.kind === 'cloze',
+    cloze: false,
   });
   // 3. main sanitize the whole card (last line of defense).
   let out = DOMPurify.sanitize(templated, SANITIZE_CONFIG);
   // 4. restore math: placeholder → KaTeX island (rendered + KaTeX-DOMPurified).
-  for (const [key, { source, display }] of mathSources) {
-    out = out.split(key).join(renderOneMath(source, display));
+  const mathErrors: ContentBlock[] = [];
+  for (const [key, { source, display, field, block }] of mathSources) {
+    if (!out.includes(key)) continue;
+    const rendered = renderOneMath(source, display);
+    if (rendered === null) mathErrors.push({ key, source, field, block });
+    else out = out.split(key).join(rendered);
   }
   // Mermaid placeholders are intentionally LEFT in `out` — the async RichCard
   // wrapper swaps them for sanitized SVG islands; `renderCardHtml` restores them
   // to a code block for the non-async callers.
-  return { html: out, mermaid };
+  return { html: out, mathErrors, mermaid: mermaid.filter(({ key }) => out.includes(key)) };
 }
 
 /**
@@ -710,9 +698,11 @@ export function renderCardHtml(
   fieldValues: FieldValues,
   side: 'front' | 'back',
   templateOrd = 0,
+  clozeNumber: number | null = 0,
 ): string {
-  const { html, mermaid } = renderCardHtmlWithMermaid(noteType, fieldValues, side, templateOrd);
+  const { html, mermaid, mathErrors = [] } = renderCardHtmlWithMermaid(noteType, fieldValues, side, templateOrd, clozeNumber);
   let out = html;
+  for (const { key, source } of mathErrors) out = out.split(key).join(`<code>${escapeFence(source)}</code>`);
   for (const { key, source } of mermaid) {
     out = out.split(key).join(`<pre><code class="language-mermaid">${escapeFence(source)}</code></pre>`);
   }

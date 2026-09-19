@@ -1,13 +1,12 @@
-// Server-side HTML sanitizer for note field values (Milestone 1, Phase 4 — the
-// authoritative save edge). This is the ONE pinned allowlist over `sanitize-html`
+// HTML sanitizer for explicit HTML callers. Markdown field values use the
+// lossless source copier at the bottom of this file. Pinned HTML allowlist:
 // (parse5-based, no jsdom — chosen for Bun reliability per Phase 0 / C-3). The
 // SAME `SANITIZE_CONFIG` shape is referenced by the Phase 4b tests and the
 // client render edge (Phase 5, DOMPurify) so both edges agree on what is allowed.
 //
-// Trust boundary (plan must-fix #1/#2): field values are the source of truth;
-// they are sanitized HERE on save. The `cards.render*` columns are a plaintext
-// search cache, NOT a security artifact. Display HTML is re-sanitized in the
-// browser before DOM injection (defense in depth).
+// Field values are untrusted source. The cards.render* columns are a derived
+// search cache, NOT a security artifact. Display HTML MUST be sanitized in the
+// browser before DOM injection even when source has already been validated.
 //
 // Allowlist (M1 narrow set + M2 img + rich-content A4):
 //   tags:    b i em strong u ul ol li br hr p span div img
@@ -137,16 +136,16 @@ export function sanitizeFieldHtml(html: string): string {
 }
 
 /**
- * Sanitize every value of a note's `fieldValues` map in place-safe fashion
- * (returns a new object). Field NAMES are not HTML and are passed through
- * untouched.
+ * Preserve Markdown source. This historical name remains for callers, but
+ * source text is NOT safe HTML. Markdown renders with html:false and its output
+ * must pass through the browser's sanitized render sink. Sanitizing the source
+ * as HTML destroys code examples, comparisons and literal markup.
+ * Object.fromEntries also preserves own keys such as __proto__ safely.
  */
 export function sanitizeFieldValues(
   fieldValues: Record<string, string>,
 ): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [name, value] of Object.entries(fieldValues)) {
-    out[name] = sanitizeFieldHtml(value);
-  }
-  return out;
+  return Object.fromEntries(Object.entries(fieldValues).map(([name, value]) => [
+    name, typeof value === 'string' ? value : '',
+  ]));
 }

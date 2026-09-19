@@ -48,8 +48,9 @@ import {
   resolveNoteCreate,
   resolveNoteUpdate,
   applyNoteUpdate,
-  noteUpdateImpact,
+  prepareNoteUpdate,
 } from '../modules/notes.ts';
+import { NoteWriteConflict } from '../modules/card-regeneration';
 import {
   descendantIds,
   patchCard,
@@ -91,6 +92,8 @@ export interface ToolContext {
   confirmationHash?: string;
   /** Optional caller-supplied transaction (confirm-resume atomicity). */
   tx?: Tx;
+  /** Persisted by the server at dry-run time, never taken from tool args. */
+  confirmationToken?: string;
   /**
    * Optional per-turn deck scope (AC3.7): the turn's `deckId` resolved to its
    * subtree `[deckId, ...descendants]`. When set, `search_cards` forwards it to
@@ -1850,7 +1853,7 @@ export async function resolveNoteTypeForCreate(
   userId: string,
   noteTypeRef: string | null,
 ): Promise<
-  | { ok: true; id: string; fields: { name: string }[]; name: string }
+  | { ok: true; id: string; fields: { name: string }[]; name: string; updatedAt: Date }
   | { ok: false; error: string }
 > {
   const rows = await db
@@ -1860,6 +1863,7 @@ export async function resolveNoteTypeForCreate(
       kind: noteTypes.kind,
       isBuiltin: noteTypes.isBuiltin,
       fields: noteTypes.fields,
+      updatedAt: noteTypes.updatedAt,
     })
     .from(noteTypes)
     .where(or(isNull(noteTypes.userId), eq(noteTypes.userId, userId)));
@@ -1868,7 +1872,7 @@ export async function resolveNoteTypeForCreate(
     const basic =
       rows.find((r) => r.isBuiltin && r.kind === 'basic') ??
       rows.find((r) => r.isBuiltin && r.name.toLowerCase() === 'basic');
-    if (basic) return { ok: true, id: basic.id, fields: basic.fields, name: basic.name };
+    if (basic) return { ok: true, id: basic.id, fields: basic.fields, name: basic.name, updatedAt: basic.updatedAt };
     return {
       ok: false,
       error: `create_card: no builtin Basic note type found. Available note types: ${describeNoteTypes(rows)}`,
@@ -1882,7 +1886,7 @@ export async function resolveNoteTypeForCreate(
     byId ??
     rows.find((r) => !r.isBuiltin && r.name.toLowerCase() === lower) ??
     rows.find((r) => r.name.toLowerCase() === lower);
-  if (byName) return { ok: true, id: byName.id, fields: byName.fields, name: byName.name };
+  if (byName) return { ok: true, id: byName.id, fields: byName.fields, name: byName.name, updatedAt: byName.updatedAt };
   return {
     ok: false,
     error: `create_card: unknown note type "${noteTypeRef}". Available note types: ${describeNoteTypes(rows)}`,
@@ -1900,19 +1904,21 @@ function normalizeFieldKeys(
   provided: Record<string, string>,
   noteTypeName: string,
 ): { ok: true; fieldValues: Record<string, string> } | { ok: false; error: string } {
-  const byLower = new Map(fields.map((f) => [f.name.toLowerCase(), f.name]));
-  const out: Record<string, string> = {};
+  const byLower = new Map(fields.map((f) => [f.name.trim().normalize('NFC').toLowerCase(), f.name]));
+  const entries: [string, string][] = [];
+  const seen = new Set<string>();
   for (const [k, v] of Object.entries(provided)) {
-    const real = byLower.get(k.toLowerCase());
+    const real = byLower.get(k.trim().normalize('NFC').toLowerCase());
     if (!real) {
       return {
         ok: false,
         error: `create_card: note type "${noteTypeName}" has no field "${k}" (fields: ${fields.map((f) => f.name).join(', ')})`,
       };
     }
-    out[real] = v;
+    if (seen.has(real)) return { ok: false, error: `create_card: duplicate field ${real}` };
+    seen.add(real); entries.push([real, v]);
   }
-  return { ok: true, fieldValues: out };
+  return { ok: true, fieldValues: Object.fromEntries(entries) };
 }
 
 /** One fully-resolved card of a create_card call, ready to insert. */
@@ -1962,10 +1968,11 @@ async function resolveCreateCardInputs(
           : `create_card: ${at}${resolved.error}`;
       return { ok: false, error: detail };
     }
+    if (resolved.typeUpdatedAt.getTime() !== noteType.updatedAt.getTime()) return { ok: false, error: 'create_card: note_type_changed; select the current type again' };
     if (resolved.generated.length === 0) {
       return {
         ok: false,
-        error: `create_card: ${at}the field values produced no cards (the first field of "${noteType.name}" must be non-empty)`,
+        error: `create_card: ${at}the field values produced no cards (fill the question fields used by the templates of "${noteType.name}")`,
       };
     }
     entries.push({ fieldValues: normalized.fieldValues, tags: entry.tags, resolved });
@@ -2057,6 +2064,7 @@ const createCard: Tool = {
           userId: ctx.userId,
           deckId: inputs.deckId,
           noteTypeId: inputs.noteTypeId,
+          expectedTypeUpdatedAt: entry.resolved.typeUpdatedAt,
           sanitized: entry.resolved.sanitized,
           tags: entry.tags,
           generated: entry.resolved.generated,
@@ -2235,8 +2243,13 @@ const editCard: Tool = {
     };
     const resolved = await resolveNoteUpdate(ctx.userId, noteRes.noteId, { fieldValues, tags });
     if (!resolved.ok) return { ...previews, affectsSiblings: true };
-    const impact = await noteUpdateImpact(noteRes.noteId, resolved.generated);
-    return { ...impact, ...previews, affectsSiblings: true };
+    const prepare = (tx: Tx) => prepareNoteUpdate(tx, {
+      userId: ctx.userId, noteId: noteRes.noteId, nextFieldValues: resolved.nextFieldValues,
+      nextTags: resolved.nextTags, generated: resolved.generated,
+      expectedUpdatedAt: resolved.note.updatedAt, expectedTypeUpdatedAt: resolved.typeUpdatedAt,
+    });
+    const prepared = ctx.tx ? await prepare(ctx.tx) : await db.transaction(prepare);
+    return { ...prepared.preview.impact, confirmationToken: prepared.preview.confirmationToken, ...previews, affectsSiblings: true };
   },
   async execute(ctx, rawArgs): Promise<ToolResult> {
     const args = (rawArgs ?? {}) as EditCardArgs;
@@ -2260,14 +2273,20 @@ const editCard: Tool = {
       const resolved = await resolveNoteUpdate(ctx.userId, noteRes.noteId, { fieldValues, tags });
       if (!resolved.ok) return { ok: false, error: `edit_card: ${resolved.error}` };
 
-      const run = (tx: Tx) =>
-        applyNoteUpdate(tx, {
+      const run = async (tx: Tx) => {
+        const input = {
           userId: ctx.userId,
           noteId: noteRes.noteId,
+          expectedUpdatedAt: resolved.note.updatedAt,
+          expectedTypeUpdatedAt: resolved.typeUpdatedAt,
           nextFieldValues: resolved.nextFieldValues,
           nextTags: resolved.nextTags,
           generated: resolved.generated,
-        });
+        };
+        const prepared = await prepareNoteUpdate(tx, input);
+        if (ctx.tx && ctx.confirmationToken !== prepared.preview.confirmationToken) throw new NoteWriteConflict('preview_changed');
+        return applyNoteUpdate(tx, input, prepared);
+      };
       const updated = ctx.tx ? await run(ctx.tx) : await db.transaction(run);
       cardIds = updated.cards.map((c) => c.id);
       summaries.push(

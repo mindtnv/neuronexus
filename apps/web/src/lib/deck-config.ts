@@ -11,7 +11,7 @@
  * changes.
  */
 
-import { ANKI_DEFAULTS } from '@neuronexus/shared';
+import { ANKI_DEFAULTS, isValidLearningSteps as isValidSteps } from '@neuronexus/shared';
 import type { Deck, DeckOptionsPreset, Profile } from '@/lib/types';
 
 export interface ClientResolvedDeckConfig {
@@ -19,12 +19,6 @@ export interface ClientResolvedDeckConfig {
   relearningSteps: string[];
   desiredRetention: number;
   maximumInterval: number;
-}
-
-const STEP_RE = /^\d+(s|m|h|d)$/;
-
-function isValidSteps(arr: readonly string[] | null | undefined): boolean {
-  return Array.isArray(arr) && arr.length > 0 && arr.every((s) => STEP_RE.test(s));
 }
 
 function nearestPreset(

@@ -17,9 +17,12 @@ import { TextInput } from '@/components/design-system/primitives';
 import { CardColumnPicker } from '@/components/card-column-picker';
 import { CARD_COLUMNS, defaultCardColumns, readCardColumns, saveCardColumns, cardTableMinWidth, type SortField } from '@/lib/card-columns';
 import { CardsViewSwitcher } from '@/components/cards-view-switcher';
+import { raiseToast } from '@/components/toasts';
+import { NoteConversionDialog } from '@/components/note-conversion';
 import { NNTopbar } from '@/components/shell';
 import { cardCreationDeck } from '@/lib/card-creation-deck';
 import { CardDetailPanel } from '@/components/card-detail-panel';
+
 import { RENDER_KIND_BADGE_TONE } from '@/lib/source-kind';
 import { useNN } from '@/lib/store';
 import type { Card } from '@/lib/types';
@@ -34,7 +37,9 @@ import {
 } from '@/lib/decks';
 import { addOrReplaceToken, toggleToken, tokenizeQuery } from '@/lib/card-query-ui';
 import { toApiError } from '@/lib/resource-state';
-import type { ApiError } from '@/lib/api';
+import { api, ok, type ApiError } from '@/lib/api';
+import { cardFromApi } from '@/lib/mappers';
+import { studyDateIso } from '@/lib/study-date';
 
 const DEFAULT_CARDS_PAGE = 500;
 
@@ -93,7 +98,7 @@ function truncate(s: string, n = 90): string {
 
 export const NNCardsBrowser = () => {
   const t = useT();
-  const { confirm, prompt, select } = useDialog();
+  const { confirm, prompt, select, alert } = useDialog();
   const dateLocale = useDateLocale();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
@@ -108,15 +113,17 @@ export const NNCardsBrowser = () => {
   const decks = useNN((s) => s.decks);
   const cardTags = useNN((s) => s.cardTags);
   const bootstrapped = useNN((s) => s.bootstrapped);
+  const noteTypes = useNN((s) => s.noteTypes);
   const searchCards = useNN((s) => s.searchCards);
   const bulkCards = useNN((s) => s.bulkCards);
-  const forgetCard = useNN((s) => s.forgetCard);
-  const setCardDue = useNN((s) => s.setCardDue);
   const refetchCard = useNN((s) => s.refetchCard);
   const getCardTags = useNN((s) => s.getCardTags);
 
   // Query string: URL `?q=` is the source of truth, mirrored into local state
   // for instant typing (URL writes are debounced).
+  const noteTypeScope = searchParams.get('noteTypeId') ?? undefined;
+  const conversionTarget = searchParams.get('convertTo') ?? undefined;
+  const [conversionCards, setConversionCards] = useState<Card[] | null>(null);
   const urlQ = searchParams.get('q') ?? '';
   const [query, setQuery] = useState(urlQ);
 
@@ -127,6 +134,14 @@ export const NNCardsBrowser = () => {
   const [serverResults, setServerResults] = useState<Card[] | null>(null);
   const [serverQ, setServerQ] = useState<string | null>(null);
   const [serverKey, setServerKey] = useState<string | null>(null);
+  useEffect(() => {
+    searchGeneration.current += 1;
+    loadMoreGeneration.current += 1;
+    const current = new Map(useNN.getState().cards.map((card) => [card.id, card]));
+    setServerResults((previous) => previous === null ? previous
+      : previous.flatMap((card) => { const fresh = current.get(card.id); return fresh ? [fresh] : []; }));
+    setServerKey(null);
+  }, [noteTypes]);
   const [searching, setSearching] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   // Honest pagination: the cursor for the NEXT server page (null = no more rows).
@@ -136,29 +151,17 @@ export const NNCardsBrowser = () => {
 
   // Two decoupled intents (must-fix: stop conflating look / edit-one / bulk):
   //  • `selected` (checkboxes / Ctrl+Shift-click) → drives ONLY the floating bulk bar.
-  //  • `focusedId` (plain row click) → the single card shown in the card detail panel.
+  //  • `focusedId` (plain row click) → the single card shown in the bottom edit dock.
+  const bulkLock = useRef(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const lastClickedRef = useRef<string | null>(null);
-  const [focusedId, commitFocusedId] = useState<string | null>(null);
-  const focusedRef = useRef(focusedId);
-  focusedRef.current = focusedId;
-  const dirtyRef = useRef(false);
-  const confirmingRef = useRef(false);
-  const onDirtyChange = useCallback((dirty: boolean) => { dirtyRef.current = dirty; }, []);
-  const setFocusedId = useCallback((id: string | null) => {
-    if (focusedRef.current === id || confirmingRef.current) return;
-    void (async () => {
-      if (dirtyRef.current) {
-        confirmingRef.current = true;
-        let discard = false;
-        try { discard = await confirm({ title: t('cards.panel.discard'), confirmLabel: t('cards.panel.discardAction'), danger: true }); }
-        finally { confirmingRef.current = false; }
-        if (!discard) return;
-      }
-      dirtyRef.current = false;
-      commitFocusedId(id);
-    })();
-  }, [confirm, t]);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [focusError, setFocusError] = useState<ApiError | null>(null);
+  const [focusAttempt, setFocusAttempt] = useState(0);
+
+
 
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const [filtersVisible, setFiltersVisible] = useState(true);
@@ -178,9 +181,11 @@ export const NNCardsBrowser = () => {
     setLoadingMore(false);
   }, []);
 
+  useEffect(() => { invalidatePendingSearches(); setSelected(new Set()); setServerKey(null); }, [noteTypeScope, invalidatePendingSearches]);
+
   // Fetch the distinct tag universe once on mount (C3 — not from the ≤500 mirror).
   useEffect(() => {
-    void getCardTags();
+    void getCardTags().catch(() => {});
   }, [getCardTags]);
 
   // Keep local query in sync when the URL changes externally (deck drill-in,
@@ -192,26 +197,36 @@ export const NNCardsBrowser = () => {
     setSearching(true);
     queryRef.current = urlQ;
     setQuery(urlQ);
+    setSelected(new Set());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlQ]);
 
-  // Jump-to-card (AC3.6): a `?focus=<id>` param (from a chat citation's "open
-  // card" affordance) opens the card detail panel on that card. Wait for the
-  // mirror to bootstrap before consuming — the card may not be loaded yet on a
-  // cold open. Once the card resolves in the mirror, focus it and CLEAR the param
-  // (router.replace) so back/forward stays clean and a refocus needs a fresh link.
+  // Deep links must resolve beyond the bootstrap page, with a visible error.
+
   const focusParam = searchParams.get('focus');
   useEffect(() => {
     if (!focusParam || !bootstrapped) return;
-    const exists = cards.some((c) => c.id === focusParam);
-    if (!exists) return;
-    setFocusedId(focusParam);
-    const params = new URLSearchParams(Array.from(searchParams.entries()));
-    params.delete('focus');
-    const qs = params.toString();
-    router.replace(qs ? `/cards?${qs}` : '/cards', { track: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusParam, bootstrapped, cards]);
+    let active = true;
+    setFocusError(null);
+    void (async () => {
+      try {
+        const cached = useNN.getState().cards.find((card) => card.id === focusParam);
+        const card = cached ?? cardFromApi(await ok(await api.cards({ id: focusParam }).get()));
+        if (!active) return;
+        if (!cached) useNN.setState((state) => ({ cards: [...state.cards.filter((c) => c.id !== card.id), card] }));
+        if (focusedId !== card.id && !(await router.confirmLeave())) return;
+        if (!active) return;
+        setFocusedId(card.id);
+        const params = new URLSearchParams(Array.from(searchParams.entries()));
+        params.delete('focus');
+        const qs = params.toString();
+        router.replace(qs ? `/cards?${qs}` : '/cards', { track: false });
+      } catch (error) {
+        if (active) setFocusError(toApiError(error));
+      }
+    })();
+    return () => { active = false; };
+  }, [focusParam, bootstrapped, focusAttempt]);
 
   // Resolve a deck NAME (or path) to its id + descendants for the predicate.
   const resolveDeckIds = useCallback(
@@ -251,12 +266,12 @@ export const NNCardsBrowser = () => {
   // Client-side filtered + sorted view over the mirror (instant type-ahead).
   const clientFiltered = useMemo(() => {
     if (queryError) return [] as Card[];
-    const out = cards.filter((c) => predicate(toCardLike(c)));
+    const out = cards.filter((c) => (!noteTypeScope || c.noteType?.id === noteTypeScope) && predicate(toCardLike(c)));
     return sortCards(out, sortField, sortDir);
-  }, [cards, predicate, queryError, sortField, sortDir]);
+  }, [cards, predicate, queryError, sortField, sortDir, noteTypeScope]);
 
   const sortStr = `${sortField} ${sortDir}`;
-  const currentSearchKey = `${query}\u0000${sortStr}`;
+  const currentSearchKey = `${query}\u0000${sortStr}\u0000${noteTypeScope ?? ''}`;
 
   // True when the displayed rows are the authoritative server result set for the
   // current query (vs the provisional client mirror).
@@ -282,7 +297,7 @@ export const NNCardsBrowser = () => {
 
   const runServerSearch = useCallback(
     async (q: string) => {
-      const requestKey = `${q}\u0000${sortStr}`;
+      const requestKey = `${q}\u0000${sortStr}\u0000${noteTypeScope ?? ''}`;
       const generation = ++searchGeneration.current;
       // A fresh authoritative search supersedes any pagination append in flight.
       loadMoreGeneration.current += 1;
@@ -291,9 +306,10 @@ export const NNCardsBrowser = () => {
       setSearching(true);
       setServerError(null);
       try {
-        const { items, nextCursor } = await searchCards(q, { sort: sortStr });
+        const { items, nextCursor } = await searchCards(q, { sort: sortStr, noteTypeId: noteTypeScope });
         if (generation !== searchGeneration.current) return;
         setServerResults(items);
+        setSelected((previous) => new Set([...previous].filter((id) => items.some((card) => card.id === id))));
         setServerQ(q);
         setServerKey(requestKey);
         setServerCursor(nextCursor);
@@ -305,8 +321,11 @@ export const NNCardsBrowser = () => {
         if (generation === searchGeneration.current) setSearching(false);
       }
     },
-    [searchCards, sortStr],
+    [searchCards, sortStr, noteTypeScope],
   );
+
+  const latestSearch = useRef(runServerSearch);
+  latestSearch.current = runServerSearch;
 
   // Honest "Load more": fetch the next page from the cursor and APPEND it to the
   // displayed server results (no silent truncation at the 500-row cap).
@@ -321,6 +340,7 @@ export const NNCardsBrowser = () => {
       const { items, nextCursor } = await searchCards(serverQ, {
         sort: sortStr,
         cursor: serverCursor,
+        noteTypeId: noteTypeScope,
       });
       if (generation !== loadMoreGeneration.current) return;
       setServerResults((prev) => {
@@ -340,7 +360,7 @@ export const NNCardsBrowser = () => {
         setLoadingMore(false);
       }
     }
-  }, [currentSearchKey, searchCards, serverCursor, serverKey, serverQ, sortStr]);
+  }, [currentSearchKey, searchCards, serverCursor, serverKey, serverQ, sortStr, noteTypeScope]);
 
   // Auto-fire the debounced server search whenever results are provisional for
   // the current query (and the query is parseable).
@@ -379,6 +399,7 @@ export const NNCardsBrowser = () => {
     invalidatePendingSearches();
     queryRef.current = q;
     setQuery(q);
+    setSelected(new Set());
     // Keep the previous authoritative rows mounted while the new query resolves.
     setSearching(true);
     setServerError(null);
@@ -421,12 +442,18 @@ export const NNCardsBrowser = () => {
     setServerError(null);
   };
 
+  const changeFocused = async (id: string | null) => {
+    if (id === focusedId) return;
+    if (await router.confirmLeave()) setFocusedId(id);
+  };
+
   // Row click. Three distinct intents:
   //  • Shift+click   → range-add to `selected` (bulk), leaves the dock untouched.
   //  • Ctrl/Cmd+click → toggle `id` in `selected` (bulk), leaves the dock untouched.
   //  • plain click   → open the detail panel on this card (`focusedId`); never
   //                    touches `selected`, so a single look never raises the bulk bar.
   const onRowSelect = (id: string, e: React.MouseEvent) => {
+    if ((e.shiftKey || e.metaKey || e.ctrlKey) && (!serverActive || searching || bulkBusy)) return;
     if (e.shiftKey && lastClickedRef.current) {
       setSelected((prev) => {
         const next = new Set(prev);
@@ -447,12 +474,13 @@ export const NNCardsBrowser = () => {
         return next;
       });
     } else {
-      setFocusedId(id);
+      void changeFocused(id);
     }
     lastClickedRef.current = id;
   };
 
   const toggleCheckbox = (id: string) => {
+    if (!serverActive || searching || bulkBusy) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -478,7 +506,7 @@ export const NNCardsBrowser = () => {
     const nextIdx = idx + delta;
     if (nextIdx < 0 || nextIdx >= ids.length) return;
     const nextId = ids[nextIdx]!;
-    setFocusedId(nextId);
+    void changeFocused(nextId);
     lastClickedRef.current = nextId;
   };
 
@@ -495,87 +523,61 @@ export const NNCardsBrowser = () => {
       const el = e.target as HTMLElement | null;
       const tag = el?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
-      setFocusedId(null);
+      void changeFocused(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [focusedId]);
 
-  // Bulk actions.
-  const runBulk = async (
-    action: 'move' | 'delete' | 'suspend' | 'unsuspend' | 'addTag' | 'removeTag',
-  ) => {
+  // Capture the selection once; a whole scheduling batch is one server write.
+  const performBulk = async (operation: (ids: string[]) => Promise<void>) => {
+    if (bulkLock.current || selected.size === 0 || !serverActive || searching) return;
+
     const ids = [...selected];
-    if (ids.length === 0) return;
+    if (ids.length > 1000) { setBulkError(true); return; }
+    bulkLock.current = true;
+    setBulkBusy(true);
+    setBulkError(false);
     try {
-      if (action === 'delete') {
-        if (!(await confirm({ title: t('cards.bulk.deleteConfirm', { n: ids.length }), danger: true }))) return;
-        await bulkCards('delete', ids);
-        setSelected(new Set());
-      } else if (action === 'move') {
-        const deckId = await select<string>({
-          title: t('cards.bulk.movePrompt'),
-          options: decks.map((d) => ({
-            value: d.id,
-            label: deckPathLabel(decks, d.id),
-          })),
-        });
-        if (!deckId) return;
-        await bulkCards('move', ids, { deckId });
-      } else if (action === 'addTag' || action === 'removeTag') {
-        const tag = await prompt({ title: t('cards.bulk.tagPrompt') });
-        const clean = tag?.trim();
-        if (!clean) return;
-        await bulkCards(action, ids, { tag: clean });
-        await getCardTags();
-      } else {
-        await bulkCards(action, ids);
-      }
-      // Refresh server view so the table reflects the mutation authoritatively.
-      if (!queryError && serverQ === query) void runServerSearch(query);
-    } catch (err) {
-      console.error('bulk action failed', err);
-      setServerError(toApiError(err));
+      await operation(ids);
+    } catch {
+      setBulkError(true);
+    } finally {
+      bulkLock.current = false;
+      setBulkBusy(false);
+      // Refresh even after an ambiguous network failure; never leave a stale
+      // table after the server may have committed a mutation.
+      void latestSearch.current(queryRef.current);
     }
   };
 
-  // Manual scheduling control. forget resets each selected card to "new";
-  // setDue picks a single date applied to every selected card. Both are
-  // single-card PATCHes looped over the selection (no bulk endpoint).
-  const runForget = async () => {
-    const ids = [...selected];
-    if (ids.length === 0) return;
-    if (!(await confirm({ title: t('cards.actions.forgetConfirm', { n: ids.length }), danger: true }))) return;
-    try {
-      for (const id of ids) await forgetCard(id);
-      if (!queryError && serverQ === query) void runServerSearch(query);
-    } catch (err) {
-      console.error('forget failed', err);
-      setServerError(toApiError(err));
-    }
-  };
+  const runBulk = (action: 'move' | 'delete' | 'suspend' | 'unsuspend' | 'addTag' | 'removeTag') => performBulk(async (ids) => {
+    if (action === 'delete') {
+      if (!(await confirm({ title: t('cards.bulk.deleteConfirm', { n: ids.length }), danger: true }))) return;
+      await bulkCards('delete', ids);
+      setSelected(new Set());
+    } else if (action === 'move') {
+      const deckId = await select<string>({ title: t('cards.bulk.movePrompt'), options: decks.map((deck) => ({ value: deck.id, label: deckPathLabel(decks, deck.id) })) });
+      if (deckId) await bulkCards('move', ids, { deckId });
+    } else if (action === 'addTag' || action === 'removeTag') {
+      const tag = (await prompt({ title: t('cards.bulk.tagPrompt') }))?.trim();
+      if (tag) { await bulkCards(action, ids, { tag }); await getCardTags(); }
+    } else await bulkCards(action, ids);
+  });
 
-  const runSetDue = async () => {
-    const ids = [...selected];
-    if (ids.length === 0) return;
-    const today = new Date().toISOString().slice(0, 10);
+  const runForget = () => performBulk(async (ids) => {
+    if (await confirm({ title: t('cards.actions.forgetConfirm', { n: ids.length }), danger: true })) await bulkCards('forget', ids);
+  });
+
+  const runSetDue = () => performBulk(async (ids) => {
     const value = await prompt({
-      title: t('cards.actions.setDueTitle'),
-      defaultValue: today,
-      placeholder: 'YYYY-MM-DD',
-      validate: (v) => (Number.isNaN(new Date(v).getTime()) ? t('cards.actions.invalidDate') : null),
+      title: t('cards.actions.setDueTitle'), inputType: 'date',
+      defaultValue: new Date().toISOString().slice(0, 10),
+      validate: (value) => studyDateIso(value) ? null : t('cards.actions.invalidDate'),
     });
-    const clean = value?.trim();
-    if (!clean) return;
-    const iso = new Date(clean).toISOString();
-    try {
-      for (const id of ids) await setCardDue(id, iso);
-      if (!queryError && serverQ === query) void runServerSearch(query);
-    } catch (err) {
-      console.error('set-due failed', err);
-      setServerError(toApiError(err));
-    }
-  };
+    const iso = value ? studyDateIso(value) : null;
+    if (iso) await bulkCards('setDue', ids, { setDue: iso });
+  });
 
   const fmtDate = (ms: number) => {
     if (!ms) return '—';
@@ -594,7 +596,6 @@ export const NNCardsBrowser = () => {
 
   const creationDeck = cardCreationDeck(query, decks);
   const createCard = async () => {
-    if (dirtyRef.current && !(await confirm({ title: t('cards.panel.discard'), confirmLabel: t('cards.panel.discardAction'), danger: true }))) return;
     router.push(creationDeck ? `/editor?deck=${encodeURIComponent(creationDeck.id)}` : '/editor');
   };
 
@@ -646,6 +647,8 @@ export const NNCardsBrowser = () => {
           />
         </div>
         <CardColumnPicker selected={columnIds} onChange={changeColumns} onReset={() => changeColumns(defaultCardColumns(isMobile))} />
+        <NNBtn variant="ghost" icon="clock" onClick={() => router.push('/editor?drafts=1')}
+          title={t('editor.draft.libraryTitle')} ariaLabel={t('editor.draft.libraryTitle')} />
         <NNBtn
           size="md"
           variant="ghost"
@@ -693,6 +696,17 @@ export const NNCardsBrowser = () => {
         aria-busy={searching || loadingMore}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}
       >
+        {conversionCards && <NoteConversionDialog cards={conversionCards} targetTypeId={conversionTarget} onClose={() => { setConversionCards(null); void latestSearch.current(queryRef.current); }} onConverted={(converted) => {
+          const notes = new Set(converted.map((card) => card.noteId));
+          setServerResults((previous) => previous === null ? previous : [...previous.filter((card) => !notes.has(card.noteId)),
+            ...converted.filter((card) => (!noteTypeScope || card.noteType?.id === noteTypeScope) && predicate(toCardLike(card)))]);
+          raiseToast({ kind: 'success', title: t('noteTypes.convert.done', { n: notes.size }) });
+          setConversionCards(null); setSelected(new Set()); void latestSearch.current(queryRef.current);
+        }} />}
+        {(noteTypeScope || conversionTarget) && <div role="status" style={{ padding: 12, fontSize: 13, borderBottom: '1px solid var(--border)' }}>
+          {t(noteTypeScope ? conversionTarget ? 'noteTypes.convert.selectionHint' : 'noteTypes.convert.sourceHint' : 'noteTypes.convert.targetHint', { source: noteTypes.find((type) => type.id === noteTypeScope)?.name ?? '', target: noteTypes.find((type) => type.id === conversionTarget)?.name ?? '' })}
+          <NNBtn size="sm" variant="ghost" onClick={() => { const params = new URLSearchParams(searchParams.toString()); params.delete('noteTypeId'); params.delete('convertTo'); router.replace(`/cards?${params.toString()}`, { track: false }); }}>{t('noteTypes.convert.clearScope')}</NNBtn>
+        </div>}
         {/* Status line: result count / provisional / error */}
         <div className="reomi-cards-status"
           style={{
@@ -728,6 +742,12 @@ export const NNCardsBrowser = () => {
           )}
           {!isMobile && <span className="reomi-cards-query-help" title={t('cards.search.help')}>{t('cards.search.help')}</span>}
         </div>
+
+        {bulkError && <div role="alert" style={{ padding: 12, fontSize: 13, color: 'var(--rose-400)' }}>
+          {t(selected.size > 1000 ? 'cards.bulk.tooMany' : 'cards.bulk.failed')}
+        </div>}
+        {focusError && <NNLoadError title={t('editor.errors.loadFailed')} description={t(focusError.status === 404 ? 'editor.errors.notFound' : 'review.loadFailedBody')}
+          retryLabel={t('review.retry')} onRetry={() => setFocusAttempt((n) => n + 1)} requestId={focusError.requestId} />}
 
         {/* Body: the table ALWAYS spans the full width — neither the bottom edit
             dock nor the floating bulk pill reformats or clips it. */}
@@ -933,13 +953,13 @@ export const NNCardsBrowser = () => {
 
         {focusedCard && <CardDetailPanel card={focusedCard}
           deckName={deckPathLabel(decks, focusedCard.deckId)} index={rows.findIndex(card => card.id === focusedCard.id)} total={rows.length}
-          onMove={movePanel} onClose={() => setFocusedId(null)} onDirtyChange={onDirtyChange}
-          onOpen={id => { void refetchCard(id).then(() => setFocusedId(id)); }}
+          onMove={movePanel} onClose={() => void changeFocused(null)} onDirtyChange={() => {}}
+          onOpen={id => { void router.confirmLeave().then(allowed => { if (allowed) void refetchCard(id).then(() => setFocusedId(id)); }); }}
           onDeleted={id => {
-            dirtyRef.current = false;
-            commitFocusedId(null);
+            setFocusedId(null);
             setSelected(prev => { const next = new Set(prev); next.delete(id); return next; });
           }} />}
+
 
         {/* Floating contextual bulk pill — appears ONLY for checkbox / Ctrl+Shift
             selection. position:fixed so it never reflows page layout; sits above
@@ -966,15 +986,19 @@ export const NNCardsBrowser = () => {
             }}
           >
             <NNBadge tone="lime" size="sm">{t('cards.bulk.selected', { n: selected.size })}</NNBadge>
-            <NNBtn size="sm" variant="soft" icon="stack" onClick={() => runBulk('move')}>{t('cards.bulk.move')}</NNBtn>
-            <NNBtn size="sm" variant="soft" icon="tag" onClick={() => runBulk('addTag')}>{t('cards.bulk.addTag')}</NNBtn>
-            <NNBtn size="sm" variant="soft" icon="x" onClick={() => runBulk('removeTag')}>{t('cards.bulk.removeTag')}</NNBtn>
-            <NNBtn size="sm" variant="soft" icon="pause" onClick={() => runBulk('suspend')}>{t('cards.bulk.suspend')}</NNBtn>
-            <NNBtn size="sm" variant="soft" icon="play" onClick={() => runBulk('unsuspend')}>{t('cards.bulk.unsuspend')}</NNBtn>
-            <NNBtn size="sm" variant="soft" icon="clock" onClick={() => void runSetDue()}>{t('cards.actions.setDue')}</NNBtn>
-            <NNBtn size="sm" variant="soft" icon="sync" onClick={() => void runForget()}>{t('cards.actions.forget')}</NNBtn>
-            <NNBtn size="sm" variant="danger" icon="x" onClick={() => runBulk('delete')}>{t('cards.bulk.delete')}</NNBtn>
-            <NNBtn size="sm" variant="ghost" onClick={() => setSelected(new Set())}>{t('cards.bulk.clear')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" onClick={async () => {
+              if (focusedId) { await alert({ title: t('noteTypes.convert.closeEditor') }); return; }
+              setConversionCards(rows.filter((card) => selected.has(card.id)));
+            }}>{t('noteTypes.convert.open')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="stack" onClick={() => runBulk('move')}>{t('cards.bulk.move')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="tag" onClick={() => runBulk('addTag')}>{t('cards.bulk.addTag')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="x" onClick={() => runBulk('removeTag')}>{t('cards.bulk.removeTag')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="pause" onClick={() => runBulk('suspend')}>{t('cards.bulk.suspend')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="play" onClick={() => runBulk('unsuspend')}>{t('cards.bulk.unsuspend')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="clock" onClick={() => void runSetDue()}>{t('cards.actions.setDue')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="sync" onClick={() => void runForget()}>{t('cards.actions.forget')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="danger" icon="x" onClick={() => runBulk('delete')}>{t('cards.bulk.delete')}</NNBtn>
+            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="ghost" onClick={() => setSelected(new Set())}>{t('cards.bulk.clear')}</NNBtn>
           </div>
         )}
       </div>

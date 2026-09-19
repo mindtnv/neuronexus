@@ -47,6 +47,8 @@ const m = {
   },
   loading: 'Loading cards…',
   bulk: {
+    tooMany: 'Select up to 1000 cards at a time.',
+    failed: 'Could not confirm the change. Check the refreshed list before trying again.',
     selected: '{n} selected',
     move: 'Move',
     delete: 'Delete',

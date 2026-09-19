@@ -831,7 +831,7 @@ body:has(.reomi-resize-handle[data-dragging='true']) { user-select: none; cursor
 .reomi-card-form[data-actions='footer'] { min-height: 0; overflow: hidden !important; }
 .reomi-card-form[data-actions='footer'] > .reomi-card-form-scroll { flex: 1; min-height: 0; overflow: auto !important; padding-top: 12px !important; }
 .reomi-card-form-footer { flex-shrink: 0; padding: 12px 20px; border-top: 1px solid var(--panel-edge); background: var(--surface); }
-.reomi-card-form-footer-actions { display: flex; align-items: center; gap: 10px; }
+.reomi-card-form-footer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .reomi-card-form-footer-actions > .reomi-button { --button-h: 38px; --control-radius: 11px; }
 .reomi-card-form-footer-actions > .reomi-button:last-child { margin-left: auto; min-width: 130px; }
 .reomi-card-form-footer-error { margin: 0 0 10px; color: var(--rose-500); font-size: 12px; line-height: 1.45; }

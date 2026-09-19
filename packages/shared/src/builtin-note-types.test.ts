@@ -177,10 +177,11 @@ describe('CLOZE_NOTE_TYPE', () => {
     expect(result).toBe('The capital of France is Paris.');
   });
 
-  it('card with no cloze markup still generates (non-empty text)', () => {
+  it('new cloze requires a deletion; legacy aggregate questions retain old behavior', () => {
     // Text without cloze → front is plain text → non-empty → card generated
     const cards = generateCards(CLOZE_NOTE_TYPE, { Text: 'Plain text', Extra: '' });
-    expect(cards).toHaveLength(1);
+    expect(cards).toHaveLength(0);
+    expect(generateCards(CLOZE_NOTE_TYPE, { Text: 'Plain text', Extra: '' }, { legacyCloze: true })).toHaveLength(1);
   });
 
   it('skips card generation when Text is empty', () => {
@@ -209,7 +210,7 @@ describe('TYPEIN_NOTE_TYPE', () => {
   it('fields are Front(ord=0) and Back(ord=1)', () => {
     const [front, back] = TYPEIN_NOTE_TYPE.fields;
     expect(front).toEqual({ name: 'Front', ord: 0 });
-    expect(back).toEqual({ name: 'Back', ord: 1 });
+    expect(back).toEqual({ name: 'Back', ord: 1, typeinAnswer: true });
   });
 
   it('generateCards produces 1 card with renderKind=typein', () => {

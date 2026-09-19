@@ -1,4 +1,10 @@
 const m = {
+  scheduledDay: 'Scheduled for {date}',
+  nextReview: 'Next scheduled review: {time}.',
+  saved: 'Saved to your account',
+  scheduleSaved: 'Your ratings are saved. Further reviews follow the cards’ schedules.',
+  nextLearning: 'Next learning step: {time}.',
+  scopeMissing: 'This deck is no longer available. Choose another deck.',
   complete: 'Session complete',
   heading: 'Nicely done, {name}.',
   defaultUserName: 'there',
@@ -14,11 +20,13 @@ const m = {
     suffix: '— your fern grew a new frond.',
   },
   kpi: {
+    answers: 'Answers',
+    uniqueHint: 'Distinct cards',
     cardsReviewed: 'Cards reviewed',
     retention: 'Retention',
     retentionSub: 'good + easy',
     duration: 'Duration',
-    durationSub: 'mm:ss',
+    durationSub: 'Active time · mm:ss',
     xpEarned: 'XP earned',
     xpSub: '{total} total',
   },
@@ -41,6 +49,7 @@ const m = {
     noneAgain: 'Every card landed on Hard or better this round.',
   },
   tomorrow: {
+    hint: 'Current schedule · UTC study day',
     title: 'Tomorrow',
     due: '{n} due',
     eta: '~{min} min · best at 9:30am',
@@ -48,9 +57,12 @@ const m = {
   newAvailable: {
     title: 'New cards available',
     inQueue: '{n} in queue',
-    hint: 'Learn now · extend session?',
+    hint: 'Within your regular daily limit',
   },
   actions: {
+    continue: 'Continue studying',
+    repeatPractice: 'Repeat this practice',
+    checkQueue: 'Check study queue',
     visitGarden: 'Visit garden',
     viewGraph: 'View graph',
     finish: 'Finish',

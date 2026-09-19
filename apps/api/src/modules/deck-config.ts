@@ -11,7 +11,7 @@
 // Resolution order per field: nearest-ancestor preset value (if set) → profile
 // (`desiredRetention` only) → ANKI_DEFAULTS / the daily-limit defaults below.
 
-import { ANKI_DEFAULTS } from '@neuronexus/shared';
+import { ANKI_DEFAULTS, isValidLearningSteps as isValidSteps } from '@neuronexus/shared';
 import type { Deck, DeckOptionsPreset, Profile } from '@neuronexus/db';
 
 // Anki-style per-day caps used when no preset supplies them. These mirror the
@@ -21,16 +21,7 @@ import type { Deck, DeckOptionsPreset, Profile } from '@neuronexus/db';
 export const DEFAULT_NEW_PER_DAY = 20;
 export const DEFAULT_REVIEWS_PER_DAY = 200;
 
-// ts-fsrs duration-string grammar (e.g. `1m`, `10m`, `1h`, `1d`, `3d`). A
-// stored steps array is only honored if EVERY entry matches; otherwise the
-// resolver falls back to ANKI_DEFAULTS for that field (never throws inside the
-// grade transaction). Re-used by Phase 5 write-time validation.
-const STEP_RE = /^\d+(s|m|h|d)$/;
-
-/** True iff `arr` is a non-empty array of valid ts-fsrs duration strings. */
-export function isValidSteps(arr: readonly string[] | null | undefined): boolean {
-  return Array.isArray(arr) && arr.length > 0 && arr.every((s) => STEP_RE.test(s));
-}
+export { isValidSteps };
 
 export interface ResolvedDeckConfig {
   newPerDay: number;

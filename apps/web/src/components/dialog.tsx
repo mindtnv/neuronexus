@@ -35,6 +35,7 @@ interface ConfirmOpts {
 }
 
 interface PromptOpts {
+  inputType?: 'text' | 'date';
   title: string;
   message?: string;
   label?: string;
@@ -404,6 +405,7 @@ function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => 
               )}
               <input
                 ref={inputRef}
+                type={dialog.opts.inputType ?? 'text'}
                 value={value}
                 onChange={(e) => {
                   setValue(e.target.value);

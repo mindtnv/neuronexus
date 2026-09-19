@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { NNIcon, NNLogo } from './ui';
 import { AppLink, useAppNavigation } from './navigation';
 import { APP_NAV, FOOTER_NAV, NAV_SECTIONS, NAV_SECTION_LABEL, getActiveNavId, type AppNavItem } from './nav-config';
-import { countDueCards } from '@/lib/cards';
+import { useStudyOverview } from '@/lib/use-study-overview';
 import { signOut } from '@/lib/auth';
 import { useNN } from '@/lib/store';
 import {
@@ -79,6 +79,7 @@ export const NNSidebar = ({
   const profileName = useNN((s) => s.profile?.name);
 
   const handleSignOut = async () => {
+    if (!(await router.confirmLeave())) return;
     try {
       await signOut();
     } finally {
@@ -87,10 +88,14 @@ export const NNSidebar = ({
     }
   };
 
-  const dueCount = useNN((s) => countDueCards(s.cards));
+  const study = useStudyOverview();
+  const dueCount = study.data?.overall.totalAvailable ?? 0;
+  const profile = useNN((s) => s.profile);
+
 
   // Leave the installed PWA's traffic-light area clear and draggable.
   const { active: wcoActive } = useWindowControlsOverlay();
+
 
   return (
     <aside
@@ -117,6 +122,7 @@ export const NNSidebar = ({
           data-tooltip={`${t('chrome.toggleSidebar')} (⌘B)`}
         ><NNIcon name="panel" size={18} /></button>}
       </div>
+
 
       <nav className="nn-sidebar-navigation" aria-label={t('topbar.menuLabel')}>
         <div className="nn-sidebar-primary">

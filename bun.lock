@@ -112,11 +112,13 @@
       "name": "@neuronexus/shared",
       "version": "0.1.0",
       "dependencies": {
+        "markdown-it": "^15.0.0",
         "ts-fsrs": "^5.4.2",
         "uuid": "^14.0.2",
       },
       "devDependencies": {
         "@types/bun": "^1.4.2",
+        "@types/markdown-it": "^14.1.2",
         "typescript": "^7.0.2",
       },
     },

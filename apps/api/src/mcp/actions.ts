@@ -54,6 +54,10 @@ export async function confirm(principal: McpPrincipal, tools: KnowledgeTool[], a
     const values = json(tool.schema.parse(action.args));
     const freshPreview = json(await tool.prepare(ctx, values));
     if (!isDeepStrictEqual(freshPreview, action.preview)) throw new McpToolError('stale_preview: propose the operation again for a new user decision');
+    // Only forward the token from the stored, revalidated preview. Never accept
+    // a caller-supplied note-edit token or recompute one after approval.
+    const impact = freshPreview.impact as { confirmationToken?: unknown } | undefined;
+    if (typeof impact?.confirmationToken === 'string') ctx.confirmationToken = impact.confirmationToken;
     const executed = await tool.execute(ctx, values);
     await tx.update(mcpActions).set({ consumedAt: new Date(), args: {}, preview: {} }).where(eq(mcpActions.id, action.id));
     committed = { tool, args: values, result: executed };

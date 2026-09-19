@@ -123,6 +123,32 @@ describe('note-types CRUD', () => {
     expect(updated.name).toBe('Renamed');
   });
 
+  test('renaming a field moves values and template references atomically without changing schedule', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const type = await (await callApp(app, 'POST', '/note-types', { cookie, body: customBody })).json<any>();
+    const deck = await (await callApp(app, 'POST', '/decks', { cookie, body: { name: 'Fields' } })).json<any>();
+    const note = await (await callApp(app, 'POST', '/notes', { cookie, body: { noteTypeId: type.id, deckId: deck.id,
+      fieldValues: { Q: 'Original question', A: 'Original answer' } } })).json<any>();
+    const graded = await (await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: note.cards[0].id, rating: 4 } })).json<any>();
+    const renamed = await callApp(app, 'PATCH', `/note-types/${type.id}`, { cookie, body: {
+      fields: type.fields.map((field: any) => field.name === 'Q' ? { ...field, name: 'Question' } : field),
+    } });
+    expect(renamed.status).toBe(200);
+    const result = await renamed.json<any>();
+    expect(result.templates[0].frontTemplate).toBe('{{Question}}');
+    expect(result.templates[0].backTemplate).toBe('{{Question}}<hr>{{A}}');
+    const card = await (await callApp(app, 'GET', `/cards/${note.cards[0].id}`, { cookie })).json<any>();
+    expect(card.note.fieldValues).toEqual({ Question: 'Original question', A: 'Original answer' });
+    expect(card.renderFrontText).toBe('Original question');
+    expect(card).toMatchObject({ id: graded.card.id, reps: graded.card.reps, due: graded.card.due, stability: graded.card.stability });
+    const invalid = await callApp(app, 'PATCH', `/note-types/${type.id}`, { cookie, body: {
+      fields: result.fields.map((field: any) => ({ ...field, name: ' same ' })),
+    } });
+    expect(invalid.status).toBe(400);
+    const unchanged = await (await callApp(app, 'GET', `/cards/${card.id}`, { cookie })).json<any>();
+    expect(unchanged.note.fieldValues).toEqual(card.note.fieldValues);
+  });
+
   test('DELETE removes own type; refuses foreign / builtin', async () => {
     const builtin = await seedBuiltin();
     const { cookie: a } = await signUpAndCookie(app, uniqueEmail('a'));
@@ -141,8 +167,45 @@ describe('note-types CRUD', () => {
     expect(builtinDel.status).toBe(404);
 
     // a deletes its own.
-    const ok = await callApp(app, 'DELETE', `/note-types/${created.id}`, { cookie: a });
+    const ok = await callApp(app, 'DELETE', `/note-types/${created.id}`, { cookie: a, body: { confirmationToken: (await (await callApp(app, 'GET', `/note-types/${created.id}/delete-preview`, { cookie: a })).json<any>()).confirmationToken } });
     expect(ok.status).toBe(200);
+  });
+
+  test('reordering and renaming templates keeps each reviewed question attached to its card', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const type = await (await callApp(app, 'POST', '/note-types', { cookie, body: { ...customBody, templates: [
+      { name: 'Forward', ord: 0, frontTemplate: '{{Q}}', backTemplate: '{{A}}' },
+      { name: 'Reverse', ord: 1, frontTemplate: '{{A}}', backTemplate: '{{Q}}' },
+    ] } })).json<any>();
+    const deck = await (await callApp(app, 'POST', '/decks', { cookie, body: { name: 'Identity' } })).json<any>();
+    const created = await (await callApp(app, 'POST', '/notes', { cookie, body: { deckId: deck.id, noteTypeId: type.id,
+      fieldValues: { Q: 'question', A: 'answer' } } })).json<any>();
+    const forward = created.cards.find((card: any) => card.templateOrd === 0);
+    const reverse = created.cards.find((card: any) => card.templateOrd === 1);
+    const grade = await (await callApp(app, 'POST', '/reviews', { cookie, body: { cardId: forward.id, rating: 4 } })).json<any>();
+    const reordered = type.templates.toReversed().map((template: any, ord: number) => ({ ...template, ord, name: `${template.name} renamed` }));
+    const response = await callApp(app, 'PATCH', `/note-types/${type.id}`, { cookie, body: { templates: reordered } });
+    expect(response.status).toBe(200);
+    const first = await (await callApp(app, 'GET', `/cards/${forward.id}`, { cookie })).json<any>();
+    const second = await (await callApp(app, 'GET', `/cards/${reverse.id}`, { cookie })).json<any>();
+    expect(first).toMatchObject({ templateOrd: 1, renderFrontText: 'question', reps: grade.card.reps, due: grade.card.due });
+    expect(second).toMatchObject({ templateOrd: 0, renderFrontText: 'answer', reps: 0 });
+  });
+
+  test('rename colliding with retained note data leaves every note and type unchanged', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const type = await (await callApp(app, 'POST', '/note-types', { cookie, body: customBody })).json<any>();
+    const deck = await (await callApp(app, 'POST', '/decks', { cookie, body: { name: 'Collision' } })).json<any>();
+    const fieldValues = { Q: 'question', A: 'answer', Legacy: 'must survive' };
+    const created = await (await callApp(app, 'POST', '/notes', { cookie, body: { deckId: deck.id, noteTypeId: type.id, fieldValues } })).json<any>();
+    const response = await callApp(app, 'PATCH', `/note-types/${type.id}`, { cookie, body: {
+      fields: type.fields.map((field: any) => field.name === 'Q' ? { ...field, name: 'Legacy' } : field),
+    } });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: 'field_value_collision' });
+    const card = await (await callApp(app, 'GET', `/cards/${created.cards[0].id}`, { cookie })).json<any>();
+    expect(card.note.fieldValues).toEqual(fieldValues);
+    expect(card.noteType.templates[0].frontTemplate).toBe('{{Q}}');
   });
 
   test('DELETE cascades to notes + cards', async () => {
@@ -164,7 +227,7 @@ describe('note-types CRUD', () => {
     }>();
     expect(before.items.length).toBe(1);
 
-    await callApp(app, 'DELETE', `/note-types/${nt.id}`, { cookie });
+    await callApp(app, 'DELETE', `/note-types/${nt.id}`, { cookie, body: { confirmationToken: (await (await callApp(app, 'GET', `/note-types/${nt.id}/delete-preview`, { cookie })).json<any>()).confirmationToken } });
 
     const after = await (await callApp(app, 'GET', '/cards', { cookie })).json<{
       items: unknown[];

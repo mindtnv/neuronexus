@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppNavigation } from '@/components/navigation';
 import { parseCardQuery, CardQueryError } from '@neuronexus/shared';
-import { NNBtn, NNBadge, NNIcon } from '@/components/ui';
+import { NNBtn, NNBadge, NNIcon, NNPageSkeleton } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
@@ -77,7 +77,6 @@ interface FormState {
   query: string;
   sortOrder: FilteredDeckSortOrder;
   cardLimit: number;
-  includeSuspended: boolean;
 }
 
 interface FilteredDeckFormProps {
@@ -94,8 +93,10 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
   const [name, setName] = useState(initial?.name ?? '');
   const [query, setQuery] = useState(initial?.query ?? '');
   const [sortOrder, setSortOrder] = useState<FilteredDeckSortOrder>(initial?.sortOrder ?? 'due');
-  const [cardLimit, setCardLimit] = useState(initial?.cardLimit ?? 50);
-  const [includeSuspended, setIncludeSuspended] = useState(initial?.includeSuspended ?? false);
+  const [cardLimit, setCardLimit] = useState(String(initial?.cardLimit ?? 50));
+  const saveLock = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -113,6 +114,7 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
   );
 
   const handleSave = useCallback(async () => {
+    if (saveLock.current) return;
     setSaveError(null);
     const qErr = validateQuery(query);
     if (qErr) {
@@ -121,29 +123,33 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
     }
     setQueryError(null);
     if (!name.trim()) return;
+    const limit = Number(cardLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) { setSaveError(t('review.customStudy.invalidLimit')); return; }
+    saveLock.current = true;
     setSaving(true);
     try {
       const payload = {
         name: name.trim(),
         query: query.trim(),
         sortOrder,
-        cardLimit: Math.max(1, Math.min(1000, cardLimit)),
-        includeSuspended,
+        cardLimit: limit,
+        includeSuspended: false,
       };
       if (isEdit && initial?.id) {
         const updated = await updateFilteredDeck(initial.id, payload);
-        onSaved(updated.id);
+        if (alive.current) onSaved(updated.id);
       } else {
         const created = await addFilteredDeck(payload);
-        onSaved(created.id);
+        if (alive.current) onSaved(created.id);
       }
     } catch {
-      setSaveError(t('review.customStudy.saveError'));
+      if (alive.current) setSaveError(t('review.customStudy.saveError'));
     } finally {
-      setSaving(false);
+      saveLock.current = false;
+      if (alive.current) setSaving(false);
     }
   }, [
-    name, query, sortOrder, cardLimit, includeSuspended,
+    name, query, sortOrder, cardLimit,
     isEdit, initial, addFilteredDeck, updateFilteredDeck, onSaved, t,
   ]);
 
@@ -174,6 +180,9 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
         <label style={labelStyle}>{t('review.customStudy.fieldName')}</label>
         <input
           style={inputStyle}
+          aria-label={t('review.customStudy.fieldName')}
+          maxLength={100}
+          disabled={saving}
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={t('review.customStudy.fieldNamePlaceholder')}
@@ -189,6 +198,8 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
             ...inputStyle,
             borderColor: queryError ? 'var(--rose-500)' : 'var(--border-2)',
           }}
+          aria-label={t('review.customStudy.fieldQuery')}
+          disabled={saving}
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -211,6 +222,7 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
       <div>
         <label style={labelStyle}>{t('review.customStudy.fieldSortOrder')}</label>
         <NNSelect<FilteredDeckSortOrder>
+          disabled={saving}
           value={sortOrder}
           onChange={setSortOrder}
           options={sortOrderOptions}
@@ -226,54 +238,20 @@ const FilteredDeckForm = ({ initial, onClose, onSaved }: FilteredDeckFormProps) 
           type="number"
           min={1}
           max={1000}
+          aria-label={t('review.customStudy.fieldCardLimit')}
+          disabled={saving}
           value={cardLimit}
-          onChange={(e) => setCardLimit(Number(e.target.value) || 50)}
+          onChange={(e) => setCardLimit(e.target.value)}
         />
       </div>
 
-      {/* Include suspended */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <button
-          type="button"
-          onClick={() => setIncludeSuspended((v) => !v)}
-          style={{
-            width: 36,
-            height: 20,
-            borderRadius: 10,
-            background: includeSuspended ? 'var(--lime-500)' : 'var(--surface-3)',
-            border: 'none',
-            cursor: 'pointer',
-            position: 'relative',
-            transition: 'background 160ms ease',
-            flexShrink: 0,
-          }}
-          aria-pressed={includeSuspended}
-        >
-          <span
-            style={{
-              position: 'absolute',
-              top: 2,
-              left: includeSuspended ? 18 : 2,
-              width: 16,
-              height: 16,
-              borderRadius: '50%',
-              background: 'var(--text)',
-              transition: 'left 160ms ease',
-            }}
-          />
-        </button>
-        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          {t('review.customStudy.fieldIncludeSuspended')}
-        </span>
-      </div>
-
       {saveError && (
-        <span style={{ fontSize: 12, color: 'var(--rose-500)' }}>{saveError}</span>
+        <span role="alert" style={{ fontSize: 12, color: 'var(--rose-500)' }}>{saveError}</span>
       )}
 
       {/* Actions */}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
-        <NNBtn size="md" variant="ghost" onClick={onClose}>
+        <NNBtn size="md" variant="ghost" disabled={saving} onClick={onClose}>
           {t('review.customStudy.actions.cancel')}
         </NNBtn>
         <NNBtn
@@ -300,6 +278,12 @@ export const NNCustomStudy = () => {
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
 
+  const bootstrapped = useNN((s) => s.bootstrapped);
+  const quickLock = useRef(false);
+  const deleteLock = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const [quickBusy, setQuickBusy] = useState<string | null>(null);
   const filteredDecks = useNN((s) => s.filteredDecks);
   const addFilteredDeck = useNN((s) => s.addFilteredDeck);
   const deleteFilteredDeck = useNN((s) => s.deleteFilteredDeck);
@@ -324,10 +308,9 @@ export const NNCustomStudy = () => {
     (id: string) => {
       setFormOpen(false);
       setEditTarget(null);
-      // Navigate to the reviewer with this filtered deck
-      router.push(`/review?filteredDeckId=${id}`);
+      if (!editTarget) router.push(`/review?filteredDeckId=${id}`);
     },
-    [router],
+    [router, editTarget],
   );
 
   const handleStudy = useCallback(
@@ -337,40 +320,43 @@ export const NNCustomStudy = () => {
     [router],
   );
 
-  const handleDelete = useCallback(
-    async (fd: FilteredDeck) => {
+  const handleDelete = useCallback(async (fd: FilteredDeck) => {
+    if (deleteLock.current) return;
+    deleteLock.current = true;
+    try {
       if (!(await confirm({ title: t('review.customStudy.deleteConfirm', { name: fd.name }), danger: true }))) return;
       setDeletingId(fd.id);
       setDeleteError(null);
-      try {
-        await deleteFilteredDeck(fd.id);
-      } catch {
-        setDeleteError(t('review.customStudy.deleteError'));
-      } finally {
-        setDeletingId(null);
-      }
-    },
-    [deleteFilteredDeck, t, confirm],
-  );
+      await deleteFilteredDeck(fd.id);
+    } catch {
+      if (alive.current) setDeleteError(t('review.customStudy.deleteError'));
+    } finally {
+      deleteLock.current = false;
+      if (alive.current) setDeletingId(null);
+    }
+  }, [deleteFilteredDeck, t, confirm]);
 
-  const handleQuickAction = useCallback(
-    async (action: QuickAction) => {
-      setQuickActionError(null);
-      try {
-        const created = await addFilteredDeck({
-          name: t(action.nameKey),
-          query: action.query,
-          sortOrder: action.sortOrder,
-          cardLimit: 100,
-          includeSuspended: action.sortOrder === 'cram',
-        });
-        router.push(`/review?filteredDeckId=${created.id}`);
-      } catch {
-        setQuickActionError(t('review.customStudy.saveError'));
-      }
-    },
-    [addFilteredDeck, router, t],
-  );
+  const handleQuickAction = useCallback(async (action: QuickAction) => {
+    if (quickLock.current) return;
+    quickLock.current = true;
+    setQuickBusy(action.nameKey);
+    setQuickActionError(null);
+    try {
+      const existing = filteredDecks.find((deck) => deck.query === action.query && deck.sortOrder === action.sortOrder && deck.cardLimit === 100);
+      const selected = existing ?? await addFilteredDeck({
+        name: t(action.nameKey), query: action.query, sortOrder: action.sortOrder,
+        cardLimit: 100, includeSuspended: false,
+      });
+      if (alive.current) router.push(`/review?filteredDeckId=${selected.id}`);
+    } catch {
+      if (alive.current) setQuickActionError(t('review.customStudy.saveError'));
+    } finally {
+      quickLock.current = false;
+      if (alive.current) setQuickBusy(null);
+    }
+  }, [filteredDecks, addFilteredDeck, router, t]);
+
+  if (!bootstrapped) return <NNPageSkeleton />;
 
   return (
     <div
@@ -394,19 +380,22 @@ export const NNCustomStudy = () => {
         <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>
           {t('review.customStudy.subtitle')}
         </div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>{t('review.customStudy.scheduleNotice')}</p>
       </div>
 
       {/* Quick actions */}
       <section>
         <div className="nn-section-label">{t('review.customStudy.quickActions.title')}</div>
         {quickActionError && (
-          <div style={{ fontSize: 12, color: 'var(--rose-500)', marginBottom: 8 }}>{quickActionError}</div>
+          <div role="alert" style={{ fontSize: 12, color: 'var(--rose-500)', marginBottom: 8 }}>{quickActionError}</div>
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {QUICK_ACTIONS.map((action) => (
             <button
               key={action.nameKey}
               type="button"
+              disabled={Boolean(quickBusy)}
+              aria-busy={quickBusy === action.nameKey}
               onClick={() => handleQuickAction(action)}
               style={{
                 display: 'flex',
@@ -446,9 +435,9 @@ export const NNCustomStudy = () => {
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.2 }}>
-                  {t(action.nameKey)}
+                  {t(quickBusy === action.nameKey ? 'review.customStudy.launching' : action.nameKey)}
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.3 }}>
+                <div role="alert" style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.3 }}>
                   {t(action.descKey)}
                 </div>
               </div>
@@ -484,6 +473,7 @@ export const NNCustomStudy = () => {
                 : t('review.customStudy.createNew')}
             </div>
             <FilteredDeckForm
+              key={editTarget?.id ?? 'new'}
               initial={editTarget ?? undefined}
               onClose={() => { setFormOpen(false); setEditTarget(null); }}
               onSaved={handleSaved}
@@ -561,7 +551,7 @@ export const NNCustomStudy = () => {
         )}
 
         {deleteError && (
-          <div style={{ fontSize: 12, color: 'var(--rose-500)', marginTop: 6 }}>{deleteError}</div>
+          <div role="alert" style={{ fontSize: 12, color: 'var(--rose-500)', marginTop: 6 }}>{deleteError}</div>
         )}
       </section>
     </div>

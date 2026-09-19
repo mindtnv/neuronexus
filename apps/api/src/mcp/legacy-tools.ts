@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
-import { db, cards, notes, decks, notebooks, notebookSources, sources } from '@neuronexus/db';
+import { db, cards, notes, noteTypes, decks, notebooks, notebookSources, sources } from '@neuronexus/db';
 import { buildToolRegistry, enqueueToolCardsForIndex, type ToolContext } from '../ai/tools.ts';
 import { env, embeddingEnabled } from '../env.ts';
 import { McpToolError, type KnowledgeTool, type McpArgs } from './types.ts';
@@ -25,14 +25,25 @@ async function snapshot(ctx: ToolContext, args: McpArgs) {
   const validId = (v: unknown): v is string => typeof v === 'string' && z.uuid().safeParse(v).success;
   const cardIds = [args.cardId, ...(Array.isArray(args.cardIds) ? args.cardIds : [])].filter(validId);
   const cq = ex.select().from(cards).where(and(eq(cards.userId, ctx.userId), inArray(cards.id, cardIds))).orderBy(cards.id);
-  const cardRows = cardIds.length ? await (ctx.tx ? cq.for('update') : cq) : [];
-  const noteIds = [...new Set([args.noteId, ...cardRows.map(r => r.noteId)].filter(validId))];
+  const initialCards = cardIds.length ? await cq : [];
+  const noteIds = [...new Set([args.noteId, ...initialCards.map(r => r.noteId)].filter(validId))];
   const nq = ex.select().from(notes).where(and(eq(notes.userId, ctx.userId), inArray(notes.id, noteIds))).orderBy(notes.id);
+  const initialNotes = noteIds.length ? await nq : [];
+  const typeIds = [...new Set(initialNotes.map(r => r.noteTypeId))].sort();
+  const tq = ex.select().from(noteTypes).where(inArray(noteTypes.id, typeIds)).orderBy(noteTypes.id);
+  // Match note editing/conversion: type -> note -> cards. Locking a card first
+  // would deadlock against reconciliation, which already holds its note.
+  const typeRows = typeIds.length ? await (ctx.tx ? tq.for('share') : tq) : [];
   const noteRows = noteIds.length ? await (ctx.tx ? nq.for('update') : nq) : [];
+  if (ctx.tx && noteRows.some(row => !typeIds.includes(row.noteTypeId)))
+    throw new McpToolError('stale_preview: note type changed; propose again');
+  const cardRows = cardIds.length ? await (ctx.tx ? cq.for('update') : cq) : [];
+  if (ctx.tx && cardRows.some(row => !noteIds.includes(row.noteId)))
+    throw new McpToolError('stale_preview: card note changed; propose again');
   const deckIds = [args.deckId].filter(validId);
   const dq = ex.select().from(decks).where(and(eq(decks.userId, ctx.userId), inArray(decks.id, deckIds)));
   const deckRows = deckIds.length ? await (ctx.tx ? dq.for('update') : dq) : [];
-  return { cards: cardRows, notes: noteRows, decks: deckRows };
+  return { cards: cardRows, notes: noteRows, noteTypes: typeRows, decks: deckRows };
 }
 
 export function legacyTools(): KnowledgeTool[] {

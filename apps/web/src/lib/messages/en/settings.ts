@@ -130,8 +130,12 @@ const m = {
     workloadValue: '~28 min/day, 1,284 reviews/month at current deck size.',
   },
   weights: {
-    title: 'FSRS weights · 19 parameters',
-    advanced: 'Advanced · read-only for now',
+    fuzz: 'Interval variation',
+    shortTerm: 'Short learning steps',
+    enabled: 'Enabled',
+    disabled: 'Disabled',
+    title: 'Default study settings',
+    advanced: 'Defaults',
     defaults: 'Defaults from ts-fsrs generatorParameters().w',
     reoptimize: 'Re-optimize',
     logLoss: 'Log loss',
@@ -221,7 +225,7 @@ const m = {
       reviewsPerDay: 'Reviews / day',
       learningSteps: 'Learning steps',
       learningStepsPlaceholder: 'e.g. 1m 10m',
-      learningStepsHint: 'Space-separated steps: 1m 10m 1d',
+      learningStepsHint: '1–20 positive steps separated by spaces: 1m 10m 1d.',
       relearningSteps: 'Relearning steps',
       relearningStepsPlaceholder: 'e.g. 10m',
       desiredRetention: 'Desired retention override',
@@ -250,7 +254,7 @@ const m = {
     subtitle: '{n} of 6 unlocked. Pick which one grows in the center of your garden.',
   },
   weightsSubtitle:
-    'The FSRS algorithm schedules your reviews. Parameters are shared across users for now; per-weight personalization is coming in a future version.',
+    'These defaults apply when a deck has no preset. Use the presets below to customize individual decks.',
   signOut: {
     title: 'Sign out',
     subtitle: 'Your session closes, your data stays — sign back in to continue.',

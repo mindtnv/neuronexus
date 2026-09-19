@@ -10,6 +10,9 @@ import { filteredDecksModule } from './modules/filtered-decks.ts';
 import { cardsModule } from './modules/cards.ts';
 import { noteTypesModule } from './modules/note-types.ts';
 import { notesModule } from './modules/notes.ts';
+import { noteConversionModule } from './modules/note-conversion';
+import { ClozeSyntaxError, NoteContentError } from '@neuronexus/shared';
+import { NoteWriteConflict } from './modules/card-regeneration';
 import { reviewsModule } from './modules/reviews.ts';
 import { statsModule } from './modules/stats.ts';
 import { profileModule } from './modules/profile.ts';
@@ -202,6 +205,18 @@ export function buildApp(options: BuildAppOptions = {}) {
     .onError({ as: 'global' }, ({ code, error, status, log, requestState }) => {
       const state = requestState as RequestLifecycleState | undefined;
       const errorLog = log ?? baseLogger;
+      if (error instanceof NoteContentError) {
+        if (state) state.errorStatus = 400;
+        return status(400, { error: error.code });
+      }
+      if (error instanceof ClozeSyntaxError) {
+        if (state) state.errorStatus = 400;
+        return status(400, { error: 'invalid_cloze' });
+      }
+      if (error instanceof NoteWriteConflict) {
+        if (state) state.errorStatus = 409;
+        return status(409, { error: error.code });
+      }
       if (code === 'VALIDATION') {
         if (state) state.errorStatus = 400;
         const issueCount = Array.isArray((error as { all?: unknown[] }).all)
@@ -223,6 +238,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     .use(decksModule)
     .use(noteTypesModule)
     .use(notesModule)
+    .use(noteConversionModule)
     .use(cardsModule)
     .use(cardsSimilarModule)
     .use(graphModule)

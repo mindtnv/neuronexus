@@ -30,6 +30,15 @@ describe('deck-options (presets)', () => {
     await resetTestDb();
   });
 
+  test('steps must be positive, bounded durations with a practical count', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    for (const steps of [['0m'], ['99999999999999999999d'], Array(21).fill('1m')]) {
+      const result = await callApp(app, 'POST', '/deck-options', { cookie, body: presetBody({ learningSteps: steps }) });
+      expect(result.status).toBe(400);
+      expect(await result.json()).toMatchObject({ error: 'bad_learning_steps' });
+    }
+  });
+
   test('CRUD roundtrip', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
 

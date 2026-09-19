@@ -96,6 +96,7 @@ export interface FilteredDeck {
 /** A note-type the user can author against (own or a global builtin). */
 export interface NoteType {
   id: string;
+  updatedAt?: string;
   name: string;
   fields: NoteField[];
   templates: CardTemplate[];
@@ -126,6 +127,7 @@ export interface Card {
   deckId: string;
   noteId: string;
   templateOrd: number;
+  clozeNumber?: number | null;
   /** Server-rendered plaintext (front + back, search cache). */
   renderText: string;
   /** Server-rendered plaintext front (Browse "Question" column). */
@@ -141,12 +143,14 @@ export interface Card {
   updatedAt: number;
   fsrs: FsrsCard;
   /** Embedded note (id, sanitized field values, tags) for lazy HTML render. */
-  note?: { id: string; fieldValues: FieldValues; tags: string[] } | null;
+  note?: { id: string; fieldValues: FieldValues; acceptedAnswers?: string[]; tags: string[]; updatedAt?: string } | null;
   /** Embedded note-type (name, kind, templates, styling) for lazy HTML render. */
   noteType?: {
     id: string;
+    updatedAt?: string;
     name: string;
     kind: RenderKind;
+    fields?: NoteField[];
     templates: CardTemplate[];
     styling: string;
   } | null;
@@ -548,7 +552,8 @@ export type Rating = 1 | 2 | 3 | 4;
 export interface Review {
   id: string;
   cardId: string;
-  deckId: string;
+  /** Historical deck may have been deleted after the card was moved. */
+  deckId: string | null;
   rating: Rating;
   durationMs: number;
   reviewedAt: number;
@@ -559,6 +564,7 @@ export interface Review {
 
 export interface Profile {
   id: 'me';
+  userId?: string;
   name: string;
   level: number;
   xp: number;

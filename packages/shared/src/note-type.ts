@@ -7,9 +7,7 @@
 //   - the API notes/note-types modules (Phase 4),
 //   - the web editor/review/browser (Phase 5).
 //
-// No values live here — only types. Sanitization is NOT modelled here: field
-// values are HTML strings that are sanitized at the edges (sanitize-html on the
-// server save edge, DOMPurify in the browser render edge), not in shared.
+// Field values are lossless Markdown source, never trusted HTML.
 
 /**
  * The render behaviour a note-type's cards exhibit. Denormalized onto the card
@@ -25,15 +23,21 @@ export type RenderKind = 'basic' | 'cloze' | 'typein' | 'custom';
 
 /** A single named field on a note-type, ordered by `ord`. */
 export type NoteField = {
+  /** Stable within the type. Legacy definitions gain a deterministic read ID. */
+  id?: string;
   name: string;
   ord: number;
+  /** Explicit typed-answer target; follows the field's stable identity. */
+  typeinAnswer?: boolean;
 };
 
 /**
- * A card template on a note-type. One template generates (at most) one card per
- * note. `frontTemplate`/`backTemplate` use the `template.ts` syntax.
+ * A template generates one ordinary card, or one card per distinct cloze number.
+ * `frontTemplate`/`backTemplate` use the `template.ts` syntax.
  */
 export type CardTemplate = {
+  /** Stable question identity; ord is only its current display position. */
+  id?: string;
   name: string;
   ord: number;
   frontTemplate: string;
@@ -42,8 +46,8 @@ export type CardTemplate = {
 
 /**
  * A full note-type definition. `id` is optional so builtins/fixtures can be
- * declared before persistence assigns one. `styling` is a raw CSS string scoped
- * to the rendered card (applied at the display edge, not by the engine).
+ * declared before persistence assigns one. `styling` preserves legacy CSS for
+ * portability; arbitrary per-type CSS is not applied by the renderer.
  */
 export type NoteTypeDef = {
   id?: string;
@@ -56,7 +60,64 @@ export type NoteTypeDef = {
 };
 
 /**
- * The values for a note's fields, keyed by field name. Each value is an HTML
- * string (treated as already-sanitized at render time in production).
+ * Lossless Markdown source keyed by field name; sanitize rendered HTML, not source.
  */
 export type FieldValues = Record<string, string>;
+
+/** Owner-scoped, bounded impact of regenerating one or more notes. */
+export interface CardRegenerationPreview {
+  kindTransition?: { from: string; to: string; resetsQuestions: boolean };
+  validation?: {
+    checkedNotes: number;
+    invalidNotes: number;
+    samples: { front: string; questions: string[]; answers?: string[]; answer?: string; omittedTemplates: string[]; error?: string }[];
+  };
+  impact: {
+    retainedClozeTargets?: Record<string, number>;
+    willCreateCards: number;
+    willKeepCards: number;
+    willDeleteCards: number;
+    willDeleteReviews: number;
+    removedCards: { id: string; front: string; reviews: number }[];
+  };
+  confirmationToken: string;
+  sourceVersion: string;
+}
+
+
+export interface NoteConversionInput {
+  newCardsDeckId?: string;
+  noteIds: string[];
+  sourceTypeId: string;
+  targetTypeId: string;
+  sourceVersion: string;
+  targetVersion: string;
+  fieldMap: Record<string, string | null>;
+  templateMap: Record<string, string | null>;
+  preserveUnmappedFields: boolean;
+  confirmationToken?: string;
+}
+export interface NoteConversionPreview extends CardRegenerationPreview {
+  newCardsDeckId?: string;
+  newCardsDeckName?: string;
+  targetVersion: string;
+  noteCount: number;
+  fieldMapping: { target: string; source: string | null }[];
+  cardMapping?: { target: { name: string; ord: number }; source: { name: string; ord: number } | null }[];
+  unmappedFields: { field: string; action: 'preserve' | 'discard'; nonemptyNotes: number; example: string }[];
+  unmappedFieldCount: number;
+  discardedValues: number;
+  discardedAlternatives: number;
+}
+
+/** Complete owner-scoped impact; consent is bound to the current collection. */
+export interface NoteTypeDeletionPreview {
+  noteTypeId: string;
+  name: string;
+  sourceVersion: string;
+  notes: number;
+  cards: number;
+  reviews: number;
+  notesWithoutCards: number;
+  confirmationToken: string;
+}

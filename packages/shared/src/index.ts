@@ -3,6 +3,7 @@
 // Drizzle schema; everything else (pure value types, enums, constants) lives here.
 
 export * from './fsrs.ts';
+export * from './study.ts';
 export * from './gamification.ts';
 export * from './card-query.ts';
 export * from './card-query-predicate.ts';
@@ -30,3 +31,7 @@ export type Paginated<T> = {
   items: T[];
   nextCursor: string | null;
 };
+export * from './note-fields';
+export * from './card-markdown';
+export * from './cloze';
+export * from './note-content';

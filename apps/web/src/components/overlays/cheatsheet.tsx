@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
+import { useModalFocus } from '@/lib/use-modal-focus';
 import { NNIcon, NNBtn, NNKbd } from '@/components/ui';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
@@ -26,7 +27,7 @@ const buildKbdGroups: KbdGroupsBuilder = (t) => [
       { keys: ['2'],         desc: t('overlays.cheatsheet.review.hard') },
       { keys: ['3'],         desc: t('overlays.cheatsheet.review.good') },
       { keys: ['4'],         desc: t('overlays.cheatsheet.review.easy') },
-      { keys: ['J'],         desc: t('overlays.cheatsheet.review.skip') },
+      { keys: ['K'],         desc: t('overlays.cheatsheet.review.skip') },
       { keys: ['E'],         desc: t('overlays.cheatsheet.review.edit') },
       { keys: ['⌘', 'Z'],   desc: t('overlays.cheatsheet.review.undo') },
       { keys: ['F'],         desc: t('overlays.cheatsheet.review.focus') },
@@ -62,6 +63,8 @@ const COLOR_MAP: Record<string, string> = {
 };
 
 export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef);
   const t = useT();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
@@ -81,7 +84,7 @@ export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       padding: isMobile ? '2vw' : 0,
     }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{
+      <div ref={dialogRef} className="nn-shortcut-dialog" role="dialog" aria-modal="true" aria-label={t('overlays.cheatsheet.title')} tabIndex={-1} onClick={e => e.stopPropagation()} style={{
         width: isMobile ? '96vw' : 780,
         maxWidth: '100%',
         maxHeight: isMobile ? '90vh' : 600,
@@ -104,7 +107,7 @@ export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
           <NNKbd>?</NNKbd>
           <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 2 }}>{t('overlays.cheatsheet.toToggle')}</span>
           <div style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 6px' }}/>
-          <NNBtn size="sm" variant="ghost" icon="x" onClick={onClose}/>
+          <NNBtn size="sm" variant="ghost" icon="x" onClick={onClose} ariaLabel={t('actions.close')}/>
         </div>
 
         {/* Grid of groups */}
@@ -162,4 +165,3 @@ export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
     </div>
   );
 };
-

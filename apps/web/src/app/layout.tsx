@@ -30,6 +30,7 @@ export default function RootLayout({
       lang="en"
       suppressHydrationWarning
       className={`${golos.variable} ${jetbrainsMono.variable} ${literata.variable}`}
+
     >
       <head>
         <style data-reomi-palettes>{THEME_CSS}</style>

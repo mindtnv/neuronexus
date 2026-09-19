@@ -4,8 +4,10 @@ import { create } from 'zustand';
 import { countDueCardsByDeck, getDueCards } from './cards';
 import { api, ok, type ApiError } from './api';
 import { toApiError, type LoadStatus } from './resource-state';
+import { clearStudyHandoff } from './review-session';
 import {
   cardFromApi,
+  mergeReviewedCard,
   deckFromApi,
   filteredDeckFromApi,
   notebookArtifactFromApi,
@@ -17,7 +19,7 @@ import {
   quizAttemptFromApi,
   reviewFromApi,
 } from './mappers';
-import type { CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
+import type { NoteConversionInput, CardTemplate, FieldValues, NoteField, RenderKind } from '@neuronexus/shared';
 import type { Card, ConceptMapResult, Deck, DeckOptionsPreset, FilteredDeck, FilteredDeckSortOrder, HarvestCandidate, LibraryItem, LibraryItemDetail, LibrarySearchResult, Notebook, NotebookArtifact, NotebookCoverage, NotebookNote, NoteType, Profile, QuizAttempt, Rating, ReadingStatus, Review, Source, SourceChunkPage, SourceLinkedCard, SuggestSourcesResult } from './types';
 import type { NotebookArtifactType, NotebookColor, NotebookNoteKind, QuizAttemptAnswerInput, SourceKind, SourceMime } from '@neuronexus/shared';
 
@@ -25,7 +27,7 @@ import type { NotebookArtifactType, NotebookColor, NotebookNoteKind, QuizAttempt
 // and profile — fetched at bootstrap, mutated optimistically-ish on each API
 // call. Dexie is gone: the server is the source of truth now.
 
-type BulkAction = 'move' | 'delete' | 'suspend' | 'unsuspend' | 'addTag' | 'removeTag';
+type BulkAction = 'move' | 'delete' | 'suspend' | 'unsuspend' | 'addTag' | 'removeTag' | 'forget' | 'setDue';
 
 interface State {
   bootstrapped: boolean;
@@ -54,8 +56,10 @@ interface State {
    */
   addNote: (input: {
     noteTypeId: string;
+    expectedTypeUpdatedAt?: string;
     deckId: string;
     fieldValues: FieldValues;
+    acceptedAnswers?: string[];
     tags: string[];
   }) => Promise<Card[]>;
 
@@ -66,7 +70,7 @@ interface State {
    */
   updateNote: (
     noteId: string,
-    patch: { fieldValues?: FieldValues; tags?: string[] },
+    patch: { acceptedAnswers?: string[]; fieldValues?: FieldValues; tags?: string[]; deckId?: string; expectedUpdatedAt?: string; confirmationToken?: string; expectedTypeUpdatedAt?: string; clozeRetainHistoryFor?: Record<string, number> },
   ) => Promise<Card[]>;
 
   /** Delete a note (DELETE /notes/:id). Cascades its cards via FK; mirror drops them. */
@@ -133,11 +137,16 @@ interface State {
       templates?: CardTemplate[];
       styling?: string;
       kind?: RenderKind;
+      answerFieldId?: string;
+      expectedUpdatedAt?: string;
+      confirmationToken?: string;
     },
   ) => Promise<NoteType>;
 
+  convertNotes: (input: NoteConversionInput) => Promise<Card[]>;
+
   /** Delete an own note-type (DELETE /note-types/:id). Cascades notes+cards. */
-  deleteNoteType: (id: string) => Promise<void>;
+  deleteNoteType: (id: string, confirmationToken: string) => Promise<void>;
 
   /**
    * Search cards via the server (GET /cards/search). Maps rows via cardFromApi,
@@ -146,7 +155,7 @@ interface State {
    */
   searchCards: (
     q: string,
-    opts?: { sort?: string; cursor?: string; limit?: string },
+    opts?: { sort?: string; cursor?: string; limit?: string; noteTypeId?: string },
   ) => Promise<{ items: Card[]; nextCursor: string | null }>;
 
   /**
@@ -156,7 +165,7 @@ interface State {
   bulkCards: (
     action: BulkAction,
     cardIds: string[],
-    payload?: { deckId?: string; tag?: string },
+    payload?: { deckId?: string; tag?: string; setDue?: string },
   ) => Promise<void>;
 
   /**
@@ -165,7 +174,7 @@ interface State {
    */
   getCardTags: () => Promise<string[]>;
 
-  gradeCard: (cardId: string, rating: Rating, durationMs: number, source?: 'regular' | 'filtered') => Promise<Review>;
+  gradeCard: (cardId: string, rating: Rating, durationMs: number, source?: 'regular' | 'filtered', displayedCard?: Card) => Promise<Review & { card: Card }>;
 
   /**
    * Undo the user's most recent grade (POST /reviews/undo). Restores the card +
@@ -173,7 +182,7 @@ interface State {
    * restored card id on success; throws on 404 (nothing to undo) / 409 (card
    * modified since the grade) so callers can surface the right toast.
    */
-  undoLastReview: () => Promise<{ cardId: string }>;
+  undoLastReview: (reviewId?: string, displayedCard?: Card) => Promise<{ cardId: string; card: Card; reviewId: string }>;
   updateProfile: (patch: Partial<Omit<Profile, 'id'>>) => Promise<void>;
 
   /** Create a preset (POST /deck-options). Appends to the mirror. */
@@ -497,6 +506,9 @@ export function isCooldownError(err: unknown): err is CooldownError {
 
 let bootstrapPromise: Promise<void> | null = null;
 let bootstrapGeneration = 0;
+let typeMutationSequence = 0;
+const latestTypeMutation = new Map<string, number>();
+let cardReadGeneration = 0;
 
 export const useNN = create<State>()((set, get) => ({
   bootstrapped: false,
@@ -564,6 +576,9 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   reset() {
+    cardReadGeneration += 1;
+    latestTypeMutation.clear();
+    clearStudyHandoff();
     // Server is source of truth — blow away the local mirror and let bootstrap
     // repopulate on next mount.
     bootstrapGeneration += 1;
@@ -622,27 +637,42 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async addNote(input) {
+    const generation = bootstrapGeneration;
     // POST /notes → server generates cards from the note-type templates and
     // returns the enriched cards (each carrying its embedded note + noteType).
     const res: any = await ok(
       await (api as any).notes.post({
         noteTypeId: input.noteTypeId,
+        expectedTypeUpdatedAt: input.expectedTypeUpdatedAt,
         deckId: input.deckId,
         fieldValues: input.fieldValues,
+        acceptedAnswers: input.acceptedAnswers,
         tags: input.tags,
       }),
     );
-    const created: Card[] = ((res.cards ?? []) as any[]).map(cardFromApi);
+    const noteType = get().noteTypes.find((type) => type.id === res.note.noteTypeId);
+    const created: Card[] = ((res.cards ?? []) as any[]).map((row) => cardFromApi({ ...row, note: res.note, noteType }));
+    if (generation !== bootstrapGeneration) return created;
     set((s) => ({ cards: [...s.cards, ...created] }));
     return created;
   },
 
   async updateNote(noteId, patch) {
+    const generation = bootstrapGeneration;
     const body: any = {};
+    if (patch.acceptedAnswers !== undefined) body.acceptedAnswers = patch.acceptedAnswers;
     if (patch.fieldValues !== undefined) body.fieldValues = patch.fieldValues;
     if (patch.tags !== undefined) body.tags = patch.tags;
+    if (patch.deckId !== undefined) body.deckId = patch.deckId;
+    if (patch.expectedUpdatedAt !== undefined) body.expectedUpdatedAt = patch.expectedUpdatedAt;
+    if (patch.expectedTypeUpdatedAt !== undefined) body.expectedTypeUpdatedAt = patch.expectedTypeUpdatedAt;
+    if (patch.confirmationToken !== undefined) body.confirmationToken = patch.confirmationToken;
+    if (patch.clozeRetainHistoryFor !== undefined) body.clozeRetainHistoryFor = patch.clozeRetainHistoryFor;
     const res: any = await ok(await (api as any).notes({ id: noteId }).patch(body));
-    const updated: Card[] = ((res.cards ?? []) as any[]).map(cardFromApi);
+    const noteType = get().noteTypes.find((type) => type.id === res.note.noteTypeId)
+      ?? get().cards.find((card) => card.noteId === noteId)?.noteType;
+    const updated: Card[] = ((res.cards ?? []) as any[]).map((row) => cardFromApi({ ...row, note: res.note, noteType }));
+    if (generation !== bootstrapGeneration) return updated;
     // Replace this note's cards in the mirror (regeneration may add/remove).
     set((s) => {
       const kept = s.cards.filter((c) => c.noteId !== noteId);
@@ -652,7 +682,9 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async deleteNote(noteId) {
+    const generation = bootstrapGeneration;
     await ok(await (api as any).notes({ id: noteId }).delete());
+    if (generation !== bootstrapGeneration) return;
     set((s) => ({ cards: s.cards.filter((c) => c.noteId !== noteId) }));
   },
 
@@ -662,18 +694,20 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async forgetCard(id) {
-    const updated = cardFromApi(await ok(await (api as any).cards({ id }).patch({ forget: true })));
+    const updated = mergeReviewedCard(await ok(await (api as any).cards({ id }).patch({ forget: true })), get().cards.find((c) => c.id === id));
     set((s) => ({ cards: s.cards.map((c) => (c.id === updated.id ? updated : c)) }));
   },
 
   async setCardDue(id, iso) {
-    const updated = cardFromApi(await ok(await (api as any).cards({ id }).patch({ setDue: iso })));
+    const updated = mergeReviewedCard(await ok(await (api as any).cards({ id }).patch({ setDue: iso })), get().cards.find((c) => c.id === id));
     set((s) => ({ cards: s.cards.map((c) => (c.id === updated.id ? updated : c)) }));
   },
 
   async refetchCard(id) {
+    const generation = cardReadGeneration;
     try {
       const updated = cardFromApi(await ok(await (api as any).cards({ id }).get()));
+      if (generation !== cardReadGeneration) return;
       set((s) => {
         const exists = s.cards.some((c) => c.id === updated.id);
         return {
@@ -688,11 +722,13 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async refetchDeckCards(deckId) {
+    const generation = cardReadGeneration;
     try {
       // GET /cards?deckId=… is cursor-paginated ({ items, nextCursor }) but the
       // first page (≤500) is enough to surface freshly-created cards in the
       // mirror; deeper pages load on-demand elsewhere (same contract bootstrap uses).
       const page: any = await ok(await (api as any).cards.get({ query: { deckId } }));
+      if (generation !== cardReadGeneration) return;
       const rows = Array.isArray(page) ? page : (page?.items ?? []);
       const fresh: Card[] = (rows as any[]).map(cardFromApi);
       if (fresh.length === 0) return;
@@ -707,13 +743,15 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async getNoteTypes() {
+    const generation = bootstrapGeneration;
     const rows: any = await ok(await (api as any)['note-types'].get());
     const list: NoteType[] = (rows as any[]).map(noteTypeFromApi);
-    set({ noteTypes: list });
+    if (generation === bootstrapGeneration) set({ noteTypes: list });
     return list;
   },
 
   async addNoteType(def) {
+    const generation = bootstrapGeneration;
     const created = noteTypeFromApi(
       await ok(
         await (api as any)['note-types'].post({
@@ -725,44 +763,90 @@ export const useNN = create<State>()((set, get) => ({
         }),
       ),
     );
-    set((s) => ({ noteTypes: [...s.noteTypes, created] }));
+    if (generation === bootstrapGeneration) set((s) => ({ noteTypes: [...s.noteTypes, created] }));
     return created;
   },
 
   async updateNoteType(id, patch) {
+    const generation = bootstrapGeneration;
+    const operation = ++typeMutationSequence;
+    latestTypeMutation.set(id, operation);
+    const current = () => generation === bootstrapGeneration && latestTypeMutation.get(id) === operation;
     const body: any = {};
     if (patch.name !== undefined) body.name = patch.name;
     if (patch.fields !== undefined) body.fields = patch.fields;
     if (patch.templates !== undefined) body.templates = patch.templates;
     if (patch.styling !== undefined) body.styling = patch.styling;
     if (patch.kind !== undefined) body.kind = patch.kind;
+    if (patch.answerFieldId !== undefined) body.answerFieldId = patch.answerFieldId;
+    if (patch.expectedUpdatedAt !== undefined) body.expectedUpdatedAt = patch.expectedUpdatedAt;
+    if (patch.confirmationToken !== undefined) body.confirmationToken = patch.confirmationToken;
     const updated = noteTypeFromApi(
-      await ok(await (api as any)['note-types']({ id }).patch(body)),
+      await ok(await (patch.kind !== undefined
+        ? (api as any)['note-types']({ id }).kind.post(body)
+        : (api as any)['note-types']({ id }).patch(body))),
     );
+    if (!current()) return updated;
+    cardReadGeneration += 1;
+    const refreshed = new Map<string, Card>();
+    if (updated.id === id) {
+      const loadedIds = get().cards.filter((card) => card.noteType?.id === id).map((card) => card.id);
+      const reads: Promise<any>[] = [(api as any).cards.get({ query: { noteTypeId: id, includeSuspended: 'true' } }).then(ok)];
+      for (let offset = 0; offset < loadedIds.length; offset += 200) {
+        reads.push((api as any).cards.lookup.post({ ids: loadedIds.slice(offset, offset + 200) }).then(ok));
+      }
+      for (const result of await Promise.allSettled(reads)) {
+        if (result.status === 'fulfilled') for (const row of result.value.items ?? []) {
+          const card = cardFromApi(row); refreshed.set(card.id, card);
+        }
+      }
+      if (!current()) return updated;
+    }
     // Clone-on-edit: editing a global builtin returns a NEW id (a user-owned
     // copy). The original builtin stays in the list; we append the clone.
     // Editing an owned type returns the same id and we replace it in place.
     set((s) => {
       const exists = s.noteTypes.some((nt) => nt.id === updated.id);
       return {
+        ...(updated.id === id ? { cards: [...s.cards.filter((card) => card.noteType?.id !== id), ...refreshed.values()] } : {}),
         noteTypes: exists
           ? s.noteTypes.map((nt) => (nt.id === updated.id ? updated : nt))
           : [...s.noteTypes, updated],
       };
     });
+    if (current()) latestTypeMutation.delete(id);
     return updated;
   },
 
-  async deleteNoteType(id) {
-    await ok(await (api as any)['note-types']({ id }).delete());
-    set((s) => ({ noteTypes: s.noteTypes.filter((nt) => nt.id !== id) }));
+  async convertNotes(input) {
+    const generation = bootstrapGeneration;
+    const result: any = await ok(await (api as any).notes.convert.post(input));
+    const converted = (result.cards ?? []).map(cardFromApi) as Card[];
+    if (generation !== bootstrapGeneration) return converted;
+    cardReadGeneration += 1;
+    const noteIds = new Set<string>(result.noteIds);
+    set((state) => ({ cards: [...state.cards.filter((card) => !noteIds.has(card.noteId)), ...converted] }));
+    return converted;
+  },
+
+  async deleteNoteType(id, confirmationToken) {
+    const generation = bootstrapGeneration;
+    const operation = ++typeMutationSequence;
+    latestTypeMutation.set(id, operation);
+    await ok(await (api as any)['note-types']({ id }).delete({ confirmationToken }));
+    if (generation !== bootstrapGeneration || latestTypeMutation.get(id) !== operation) return;
+    cardReadGeneration += 1;
+    set((s) => ({ noteTypes: s.noteTypes.filter((nt) => nt.id !== id), cards: s.cards.filter((card) => card.noteType?.id !== id) }));
+    latestTypeMutation.delete(id);
   },
 
   async searchCards(q, opts) {
+    const generation = cardReadGeneration;
     const res: any = await ok(
       await (api as any).cards.search.get({
         query: {
           q,
+          noteTypeId: opts?.noteTypeId,
           sort: opts?.sort,
           cursor: opts?.cursor,
           limit: opts?.limit,
@@ -770,6 +854,7 @@ export const useNN = create<State>()((set, get) => ({
       }),
     );
     const items: Card[] = (res.items as any[]).map(cardFromApi);
+    if (generation !== cardReadGeneration) return { items, nextCursor: res.nextCursor ?? null };
     // Merge into mirror: update existing by id, append new.
     set((s) => {
       const byId = new Map(s.cards.map((c) => [c.id, c]));
@@ -780,7 +865,17 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async bulkCards(action, cardIds, payload) {
-    await ok(await (api as any).cards.bulk.post({ action, cardIds, payload }));
+    const generation = bootstrapGeneration;
+    const result: any = await ok(await (api as any).cards.bulk.post({ action, cardIds, payload }));
+    if (generation !== bootstrapGeneration) return;
+    if (action === 'forget' || action === 'setDue') {
+      set((state) => {
+        const byId = new Map(state.cards.map((card) => [card.id, card]));
+        for (const row of result.cards ?? []) byId.set(row.id, mergeReviewedCard(row, byId.get(row.id)));
+        return { cards: [...byId.values()] };
+      });
+      return;
+    }
     // Mirror the same mutation locally so the UI reflects immediately.
     const idSet = new Set(cardIds);
     // Tags are NOTE-level: the server mutates notes.tags for the notes of the
@@ -839,17 +934,26 @@ export const useNN = create<State>()((set, get) => ({
     return tags;
   },
 
-  async gradeCard(cardId, rating, durationMs, source) {
+  async gradeCard(cardId, rating, durationMs, source, displayedCard) {
+    const generation = bootstrapGeneration;
+    const previous = displayedCard ?? get().cards.find((c) => c.id === cardId);
     const body: Record<string, unknown> = { cardId, rating, durationMs };
     if (source) body.source = source;
+    if (previous) {
+      body.expectedReps = previous.fsrs.reps;
+      body.expectedUpdatedAt = new Date(previous.updatedAt).toISOString();
+    }
     const res: any = await ok(
       await (api as any).reviews.post(body),
     );
-    const updatedCard = cardFromApi(res.card);
+    const updatedCard = mergeReviewedCard(res.card, previous);
     const review = reviewFromApi(res.review);
+    if (generation !== bootstrapGeneration) return { ...review, card: updatedCard };
     const nextProfile = res.profile ? profileFromApi(res.profile) : null;
     set((s) => ({
-      cards: s.cards.map((c) => (c.id === cardId ? updatedCard : c)),
+      cards: s.cards.some((c) => c.id === cardId)
+        ? s.cards.map((c) => (c.id === cardId ? updatedCard : c))
+        : [...s.cards, updatedCard],
       profile: nextProfile ?? s.profile,
     }));
 
@@ -859,6 +963,7 @@ export const useNN = create<State>()((set, get) => ({
     if (typeof window !== 'undefined') {
       // Defer a tick so React has committed the state update first.
       queueMicrotask(async () => {
+        if (generation !== bootstrapGeneration) return;
         const dispatch = (detail: {
           kind: string;
           title?: string;
@@ -893,14 +998,15 @@ export const useNN = create<State>()((set, get) => ({
       });
     }
 
-    return review;
+    return { ...review, card: updatedCard };
   },
 
-  async undoLastReview() {
+  async undoLastReview(reviewId, displayedCard) {
+    const generation = bootstrapGeneration;
     // Don't go through `ok()` — we want the HTTP status to distinguish 404
     // (nothing to undo) from 409 (card modified since the grade) so the UI can
     // pick the right toast. The thrown error carries `.code` for the caller.
-    const { data, error }: any = await (api as any).reviews.undo.post();
+    const { data, error }: any = await (api as any).reviews.undo.post(reviewId ? { reviewId } : undefined);
     if (error) {
       const err = new Error(
         error.value?.error ?? `undo_failed_${error.status ?? ''}`,
@@ -909,13 +1015,17 @@ export const useNN = create<State>()((set, get) => ({
       err.status = error.status;
       throw err;
     }
-    const restoredCard = cardFromApi(data.card);
+    const restoredCard = mergeReviewedCard(data.card, displayedCard ?? get().cards.find((c) => c.id === data.card.id));
+    const result = { cardId: restoredCard.id, card: restoredCard, reviewId: data.reviewId };
+    if (generation !== bootstrapGeneration) return result;
     const nextProfile = data.profile ? profileFromApi(data.profile) : null;
     set((s) => ({
-      cards: s.cards.map((c) => (c.id === restoredCard.id ? restoredCard : c)),
+      cards: s.cards.some((c) => c.id === restoredCard.id)
+        ? s.cards.map((c) => (c.id === restoredCard.id ? restoredCard : c))
+        : [...s.cards, restoredCard],
       profile: nextProfile ?? s.profile,
     }));
-    return { cardId: restoredCard.id };
+    return result;
   },
 
   async updateProfile(patch) {

@@ -207,6 +207,34 @@ describe('MCP confirmed management', () => {
     expect((await callApp(app, 'GET', `/cards/${cardId}`, { cookie })).status).toBe(404);
   });
 
+  test('note edits reject changed review state and apply a fresh preview atomically', async () => {
+    const { ensureBuiltins, db, cards, mcpActions } = await import('@neuronexus/db');
+    const { eq } = await import('drizzle-orm');
+    await ensureBuiltins(db);
+    const { token } = await fixture();
+    const deck = data(await apply(token, data(await invoke(token, 'create_deck', { name: 'Note edits' })).actionId)).result;
+    const created = data(await apply(token, data(await invoke(token, 'create_card', {
+      deckId: deck.id, fieldValues: { Front: 'Question', Back: 'Original' },
+    })).actionId));
+    const cardId = created.result.cardIds[0];
+    const [before] = await db.select().from(cards).where(eq(cards.id, cardId));
+    const args = { noteId: before!.noteId, fieldValues: { Back: 'Confirmed' }, tags: ['mcp'] };
+    const stale = data(await invoke(token, 'edit_card', args));
+    // A review after preview changes the protected regeneration state even
+    // though the fields and question identity did not change.
+    await db.update(cards).set({ reps: 1 }).where(eq(cards.id, cardId));
+    expect((await apply(token, stale.actionId)).isError).toBe(true);
+    expect(data(await invoke(token, 'get_card', { cardId })).text).toContain('Original');
+    const [pending] = await db.select().from(mcpActions).where(eq(mcpActions.id, stale.actionId));
+    expect(pending!.consumedAt).toBeNull();
+    const fresh = data(await invoke(token, 'edit_card', args));
+    expect(data(await apply(token, fresh.actionId)).status).toBe('applied');
+    expect(data(await invoke(token, 'get_card', { cardId })).text).toContain('Confirmed');
+    const [after] = await db.select().from(cards).where(eq(cards.id, cardId));
+    expect(after!.reps).toBe(1);
+    expect(after!.id).toBe(before!.id);
+  });
+
   test('card-control writes participate in the caller transaction and roll back on failure', async () => {
     const { db, cards, ensureBuiltins } = await import('@neuronexus/db');
     const { eq } = await import('drizzle-orm');

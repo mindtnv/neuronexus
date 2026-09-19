@@ -90,13 +90,13 @@ describe('sanitizeFieldHtml — preserves allowlisted formatting', () => {
 });
 
 describe('sanitizeFieldValues', () => {
-  test('sanitizes every value, preserves field names', () => {
+  test('preserves Markdown source and field names; HTML sanitization is a separate API', () => {
     const out = sanitizeFieldValues({
       Front: '<b>Hund</b><script>x</script>',
       Back: 'dog<img src=x onerror=alert(1)>',
     });
-    expect(out.Front).toBe('<b>Hund</b>');
-    expect(out.Back.toLowerCase()).not.toContain('onerror');
+    expect(out.Front).toBe('<b>Hund</b><script>x</script>');
+    expect(out.Back).toBe('dog<img src=x onerror=alert(1)>');
     expect(Object.keys(out)).toEqual(['Front', 'Back']);
   });
 });

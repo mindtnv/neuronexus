@@ -105,9 +105,8 @@ export function nextTodayMinutes(opts: {
  *   - new day (or null `previousDate`)     → reset both, set the chosen lane to
  *     1, stamp today
  *
- * `introducedNew` is the card's PRE-grade `state === 'new'` — a "first
- * introduction" counts toward the new lane, every other grade (incl. relearning
- * reps) counts toward the review lane. Pure: no clock, no DB.
+ * `introducedNew` and `reviewedCard` describe the PRE-grade state. Learning
+ * and relearning steps consume neither budget. Pure: no clock, no DB.
  */
 export function nextDailyCounts(opts: {
   previousNew: number;
@@ -115,18 +114,20 @@ export function nextDailyCounts(opts: {
   previousDate: string | null | undefined;
   today: string;
   introducedNew: boolean;
+  reviewedCard?: boolean;
 }): { newIntroducedToday: number; reviewsDoneToday: number; date: string } {
   const { previousNew, previousReviews, previousDate, today, introducedNew } = opts;
+  const reviewDelta = (opts.reviewedCard ?? !introducedNew) ? 1 : 0;
   if (previousDate === today) {
     return {
       newIntroducedToday: previousNew + (introducedNew ? 1 : 0),
-      reviewsDoneToday: previousReviews + (introducedNew ? 0 : 1),
+      reviewsDoneToday: previousReviews + reviewDelta,
       date: today,
     };
   }
   return {
     newIntroducedToday: introducedNew ? 1 : 0,
-    reviewsDoneToday: introducedNew ? 0 : 1,
+    reviewsDoneToday: reviewDelta,
     date: today,
   };
 }
@@ -164,6 +165,8 @@ export function clampFreezes(n: number): number {
 
 export interface GradeRollupInput {
   durationMs: number;
+  /** Exact sum of today's persisted answer durations, including this grade. */
+  todayDurationMs?: number;
   now: Date;
   previous: {
     streakDays: number;
@@ -213,10 +216,10 @@ export function applyGradeRollup(input: GradeRollupInput): GradeRollupResult {
 
   // 2. today minutes ledger
   const minRes = nextTodayMinutes({
-    previousMinutes: previous.todayMinutes,
-    previousDate: previous.todayMinutesDate,
+    previousMinutes: input.todayDurationMs === undefined ? previous.todayMinutes : 0,
+    previousDate: input.todayDurationMs === undefined ? previous.todayMinutesDate : null,
     today,
-    deltaMs: durationMs,
+    deltaMs: input.todayDurationMs ?? durationMs,
   });
 
   // 3. daily goal stamp (off the post-increment minutes)

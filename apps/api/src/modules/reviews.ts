@@ -1,5 +1,5 @@
 import { Elysia, t } from 'elysia';
-import { and, count, desc, eq, gte, isNotNull } from 'drizzle-orm';
+import { and, count, desc, eq, gte, lt, sql } from 'drizzle-orm';
 import {
   cards,
   db,
@@ -13,6 +13,7 @@ import {
   applyGradeRollup,
   gradeFsrs,
   isLeech,
+  MAX_REVIEW_DURATION_MS,
   nextDailyCounts,
   stateLabel,
   State,
@@ -36,15 +37,16 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
   // (epoch ms or ISO string). Default: last 90 days, most recent first.
   .get(
     '/',
-    async ({ user, query }) => {
+    async ({ user, query, status }) => {
       const since = query.since
         ? new Date(/^\d+$/.test(query.since) ? Number(query.since) : query.since)
         : new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      if (!Number.isFinite(since.getTime())) return status(400, { error: 'invalid_since' });
       const rows = await db
         .select()
         .from(reviews)
         .where(and(eq(reviews.userId, user.id), gte(reviews.reviewedAt, since)))
-        .orderBy(desc(reviews.reviewedAt));
+        .orderBy(desc(reviews.reviewedAt), desc(reviews.id));
       return rows;
     },
     { auth: true, query: t.Object({ since: t.Optional(t.String()) }) },
@@ -64,21 +66,33 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
   .post(
     '/',
     async ({ user, body, status }) => {
-      const now = new Date();
+      const durationMs = Math.min(body.durationMs ?? 0, MAX_REVIEW_DURATION_MS);
       return await db.transaction(async (tx) => {
-        const [card] = await tx
-          .select()
-          .from(cards)
-          .where(and(eq(cards.id, body.cardId), eq(cards.userId, user.id)))
-          .limit(1);
-        if (!card) return status(404, { error: 'card_not_found' });
-        if (card.suspended) return status(409, { error: 'card_suspended' });
-
+        // All study writes take the profile lock before any card lock. This
+        // serializes the user's rollups across tabs and API instances.
+        await tx.insert(profile)
+          .values({ userId: user.id, name: user.name ?? 'Friend' })
+          .onConflictDoNothing({ target: profile.userId });
         const [existingProfile] = await tx
           .select()
           .from(profile)
           .where(eq(profile.userId, user.id))
-          .limit(1);
+          .for('update');
+        const [card] = await tx
+          .select()
+          .from(cards)
+          .where(and(eq(cards.id, body.cardId), eq(cards.userId, user.id)))
+          .limit(1)
+          .for('update');
+        if (!card) return status(404, { error: 'card_not_found' });
+        if (card.suspended) return status(409, { error: 'card_suspended' });
+        if (
+          (body.expectedReps !== undefined && body.expectedReps !== card.reps) ||
+          (body.expectedUpdatedAt !== undefined &&
+            new Date(body.expectedUpdatedAt).getTime() !== card.updatedAt.getTime())
+        ) return status(409, { error: 'card_changed' });
+
+        const now = new Date(Math.max(Date.now(), card.updatedAt.getTime() + 1, (existingProfile?.updatedAt.getTime() ?? 0) + 1));
 
         // Pre-grade snapshot (Principle 4 / B5). Captures the EXACT mutate-set
         // BEFORE the FSRS step + rollup touch the card / profile, so undo can
@@ -190,7 +204,7 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
             cardId: card.id,
             deckId: card.deckId,
             rating: body.rating,
-            durationMs: body.durationMs ?? 0,
+            durationMs,
             reviewedAt: now,
             nextDue: new Date(res.card.due),
             nextStability: res.card.stability,
@@ -207,8 +221,20 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
         let dailyGoalJustMet = false;
 
         if (existingProfile) {
+          // Round AFTER summing. Flooring each individual answer discarded
+          // every sub-minute review. The user/date index bounds this to today.
+          const dayStart = new Date(`${todayISO(now)}T00:00:00Z`);
+          const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+          const [todayTime] = await tx.select({
+            durationMs: sql<number>`coalesce(sum(${reviews.durationMs}), 0)`.mapWith(Number),
+          }).from(reviews).where(and(
+            eq(reviews.userId, user.id),
+            gte(reviews.reviewedAt, dayStart),
+            lt(reviews.reviewedAt, dayEnd),
+          ));
           const rollup = applyGradeRollup({
-            durationMs: body.durationMs ?? 0,
+            durationMs,
+            todayDurationMs: todayTime?.durationMs ?? durationMs,
             now,
             previous: {
               streakDays: existingProfile.streakDays,
@@ -240,6 +266,7 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
                   previousDate: existingProfile.dailyCountsDate,
                   today: todayISO(now),
                   introducedNew: wasNew,
+                  reviewedCard: card.state === 'review',
                 });
 
           const [saved] = await tx
@@ -285,6 +312,8 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
         cardId: t.String({ format: 'uuid' }),
         rating: t.Union([t.Literal(1), t.Literal(2), t.Literal(3), t.Literal(4)]),
         durationMs: t.Optional(t.Integer({ minimum: 0 })),
+        expectedReps: t.Optional(t.Integer({ minimum: 0 })),
+        expectedUpdatedAt: t.Optional(t.String({ format: 'date-time' })),
         // Grade origin: 'filtered' (custom-study / cram) grades skip the GLOBAL
         // daily counters so a cram run never blocks the regular queue. Default
         // ('regular' / omitted) consumes the daily budget.
@@ -298,19 +327,25 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
   // mutate-set incl. `updatedAt` → undo is "as if the grade never happened".
   .post(
     '/undo',
-    async ({ user, status }) => {
+    async ({ user, body, status }) => {
       return await db.transaction(async (tx) => {
+        await tx.select({ id: profile.userId }).from(profile)
+          .where(eq(profile.userId, user.id)).for('update');
         // Most recent undoable review. Tie-break on `id DESC` so two grades in
         // the same `reviewedAt` instant undo the genuinely-last one first.
         const [review] = await tx
           .select()
           .from(reviews)
-          .where(and(eq(reviews.userId, user.id), isNotNull(reviews.undoSnapshot)))
+          .where(eq(reviews.userId, user.id))
           .orderBy(desc(reviews.reviewedAt), desc(reviews.id))
-          .limit(1);
+          .limit(1)
+          .for('update');
 
         if (!review || !review.undoSnapshot) {
           return status(404, { error: 'nothing_to_undo' });
+        }
+        if (body?.reviewId && body.reviewId !== review.id) {
+          return status(409, { error: 'review_changed' });
         }
 
         const snapshot = review.undoSnapshot;
@@ -322,7 +357,8 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
           .select({ id: cards.id, updatedAt: cards.updatedAt })
           .from(cards)
           .where(and(eq(cards.id, review.cardId), eq(cards.userId, user.id)))
-          .limit(1);
+          .limit(1)
+          .for('update');
         if (!currentCard) {
           return status(404, { error: 'nothing_to_undo' });
         }
@@ -386,8 +422,8 @@ export const reviewsModule = new Elysia({ prefix: '/reviews' })
         // Drop the review row — the grade is gone.
         await tx.delete(reviews).where(eq(reviews.id, review.id));
 
-        return { card: restoredCard, profile: restoredProfile };
+        return { card: restoredCard, profile: restoredProfile, reviewId: review.id };
       });
     },
-    { auth: true },
+    { auth: true, body: t.Optional(t.Object({ reviewId: t.String({ format: 'uuid' }) })) },
   );

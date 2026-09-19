@@ -14,9 +14,10 @@
 // caches `Node.prototype.nodeName` at module-eval time. `test-dom-setup` does
 // both as an import side effect, so it MUST be the first import here.
 
-import { GlobalRegistrator } from './test-dom-setup.ts';
+import { ensureTestDom, GlobalRegistrator } from './test-dom-setup.ts';
 
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+beforeAll(ensureTestDom);
 import { readFileSync } from 'node:fs';
 import {
   IMG_CORPUS,
@@ -25,15 +26,16 @@ import {
   isNeutralized,
   keptImg,
 } from '../../../api/tests/sanitize-img-corpus.ts';
-// Imported AFTER the DOM is registered so DOMPurify binds to the happy-dom window.
-import {
+// Register before the first DOMPurify module evaluation, even after another suite tears down the cached bootstrap.
+ensureTestDom();
+const {
   renderCardHtml,
   renderCardHtmlWithMermaid,
   resanitize,
   restoreMermaidIslands,
   sanitizeHtml,
   sanitizeMermaidSvg,
-} from './render-card.tsx';
+} = await import('./render-card.tsx');
 import type { NoteTypeDef } from '@neuronexus/shared';
 
 // A minimal basic note-type whose front template is the raw field, so a test can

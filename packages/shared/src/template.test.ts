@@ -172,11 +172,11 @@ describe('extractMath / stripMath — math markers', () => {
 });
 
 describe('renderTextFor — plaintext extraction', () => {
-  test('strips HTML tags from a basic note', () => {
+  test('preserves literal field HTML but strips template structure', () => {
     const r = renderTextFor(basicType, { Front: '<b>Bonjour</b>', Back: '<i>Hello</i>' });
-    expect(r.renderFrontText).toBe('Bonjour');
-    expect(r.renderBackText).toBe('Bonjour Hello');
-    expect(r.renderText).toBe('Bonjour Bonjour Hello');
+    expect(r.renderFrontText).toBe('<b>Bonjour</b>');
+    expect(r.renderBackText).toBe('<b>Bonjour</b> <i>Hello</i>');
+    expect(r.renderText).toBe('<b>Bonjour</b> <b>Bonjour</b> <i>Hello</i>');
   });
 
   test('emits math formula SOURCE so search matches the formula', () => {
@@ -188,7 +188,7 @@ describe('renderTextFor — plaintext extraction', () => {
 
   test('emits <img> alt text and drops the tag', () => {
     const r = renderTextFor(basicType, {
-      Front: 'see <img src="/m/x" alt="a red apple">',
+      Front: 'see ![a red apple](/m/00000000-0000-0000-0000-000000000001)',
       Back: 'plain',
     });
     expect(r.renderFrontText).toBe('see a red apple');
@@ -196,7 +196,7 @@ describe('renderTextFor — plaintext extraction', () => {
 
   test('drops an <img> with no alt (no leftover markup)', () => {
     const r = renderTextFor(basicType, {
-      Front: 'before <img src="/m/x"> after',
+      Front: 'before ![](/m/00000000-0000-0000-0000-000000000001) after',
       Back: 'b',
     });
     expect(r.renderFrontText).toBe('before after');
@@ -204,7 +204,7 @@ describe('renderTextFor — plaintext extraction', () => {
 
   test('math + img + tags coexist in one field', () => {
     const r = renderTextFor(basicType, {
-      Front: '<b>Energy</b> <img src="/m/y" alt="diagram"> \\(E=mc^2\\)',
+      Front: '**Energy** ![diagram](/m/00000000-0000-0000-0000-000000000001) \\(E=mc^2\\)',
       Back: 'b',
     });
     expect(r.renderFrontText).toBe('Energy diagram E=mc^2');

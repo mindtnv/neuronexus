@@ -3,15 +3,15 @@
 import { usePathname } from 'next/navigation';
 import { BOTTOM_TABS, getActiveNavId } from './nav-config';
 import { NNIcon } from './ui';
-import { countDueCards } from '@/lib/cards';
-import { useNN } from '@/lib/store';
+import { useStudyOverview } from '@/lib/use-study-overview';
 import { useT } from '@/lib/i18n';
 import { AppLink } from './navigation';
 
 export const BottomTabs = () => {
   const pathname = usePathname() ?? '/';
   const t = useT();
-  const dueCount = useNN((s) => countDueCards(s.cards));
+  const study = useStudyOverview();
+  const dueCount = study.data?.overall.totalAvailable ?? 0;
   const activeTab = getActiveNavId(pathname, BOTTOM_TABS);
 
   return (

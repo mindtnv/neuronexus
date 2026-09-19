@@ -3,8 +3,9 @@
 import { useState, useEffect, useRef, useMemo, useId } from 'react';
 import { NNIcon, NNKbd, NNBtn } from '@/components/ui';
 import { useAppNavigation } from '@/components/navigation';
+
 import { useNN } from '@/lib/store';
-import { countDueCards } from '@/lib/cards';
+import { useStudyOverview } from '@/lib/use-study-overview';
 import type { Card, LibraryItem, Notebook } from '@/lib/types';
 import { useT } from '@/lib/i18n';
 import { paletteSelection, movePaletteSelection, paletteDeckHref } from '@/lib/command-palette';
@@ -25,9 +26,11 @@ export function CommandPalette({ defaultQuery = '', onClose }: { defaultQuery?: 
   const [retry, setRetry] = useState(0);
   const decks = useNN(state => state.decks);
   const cards = useNN(state => state.cards);
+  const study = useStudyOverview();
   const searchCards = useNN(state => state.searchCards);
   const listLibrary = useNN(state => state.listLibrary);
   const listNotebooks = useNN(state => state.listNotebooks);
+
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [notebookError, setNotebookError] = useState(false);
   const [search, setSearch] = useState<Search>({ query: '', cards: [], sources: [], moreCards: false, pending: true, errors: [] });
@@ -72,7 +75,7 @@ export function CommandPalette({ defaultQuery = '', onClose }: { defaultQuery?: 
     const group = (key: string) => t(`overlays.palette.groups.${key}`);
     const quick = 'overlays.palette.quick.';
     const staticItems: Item[] = [
-      { id: 'review', group: group('quickActions'), icon: 'review', label: t(quick + 'reviewNow.label'), sub: t(quick + 'reviewNow.sub', { n: countDueCards(cards) }), href: '/review' },
+      { id: 'review', group: group('quickActions'), icon: 'review', label: t(quick + 'reviewNow.label'), sub: t(quick + 'reviewNow.sub', { n: study.data?.overall.totalAvailable ?? '—' }), href: '/review' },
       { id: 'create-card', group: group('quickActions'), icon: 'plus', label: t(quick + 'newCard.label'), sub: t(quick + 'newCard.sub'), href: '/editor' },
       { id: 'create-deck', group: group('quickActions'), icon: 'decks', label: t(quick + 'newDeck.label'), href: '/decks?create=1' },
       ...([
@@ -97,7 +100,7 @@ export function CommandPalette({ defaultQuery = '', onClose }: { defaultQuery?: 
       ...notebooks.filter(book => !normalized || matches(normalized, book.title)).slice(0, normalized ? 6 : 3).map(book => ({ id: `notebook-${book.id}`, group: group('notebooks'), icon: 'notebook', label: book.title, sub: t('overlays.palette.notebookItemSub'), href: `/notebooks/${book.id}` })),
     ];
     return [...staticItems.filter(item => item.group === group('quickActions')), ...dynamic, ...staticItems.filter(item => item.group === group('navigate'))];
-  }, [query, normalized, cards, decks, notebooks, search, t]);
+  }, [query, normalized, cards, decks, notebooks, search, study.data, t]);
   const groups = useMemo(() => {
     const result = new Map<string, Item[]>();
     for (const item of items) result.set(item.group, [...(result.get(item.group) ?? []), item]);
@@ -135,6 +138,7 @@ export function CommandPalette({ defaultQuery = '', onClose }: { defaultQuery?: 
         }} />
       {query && <NNBtn icon="x" ariaLabel={t('overlays.palette.clear')} title={t('overlays.palette.clear')} onClick={() => { setQuery(''); setActiveId(null); input.current?.focus(); }} />}
       <button type="button" className="reomi-palette-close" aria-label={t('actions.close')} onClick={onClose}><NNKbd>esc</NNKbd></button>
+
     </div>
     <div ref={list} id={listId} className="reomi-palette-results nn-scroll" role="listbox" aria-label={t('overlays.palette.results')} aria-busy={pending}>
       {[...groups].map(([label, rows]) => <div key={label} role="group" aria-label={label}>

@@ -1,6 +1,8 @@
 const common = {
   app: {
+    cardCount: 'Cards: {n}',
     name: 'Reomi',
+
     tagline: 'Anki reimagined — graph, garden, AI.',
     workspace: "{name}'s brain",
   },
