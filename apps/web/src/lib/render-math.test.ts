@@ -14,12 +14,15 @@
 // caches `Node.prototype.nodeName` at module-eval time. `test-dom-setup` does
 // both as an import side effect, so it MUST be the first import here.
 
-import { GlobalRegistrator } from './test-dom-setup.ts';
+import { ensureTestDom, GlobalRegistrator } from './test-dom-setup.ts';
 
-import { afterAll, describe, expect, test } from 'bun:test';
-import DOMPurify, { type Config } from 'dompurify';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+beforeAll(ensureTestDom);
+import type { Config } from 'dompurify';
+ensureTestDom();
+const { default: DOMPurify } = await import('dompurify');
 // Imported AFTER the DOM is registered so DOMPurify binds to the happy-dom window.
-import { renderCardHtml, renderCardHtmlWithMermaid, resanitize, sanitizeHtml } from './render-card.tsx';
+const { renderCardHtml, renderCardHtmlWithMermaid, resanitize, sanitizeHtml } = await import('./render-card.tsx');
 import type { NoteTypeDef } from '@neuronexus/shared';
 
 // The EXACT config `render-card.tsx` uses to DOMPurify KaTeX output (plan A3/C-5).
@@ -338,5 +341,25 @@ describe('single sink — dangerouslySetInnerHTML stays in render-card.tsx only'
       if (text.includes('dangerouslySetInnerHTML')) offenders.push(rel);
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('rich-content diagnostics', () => {
+  test('bad visible formulas retain their source, field and block while ordinary content survives', () => {
+    const source = 'before \\(x\\) middle \\(\\notARealCommand{<img src=x onerror=alert(1)>}\\) after';
+    const result = renderCardHtmlWithMermaid(basicType, { Front: source, Back: '\\(\\secretAnswer\\)' }, 'front');
+    expect(result.mathErrors).toHaveLength(1);
+    expect(result.mathErrors![0]).toMatchObject({ field: 'Front', block: 2 });
+    expect(result.mathErrors![0].source).toContain('notARealCommand');
+    expect(result.html).toContain('before'); expect(result.html).toContain('after');
+    expect(result.html).not.toContain('secretAnswer');
+    const fallback = renderCardHtml(basicType, { Front: source }, 'front');
+    expect(fallback).toContain('&lt;img'); expect(fallback).not.toContain('<img');
+    expect(fallback).not.toMatch(/nnph[0-9a-f]+m/);
+  });
+  test('diagrams are numbered within their own field and hidden blocks are omitted', () => {
+    const diagram = '```mermaid\ngraph TD\n A-->B\n```';
+    const result = renderCardHtmlWithMermaid(basicType, { Front: `${diagram}\n\n${diagram}`, Back: diagram }, 'front');
+    expect(result.mermaid.map(({ field, block }) => ({ field, block }))).toEqual([{ field: 'Front', block: 1 }, { field: 'Front', block: 2 }]);
   });
 });

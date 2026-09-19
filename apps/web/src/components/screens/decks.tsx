@@ -1,15 +1,16 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AppLink, useAppNavigation } from '@/components/navigation';
 import { NNIcon, NNBtn, NNCard, NNPlant, NNBadge } from '@/components/ui';
 import { useNN } from '@/lib/store';
+import { useStudyOverview } from '@/lib/use-study-overview';
 import type { DeckColor } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
-import { aggregateCounts, buildDeckTree, flattenTree, deckPathLabel, deckRowTarget, DeckNode } from '@/lib/decks';
+import { buildDeckTree, flattenTree, deckPathLabel, deckRowTarget, DeckNode } from '@/lib/decks';
 
 // ─────────────────────────────────────────────
 // Decks screen — nested tree view
@@ -25,7 +26,8 @@ export const NNDecks = () => {
   const isMobile = bp === 'mobile';
 
   const decks = useNN((s) => s.decks);
-  const cards = useNN((s) => s.cards);
+  const study = useStudyOverview();
+  const profile = useNN((s) => s.profile);
   const presets = useNN((s) => s.presets);
   const addDeck = useNN((s) => s.addDeck);
   const updateDeck = useNN((s) => s.updateDeck);
@@ -55,12 +57,13 @@ export const NNDecks = () => {
   const router = useAppNavigation();
 
   const [creating, setCreating] = useState(false);
+  const createLock = useRef(false);
+  const [saving, setSaving] = useState(false);
   const [newName, setNewName] = useState('');
   const [newColor, setNewColor] = useState<DeckColor>('lime');
   const [newParentId, setNewParentId] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
-  const now = Date.now();
 
   const tree = useMemo(() => buildDeckTree(decks), [decks]);
   // Tree flattening: nodes are expanded if NOT collapsed.
@@ -77,25 +80,10 @@ export const NNDecks = () => {
   }, [tree, collapsed]);
   const rows = useMemo(() => flattenTree(tree, expanded), [tree, expanded]);
 
-  // Aggregate counts (include descendants) for each deck.
-  const aggregate = useMemo(() => {
-    const out = new Map<string, { total: number; due: number }>();
-    for (const d of decks) out.set(d.id, aggregateCounts(decks, cards, d.id, now));
-    return out;
-  }, [decks, cards, now]);
-
-  // Direct counts (cards belonging to this deck only).
-  const direct = useMemo(() => {
-    const out = new Map<string, { total: number; due: number }>();
-    for (const d of decks) out.set(d.id, { total: 0, due: 0 });
-    for (const c of cards) {
-      const s = out.get(c.deckId);
-      if (!s) continue;
-      s.total += 1;
-      if (new Date(c.fsrs.due).getTime() <= now) s.due += 1;
-    }
-    return out;
-  }, [decks, cards, now]);
+  const aggregate = useMemo(() => new Map(Object.entries(study.data?.decks ?? {}).map(([id, counts]) =>
+    [id, { total: counts.total, due: counts.totalAvailable }])), [study.data]);
+  const direct = useMemo(() => new Map(Object.entries(study.data?.direct ?? {}).map(([id, counts]) =>
+    [id, { total: counts.total }])), [study.data]);
 
   const resetForm = () => {
     setNewName('');
@@ -116,7 +104,9 @@ export const NNDecks = () => {
 
   const handleCreate = async () => {
     const name = newName.trim();
-    if (!name) return;
+    if (!name || createLock.current) return;
+    createLock.current = true;
+    setSaving(true);
     try {
       await addDeck({
         name,
@@ -139,6 +129,9 @@ export const NNDecks = () => {
     } catch (err) {
       console.error('addDeck failed', err);
       raiseToast({ kind: 'error', title: t('common.toasts.error') });
+    } finally {
+      createLock.current = false;
+      setSaving(false);
     }
   };
 
@@ -170,6 +163,9 @@ export const NNDecks = () => {
         {/* Import PDF lives behind a feature flag until the LLM integration
             lands — hidden from the deck toolbar so we don't route users to a
             placeholder screen. */}
+        {decks.length > 0 && <NNBtn size="sm" variant="soft" icon="filter" onClick={() => router.push('/review/custom-study')}>
+          {t('review.customStudy.title')}
+        </NNBtn>}
         <NNBtn size="sm" variant="primary" icon="plus" onClick={() => openCreateAt(null)}>
           {t('decks.newDeck')}
         </NNBtn>
@@ -187,11 +183,14 @@ export const NNDecks = () => {
               <div className="nn-section-label" style={{ marginBottom: 6 }}>{t('decks.name')}</div>
               <input
                 autoFocus
+                aria-label={t('decks.name')}
+                maxLength={100}
+                disabled={saving}
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreate();
-                  else if (e.key === 'Escape') resetForm();
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat) void handleCreate();
+                  else if (e.key === 'Escape' && !saving) resetForm();
                 }}
                 placeholder={t('decks.namePlaceholder')}
                 style={inputStyle}
@@ -208,8 +207,8 @@ export const NNDecks = () => {
                       key={c}
                       type="button"
                       onClick={() => setNewColor(c)}
-                      aria-label={c}
-                      title={c}
+                      aria-label={t(`decks.colors.${c}`)}
+                      title={t(`decks.colors.${c}`)}
                       style={{
                         width: 26,
                         height: 26,
@@ -227,10 +226,10 @@ export const NNDecks = () => {
             </div>
             <div style={{ flex: 1 }} />
             <div style={{ display: 'flex', gap: 8, alignSelf: 'flex-end' }}>
-              <NNBtn size="sm" variant="ghost" onClick={resetForm}>
+              <NNBtn size="sm" variant="ghost" onClick={resetForm} disabled={saving}>
                 {t('actions.cancel')}
               </NNBtn>
-              <NNBtn size="sm" variant="primary" icon="check" onClick={handleCreate}>
+              <NNBtn size="sm" variant="primary" icon="check" onClick={handleCreate} loading={saving} disabled={!newName.trim()}>
                 {t('actions.create')}
               </NNBtn>
             </div>
@@ -249,14 +248,17 @@ export const NNDecks = () => {
             fontSize: 11,
           }}
         >
-          <NNPlant stage={Math.min(5, Math.floor(cards.length / 10))} size={isMobile ? 34 : 40} />
+          <NNPlant stage={profile?.plantStage ?? 0} size={isMobile ? 34 : 40} />
           <div>
-            <div style={{ color: 'var(--text-muted)' }}>{t('decks.totalCards', { n: cards.length })}</div>
+            <div style={{ color: 'var(--text-muted)' }}>{t('decks.totalCards', { n: study.data?.overall.total ?? '—' })}</div>
             <div>{t('decks.gardenHint')}</div>
           </div>
         </div>
       )}
 
+      {study.error && <div role="alert" style={{ marginBottom: 12, color: 'var(--text-muted)', fontSize: 13 }}>
+        {t('home.countsError')} <NNBtn size="sm" variant="soft" onClick={study.reload}>{t('review.retry')}</NNBtn>
+      </div>}
       {decks.length === 0 && !creating ? (
         <NNCard style={{ textAlign: 'center', padding: 40, color: 'var(--text-dim)' }}>
           <div style={{ fontSize: 14, marginBottom: 8 }}>{t('decks.emptyTitle')}</div>
@@ -343,6 +345,8 @@ export const NNDecks = () => {
                       }
                     }}
                     aria-label={hasChildren ? (isCollapsed ? t('decks.expand') : t('decks.collapse')) : undefined}
+                    aria-hidden={!hasChildren || undefined}
+                    tabIndex={hasChildren ? 0 : -1}
                     style={{
                       width: 18,
                       height: 18,
@@ -399,7 +403,7 @@ export const NNDecks = () => {
                   {/* demoted total — desktop only; carries the (own.total) parenthetical */}
                   {!isMobile && (
                     <span className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0, marginLeft: 2 }}>
-                      {agg.total}
+                      {study.data ? agg.total : '—'}
                       {hasChildren && own.total > 0 && <span> ({own.total})</span>}
                     </span>
                   )}
@@ -417,7 +421,7 @@ export const NNDecks = () => {
                     >
                       <NNIcon name="plus" size={14} />
                     </AppLink>
-                    {agg.due > 0 && (
+                    {agg.total > 0 && (
                       <AppLink
                         href={`/review?deck=${encodeURIComponent(d.id)}`}
                         onClick={(e) => e.stopPropagation()}
@@ -452,8 +456,11 @@ export const NNDecks = () => {
                       textDecoration: 'none',
                     }}
                   >
-                    {agg.due}
+                    {study.data ? agg.due : '—'}
                   </AppLink>
+                ) : study.data && agg.total === 0 ? (
+                  <AppLink href={`/editor?deck=${encodeURIComponent(d.id)}`} onClick={(e) => e.stopPropagation()}
+                    style={{ fontSize: 12, color: 'var(--accent-400)', textDecoration: 'none' }}>{t('decks.firstCard')}</AppLink>
                 ) : (
                   <span
                     className="mono"
@@ -468,7 +475,7 @@ export const NNDecks = () => {
                       fontSize: 12,
                     }}
                   >
-                    {agg.due}
+                    {study.data ? agg.due : '—'}
                   </span>
                 )}
 
@@ -535,7 +542,7 @@ export const NNDecks = () => {
                         <NNIcon name="grid" size={13} />
                         <span>{t('cards.openCards')}</span>
                       </button>
-                      {agg.due > 0 && (
+                      {agg.total > 0 && (
                         <button
                           type="button"
                           onClick={() => { setOpenMenuId(null); router.push(`/review?deck=${encodeURIComponent(d.id)}`); }}

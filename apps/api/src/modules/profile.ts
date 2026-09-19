@@ -34,10 +34,11 @@ export const profileModule = new Elysia({ prefix: '/profile' })
       const rows = await db.select().from(profile).where(eq(profile.userId, user.id));
       if (rows.length === 0) {
         // Lazy-create on first read — avoids a separate "finish signup" round trip.
-        const [created] = await db
+        await db
           .insert(profile)
           .values({ userId: user.id, name: user.name ?? 'Friend' })
-          .returning();
+          .onConflictDoNothing({ target: profile.userId });
+        const [created] = await db.select().from(profile).where(eq(profile.userId, user.id));
         return created;
       }
       return rows[0];

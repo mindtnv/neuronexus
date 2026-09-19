@@ -1,4 +1,5 @@
 const m = {
+  firstCard: 'Добавить первую карточку',
   newDeck: 'Новая колода',
   newSubDeck: 'Новая под-колода',
   underParent: 'Внутри',

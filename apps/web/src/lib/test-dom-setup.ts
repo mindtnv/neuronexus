@@ -22,8 +22,8 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
  * file to load this module, but module caching means it runs ONCE per process —
  * if an earlier suite tore the DOM down via `GlobalRegistrator.unregister()`
  * (render-math / sanitize-img do, deliberately, so DOM globals don't leak into
- * API tests), a later DOM-dependent file must call `ensureTestDom()` in its
- * `beforeAll` to re-register. Test-file execution order differs between macOS
+ * API tests), a later DOM-dependent file must call `ensureTestDom()` before dynamically
+ * importing DOM-dependent modules, and in `beforeAll` to re-register for tests. Test-file execution order differs between macOS
  * and the Linux CI runner, so "it passes locally" does not cover this.
  */
 export function ensureTestDom(): void {

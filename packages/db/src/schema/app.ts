@@ -12,6 +12,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  unique,
   uuid,
   vector,
 } from 'drizzle-orm/pg-core';
@@ -232,6 +233,7 @@ export const notes = pgTable(
       .notNull()
       .references(() => noteTypes.id, { onDelete: 'cascade' }),
     fieldValues: jsonb('field_values').notNull().$type<FieldValues>(),
+    acceptedAnswers: text('accepted_answers').array().notNull().default(sql`ARRAY[]::text[]`),
     tags: text('tags').array().notNull().default(sql`ARRAY[]::text[]`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -267,6 +269,8 @@ export const cards = pgTable(
       .notNull()
       .references(() => notes.id, { onDelete: 'cascade' }),
     templateOrd: integer('template_ord').notNull().default(0),
+    // null = ordinary question; 0 = legacy aggregate; positive = one cloze group.
+    clozeNumber: integer('cloze_number'),
     // Denormalized plaintext (search cache, NOT a security artifact).
     renderText: text('render_text').notNull().default(''),
     renderFrontText: text('render_front_text').notNull().default(''),
@@ -293,6 +297,7 @@ export const cards = pgTable(
     index('cards_deck_idx').on(t.deckId),
     index('cards_due_idx').on(t.userId, t.due),
     index('cards_note_idx').on(t.noteId),
+    unique('cards_note_template_cloze_uq').on(t.noteId, t.templateOrd, t.clozeNumber).nullsNotDistinct(),
     // Card-database (Browse) query paths:
     //  - (user_id, state) and (user_id, created_at, id) match the hot filter+sort
     //    paths of GET /cards/search (is:/state filters, default created sort).
@@ -353,9 +358,9 @@ export const reviews = pgTable(
     cardId: uuid('card_id')
       .notNull()
       .references(() => cards.id, { onDelete: 'cascade' }),
-    deckId: uuid('deck_id')
-      .notNull()
-      .references(() => decks.id, { onDelete: 'cascade' }),
+    // Historical location, not ownership of the review. Deleting a former
+    // deck must not delete reviews of a card that has since moved elsewhere.
+    deckId: uuid('deck_id').references(() => decks.id, { onDelete: 'set null' }),
     rating: integer('rating').notNull(), // 1..4
     durationMs: integer('duration_ms').notNull().default(0),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }).notNull().defaultNow(),

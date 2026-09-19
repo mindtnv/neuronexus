@@ -1,6 +1,8 @@
 'use client';
 
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { normalizeFieldName, validFieldNames, validateTemplates, typedAnswerField, renameFieldValues, renameTemplateFields } from '@neuronexus/shared';
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
 import { NNBtn, NNBadge, NNCard, NNIcon } from '@/components/ui';
@@ -11,7 +13,9 @@ import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { renderCardHtml } from '@/lib/render-card';
 import { RichCard } from '@/components/rich-card';
-import type { CardTemplate, FieldValues, NoteField } from '@neuronexus/shared';
+import type { RenderKind, CardRegenerationPreview, CardTemplate, FieldValues, NoteField } from '@neuronexus/shared';
+import { api, ApiError, ok } from '@/lib/api';
+import { noteTypeFromApi } from '@/lib/mappers';
 
 // ─────────────────────────────────────────────
 // Note-type editor (Milestone 1, Phase 5b)
@@ -122,12 +126,16 @@ const NoteTypeList = ({
   onCreate,
   onEdit,
   onDelete,
+  onKind,
+  onApply,
   onBack,
 }: {
   noteTypes: NoteType[];
   onCreate: () => void;
   onEdit: (nt: NoteType) => void;
   onDelete: (nt: NoteType) => void;
+  onKind: (nt: NoteType) => void;
+  onApply: (nt: NoteType) => void;
   onBack: () => void;
 }) => {
   const t = useT();
@@ -171,10 +179,12 @@ const NoteTypeList = ({
                   {t('noteTypes.list.templatesCount', { n: nt.templates.length })}
                 </span>
               </div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
                 <NNBtn size="sm" variant="soft" icon="edit" onClick={() => onEdit(nt)}>
                   {nt.isBuiltin ? t('noteTypes.list.clone') : t('noteTypes.list.edit')}
                 </NNBtn>
+                {!nt.isBuiltin && <NNBtn size="sm" variant="soft" onClick={() => onApply(nt)}>{t('noteTypes.convert.applyToNotes')}</NNBtn>}
+                {!nt.isBuiltin && <NNBtn size="sm" variant="soft" onClick={() => onKind(nt)}>{t('noteTypes.kind.change')}</NNBtn>}
                 {!nt.isBuiltin && (
                   <NNBtn size="sm" variant="danger" icon="x" onClick={() => onDelete(nt)}>
                     {t('noteTypes.list.delete')}
@@ -452,10 +462,16 @@ const NoteTypeForm = ({
   const isMobile = bp === 'mobile';
   const addNoteType = useNN((s) => s.addNoteType);
   const updateNoteType = useNN((s) => s.updateNoteType);
+  const { confirm } = useDialog();
+  const saveLock = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const [baseVersion, setBaseVersion] = useState(editing?.updatedAt);
+  const [latest, setLatest] = useState<NoteType | null>(null);
 
   const isClone = editing?.isBuiltin ?? false;
   const [draft, setDraft] = useState<Draft>(() =>
-    editing ? draftFromNoteType(editing) : emptyDraft(),
+    editing ? { ...draftFromNoteType(editing), fields: editing.fields.map((field) => ({ ...field, ...(editing.kind === 'typein' && field === typedAnswerField(editing.fields) ? { typeinAnswer: true } : {}) })) } : emptyDraft(),
   );
   // Per-field sample values for the preview, keyed by field name. Default to the
   // field name itself so the author immediately sees where each field lands.
@@ -483,11 +499,20 @@ const NoteTypeForm = ({
 
   // ── Field mutations ──
   const setFieldName = useCallback((index: number, name: string) => {
+    const previous = draft.fields[index]?.name;
+    if (previous === undefined) return;
+    const renames = new Map([[previous, name]]);
+    setSample((values) => renameFieldValues(values, renames) ?? values);
     setDraft((d) => ({
       ...d,
       fields: d.fields.map((f, i) => (i === index ? { ...f, name } : f)),
+      templates: d.templates.map((template) => ({
+        ...template,
+        frontTemplate: renameTemplateFields(template.frontTemplate, renames),
+        backTemplate: renameTemplateFields(template.backTemplate, renames),
+      })),
     }));
-  }, []);
+  }, [draft.fields]);
 
   const moveField = useCallback((index: number, dir: -1 | 1) => {
     setDraft((d) => {
@@ -545,7 +570,11 @@ const NoteTypeForm = ({
     if (!draft.name.trim()) return t('noteTypes.errors.nameRequired');
     const names = draft.fields.map((f) => f.name.trim());
     if (names.length === 0 || names.some((n) => !n)) return t('noteTypes.errors.noFields');
-    if (new Set(names).size !== names.length) return t('noteTypes.errors.duplicateFields');
+    if (!validFieldNames(draft.fields)) return t('noteTypes.errors.invalidFields');
+    if (editing?.kind === 'typein' && !draft.fields.some((field) => field.typeinAnswer)) return t('noteTypes.errors.answerRequired');
+    const issue = validateTemplates(draft.fields, draft.templates)[0];
+    if (issue?.code === 'unsupported_html') return t('noteTypes.errors.unsupportedHtml', { template: draft.templates.find((tpl) => tpl.ord === issue.templateOrd)?.name ?? '', tag: issue.tag ?? '', position: issue.offset + 1 });
+    if (issue) return t('noteTypes.errors.invalidTemplate', { template: draft.templates.find((tpl) => tpl.ord === issue.templateOrd)?.name ?? '', side: issue.side === 'front' ? t('noteTypes.preview.front') : t('noteTypes.preview.back'), position: issue.offset + 1, field: issue.field ?? '' });
     const tnames = draft.templates.map((tpl) => tpl.name.trim());
     if (tnames.length === 0 || tnames.some((n) => !n)) return t('noteTypes.errors.noTemplates');
     if (new Set(tnames).size !== tnames.length) return t('noteTypes.errors.duplicateTemplates');
@@ -553,25 +582,45 @@ const NoteTypeForm = ({
   };
 
   const handleSave = async () => {
+    if (saveLock.current) return;
     const v = validate();
     if (v) {
       setError(v);
       return;
     }
     setError(null);
+    saveLock.current = true;
     setSaving(true);
     // Re-pack ordinals dense+unique (server validates this) and trim names.
     const payload = {
       name: draft.name.trim(),
-      fields: reindex(draft.fields.map((f) => ({ ...f, name: f.name.trim() }))),
-      templates: reindex(draft.templates.map((tpl) => ({ ...tpl, name: tpl.name.trim() }))),
+      fields: reindex(draft.fields.map((f) => ({ ...f, name: normalizeFieldName(f.name) }))),
+      templates: reindex(draft.templates.map((tpl) => ({ ...tpl, name: tpl.name.trim(), frontTemplate: renameTemplateFields(tpl.frontTemplate, new Map()), backTemplate: renameTemplateFields(tpl.backTemplate, new Map()) }))),
       styling: draft.styling,
     };
     try {
       let saved: NoteType;
       if (editing && !editing.isBuiltin) {
-        // Own type → in-place PATCH (kind stays 'custom').
-        saved = await updateNoteType(editing.id, payload);
+        const preview = await ok(await (api as any)['note-types']({ id: editing.id }).preview.post({
+          ...payload, preview: true, expectedUpdatedAt: baseVersion,
+        })) as CardRegenerationPreview;
+        if (!alive.current) return;
+        const impact = preview.impact;
+        const sampleDetails = preview.validation?.samples.map((sample) => `• ${sample.front || '—'} → ${sample.error ? t(sample.error === 'typein_answer_placement' ? 'editor.errors.typeinPlacement' : 'noteTypes.validation.invalid') : sample.questions.join(' / ') || t('noteTypes.validation.media')}${sample.answer ? ` — ${t('noteTypes.answerField')}: ${sample.answer}` : ''}${sample.omittedTemplates.length ? ` (${t('noteTypes.validation.omitted', { names: sample.omittedTemplates.join(', ') })})` : ''}`).join('\n');
+        if (preview.validation?.invalidNotes) {
+          setError(`${t('noteTypes.validation.blocked', { n: preview.validation.invalidNotes })}\n${sampleDetails ?? ''}`);
+          return;
+        }
+        if (impact.willCreateCards || impact.willDeleteCards || preview.validation?.checkedNotes) {
+          const details = impact.removedCards.map((card) => `• ${card.front || t('noteTypes.preview.noCard')} (${card.reviews})`).join('\n');
+          if (!(await confirm({ title: t('noteTypes.impact.title'), danger: impact.willDeleteCards > 0,
+            message: `${t('noteTypes.impact.counts', { create: impact.willCreateCards, keep: impact.willKeepCards,
+              remove: impact.willDeleteCards, reviews: impact.willDeleteReviews })}${sampleDetails ? `\n\n${t('noteTypes.validation.samples')}\n${sampleDetails}` : ''}${details ? `\n\n${t('noteTypes.impact.removed')}\n${details}` : ''}`,
+          }))) return;
+        }
+        if (!alive.current) return;
+        saved = await updateNoteType(editing.id, { ...payload, expectedUpdatedAt: preview.sourceVersion,
+          confirmationToken: preview.confirmationToken });
       } else if (editing && editing.isBuiltin) {
         // CLONE-ON-EDIT: PATCH a builtin → server returns a NEW user-owned copy
         // (kind preserved server-side). Store appends the clone.
@@ -580,12 +629,20 @@ const NoteTypeForm = ({
         // New custom type.
         saved = await addNoteType({ ...payload, kind: 'custom' });
       }
-      onDone(saved);
+      if (alive.current) onDone(saved);
     } catch (err) {
-      console.error('note-type save failed', err);
-      setError(err instanceof Error ? err.message : t('noteTypes.errors.saveFailed'));
+      if (!alive.current) return;
+      if (err instanceof ApiError && err.status === 409 && editing) {
+        setError(t('noteTypes.errors.changed'));
+        try {
+          const rows = await ok(await (api as any)['note-types'].get()) as any[];
+          const current = rows.find((row) => row.id === editing.id);
+          if (current && alive.current) setLatest(noteTypeFromApi(current));
+        } catch { /* Keep the draft and conflict message if refreshing fails. */ }
+      } else setError(t('noteTypes.errors.saveFailed'));
     } finally {
-      setSaving(false);
+      saveLock.current = false;
+      if (alive.current) setSaving(false);
     }
   };
 
@@ -598,7 +655,7 @@ const NoteTypeForm = ({
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
-        <NNBtn size="sm" variant="ghost" icon="chevl" onClick={onCancel}>
+        <NNBtn size="sm" variant="ghost" icon="chevl" onClick={onCancel} disabled={saving}>
           {t('noteTypes.editor.back')}
         </NNBtn>
         <div style={sectionTitleStyle}>{title}</div>
@@ -622,7 +679,20 @@ const NoteTypeForm = ({
         </div>
       )}
 
-      <div style={{ display: isMobile ? 'flex' : 'grid', flexDirection: 'column', gridTemplateColumns: isMobile ? undefined : '1fr 380px', gap: 20 }}>
+      {latest && <NNCard padding={16} style={{ marginBottom: 16 }}>
+        <div role="status">{t('noteTypes.impact.latest')}</div>
+        <p>{latest.name} · {latest.fields.map((field) => field.name).join(', ')}</p>
+        {latest.templates.map((template) => <details key={template.id ?? template.ord}>
+          <summary>{template.name}</summary><pre style={{ whiteSpace: 'pre-wrap' }}>{template.frontTemplate}{'\n\n'}{template.backTemplate}</pre>
+        </details>)}
+        <NNBtn disabled={saving} size="sm" onClick={async () => {
+          if (await confirm({ title: t('noteTypes.impact.replaceDraft'), danger: true })) {
+            setDraft(draftFromNoteType(latest)); setBaseVersion(latest.updatedAt); setLatest(null); setError(null);
+          }
+        }}>{t('noteTypes.impact.loadLatest')}</NNBtn>
+      </NNCard>}
+
+      <fieldset disabled={saving} style={{ border: 0, margin: 0, padding: 0, minWidth: 0, display: isMobile ? 'flex' : 'grid', flexDirection: 'column', gridTemplateColumns: isMobile ? undefined : '1fr 380px', gap: 20 }}>
         {/* Left: editor */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           {/* Name */}
@@ -661,6 +731,15 @@ const NoteTypeForm = ({
             </div>
           </div>
 
+          {editing?.kind === 'typein' && <label>{t('noteTypes.answerField')}
+            <select aria-label={t('noteTypes.answerField')} style={inputStyle}
+              value={draft.fields.findIndex((field) => field.typeinAnswer)}
+              onChange={(event) => setDraft((previous) => ({ ...previous, fields: previous.fields.map((field, index) => ({ ...field, typeinAnswer: index === Number(event.target.value) })) }))}>
+              <option value={-1} disabled>{t('noteTypes.errors.answerRequired')}</option>
+              {draft.fields.map((field, index) => <option key={field.id ?? index} value={index}>{field.name}</option>)}
+            </select>
+          </label>}
+
           {/* Templates */}
           <div>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
@@ -692,23 +771,21 @@ const NoteTypeForm = ({
             </div>
           </div>
 
-          {/* Styling */}
+          {/* CSS is retained as legacy data; the renderer never applies it. */}
           <div>
             <div style={sectionTitleStyle}>{t('noteTypes.styling.title')}</div>
             <div style={{ ...hintStyle, margin: '6px 0 10px' }}>{t('noteTypes.styling.hint')}</div>
-            <textarea
-              value={draft.styling}
-              onChange={(e) => setDraft((d) => ({ ...d, styling: e.target.value }))}
-              placeholder={t('noteTypes.styling.placeholder')}
-              style={monoTextarea}
-            />
+            {draft.styling && <details>
+              <summary>{t('noteTypes.styling.saved')}</summary>
+              <textarea readOnly aria-label={t('noteTypes.styling.saved')} value={draft.styling} style={monoTextarea} />
+            </details>}
           </div>
 
           {error && (
-            <div style={{
+            <div role="alert" style={{
               padding: '10px 12px',
               background: 'color-mix(in srgb, var(--rose-400) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--rose-400) 28%, transparent)',
-              borderRadius: 10, color: 'var(--rose-400)', fontSize: 12.5,
+              borderRadius: 10, color: 'var(--rose-400)', fontSize: 12.5, whiteSpace: 'pre-wrap',
             }}>
               {error}
             </div>
@@ -745,9 +822,64 @@ const NoteTypeForm = ({
             ))}
           </div>
         </div>
-      </div>
+      </fieldset>
     </div>
   );
+};
+
+// A mode transition is reviewed separately from field/template edits.
+const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () => void }) => {
+  const t = useT();
+  const { confirm } = useDialog();
+  const update = useNN((state) => state.updateNoteType);
+  const [kind, setKind] = useState<RenderKind>(editing.kind === 'typein' ? 'basic' : 'typein');
+  const [answerFieldId, setAnswerFieldId] = useState(typedAnswerField(editing.fields)?.id ?? '');
+  const [version] = useState(editing.updatedAt);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const lock = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const label = (value: RenderKind) => t(value === 'cloze' ? 'editor.variants.cloze' : value === 'typein' ? 'editor.variants.type' : value === 'custom' ? 'noteTypes.kind.custom' : 'editor.variants.basic');
+  const apply = async () => {
+    if (lock.current) return;
+    lock.current = true; setBusy(true); setError(null);
+    const body = { kind, expectedUpdatedAt: version, ...(kind === 'typein' ? { answerFieldId } : {}) };
+    try {
+      const preview = await ok(await (api as any)['note-types']({ id: editing.id }).kind.preview.post(body)) as CardRegenerationPreview;
+      if (!alive.current) return;
+      const samples = preview.validation?.samples.map((sample) => `• ${sample.front || '—'} → ${sample.error ? t(sample.error === 'typein_answer_placement' ? 'editor.errors.typeinPlacement' : 'noteTypes.validation.invalid') : sample.questions.join(' / ') || t('noteTypes.validation.media')}${sample.answer ? ` — ${sample.answer}` : ''}`).join('\n') ?? '';
+      if (preview.validation?.invalidNotes) {
+        setError(`${t('noteTypes.validation.blocked', { n: preview.validation.invalidNotes })}\n${samples}`); return;
+      }
+      const impact = preview.impact;
+      const approved = await confirm({ title: t('noteTypes.kind.confirm', { from: label(editing.kind), to: label(kind) }),
+        danger: impact.willDeleteCards > 0,
+        message: `${preview.kindTransition?.resetsQuestions ? t('noteTypes.kind.reset') : t('noteTypes.kind.preserve')}\n${t('noteTypes.impact.counts', { create: impact.willCreateCards, keep: impact.willKeepCards, remove: impact.willDeleteCards, reviews: impact.willDeleteReviews })}${samples ? `\n\n${t('noteTypes.validation.samples')}\n${samples}` : ''}`,
+      });
+      if (!approved || !alive.current) return;
+      await update(editing.id, { ...body, expectedUpdatedAt: preview.sourceVersion, confirmationToken: preview.confirmationToken });
+      if (alive.current) onDone();
+    } catch (error) {
+      if (alive.current) setError(t(error instanceof ApiError && error.status === 409 ? 'noteTypes.kind.changed' : 'noteTypes.errors.saveFailed'));
+    } finally { lock.current = false; if (alive.current) setBusy(false); }
+  };
+  return <div style={{ padding: 24, maxWidth: 760, margin: '0 auto', width: '100%' }}>
+    <NNBtn variant="ghost" size="sm" onClick={onDone} disabled={busy}>{t('actions.cancel')}</NNBtn>
+    <h2>{t('noteTypes.kind.title', { name: editing.name })}</h2>
+    <p>{t('noteTypes.kind.scope')}</p>
+    <fieldset disabled={busy} style={{ border: 0, padding: 0, display: 'grid', gap: 16 }}>
+      <label>{t('noteTypes.kind.mode')}<select aria-label={t('noteTypes.kind.mode')} style={inputStyle} value={kind} onChange={(event) => setKind(event.target.value as RenderKind)}>
+        {(['basic', 'custom', 'typein', 'cloze'] as const).filter((value) => value !== editing.kind).map((value) => <option value={value} key={value}>{label(value)}</option>)}
+      </select></label>
+      {kind === 'typein' && <label>{t('noteTypes.answerField')}<select aria-label={t('noteTypes.answerField')} style={inputStyle} value={answerFieldId} onChange={(event) => setAnswerFieldId(event.target.value)}>
+        {editing.fields.map((field) => <option value={field.id} key={field.id}>{field.name}</option>)}
+      </select></label>}
+      <p>{kind === 'cloze' ? t('noteTypes.kind.cloze') : t('noteTypes.kind.scopeHint')}</p>
+      <NNBtn variant="primary" onClick={apply}>{busy ? t('noteTypes.actions.saving') : t('noteTypes.kind.preview')}</NNBtn>
+    </fieldset>
+    {error && <p role="alert" style={{ color: 'var(--rose-400)', whiteSpace: 'pre-wrap' }}>{error}</p>}
+  </div>;
 };
 
 // ── Screen orchestrator ──────────────────────────────────────────────────────
@@ -757,11 +889,13 @@ export const NNNoteTypeEditor = () => {
   const { confirm, alert } = useDialog();
   const router = useAppNavigation();
   const searchParams = useSearchParams();
-  const editId = searchParams?.get('edit') ?? null;
+  const kindId = searchParams?.get('kind') ?? null;
+  const editId = searchParams?.get('edit') ?? kindId;
   const isNew = searchParams?.get('new') === '1';
 
   const noteTypes = useNN((s) => s.noteTypes);
   const deleteNoteType = useNN((s) => s.deleteNoteType);
+  const [cloneResult, setCloneResult] = useState<{ source: NoteType; target: NoteType } | null>(null);
 
   const editing = useMemo(
     () => (editId ? noteTypes.find((nt) => nt.id === editId) ?? null : null),
@@ -796,16 +930,24 @@ export const NNNoteTypeEditor = () => {
     [deleteNoteType, t, confirm, alert],
   );
 
+  if (kindId && editing && !editing.isBuiltin) return <NoteTypeKindForm key={editing.id} editing={editing} onDone={goList} />;
+
   // Form mode: explicit ?new=1 OR ?edit=<id> resolving to a known type.
   if (isNew || editing) {
     return (
       <NoteTypeForm
         editing={editing}
-        onDone={goList}
+        onDone={(saved) => { if (editing?.isBuiltin && saved.id !== editing.id) setCloneResult({ source: editing, target: saved }); else setCloneResult(null); goList(); }}
         onCancel={goList}
       />
     );
   }
+
+  if (cloneResult) return <div style={{ padding: 24, maxWidth: 760, margin: '0 auto' }}>
+    <h2>{cloneResult.target.name}</h2><p>{t('noteTypes.convert.afterClone')}</p>
+    <NNBtn variant="primary" onClick={() => router.push(`/cards?noteTypeId=${encodeURIComponent(cloneResult.source.id)}&convertTo=${encodeURIComponent(cloneResult.target.id)}`)}>{t('noteTypes.convert.selectNotes')}</NNBtn>
+    <NNBtn variant="ghost" onClick={() => setCloneResult(null)}>{t('noteTypes.editor.back')}</NNBtn>
+  </div>;
 
   return (
     <NoteTypeList
@@ -813,6 +955,8 @@ export const NNNoteTypeEditor = () => {
       onCreate={goNew}
       onEdit={goEdit}
       onDelete={handleDelete}
+      onApply={(type) => router.push(`/cards?convertTo=${encodeURIComponent(type.id)}`)}
+      onKind={(type) => router.replace(`/note-types?kind=${encodeURIComponent(type.id)}`, { track: false })}
       onBack={goBack}
     />
   );

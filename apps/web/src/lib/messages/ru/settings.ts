@@ -91,8 +91,12 @@ const m = {
     workloadValue: '~28 мин/день, 1 284 повторов/мес при текущем размере колод.',
   },
   weights: {
-    title: 'FSRS weights · 19 parameters',
-    advanced: 'Продвинуто · пока только чтение',
+    fuzz: 'Разброс интервалов',
+    shortTerm: 'Короткие шаги обучения',
+    enabled: 'Включено',
+    disabled: 'Выключено',
+    title: 'Стандартные настройки обучения',
+    advanced: 'По умолчанию',
     defaults: 'Значения по умолчанию из ts-fsrs generatorParameters().w',
     reoptimize: 'Переоптимизировать',
     logLoss: 'Log loss',
@@ -182,7 +186,7 @@ const m = {
       reviewsPerDay: 'Повторов в день',
       learningSteps: 'Шаги изучения',
       learningStepsPlaceholder: 'например, 1m 10m',
-      learningStepsHint: 'Через пробел: 1m 10m 1d',
+      learningStepsHint: 'От 1 до 20 положительных шагов через пробел: 1m 10m 1d.',
       relearningSteps: 'Шаги переучивания',
       relearningStepsPlaceholder: 'например, 10m',
       desiredRetention: 'Переопределить желаемый retention',
@@ -211,7 +215,7 @@ const m = {
     subtitle: 'Открыто: {n} из 6. Выбери, какое растёт в центре сада.',
   },
   weightsSubtitle:
-    'Алгоритм FSRS — используется для планирования повторов. Параметры пока общие для всех пользователей; персонализация веса — в следующих версиях.',
+    'Эти настройки действуют, если для колоды не выбран свой пресет. Изменить их для конкретных колод можно ниже.',
   signOut: {
     title: 'Выйти из аккаунта',
     subtitle: 'Сессия закроется, данные останутся — зайди снова, чтобы продолжить.',

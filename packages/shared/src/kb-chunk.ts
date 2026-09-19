@@ -335,6 +335,8 @@ export interface MessageMention {
  * no impact at all (frame carries `impact: undefined`).
  */
 export interface ConfirmImpact {
+  /** Server consistency token; never supplied by the model. */
+  confirmationToken?: string;
   willDeleteCards?: number;
   willCreateCards?: number;
   affectsSiblings?: boolean;
@@ -422,6 +424,7 @@ export interface ToolCallRecord {
   id: string;
   name: string;
   arguments: string;
+  confirmationToken?: string;
 }
 
 /** Discriminated union of SSE frames emitted by the chat stream endpoint. */

@@ -67,10 +67,9 @@ export function wildcardToSqlLike(pattern: string): string {
 // ── cloze ────────────────────────────────────────────────────────────────────
 
 /**
- * Matches an Anki-style cloze deletion: `{{c1::answer}}` (and any `c<digit>`).
- * Capture group 1 is the answer text. Consolidated from review.tsx (Critic
- * must-fix C1) so there is no forked regex. The `g` flag is set; callers that
- * need a fresh lastIndex should construct `new RegExp(CLOZE_RE.source, 'g')`.
+ * Legacy flat-match helper for callers that inspect simple examples. Real
+ * parsing/validation lives in cloze.ts and the Markdown plugin; this regex
+ * cannot represent nested braces, hints or code and must not drive generation.
  */
 export const CLOZE_RE = /\{\{c\d+::([^}]+)\}\}/g;
 
@@ -83,7 +82,4 @@ export const CLOZE_RE = /\{\{c\d+::([^}]+)\}\}/g;
  *  - `'answer'` → replace each `{{c1::X}}` with `X` (the filled-in text shown on
  *    the answer side / the Browse "Answer" column).
  */
-export function stripCloze(text: string, mode: 'prompt' | 'answer'): string {
-  const re = new RegExp(CLOZE_RE.source, 'g');
-  return text.replace(re, (_full, answer: string) => (mode === 'prompt' ? '[…]' : answer));
-}
+export { renderClozeSource as stripCloze } from './cloze';

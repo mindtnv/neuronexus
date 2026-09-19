@@ -1,5 +1,6 @@
 const common = {
   app: {
+    cardCount: 'Карточек: {n}',
     name: 'NeuroNexus',
     tagline: 'Anki на стероидах — граф, сад, AI.',
     workspace: 'мозг {name}',

@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { NNIcon, NNKbd } from '@/components/ui';
+import { NNBtn, NNIcon, NNKbd } from '@/components/ui';
+import { useModalFocus } from '@/lib/use-modal-focus';
 import { AppLink } from '@/components/navigation';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -78,6 +79,8 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef);
 
   const decks = useNN((s) => s.decks);
   const cards = useNN((s) => s.cards);
@@ -267,7 +270,7 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
       paddingLeft: isMobile ? '2vw' : 0,
       paddingRight: isMobile ? '2vw' : 0,
     }} onClick={() => onClose?.()}>
-      <div onClick={e => e.stopPropagation()} style={{
+      <div ref={dialogRef} className="nn-shortcut-dialog" role="dialog" aria-modal="true" aria-label={t('overlays.cheatsheet.global.palette')} tabIndex={-1} onClick={e => e.stopPropagation()} style={{
         width: isMobile ? '96vw' : 620,
         maxWidth: '100%',
         maxHeight: isMobile ? '80vh' : 520,
@@ -288,6 +291,7 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
           <NNIcon name="search" size={18} color="var(--text-muted)"/>
           <input
             ref={inputRef}
+            aria-label={t('overlays.palette.searchPlaceholder')}
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder={isMobile ? t('overlays.palette.searchPlaceholderMobile') : t('overlays.palette.searchPlaceholder')}
@@ -303,7 +307,7 @@ export const CommandPalette = ({ defaultQuery = '', onClose }: { defaultQuery?: 
               <NNIcon name="x" size={14}/>
             </span>
           )}
-          <NNKbd>esc</NNKbd>
+          <NNBtn size="sm" variant="ghost" icon="x" onClick={onClose} ariaLabel={t('actions.close')} />
         </div>
 
         {/* Results */}

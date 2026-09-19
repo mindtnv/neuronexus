@@ -120,4 +120,27 @@ describe('decks', () => {
     >();
     expect(bobList).toEqual([]);
   });
+
+  test('moving a deck cannot attach it to another user\'s parent', async () => {
+    const a = await signUpAndCookie(app, uniqueEmail());
+    const b = await signUpAndCookie(app, uniqueEmail());
+    const own = await (await callApp(app, 'POST', '/decks', { cookie: a.cookie, body: { name: 'Own' } })).json<{ id: string }>();
+    const foreign = await (await callApp(app, 'POST', '/decks', { cookie: b.cookie, body: { name: 'Foreign' } })).json<{ id: string }>();
+    const result = await callApp(app, 'PATCH', `/decks/${own.id}`, { cookie: a.cookie, body: { parentId: foreign.id } });
+    expect(result.status).toBe(400);
+    expect(await result.json()).toMatchObject({ error: 'parent_not_found' });
+    const list = await (await callApp(app, 'GET', '/decks', { cookie: a.cookie })).json<any[]>();
+    expect(list[0].parentId).toBeNull();
+  });
+
+  test('simultaneous opposite moves cannot form a deck cycle', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const a = await (await callApp(app, 'POST', '/decks', { cookie, body: { name: 'A' } })).json<{ id: string }>();
+    const b = await (await callApp(app, 'POST', '/decks', { cookie, body: { name: 'B' } })).json<{ id: string }>();
+    const results = await Promise.all([
+      callApp(app, 'PATCH', `/decks/${a.id}`, { cookie, body: { parentId: b.id } }),
+      callApp(app, 'PATCH', `/decks/${b.id}`, { cookie, body: { parentId: a.id } }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 400]);
+  });
 });

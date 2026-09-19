@@ -4,20 +4,25 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppLink, useAppNavigation } from '@/components/navigation';
 import { useSearchParams } from 'next/navigation';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNKbd, NNSkeleton, NNTag } from '@/components/ui';
-import { previewGrades, xpForRating } from '@neuronexus/shared';
+import { fieldPlainText, typedAnswerField, typedAnswerTarget, previewGrades, type StudySummary } from '@neuronexus/shared';
 import { humanInterval } from '@/lib/fsrs';
-import { api, ok } from '@/lib/api';
-import { cardFromApi } from '@/lib/mappers';
+import { api, ApiError, ok } from '@/lib/api';
+import { cardFromApi, profileFromApi } from '@/lib/mappers';
 import { RichCard } from '@/components/rich-card';
 import { SimilarCardsPanel } from '@/components/similar-cards';
 import { SourcePeekChip, SourcePeekPanel, useFirstCardSource } from '@/components/source-peek';
 import { raiseToast } from '@/components/toasts';
-import { useT } from '@/lib/i18n';
+import { useT, useLocale } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
 import { useUI } from '@/lib/ui-store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { resolveDeckConfigClient } from '@/lib/deck-config';
+import { toApiError } from '@/lib/resource-state';
+import { clearStudyHandoff, createAnswerTimer, emptyStudySession, mergeStudyQueue, readStudyHandoff, recordStudyAnswer, saveStudyHandoff, undoStudyAnswer, skipStudyCard, studyTotals } from '@/lib/review-session';
+import { diffAnswer } from '@/lib/review-answer';
+import { clearStudyResult, saveStudyResult } from '@/lib/study-result';
+import { isReviewEditingTarget, isReviewInteractiveTarget } from '@/lib/review-interactions';
 import type { Card, CardSourceLink, Rating } from '@/lib/types';
 
 type RatingMeta = {
@@ -55,52 +60,9 @@ const renderKindLabel = (kind: string, t: (k: string) => string): string => {
 };
 
 export const NNReview = ({ variant: _variant = 'classic' }: { variant?: 'classic' }) => {
-  return <NNReviewClassic />;
-};
-
-// Type-in char-by-char diff
-type DiffToken = { ch: string; kind: 'match' | 'extra' | 'missing' };
-
-const diffAnswer = (userRaw: string, targetRaw: string): DiffToken[] => {
-  const user = userRaw.trim();
-  const target = targetRaw.trim();
-  const u = user.toLowerCase();
-  const t = target.toLowerCase();
-  const m = u.length;
-  const n = t.length;
-  // LCS via DP
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (u[i - 1] === t[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
-      else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
-    }
-  }
-  const tokens: DiffToken[] = [];
-  let i = m;
-  let j = n;
-  while (i > 0 && j > 0) {
-    if (u[i - 1] === t[j - 1]) {
-      tokens.push({ ch: target[j - 1], kind: 'match' });
-      i--;
-      j--;
-    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
-      tokens.push({ ch: user[i - 1], kind: 'extra' });
-      i--;
-    } else {
-      tokens.push({ ch: target[j - 1], kind: 'missing' });
-      j--;
-    }
-  }
-  while (i > 0) {
-    tokens.push({ ch: user[i - 1], kind: 'extra' });
-    i--;
-  }
-  while (j > 0) {
-    tokens.push({ ch: target[j - 1], kind: 'missing' });
-    j--;
-  }
-  return tokens.reverse();
+  const params = useSearchParams();
+  const owner = useNN((s) => s.bootstrapped ? s.profile?.userId ?? 'ready' : 'loading');
+  return <NNReviewClassic key={`${owner}:${params.get('deck') ?? ''}:${params.get('filteredDeckId') ?? ''}`} />;
 };
 
 // ─────────────────────────────────────────────
@@ -108,17 +70,21 @@ const diffAnswer = (userRaw: string, targetRaw: string): DiffToken[] => {
 // ─────────────────────────────────────────────
 export const NNReviewClassic = () => {
   const t = useT();
+  const { locale } = useLocale();
   useEmptyRedirect('first-run');
   const router = useAppNavigation();
   const searchParams = useSearchParams();
   const filteredDeckId = searchParams.get('filteredDeckId') ?? undefined;
   // deck= param from the decks screen "Review" button (per-deck scoped queue).
   const deckId = searchParams.get('deck') ?? undefined;
+  const resumeCardId = searchParams.get('resume');
+  const reviewHref = filteredDeckId ? `/review?filteredDeckId=${encodeURIComponent(filteredDeckId)}` : deckId ? `/review?deck=${encodeURIComponent(deckId)}` : '/review';
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const bootstrapped = useNN((s) => s.bootstrapped);
   const decks = useNN((s) => s.decks);
   const noteTypes = useNN((s) => s.noteTypes);
+  const catalogAtLoad = useRef(noteTypes);
   const filteredDecks = useNN((s) => s.filteredDecks);
   const presets = useNN((s) => s.presets);
   const profile = useNN((s) => s.profile);
@@ -133,9 +99,13 @@ export const NNReviewClassic = () => {
   // unmounts and keeps re-entry non-zen.
   useEffect(() => () => setZen(false), [setZen]);
 
-  // Freeze the queue for this session so newly-rescheduled cards don't jump back in
-  const [queue, setQueue] = useState<Card[]>([]);
-  const [index, setIndex] = useState(0);
+  const [session, setSession] = useState(() => readStudyHandoff(profile?.userId, reviewHref, resumeCardId) ?? emptyStudySession());
+  const [finished, setFinished] = useState(false);
+  const [queueLoading, setQueueLoading] = useState(true);
+  const [queueError, setQueueError] = useState<ApiError | null>(null);
+  const [queueAttempt, setQueueAttempt] = useState(0);
+  const [summary, setSummary] = useState<StudySummary | null>(null);
+  const [serverOffset, setServerOffset] = useState(0);
   const [revealed, setRevealed] = useState(false);
   // Semantic "similar cards" drawer — only offered AFTER reveal (similar cards
   // would spoil the answer before the flip).
@@ -145,10 +115,12 @@ export const NNReviewClassic = () => {
   // the reviewer (an overlay popover). The grade already committed server-side;
   // only the visual advance waits for «понятно, дальше» / Esc. null = no peek.
   const [pendingPeek, setPendingPeek] = useState<CardSourceLink | null>(null);
-  const [completed, setCompleted] = useState(0);
-  const [xpGained, setXpGained] = useState(0);
-  const [startedAt, setStartedAt] = useState<number>(() => Date.now());
-  const [gradeCounts, setGradeCounts] = useState<Record<Rating, number>>({ 1: 0, 2: 0, 3: 0, 4: 0 });
+  const totals = useMemo(() => studyTotals(session.history), [session.history]);
+  const completed = totals.answers;
+  const xpGained = totals.xp;
+  const gradeCounts = totals.grades;
+  const queue = session.pending;
+  const answerTimer = useRef(createAnswerTimer());
   // 'regular' | 'filtered' — populated from the queue envelope's `mode` field
   const [sessionMode, setSessionMode] = useState<'regular' | 'filtered'>('regular');
 
@@ -156,51 +128,113 @@ export const NNReviewClassic = () => {
   const [typedAnswer, setTypedAnswer] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
 
   // Flip-glow pulse
   const [glow, setGlow] = useState(false);
 
   const lockRef = useRef(false);
-  // Remember the last rating so undo can rewind the session XP / grade tallies
-  // by the exact amount the grade added.
-  const lastGradeRef = useRef<Rating | null>(null);
-  const sessionStartRef = useRef<number>(Date.now());
-  const sessionSavedRef = useRef(false);
-  const sessionStartedRef = useRef(false);
-  const queueLoadedRef = useRef(false);
-
-  // Build the session queue from the server's scheduler queue — this respects
-  // the daily new/review caps and excludes suspended (leeched) cards. We freeze
-  // it once for the session so rescheduled cards don't jump back in.
+  const mountedRef = useRef(true);
   useEffect(() => {
-    if (!bootstrapped || queueLoadedRef.current) return;
-    queueLoadedRef.current = true;
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const [busy, setBusy] = useState(false);
+  const [mutationError, setMutationError] = useState<ApiError | null>(null);
+  const cardUnavailable = mutationError?.status === 404 || mutationError?.status === 409;
+  const sessionSavedRef = useRef(false);
+  const [undoBlocked, setUndoBlocked] = useState(false);
+  const canUndo = session.history.length > 0 && !undoBlocked;
+
+  const refreshQueue = useCallback(() => {
+    setQueueLoading(true);
+    setQueueAttempt((n) => n + 1);
+  }, []);
+
+  // Refetch at entry, after an exhausted batch, or when a learning step is due.
+  useEffect(() => {
+    if (!bootstrapped) return;
+    let cancelled = false;
+    setQueueLoading(true);
+    setQueueError(null);
     (async () => {
       try {
         const query: Record<string, string> = {};
         if (filteredDeckId) query.filteredDeckId = filteredDeckId;
         if (deckId) query.deckId = deckId;
         const res: any = await ok(await (api as any).cards.queue.get({ query }));
+        if (mutationError && !cancelled) {
+          // A lost response may have committed, or another tab may have graded.
+          // Reconcile account totals as well as the queue during recovery.
+          const latest = await ok(await api.profile.get()).catch(() => null);
+          if (!cancelled && latest?.userId === profile?.userId && latest?.userId) {
+            useNN.setState({ profile: profileFromApi(latest) });
+          }
+        }
+        if (cancelled) return;
+        catalogAtLoad.current = useNN.getState().noteTypes;
         const due = ((res?.due ?? []) as any[]).map(cardFromApi);
         const fresh = ((res?.new ?? []) as any[]).map(cardFromApi);
         const q = [...due, ...fresh];
         // Capture the mode from the envelope for mode-aware grading (Decision 7).
-        if (res?.mode === 'filtered') {
-          setSessionMode('filtered');
-        }
-        setQueue(q);
-        setStartedAt(Date.now());
-        sessionStartRef.current = Date.now();
-        if (q.length > 0) sessionStartedRef.current = true;
-      } catch {
-        // Leave the queue empty → renders the "all caught up" empty state.
+        setSessionMode(res?.mode === 'filtered' ? 'filtered' : 'regular');
+        setSummary(res?.summary ?? null);
+        const serverNow = res?.summary?.serverNow ? Date.parse(res.summary.serverNow) : Date.now();
+        setServerOffset(serverNow - Date.now());
+        const handoff = readStudyHandoff(profile?.userId, reviewHref, resumeCardId);
+        const resumeId = resumeCardId ?? handoff?.activeId ?? null;
+        setSession((previous) => {
+          const merged = mergeStudyQueue(previous, q, res?.mode === 'filtered' ? 'filtered' : 'regular', serverNow);
+          return handoff && q.some((card) => card.id === resumeId) && merged.pending.some((card) => card.id === resumeId)
+            ? { ...merged, activeId: resumeId } : merged;
+        });
+        if (handoff) clearStudyHandoff();
+        setRevealed(false);
+        setSubmitted(false);
+        setTypedAnswer('');
+        setMutationError(null);
+        answerTimer.current.reset(!document.hidden);
+      } catch (error) {
+        if (!cancelled) setQueueError(toApiError(error));
+      } finally {
+        if (!cancelled) setQueueLoading(false);
       }
     })();
-  // filteredDeckId is stable for the lifetime of the session (frozen by queueLoadedRef).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bootstrapped]);
+    return () => { cancelled = true; };
+  }, [bootstrapped, queueAttempt]);
 
-  const current = queue[index];
+  const current = finished ? undefined : pendingPeek ? session.history.at(-1)?.before : queue.find((c) => c.id === session.activeId);
+  useEffect(() => {
+    if (!current?.noteType || queueLoading || noteTypes === catalogAtLoad.current) return;
+    const latest = noteTypes.find((type) => type.id === current.noteType!.id);
+    const renderKey = (type: { kind: string; templates: { ord: number; frontTemplate: string; backTemplate: string }[] }) =>
+      JSON.stringify([type.kind, type.templates.map((template) => [template.ord, template.frontTemplate, template.backTemplate])]);
+    if (!latest || (latest.updatedAt && current.noteType.updatedAt && latest.updatedAt > current.noteType.updatedAt) ||
+      renderKey(latest) !== renderKey(current.noteType)) {
+      setMutationError(new ApiError('card_changed', { status: 409 }));
+    }
+  }, [current, noteTypes, queueLoading]);
+  useEffect(() => {
+    if (!queueLoading && current && current.renderKind !== 'typein' && !document.querySelector('[aria-modal="true"]')) {
+      cardRef.current?.focus({ preventScroll: true });
+    }
+  }, [current?.id, current?.updatedAt, current?.renderKind, queueLoading]);
+  useEffect(() => { answerTimer.current.reset(Boolean(current) && !document.hidden); }, [current?.id]);
+  useEffect(() => {
+    const update = () => {
+      if (document.hidden || !current || busy || pendingPeek) answerTimer.current.pause();
+      else answerTimer.current.resume();
+    };
+    update();
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
+  }, [current?.id, busy, pendingPeek]);
+  const editHref = current ? `/editor?${new URLSearchParams({ card: current.id, returnTo: `${reviewHref}${reviewHref.includes('?') ? '&' : '?'}resume=${current.id}` })}` : '/editor';
+  const handleEdit = useCallback(() => {
+    if (!current || lockRef.current || pendingPeek) return;
+    if (profile?.userId) saveStudyHandoff(profile.userId, reviewHref, current.id, session);
+    router.push(editHref);
+  }, [current, pendingPeek, profile?.userId, reviewHref, session, router, editHref]);
   const deck = useMemo(() => (current ? decks.find((d) => d.id === current.deckId) : undefined), [current, decks]);
 
   // Feature #1 — the current card's first cited source (null when hand-authored).
@@ -215,18 +249,16 @@ export const NNReviewClassic = () => {
     [current?.deckId, decks, presets, profile],
   );
 
-  const previews = useMemo(
-    () =>
-      current
-        ? previewGrades(current.fsrs, new Date(), {
-            requestRetention: currentDeckConfig.desiredRetention,
-            learningSteps: currentDeckConfig.learningSteps,
-            relearningSteps: currentDeckConfig.relearningSteps,
-            maximumInterval: currentDeckConfig.maximumInterval,
-          })
-        : null,
-    [current, currentDeckConfig],
-  );
+  const previews = useMemo(() => {
+    if (!current) return null;
+    const at = new Date(Date.now() + serverOffset);
+    return { at, cards: previewGrades(current.fsrs, at, {
+      requestRetention: currentDeckConfig.desiredRetention,
+      learningSteps: currentDeckConfig.learningSteps,
+      relearningSteps: currentDeckConfig.relearningSteps,
+      maximumInterval: currentDeckConfig.maximumInterval,
+    }) };
+  }, [current, currentDeckConfig, serverOffset, revealed]);
 
   // Pulse glow whenever reveal-state changes
   useEffect(() => {
@@ -251,106 +283,85 @@ export const NNReviewClassic = () => {
     }
   }, [current?.id, current?.renderKind, submitted]);
 
-  // Advance to the next card + reset per-card state. Split out of handleGrade so
-  // a held lapse-peek (Feature #1) can defer it to «понятно, дальше» without
-  // duplicating the reset logic.
-  const advanceQueue = useCallback(() => {
-    setPendingPeek(null);
-    setIndex((i) => i + 1);
+  const resetAnswer = useCallback(() => {
     setRevealed(false);
     setSubmitted(false);
     setTypedAnswer('');
-    setStartedAt(Date.now());
+    answerTimer.current.reset(!document.hidden);
+    setSimilarOpen(false);
   }, []);
 
-  const handleGrade = useCallback(
-    async (rating: Rating) => {
-      if (!current || lockRef.current) return;
-      // Type-in: don't allow grading before submission
-      if (current.renderKind === 'typein' && !submitted) return;
-      lockRef.current = true;
-      const duration = Date.now() - startedAt;
-      try {
-        // Pass source:'filtered' when in a filtered session so the server skips
-        // the global daily counters (plan Decision 2 / Must-Fix #5).
-        const source = sessionMode === 'filtered' ? 'filtered' as const : undefined;
-        await grade(current.id, rating, duration, source);
-        lastGradeRef.current = rating;
-        setCompleted((c) => c + 1);
-        setXpGained((x) => x + xpForRating(rating));
-        setGradeCounts((g) => ({ ...g, [rating]: g[rating] + 1 }));
-        // Feature #1 — on a lapse (Again) for a card WITH a usable cited source,
-        // HOLD the advance and surface the passage. The grade is already
-        // committed; the peek is a non-blocking post-grade affordance dismissed
-        // via «понятно, дальше» / Esc, which then advances the queue.
-        if (rating === 1 && firstSource && firstSource.sourceId) {
-          setPendingPeek(firstSource);
-        } else {
-          advanceQueue();
-        }
-      } catch (err) {
-        console.error('grade failed', err);
-        raiseToast({ kind: 'error', title: t('common.toasts.error') });
-      } finally {
-        lockRef.current = false;
-      }
-    },
-    [current, grade, sessionMode, startedAt, submitted, t, firstSource, advanceQueue],
-  );
+  const advanceQueue = useCallback(() => {
+    setPendingPeek(null);
+    resetAnswer();
+    if (!session.activeId && sessionMode === 'regular') refreshQueue();
+  }, [session.activeId, sessionMode, refreshQueue, resetAnswer]);
 
-  // Undo the most recent grade. Restores the card + profile server-side (and in
-  // the store mirror), steps the in-session queue back one card so the user can
-  // re-grade, and rewinds the session XP/count tallies. 404 (nothing to undo) /
-  // 409 (card modified) are surfaced as toasts. ⌘Z / Ctrl+Z or the button.
-  const handleUndo = useCallback(async () => {
-    if (lockRef.current) return;
+  const handleGrade = useCallback(async (rating: Rating) => {
+    if (!current || lockRef.current || !revealed || pendingPeek || cardUnavailable) return;
+    if (current.renderKind === 'typein' && !submitted) return;
     lockRef.current = true;
-    const toast = (description: string) =>
-      window.dispatchEvent(
-        new CustomEvent('nn:toast', { detail: { kind: 'info', description } }),
-      );
+    answerTimer.current.pause();
+    setBusy(true);
+    setMutationError(null);
     try {
-      await undoLastReview();
-      // Rewind the in-session tallies + step back to the just-graded card.
-      setCompleted((c) => Math.max(0, c - 1));
-      setXpGained((x) => {
-        const last = lastGradeRef.current;
-        return last ? Math.max(0, x - xpForRating(last)) : x;
-      });
-      setGradeCounts((g) => {
-        const last = lastGradeRef.current;
-        if (!last) return g;
-        return { ...g, [last]: Math.max(0, g[last] - 1) };
-      });
-      lastGradeRef.current = null;
-      // A held lapse-peek (Feature #1) means the grade committed but the queue
-      // did NOT advance — the index still points at the un-graded card, so we
-      // re-reveal it in place rather than stepping back (which would skip a card).
-      if (pendingPeek) {
-        setPendingPeek(null);
+      const saved = await grade(current.id, rating, answerTimer.current.elapsed(), sessionMode, current);
+      if (!mountedRef.current) return;
+      const next = recordStudyAnswer(session, current, saved.card, saved, sessionMode, Date.now() + serverOffset);
+      setSession(next);
+      setUndoBlocked(false);
+      if (rating === 1 && firstSource?.sourceId) {
+        setPendingPeek(firstSource);
       } else {
-        setIndex((i) => Math.max(0, i - 1));
+        resetAnswer();
+        if (!next.activeId && sessionMode === 'regular') refreshQueue();
       }
-      setRevealed(false);
-      setSubmitted(false);
-      setTypedAnswer('');
-      setStartedAt(Date.now());
-      toast(t('editor.review.undo.toast'));
-    } catch (e) {
-      const code = (e as { code?: string }).code;
-      if (code === 'card_modified_since_review') {
-        toast(t('editor.review.undo.modified'));
-      } else {
-        // 'nothing_to_undo' (404) or any other failure.
-        toast(t('editor.review.undo.empty'));
-      }
+    } catch (err) {
+      if (mountedRef.current) setMutationError(toApiError(err));
     } finally {
       lockRef.current = false;
+      if (mountedRef.current) setBusy(false);
     }
-  }, [undoLastReview, t, pendingPeek]);
+  }, [current, grade, session, sessionMode, serverOffset, submitted, revealed, pendingPeek, cardUnavailable, firstSource, refreshQueue, resetAnswer]);
+
+  const handleUndo = useCallback(async () => {
+    const last = session.history.at(-1);
+    if (!last || lockRef.current || !canUndo || queueLoading) return;
+    lockRef.current = true;
+    setBusy(true);
+    try {
+      const restored = await undoLastReview(last.review.id, last.before);
+      if (!mountedRef.current) return;
+      setSession((previous) => undoStudyAnswer(previous, restored.card, restored.reviewId));
+      setFinished(false);
+      setPendingPeek(null);
+      setMutationError(null);
+      resetAnswer();
+      raiseToast({ kind: 'info', description: t('editor.review.undo.toast') });
+    } catch (error) {
+      if (!mountedRef.current) return;
+      const code = (error as { code?: string }).code;
+      if (code === 'review_changed' || code === 'card_modified_since_review' || code === 'nothing_to_undo') setUndoBlocked(true);
+      raiseToast({ kind: 'error', description: t(code === 'review_changed' ? 'review.undoChanged'
+        : code === 'card_modified_since_review' ? 'editor.review.undo.modified'
+        : code === 'nothing_to_undo' ? 'editor.review.undo.empty' : 'review.undoFailed') });
+    } finally {
+      lockRef.current = false;
+      if (mountedRef.current) setBusy(false);
+    }
+  }, [session.history, canUndo, queueLoading, undoLastReview, resetAnswer, t]);
+
+  const handleSkip = useCallback(() => {
+    if (lockRef.current || pendingPeek || !current) return;
+    const next = skipStudyCard(session, sessionMode, Date.now() + serverOffset);
+    if (next.activeId === session.activeId) return;
+    setSession(next);
+    resetAnswer();
+  }, [current, pendingPeek, session, sessionMode, serverOffset, resetAnswer]);
 
   const handleTypeSubmit = useCallback(() => {
-    if (!current || current.renderKind !== 'typein' || submitted) return;
+    if (!current || current.renderKind !== 'typein' || submitted || lockRef.current) return;
+    inputRef.current?.blur();
     setSubmitted(true);
     setRevealed(true);
   }, [current, submitted]);
@@ -358,8 +369,12 @@ export const NNReviewClassic = () => {
   // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      const inInput = tag === 'INPUT' || tag === 'TEXTAREA';
+      if (lockRef.current || e.defaultPrevented || e.repeat || e.isComposing) return;
+      if ((e.metaKey || e.ctrlKey || e.altKey) && !((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !e.altKey)) return;
+      const inInput = isReviewEditingTarget(e.target);
+      if (inInput) return;
+      if (document.querySelector('[aria-modal="true"],dialog[open]') ||
+        (!pendingPeek && !similarOpen && document.querySelector('[role="dialog"]'))) return;
 
       // Escape: a held lapse-peek closes FIRST and advances (the grade already
       // committed); then an open similar-cards drawer closes; then zen exits
@@ -402,38 +417,28 @@ export const NNReviewClassic = () => {
         return;
       }
 
+      // Let native button/link activation handle Space and Enter exactly once.
+      if (isReviewInteractiveTarget(e.target)) return;
+
       if (!current) return;
 
       // While a lapse-peek is held, the card is already graded — swallow
       // navigation/flip/grade keys (Esc above is the way out). Edit/undo still
       // worked above; everything below is queue-movement that the peek defers.
-      if (pendingPeek) return;
+      if (pendingPeek || similarOpen) return;
 
       // Edit shortcut — only outside inputs
       if ((e.key === 'e' || e.key === 'E') && !inInput) {
         e.preventDefault();
-        router.push(`/editor?card=${current.id}`);
+        handleEdit();
         return;
       }
 
-      // Previous — visual only
-      if (e.key === 'j' && !inInput) {
+      // Skip keeps the unanswered card in this session. Undo is the only
+      // way back to a previously saved answer.
+      if (e.key.toLowerCase() === 'k' && !inInput) {
         e.preventDefault();
-        setIndex((i) => Math.max(0, i - 1));
-        setRevealed(false);
-        setSubmitted(false);
-        setTypedAnswer('');
-        return;
-      }
-      // Skip forward — clamp to the LAST card (queue.length - 1) so the cursor
-      // can't run off the end (one-past-last) and trip premature SessionDone +
-      // session save without grading.
-      if (e.key === 'k' && !inInput) {
-        e.preventDefault();
-        setIndex((i) => Math.min(queue.length - 1, i + 1));
-        setRevealed(false);
-        setSubmitted(false);
-        setTypedAnswer('');
+        handleSkip();
         return;
       }
 
@@ -463,62 +468,95 @@ export const NNReviewClassic = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [revealed, current, handleGrade, handleUndo, router, queue.length, submitted, handleTypeSubmit, zenMode, toggleZen, setZen, similarOpen, pendingPeek, advanceQueue]);
+  }, [revealed, current, handleGrade, handleUndo, router, handleEdit, handleSkip, submitted, handleTypeSubmit, zenMode, toggleZen, setZen, similarOpen, pendingPeek, advanceQueue]);
 
   // Moving to another card closes the similar drawer (it belongs to the card).
   useEffect(() => {
     setSimilarOpen(false);
   }, [current?.id]);
 
-  // Save session when queue exhausted
+  const sessionDone = completed > 0 && !pendingPeek && (finished || (!current && queue.length === 0)) && !queueLoading && !queueError;
+  const nextLearningAt = queue.length > 0 && !current
+    ? new Date(Math.min(...queue.map((card) => new Date(card.fsrs.due).getTime()))).toISOString()
+    : summary?.nextLearningAt ?? null;
+
   useEffect(() => {
-    if (
-      sessionStartedRef.current &&
-      !sessionSavedRef.current &&
-      queue.length > 0 &&
-      !current
-    ) {
-      sessionSavedRef.current = true;
-      try {
-        const reviewed = queue.slice(0, completed);
-        const deckCount = new Map<string, number>();
-        reviewed.forEach((c) => deckCount.set(c.deckId, (deckCount.get(c.deckId) ?? 0) + 1));
-        let dominantDeckId: string | undefined;
-        let maxCount = 0;
-        for (const [id, count] of deckCount) {
-          if (count > maxCount) {
-            maxCount = count;
-            dominantDeckId = id;
-          }
-        }
-        const uniqueDecks = deckCount.size;
-        const deckName =
-          uniqueDecks > 1
-            ? t('review.mixedQueue')
-            : decks.find((d) => d.id === dominantDeckId)?.name ?? t('review.queueFallback');
-
-        const payload = {
-          completedAt: Date.now(),
-          deckName,
-          cards: completed,
-          xpGained,
-          durationMs: Date.now() - sessionStartRef.current,
-          grades: gradeCounts,
-        };
-        if (typeof window !== 'undefined') {
-          window.localStorage.setItem('nn:lastSession', JSON.stringify(payload));
-        }
-      } catch {
-        // best-effort
+    if (current || finished || busy || pendingPeek || queueLoading || queueError || !nextLearningAt) return;
+    const dueAt = Date.parse(nextLearningAt);
+    let fired = false;
+    const resume = () => {
+      if (!fired && !document.hidden && Date.now() + serverOffset >= dueAt) {
+        fired = true;
+        refreshQueue();
       }
-    }
-  }, [current, queue, completed, xpGained, gradeCounts, decks, t]);
+    };
+    const timer = setTimeout(resume, Math.min(2_147_483_647, Math.max(250, dueAt - Date.now() - serverOffset + 50)));
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('focus', resume);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener('focus', resume);
+    };
+  }, [current, finished, busy, pendingPeek, queueLoading, queueError, nextLearningAt, serverOffset, refreshQueue]);
 
-  if (!bootstrapped) {
+  // Only successful server answers enter this snapshot. Undo invalidates a
+  // previously saved result; a later completion writes the revised totals.
+  useEffect(() => {
+    if (!sessionDone) {
+      if (sessionSavedRef.current) {
+        sessionSavedRef.current = false;
+        if (profile?.userId) clearStudyResult(profile.userId);
+      }
+      return;
+    }
+    const deckIds = new Set(session.history.map((entry) => entry.before.deckId));
+    const deckName = filteredDeckId ? filteredDecks.find((deck) => deck.id === filteredDeckId)?.name ?? t('review.customStudy.title')
+      : deckId ? decks.find((deck) => deck.id === deckId)?.name ?? t('review.queueFallback')
+      : deckIds.size > 1 ? t('review.mixedQueue') : decks.find((d) => deckIds.has(d.id))?.name ?? t('review.queueFallback');
+    if (!profile?.userId) return;
+    saveStudyResult({ version: 1, userId: profile.userId, completedAt: Date.now(), deckName,
+      answers: completed, cards: totals.uniqueCards, xpGained, durationMs: totals.durationMs,
+      grades: gradeCounts, mode: sessionMode, reviewHref });
+    sessionSavedRef.current = true;
+  }, [sessionDone, session.history, completed, xpGained, totals, gradeCounts, decks, deckId, filteredDecks, filteredDeckId, sessionMode, reviewHref, profile?.userId, t]);
+
+  if (!bootstrapped || queueLoading) {
     return <ReviewSkeleton isMobile={isMobile} />;
   }
 
-  if (queue.length === 0) {
+  if (queueError) {
+    return <ReviewEmpty role="alert" title={t('review.loadFailed')}
+      subtitle={t(queueError.status === 400 || queueError.status === 404 ? 'review.queueMissing' : 'review.loadFailedBody')}
+      cta={t('review.retry')} onAction={() => setQueueAttempt((n) => n + 1)}
+      customStudyHref="/decks" customStudyLabel={t('nav.decks')} />;
+  }
+
+  if (sessionDone) return <SessionDone completed={completed} xp={xpGained} onUndo={canUndo ? handleUndo : undefined} busy={busy} />;
+
+  if (!current) {
+    const reason = sessionMode === 'filtered' ? 'filtered'
+      : summary?.total === 0 ? 'empty'
+      : summary && summary.total === summary.suspendedCount ? 'paused'
+      : nextLearningAt ? 'waiting'
+      : summary && (summary.limitedNew > 0 || summary.limitedReview > 0) ? 'limited'
+      : null;
+    if (reason) {
+      const next = nextLearningAt;
+      const time = next ? new Date(next).toLocaleString(locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+      return <ReviewEmpty role="status" title={t(`review.emptyStates.${reason}.title`)}
+        subtitle={t(`review.emptyStates.${reason}.body`, { time })}
+        cta={t(reason === 'empty' ? 'review.allCaught.cta' : reason === 'paused' ? 'nav.cards' : 'review.refreshQueue')}
+        actionVariant="soft"
+        href={reason === 'empty' ? `/editor${deckId ? `?deck=${deckId}` : ''}` : reason === 'paused' ? '/cards?q=is%3Asuspended' : undefined}
+        onAction={reason === 'empty' || reason === 'paused' ? undefined : () => setQueueAttempt((n) => n + 1)}
+        customStudyHref={sessionMode === 'filtered' ? '/review/custom-study' : '/decks'}
+        customStudyLabel={t(sessionMode === 'filtered' ? 'review.customStudy.manage' : 'nav.decks')}
+        actions={<>
+          {canUndo && <NNBtn variant="soft" onClick={handleUndo} loading={busy}>{t('editor.review.undo.button')}</NNBtn>}
+          {completed > 0 && <NNBtn variant="primary" disabled={busy} onClick={() => setFinished(true)}>{t('review.finish')}</NNBtn>}
+        </>} />;
+    }
     return (
       <ReviewEmpty
         title={t('review.allCaught.title')}
@@ -531,12 +569,8 @@ export const NNReviewClassic = () => {
     );
   }
 
-  if (!current) {
-    return <SessionDone completed={completed} xp={xpGained} />;
-  }
-
-  const total = queue.length;
-  const progress = (index / total) * 100;
+  const total = completed + queue.length;
+  const progress = total > 0 ? (completed / total) * 100 : 0;
   const fsrsState = current.fsrs;
   const elapsed = fsrsState.last_review
     ? Math.max(0, Math.floor((Date.now() - new Date(fsrsState.last_review).getTime()) / (1000 * 60 * 60 * 24)))
@@ -556,22 +590,11 @@ export const NNReviewClassic = () => {
   // For cloze, the FRONT card area flips between the prompt (front) and the
   // revealed answer (back) by switching the rendered SIDE.
   const promptSide: 'front' | 'back' = isCloze ? (revealed ? 'back' : 'front') : 'front';
-  // Type-in compares the typed answer against the note-type's ANSWER field — the
-  // LAST field by ordinal (Anki convention; "Back" for the builtin Type-in, but
-  // works for renamed-field clones too). Resolve the full note-type from the
-  // store by id (the embedded payload carries no field list); fall back to the
-  // raw "Back" value, then the server-rendered back plaintext.
-  const typeinNoteType = renderNoteType
-    ? noteTypes.find((nt) => nt.id === renderNoteType.id)
-    : undefined;
-  const typeinTargetField =
-    typeinNoteType && typeinNoteType.fields.length > 0
-      ? [...typeinNoteType.fields].sort((a, b) => a.ord - b.ord).at(-1)?.name
-      : undefined;
-  const typeinTarget =
-    (typeinTargetField ? renderFieldValues[typeinTargetField] : undefined) ??
-    renderFieldValues['Back'] ??
-    current.renderBackText;
+  // The embedded role travels with the exact type version displayed by this card.
+  const typeinFields = renderNoteType?.fields ?? noteTypes.find((nt) => nt.id === renderNoteType?.id)?.fields ?? [];
+  const typeinTargetField = typedAnswerField(typeinFields)?.name;
+  const canonicalAnswer = fieldPlainText((typeinTargetField ? renderFieldValues[typeinTargetField] : undefined) ?? renderFieldValues['Back'] ?? current.renderBackText);
+  const typeinTarget = typedAnswerTarget(typedAnswer, canonicalAnswer, current.note?.acceptedAnswers);
 
   // Sans (not display-serif) at a sane scale — the old 48px serif both read as
   // "местами очень большой шрифт" and, being the em-base for the whole rendered
@@ -585,136 +608,40 @@ export const NNReviewClassic = () => {
   const showAnswerSection = isTypein ? submitted : revealed;
   const showRatings = showAnswerSection;
 
-  // Reserve space at the bottom of the scroll area so the fixed rating bar
-  // (or the "Show answer" button on mobile) never overlaps the card footer.
-  const reservedBottom = showRatings ? (isMobile ? 108 : 118) : isMobile ? 88 : 0;
-
   return (
+    <div className="nn-review-layout" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
     <div
-      style={{
-        flex: 1,
-        overflow: 'auto',
-        padding: isMobile ? `0 14px ${reservedBottom}px` : `0 32px ${Math.max(24, reservedBottom)}px`,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        position: 'relative',
-      }}
+      className="nn-review-scroll"
+      aria-busy={busy || undefined}
+      style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: isMobile ? '0 14px 20px' : '0 32px 24px',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative' }}
     >
-      {/* Zen mode: subtle floating exit affordance — the topbar is hidden, so
-          this keeps the exit discoverable. Calm, top-right, never competes. */}
-      {zenMode && (
-        <button
-          type="button"
-          onClick={() => setZen(false)}
-          title={`${t('review.exitFocus')} · Esc`}
-          aria-label={t('review.exitFocus')}
-          style={{
-            position: 'absolute',
-            top: isMobile ? 10 : 18,
-            right: isMobile ? 12 : 24,
-            zIndex: 30,
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '6px 10px',
-            background: 'var(--surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 9,
-            color: 'var(--text-muted)',
-            fontSize: 11.5,
-            fontFamily: 'inherit',
-            cursor: 'pointer',
-            opacity: 0.7,
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
-          onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
-        >
-          <NNIcon name="x" size={12} color="var(--text-muted)" />
-          <span>{t('review.exitFocus')}</span>
-          <NNKbd>Esc</NNKbd>
-        </button>
-      )}
-
-      {/* progress — deck badge · slim bar · count+XP · undo · focus */}
-      <div
-        style={{
-          width: '100%',
-          maxWidth: 760,
-          padding: isMobile ? '12px 0 18px' : '20px 0 28px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: isMobile ? 10 : 16,
-          flexShrink: 0,
-        }}
-      >
-        <NNBadge icon="stack" size="sm" tone={deck?.color ?? 'neutral'}>
-          {deck?.name ?? t('review.queueFallback')}
-        </NNBadge>
-        {sessionMode === 'filtered' && (
-          <NNBadge size="sm" tone="violet">
-            {t('review.customStudy.filterBadge')}
-          </NNBadge>
-        )}
-        <div
-          style={{
-            flex: 1,
-            height: 5,
-            background: 'var(--surface-3)',
-            borderRadius: 'var(--r-pill)',
-            overflow: 'hidden',
-            position: 'relative',
-          }}
-        >
-          <div
-            style={{
-              width: `${progress}%`,
-              height: '100%',
-              borderRadius: 'var(--r-pill)',
-              background: 'linear-gradient(90deg, var(--lime-600), var(--lime-400))',
-              transition: 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)',
-            }}
-          />
-        </div>
-        <span
-          style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'baseline', gap: 6 }}
-          className="mono"
-        >
-          <span>
-            <span style={{ color: 'var(--text)' }}>{index}</span>
-            <span style={{ opacity: 0.55 }}> / {total}</span>
-          </span>
-          <span style={{ color: 'var(--lime-400)', fontWeight: 600 }}>+{xpGained} XP</span>
-        </span>
-        {completed > 0 && (
-          <NNBtn
-            size="sm"
-            variant="ghost"
-            icon="sync"
-            onClick={handleUndo}
-            title={`${t('editor.review.undo.button')} (⌘Z)`}
-          >
+      <div style={{ width: '100%', maxWidth: 760, padding: isMobile ? '12px 0 14px' : '16px 0 20px', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <NNBadge icon="stack" size="sm" tone={deck?.color ?? 'neutral'} style={{ maxWidth: '100%', color: 'var(--text)' }}>
+              <span title={deck?.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{deck?.name ?? t('review.queueFallback')}</span>
+            </NNBadge>
+            {sessionMode === 'filtered' && <NNBadge size="sm" tone="violet">{t('review.customStudy.filterBadge')}</NNBadge>}
+          </div>
+          <span className="mono" style={{ color: 'var(--text-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>+{xpGained} XP</span>
+          {canUndo && <NNBtn size="sm" variant="ghost" icon="sync" onClick={handleUndo} disabled={busy}
+            ariaLabel={t('editor.review.undo.button')} title={`${t('editor.review.undo.button')} (⌘Z)`}>
             {!isMobile && t('editor.review.undo.button')}
-          </NNBtn>
-        )}
-        {revealed && (
-          <NNBtn
-            size="sm"
-            variant="ghost"
-            icon="stars"
-            onClick={() => setSimilarOpen((v) => !v)}
-            title={t('review.similar.open')}
-            ariaLabel={t('review.similar.open')}
-          />
-        )}
-        <NNBtn
-          size="sm"
-          variant="ghost"
-          icon={zenMode ? 'x' : 'target'}
-          onClick={() => toggleZen()}
-          title={`${zenMode ? t('review.exitFocus') : t('review.focusMode')} (f)`}
-          ariaLabel={zenMode ? t('review.exitFocus') : t('review.focusMode')}
-        />
+          </NNBtn>}
+          {revealed && <NNBtn size="sm" variant="ghost" icon="stars" onClick={() => setSimilarOpen((value) => !value)}
+            title={t('review.similar.open')} ariaLabel={t('review.similar.open')} />}
+          <NNBtn size="sm" variant="ghost" icon={zenMode ? 'x' : 'target'} onClick={toggleZen}
+            title={`${t(zenMode ? 'review.exitFocus' : 'review.focusMode')} (f)`} ariaLabel={t(zenMode ? 'review.exitFocus' : 'review.focusMode')} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+          <div role="progressbar" aria-label={t('review.progress', { answers: completed, remaining: queue.length })}
+            aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}
+            style={{ flex: 1, minWidth: 30, height: 5, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ width: `${progress}%`, height: '100%', background: 'var(--accent-400)', transition: 'width 200ms ease' }} />
+          </div>
+          <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('review.progress', { answers: completed, remaining: queue.length })}</span>
+        </div>
       </div>
 
       {/* Similar-cards drawer — desktop: floating right panel; mobile: bottom
@@ -779,18 +706,23 @@ export const NNReviewClassic = () => {
       )}
 
       {/* Card */}
+      {sessionMode === 'filtered' && <p style={{ width: '100%', maxWidth: 760, fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px' }}>{t('review.customStudy.scheduleNotice')}</p>}
+      {mutationError && <div role="alert" style={{ width: '100%', maxWidth: 760, marginBottom: 12, color: 'var(--rose-400)', fontSize: 13 }}>
+        {t(cardUnavailable ? 'review.cardChanged' : 'review.gradeFailed')}
+        {cardUnavailable && <NNBtn size="sm" variant="soft" onClick={() => setQueueAttempt((n) => n + 1)}>{t('review.refreshQueue')}</NNBtn>}
+      </div>}
+      {busy && <div role="status" style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{t('review.saving')}</div>}
       <div
+        ref={cardRef}
+        className="nn-review-card"
+        role="article"
+        aria-label={t('review.cardLabel')}
+        tabIndex={-1}
         onClick={(e) => {
-          // Don't flip when clicking interactive children
-          const t = e.target as HTMLElement;
-          if (
-            t.tagName === 'INPUT' ||
-            t.tagName === 'BUTTON' ||
-            t.tagName === 'A' ||
-            t.closest('button') ||
-            t.closest('a')
-          )
-            return;
+          if (lockRef.current || pendingPeek) return;
+          if (isReviewInteractiveTarget(e.target)) return;
+          const selection = window.getSelection();
+          if (selection?.toString() && selection.anchorNode && e.currentTarget.contains(selection.anchorNode)) return;
           if (isTypein && !submitted) return;
           setRevealed((v) => !v);
         }}
@@ -852,6 +784,7 @@ export const NNReviewClassic = () => {
             fieldValues={renderFieldValues}
             side={promptSide}
             templateOrd={current.templateOrd}
+            clozeNumber={current.clozeNumber}
             style={{
               fontFamily: 'var(--font-sans)',
               fontSize: frontFontSize,
@@ -867,15 +800,22 @@ export const NNReviewClassic = () => {
         {/* Type input */}
         {isTypein && (
           <div style={{ marginTop: 28, display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <input
+            {!submitted && <input
               ref={inputRef}
               type="text"
+              aria-label={t('review.type.label')}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              enterKeyHint="done"
+              maxLength={2000}
               autoFocus
               disabled={submitted}
               value={typedAnswer}
               onChange={(e) => setTypedAnswer(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !submitted) {
+                if (e.key === 'Enter' && !submitted && !e.nativeEvent.isComposing && !e.repeat) {
                   e.preventDefault();
                   handleTypeSubmit();
                 }
@@ -898,7 +838,7 @@ export const NNReviewClassic = () => {
               onBlur={(e) => {
                 e.currentTarget.style.borderColor = 'var(--border-2)';
               }}
-            />
+            />}
             {!submitted && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <NNBtn size="md" variant="primary" onClick={handleTypeSubmit}>
@@ -911,6 +851,8 @@ export const NNReviewClassic = () => {
             )}
             {submitted && (
               <div
+                role="status"
+                aria-label={t('review.type.checked')}
                 style={{
                   padding: '12px 14px',
                   borderRadius: 'var(--r-md)',
@@ -923,7 +865,8 @@ export const NNReviewClassic = () => {
                 }}
                 className="mono"
               >
-                {diffAnswer(typedAnswer, typeinTarget).map((tok, i) => {
+                <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap' }}>{t('review.type.comparison', { typed: typedAnswer, answer: typeinTarget })}</span>
+                <span aria-hidden="true">{diffAnswer(typedAnswer, typeinTarget).map((tok, i) => {
                   if (tok.kind === 'match') {
                     return (
                       <span key={i} style={{ color: 'var(--text)' }}>
@@ -956,7 +899,7 @@ export const NNReviewClassic = () => {
                       {tok.ch}
                     </span>
                   );
-                })}
+                })}</span>
               </div>
             )}
           </div>
@@ -1011,6 +954,7 @@ export const NNReviewClassic = () => {
                       fieldValues={renderFieldValues}
                       side="back"
                       templateOrd={current.templateOrd}
+            clozeNumber={current.clozeNumber}
                       style={{
                         fontSize: isMobile ? 16 : 17,
                         fontWeight: 400,
@@ -1081,25 +1025,27 @@ export const NNReviewClassic = () => {
         }}
       >
         <span className="mono">
-          {elapsed != null ? t('review.meta.lastAgo', { n: elapsed }) : t('review.meta.newCard')}
+          {elapsed === 0 ? t('review.meta.today') : elapsed != null ? t('review.meta.lastAgo', { n: elapsed }) : t('review.meta.newCard')}
           {' · '}
-          stability {fsrsState.stability.toFixed(1)} · reps {fsrsState.reps} · lapses {fsrsState.lapses}
+          {t('review.meta.repetitions', { reps: fsrsState.reps, lapses: fsrsState.lapses })}
         </span>
         <div style={{ flex: 1 }} />
+        {completed > 0 && <NNBtn size="sm" variant="ghost" disabled={busy}
+          onClick={() => { setPendingPeek(null); setFinished(true); }}>{t('review.finish')}</NNBtn>}
+        <NNBtn size="sm" variant="ghost" onClick={handleSkip}
+          disabled={busy || Boolean(pendingPeek) || skipStudyCard(session, sessionMode, Date.now() + serverOffset).activeId === session.activeId}>
+          {t('review.hints.skip')}
+        </NNBtn>
         {!isMobile && (
           <span className="mono" style={{ opacity: 0.7, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <NNKbd>J</NNKbd> {t('review.hints.prev')} · <NNKbd>K</NNKbd> {t('review.hints.skip')} · <NNKbd>E</NNKbd> {t('review.hints.edit')} · <NNKbd>Esc</NNKbd> {t('review.hints.home')}
+            <NNKbd>K</NNKbd> {t('review.hints.skip')} · <NNKbd>E</NNKbd> {t('review.hints.edit')} · <NNKbd>Esc</NNKbd> {t('review.hints.home')}
           </span>
         )}
-        <AppLink
-          href={`/editor?card=${current.id}`}
-          onClick={(e) => e.stopPropagation()}
-          style={{ color: 'inherit', display: 'inline-flex' }}
-        >
-          <NNBtn size="sm" variant="ghost" icon="edit" />
-        </AppLink>
+        <NNBtn size="sm" variant="ghost" icon="edit" disabled={busy || Boolean(pendingPeek)}
+          onClick={handleEdit} ariaLabel={t('review.hints.edit')} title={t('review.hints.edit')} />
       </div>
 
+    </div>
       {/* Feature #1 — held lapse-peek overlay. On Again for a provenance card we
           pause the queue and float the cited passage here (replacing the rating
           bar, which is moot — the grade already committed). «Понятно, дальше» /
@@ -1113,7 +1059,7 @@ export const NNReviewClassic = () => {
             left: 0,
             right: 0,
             bottom: isMobile ? 68 : 0,
-            padding: isMobile ? '10px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 24px 18px',
+            padding: isMobile ? '10px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 32px 18px',
             display: 'flex',
             justifyContent: 'center',
             zIndex: 25,
@@ -1143,19 +1089,22 @@ export const NNReviewClassic = () => {
 
       <div
         style={{
-          position: 'fixed',
-          left: 0,
-          right: 0,
-          bottom: isMobile ? 68 : 0,
-          padding: isMobile ? '10px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 24px 18px',
-          background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg) 0%, transparent) 0%, var(--bg) 40%)',
-          display: pendingPeek ? 'none' : 'flex',
+          flexShrink: 0,
+          maxHeight: '55%',
+          overflow: 'auto',
+          padding: isMobile ? '10px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 32px 18px',
+          background: 'var(--bg)',
+          borderTop: '1px solid var(--border)',
+          display: pendingPeek || (isTypein && !submitted && !zenMode) ? 'none' : 'flex',
           justifyContent: 'center',
           zIndex: 20,
           pointerEvents: 'none',
         }}
       >
         <div style={{ width: '100%', maxWidth: 760, pointerEvents: 'auto' }}>
+          {zenMode && <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+            <NNBtn size="sm" variant="ghost" icon="x" onClick={() => setZen(false)}>{t('review.exitFocus')}</NNBtn>
+          </div>}
           {showRatings && previews ? (
             <div
               style={{
@@ -1166,16 +1115,19 @@ export const NNReviewClassic = () => {
               }}
             >
               {RATINGS.map((r) => {
-                const preview = previews[r.k];
+                const preview = previews.cards[r.k];
                 return (
                   <button
                     key={r.k}
+                    type="button"
+                    disabled={busy || cardUnavailable}
                     onClick={() => handleGrade(r.k)}
-                    title={`${t(r.labelKey)} · ${r.k}`}
+                    title={`${t(r.labelKey)} — ${t(`${r.labelKey}Hint`)} · ${r.k}`}
                     style={{
                       padding: isMobile ? '9px 8px' : '12px 14px',
                       borderRadius: 'var(--r-lg)',
-                      cursor: 'pointer',
+                      cursor: busy || cardUnavailable ? 'default' : 'pointer',
+                      opacity: busy || cardUnavailable ? 0.5 : 1,
                       background: r.bg,
                       border: `1px solid var(--border-2)`,
                       borderTop: `2px solid ${r.hue}`,
@@ -1213,7 +1165,7 @@ export const NNReviewClassic = () => {
                           borderRadius: 5,
                           fontSize: 10.5,
                           fontWeight: 600,
-                          color: r.hue,
+                          color: 'var(--text)',
                           background: r.bgHover,
                           flexShrink: 0,
                         }}
@@ -1224,18 +1176,21 @@ export const NNReviewClassic = () => {
                         {t(r.labelKey)}
                       </span>
                     </div>
+                    <span style={{ fontSize: 11, lineHeight: 1.25, minHeight: isMobile ? 28 : undefined, color: 'var(--text-muted)' }}>
+                      {t(`${r.labelKey}Hint`)}
+                    </span>
                     <div
                       style={{ fontSize: isMobile ? 10 : 11.5, color: 'var(--text-muted)', paddingLeft: isMobile ? 0 : 26 }}
                       className="mono"
                     >
-                      {humanInterval(preview, new Date())}
+                      ≈ {humanInterval(preview, previews.at, locale)}
                     </div>
                   </button>
                 );
               })}
             </div>
           ) : !isTypein ? (
-            <NNBtn size="lg" variant="soft" onClick={() => setRevealed(true)} block>
+            <NNBtn size="lg" variant="soft" disabled={busy} onClick={() => setRevealed(true)} block>
               {t('review.showAnswer')}
             </NNBtn>
           ) : null}
@@ -1252,6 +1207,9 @@ export const NNReviewClassic = () => {
 function ReviewSkeleton({ isMobile }: { isMobile: boolean }) {
   return (
     <div
+      className="nn-review-loading"
+      role="status"
+      aria-busy="true"
       style={{
         flex: 1,
         display: 'flex',
@@ -1324,6 +1282,10 @@ const ReviewEmpty = ({
   href,
   customStudyHref,
   customStudyLabel,
+  onAction,
+  role,
+  actions,
+  actionVariant = 'primary',
 }: {
   title: string;
   subtitle: string;
@@ -1331,12 +1293,17 @@ const ReviewEmpty = ({
   href?: string;
   customStudyHref?: string;
   customStudyLabel?: string;
+  onAction?: () => void;
+  role?: 'alert' | 'status';
+  actions?: React.ReactNode;
+  actionVariant?: 'primary' | 'soft';
 }) => {
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   return (
     <div
       className="nn-empty-state"
+      role={role}
       style={{
         gap: 14,
         padding: isMobile ? '0 14px 32px' : '0 32px 48px',
@@ -1345,6 +1312,8 @@ const ReviewEmpty = ({
       <h1 className="nn-h1" style={{ fontSize: isMobile ? 36 : 48, letterSpacing: -1 }}>{title}</h1>
       <div style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 460, lineHeight: 1.5 }}>{subtitle}</div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8 }}>
+        {actions}
+        {cta && onAction && <NNBtn size="lg" variant={actionVariant} onClick={onAction}>{cta}</NNBtn>}
         {cta && href && (
           <AppLink href={href}>
             <NNBtn size="lg" variant="primary" icon="plus">
@@ -1364,7 +1333,7 @@ const ReviewEmpty = ({
   );
 };
 
-const SessionDone = ({ completed, xp }: { completed: number; xp: number }) => {
+const SessionDone = ({ completed, xp, onUndo, busy }: { completed: number; xp: number; onUndo?: () => void; busy?: boolean }) => {
   const t = useT();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
@@ -1386,14 +1355,14 @@ const SessionDone = ({ completed, xp }: { completed: number; xp: number }) => {
       </div>
       <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>
         <span className="mono" style={{ color: 'var(--text)' }}>
-          {completed}
-        </span>{' '}
-        {t('review.sessionComplete.cards')} ·{' '}
-        <span className="mono" style={{ color: 'var(--lime-400)' }}>
+          {t('review.sessionComplete.answers', { n: completed })}
+        </span> ·{' '}
+        <span className="mono" style={{ color: 'var(--text)' }}>
           +{xp} XP
         </span>
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {onUndo && <NNBtn variant="soft" onClick={onUndo} loading={busy}>{t('editor.review.undo.button')}</NNBtn>}
         <AppLink href="/session/complete">
           <NNBtn size="lg" variant="primary" icon="check">
             {t('review.sessionComplete.viewSummary')}

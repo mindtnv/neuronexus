@@ -103,7 +103,7 @@ export const TYPEIN_NOTE_TYPE: NoteTypeDef = {
   styling: '',
   fields: [
     { name: 'Front', ord: 0 },
-    { name: 'Back', ord: 1 },
+    { name: 'Back', ord: 1, typeinAnswer: true },
   ],
   templates: [
     {

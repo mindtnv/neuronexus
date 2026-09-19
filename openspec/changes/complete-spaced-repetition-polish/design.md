@@ -1,0 +1,48 @@
+## Context
+
+See proposal.md and the 120-item audit for scope. Existing safe grade/undo, server queue, cursor search and resource state primitives remain the foundation. The baseline dirty tree contains the previous completed polish and must not be reset.
+
+## Goals / Non-Goals
+
+**Goals:** implement and verify each audit item as a bounded vertical slice; preserve source and history first, then extend the native workflow. Keep database-backed writes authoritative and local recovery lightweight.
+
+**Non-Goals:** replacement FSRS, distributed synchronization infrastructure, offline writes, speculative background services or deployment without a deploy request.
+
+## Decisions
+
+1. Field values are Markdown source, not safe HTML. Keep them losslessly; only parsed/rendered HTML enters the existing DOMPurify sink. Keep the HTML sanitizer for explicit HTML callers. Review every field consumer and prove source → persisted value → safe display. Reusing the existing Markdown parser is preferable to another regex grammar.
+2. Use stable per-type field/template identities and explicit rename/mapping operations. Existing ord values remain transport-compatible during migration, but reordering cannot reassign review history. Preview deletions and reconcile generated questions transactionally; reject stale versions. A broad type operation is measured before considering a worker.
+3. Preserve review records when former decks disappear. Snapshot display metadata when appropriate; nullable historical references must be supported by all readers. Do not rewrite history to the card's new deck as a workaround.
+4. Add operation identity for grade/create, scoped by owner and operation kind. A retry returns the original result; conflicting reuse is rejected. Reuse PostgreSQL uniqueness/transactions rather than a new queue or cache service.
+5. Local drafts/checkpoints contain only the current bounded working set and owner/version metadata. Reconcile against the API on reload. Cross-tab notifications are invalidation signals, never authority. Pause/targets and a simple two-button mode remain optional.
+6. Default study day remains UTC; timezone and day boundary are explicit user settings. Collection/ancestor budgets constrain child budgets; learning stays independent of daily review caps. Concurrent grading checks the applicable admission policy rather than introducing persistent reservations.
+7. Practice without scheduling is an explicit mode. Existing filtered scheduling remains available. Stable selections, preview and one-off queries reuse the current query language; a basic form compiles to that same language.
+8. Metric definitions live in shared/server helpers: Hard is remembered, first-daily retention is separate, unknown historical source remains unknown. Aggregates replace unbounded snapshot-heavy review lists. Forecast labels describe scheduled work without claiming to predict future new-card reviews.
+9. Small bounded note revisions and last-operation recovery preserve editing/bulk mistakes. Export snapshots have a schema version and use a consistent transaction. Imports preview mappings and conflicts, enforce limits and are repeatable; media manifests never contain secrets.
+10. Treat study media as private by default: authenticated retrieval or short-lived scoped access, with references checked before garbage collection. Keep the service worker inert. Accessibility and physical-device checks need actual evidence; simulated viewport checks cannot close those tasks.
+11. Numbered cloze uses a card-level nullable clozeNumber: null for ordinary cards, 0 for migrated legacy aggregate questions, positive numbers for independent questions. Legacy questions retain their ID/history and aggregate display until an explicit previewed split selects the number that inherits their schedule. New numbers start fresh. Reconciliation uses (stable template identity, cloze number), never just display position. Cloze is parsed as Markdown syntax so code remains literal; balanced braces/hints and bounded nesting are validated before persistence.
+
+12. Type-in stores `typeinAnswer` on the existing stable field descriptor. Migration 0027 pins the legacy last field before reordering; no extra field or syntax is introduced. `notes.accepted_answers` is an additive text array (20 x 256 cap at the write boundary). Existing AI edits preserve it; authoring alternatives is exposed in the note editor. Both canonical answers and field previews use shared Markdown-to-text rendering. Approximate spellings are never accepted automatically.
+13. Template validation is shared by UI and API: canonical field names, balanced known references, and generated visible questions. Type previews check all owned notes and show at most five bounded examples. A note must keep at least one question; additional empty reverse templates may be omitted. Invalid note updates cannot create orphan notes.
+
+14. Rich content failures are localized islands in the same SafeHtml sink: metadata carries the originating field and per-field block ordinal, the fallback escapes source, and only actually visible blocks produce diagnostics. Mermaid suppresses its own scratch error rendering; parser objects/source are never logged. Correcting the source restores the normal rendering path.
+15. Kind changes use `/note-types/:id/kind/preview` then `/kind` with source version, selected typed-answer field and exact token. Ordinary PATCH cannot bypass the conversion path. Basic/custom share ordinary question semantics and retain identity. Crossing a cloze/typein boundary replaces questions, explicitly disclosing removed review history; no FSRS state is attached to the new answer method. A Type-in question may not directly expose its answer field, and its answer template must render that field. Note content stays unchanged; incompatible source blocks the transition.
+
+16. `/notes/convert/preview` and `/notes/convert` operate on at most 200 explicit owner-scoped note IDs and at most 2000 existing/resulting cards. Both definitions are locked in ID order before notes/cards. Version-pinned field-name mappings include stored extra keys; stable template-ID mappings determine history correspondence. Unmapped values remain by default; explicit discard and collisions are disclosed or blocked. Same modes (or basic/custom) can keep mapped questions; a changed typed-answer role cannot inherit history or old alternatives. The exact token binds definitions, selected notes, mappings and current card/review state. The transaction updates the note type and derived cards together; post-commit indexing carries request correlation. No worker or new database table is needed.
+17. One conversion dialog serves the note editor and browser selection. A builtin clone offers a scoped selection link, with the target preselected; owned types also retain an Apply-to-notes entry after reload. Search scope uses type ID rather than its possibly non-unique label. Existing editor drafts must be saved before conversion, all sibling cards of a note are disclosed, and the preview is a separate confirmable step.
+
+## Risks / Trade-offs
+
+- Preserved raw source can contain dangerous-looking strings → escape Markdown HTML and sanitize every actual render sink; never log source.
+- Existing corrupt source cannot be reconstructed automatically → fix future writes and derived caches; document limitations and use recoverable revisions going forward.
+- Stable identities and nullable historical deck references affect DTOs → migrate additively, cover legacy rows and all history consumers before promotion.
+- Extensive feature scope can obscure progress → preserve all 120 IDs, close individually with evidence, and keep incomplete items unchecked.
+- Browser/assistive hardware may be unavailable → report evidence limits honestly and leave those criteria open until tested.
+
+## Migration Plan
+
+Generate and commit each schema migration with Drizzle after editing schema. Prefer additive IDs/versions/source columns and user-scoped indexes; populate identities from existing ord without deleting cards. Add uniqueness only after auditing preexisting duplicates. For historical deck deletion change the FK to retain review rows and verify every nullable consumer.
+
+Run the committed chain on a fresh isolated test database; never mask migrations with schema push. Repair disposable search text/index through an idempotent explicit backfill, not paid work inside SQL migrations. Preserve user source.
+
+Promote API compatibility before web. Roll back web first; additive migrations can remain until a deliberate rollback. Irreversible history/content conversions require a verified backup and documented restoration, not simply an older image. Final gates: strict OpenSpec validation, typecheck, migration-faithful full tests, real-S3 round trips and production builds, plus the audit's scenario-specific evidence.

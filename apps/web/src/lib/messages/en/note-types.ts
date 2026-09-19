@@ -1,4 +1,86 @@
 const m = {
+  convert: {
+    newDeck: "Deck for new cards",
+    inheritDeck: "Each note’s original deck",
+    deckHint: "Retained cards stay in their existing decks.",
+    deckUnsupported: "The server did not acknowledge the selected deck. Update the app before applying.",
+
+    checkState: "The notes may have changed. Reload to check the saved result before trying again.",
+    reload: "Reload page",
+
+    done: "Converted notes: {n}",
+    samples: "Examples from up to 5 notes; question and answer text is shortened.",
+
+    reset: "The answer method or answer field differs: new cards start from scratch. Existing card history is removed only after you confirm the preview.",
+    invalid: "Check the mapping and preview again: some notes are incompatible with these choices.",
+
+    applyToNotes: "Apply to notes",
+    targetHint: "Select cards from one type to convert their notes to {target}.",
+    alternatives: "Accepted alternatives of the old answer to remove: {n}. The new answer field uses its own answer.",
+
+    closeEditor: "Save changes and close the open card editor before converting selected notes.",
+    title: "Convert notes",
+    scope: "Notes: {n} · source type: {source}. All cards of each selected note are converted, including unchecked directions.",
+    oneType: "Select cards from one source note type.",
+    tooLarge: "Choose a smaller batch: up to 200 notes and 2000 cards, with up to 64 fields per note.",
+    target: "Target note type",
+    choose: "Choose a type",
+    fields: "Field mapping",
+    fieldLabel: "Source for field {field}",
+    empty: "Leave empty",
+    preserve: "Preserve unmapped values as additional fields",
+    cards: "Card and history mapping",
+    mappingHint: "For each target template, choose the previous direction of the same question. Only these cards retain their schedule and history.",
+    templateLabel: "History for template {template}",
+    newCard: "New card without history",
+    unmapped: "Unmapped fields: {n}. Nonempty values to discard: {lost}.",
+    kept: "preserved",
+    discarded: "discarded",
+    truncated: "Showing the first 50 fields. Select fewer notes to inspect the remaining fields.",
+    deckRequired: "Choose a deck for new cards: this note has no single source deck.",
+    back: "Back to mapping",
+    apply: "Convert notes ({n})",
+    collision: "An unmapped value occupies a target field name. Change the mapping or explicitly disable preservation of unmapped fields.",
+    duplicateTemplates: "One source card cannot supply history to two target templates. Change the mapping.",
+    changed: "Notes, types or reviews changed. Check the current data and preview again.",
+    open: "Convert note type",
+    saveFirst: "Save your note changes first.",
+    afterClone: "The type copy is saved. Existing notes still use their previous type.",
+    selectNotes: "Select notes to convert",
+    selectionHint: "Select cards of {source} to convert their notes to {target}.",
+    clearScope: "Show all note types",
+  },
+  kind: {
+    change: "Change mode",
+    custom: "Standard · custom template",
+    title: "Mode for {name}",
+    scope: "This affects all your notes of this type. Fields and templates stay the same; review the questions and history first.",
+    mode: "New mode",
+    cloze: "Questions must contain clozes such as {{c1::answer}}. Notes without usable questions will block the change.",
+    scopeHint: "Switching the answer method creates new cards. To change only presentation, return to editing templates.",
+    preview: "Preview change",
+    confirm: "{from} → {to}",
+    reset: "New answer method: existing cards and their review history will be deleted; new cards start from scratch. Note content is preserved.",
+    preserve: "The answer method stays the same. Cards, schedules and history are preserved.",
+    changed: "The type, notes or reviews changed. Return to the list and preview again.",
+  },
+  validation: {
+    invalid: "no usable question or answer",
+    media: "media question",
+    omitted: "empty optional templates: {names}",
+    blocked: "Not saved: {n} notes would have no usable question or answer. Fix the template or those notes.",
+    samples: "Existing note samples (up to 5). Empty optional templates are allowed when another question remains:",
+  },
+  answerField: "Correct answer field",
+  impact: {
+    title: "Review generated cards",
+    counts: "Create: {create} · Keep: {keep} · Delete: {remove} · Reviews deleted: {reviews}",
+    removed: "Cards to delete (up to 50; review count in parentheses):",
+    latest: "Current saved version — your draft is kept below",
+    loadLatest: "Load current version",
+    replaceDraft: "Replace your draft with the current saved version?",
+  },
+
   pageTitle: 'Note types',
   // List
   list: {
@@ -28,7 +110,7 @@ const m = {
   // Fields editor
   fields: {
     title: 'Fields',
-    hint: 'The named blanks a note fills in. The first field is required.',
+    hint: 'Named note fields. Question templates and the selected answer mode determine the required content.',
     addField: 'Add field',
     namePlaceholder: 'Field name',
     moveUp: 'Move up',
@@ -54,8 +136,9 @@ const m = {
   },
   // Styling
   styling: {
-    title: 'Styling (CSS)',
-    hint: 'Optional CSS applied to this note type’s cards.',
+    saved: 'Previously saved CSS (kept in exports)',
+    title: 'Appearance',
+    hint: 'Per-type CSS is not applied. Cards use the app theme.',
     placeholder: '.card { font-size: 18px; }',
   },
   // Preview
@@ -77,6 +160,12 @@ const m = {
   },
   // Errors
   errors: {
+    unsupportedHtml: "Template {template}, position {position}: <{tag}> markup is not displayed or is not closed. Remove it; put HTML code examples in Markdown fields.",
+    invalidFields: "Field names must be unique ignoring case, without braces or control characters.",
+    answerRequired: "Choose the correct answer field.",
+    invalidTemplate: "Template {template}, {side}, position {position}: check field {field} and matching conditions.",
+
+    changed: "The type or affected cards changed. Your draft is preserved; review the current version and try again.",
     nameRequired: 'Give the note type a name.',
     noFields: 'Add at least one field.',
     noTemplates: 'Add at least one template.',

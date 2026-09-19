@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppNavigation } from '@/components/navigation';
-import { ANKI_DEFAULTS, MIN_RETENTION, MAX_RETENTION } from '@neuronexus/shared';
+import { ANKI_DEFAULTS, MIN_RETENTION, MAX_RETENTION, isValidLearningSteps } from '@neuronexus/shared';
 import { NNBadge, NNBtn, NNIcon, NNLoadError, NNPageSkeleton, NNSkeleton } from '@/components/ui';
 import { signOut, useSession } from '@/lib/auth';
 import { api, ok } from '@/lib/api';
@@ -122,6 +122,7 @@ export const NNSettings = () => {
   const [presetEditing, setPresetEditing] = useState<string | 'new' | null>(null);
   const [presetForm, setPresetForm] = useState(PRESET_DEFAULTS);
   const [presetSaving, setPresetSaving] = useState(false);
+  const presetSaveLock = useRef(false);
   const [presetSaveError, setPresetSaveError] = useState('');
   const [presetDeleteError, setPresetDeleteError] = useState('');
 
@@ -152,14 +153,20 @@ export const NNSettings = () => {
   };
 
   const handleSavePreset = async () => {
+    if (presetSaveLock.current || !presetEditing) return;
     const retPctRaw = presetForm.desiredRetentionPct.trim();
     const desiredRetention = retPctRaw === '' ? null : Number(retPctRaw) / 100;
-    if (desiredRetention !== null && (desiredRetention < MIN_RETENTION || desiredRetention > MAX_RETENTION)) {
+    if (desiredRetention !== null && (!Number.isFinite(desiredRetention) || desiredRetention < MIN_RETENTION || desiredRetention > MAX_RETENTION)) {
       setPresetSaveError(t('settings.deckOptions.fields.desiredRetentionHint'));
       return;
     }
     const learningSteps = parseSteps(presetForm.learningSteps);
     const relearningSteps = parseSteps(presetForm.relearningSteps);
+    if (!isValidLearningSteps(learningSteps) || !isValidLearningSteps(relearningSteps)) {
+      setPresetSaveError(t('settings.deckOptions.fields.learningStepsHint'));
+      return;
+    }
+    presetSaveLock.current = true;
     setPresetSaving(true);
     setPresetSaveError('');
     try {
@@ -190,6 +197,7 @@ export const NNSettings = () => {
     } catch {
       setPresetSaveError(t('settings.deckOptions.saveError'));
     } finally {
+      presetSaveLock.current = false;
       setPresetSaving(false);
     }
   };
@@ -583,12 +591,12 @@ export const NNSettings = () => {
         subtitle={t('settings.weightsSubtitle')}
         accent={<NNBadge tone="neutral" size="xs">{t('settings.weights.advanced')}</NNBadge>}
       >
-        <InfoRow label="Learning steps" value={ANKI_DEFAULTS.learningSteps.join(' · ')} />
-        <InfoRow label="Relearning steps" value={ANKI_DEFAULTS.relearningSteps.join(' · ')} />
-        <InfoRow label="Max interval" value={`${ANKI_DEFAULTS.maximumInterval} d`} />
-        <InfoRow label="Fuzz" value={ANKI_DEFAULTS.enableFuzz ? 'on' : 'off'} />
-        <InfoRow label="Short-term scheduler" value={ANKI_DEFAULTS.enableShortTerm ? 'on' : 'off'} />
-        <InfoRow label="Leech threshold" value={`${ANKI_DEFAULTS.leechThreshold} lapses`} />
+        <InfoRow label={t('settings.deckOptions.fields.learningSteps')} value={ANKI_DEFAULTS.learningSteps.join(' · ')} />
+        <InfoRow label={t('settings.deckOptions.fields.relearningSteps')} value={ANKI_DEFAULTS.relearningSteps.join(' · ')} />
+        <InfoRow label={t('settings.deckOptions.fields.maximumInterval')} value={`${ANKI_DEFAULTS.maximumInterval} ${t('units.days')}`} />
+        <InfoRow label={t('settings.weights.fuzz')} value={t(ANKI_DEFAULTS.enableFuzz ? 'settings.weights.enabled' : 'settings.weights.disabled')} />
+        <InfoRow label={t('settings.weights.shortTerm')} value={t(ANKI_DEFAULTS.enableShortTerm ? 'settings.weights.enabled' : 'settings.weights.disabled')} />
+        <InfoRow label={t('settings.deckOptions.fields.leechThreshold')} value={String(ANKI_DEFAULTS.leechThreshold)} />
       </Section>
 
       {/* ── Deck Options presets ── */}

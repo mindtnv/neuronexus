@@ -28,6 +28,7 @@ import {
   renderCardHtmlWithMermaid,
   sanitizeMermaidSvg,
   SafeHtml,
+  type ContentBlock,
 } from '@/lib/render-card';
 import { useT } from '@/lib/i18n';
 import type { FieldValues, NoteTypeDef } from '@neuronexus/shared';
@@ -41,6 +42,7 @@ export interface RichCardProps extends React.HTMLAttributes<HTMLDivElement> {
   side: 'front' | 'back';
   /** Which template generates the card (defaults to 0). */
   templateOrd?: number;
+  clozeNumber?: number | null;
 }
 
 // Escape a plain text string for safe insertion into the static error island
@@ -52,24 +54,41 @@ function escapeText(s: string): string {
     .replace(/>/g, '&gt;');
 }
 
+/** Only escaped text is added to the one trusted render sink; never parser HTML/errors. */
+function failureIsland(block: ContentBlock, heading: string, advice: string): string {
+  return `<div class="nn-content-error" role="note"><strong>${escapeText(heading)}</strong><p>${escapeText(advice)}</p><pre><code>${escapeText(block.source)}</code></pre></div>`;
+}
+
 export const RichCard = ({
   noteType,
   fieldValues,
   side,
   templateOrd = 0,
+  clozeNumber = 0,
   ...rest
 }: RichCardProps) => {
   const t = useT();
   // ONE pipeline call (the single owner). Memoized on the render inputs so the
   // mermaid effect only re-runs when the actual content changes.
-  const { html, mermaid } = useMemo(
-    () => renderCardHtmlWithMermaid(noteType, fieldValues, side, templateOrd),
-    [noteType, fieldValues, side, templateOrd],
+  const { html, mermaid, mathErrors = [], error } = useMemo(
+    () => renderCardHtmlWithMermaid(noteType, fieldValues, side, templateOrd, clozeNumber),
+    [noteType, fieldValues, side, templateOrd, clozeNumber],
   );
 
   // placeholder-key → sanitized SVG (or a static error island). Keys not yet in
   // the map stay as inert placeholder text (a brief "loading" state) in SafeHtml.
   const [islands, setIslands] = useState<Map<string, string>>(new Map());
+  const [diagramTheme, setDiagramTheme] = useState<'dark' | 'default'>(() =>
+    typeof document !== 'undefined' && document.documentElement.dataset.themeMode === 'light' ? 'default' : 'dark');
+
+  useEffect(() => {
+    if (!mermaid.length) return;
+    const update = () => setDiagramTheme(document.documentElement.dataset.themeMode === 'light' ? 'default' : 'dark');
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-mode'] });
+    return () => observer.disconnect();
+  }, [mermaid.length]);
 
   useEffect(() => {
     if (mermaid.length === 0) {
@@ -77,6 +96,7 @@ export const RichCard = ({
       setIslands((prev) => (prev.size > 0 ? new Map() : prev));
       return;
     }
+    setIslands(new Map());
     let cancelled = false;
     const next = new Map<string, string>();
     (async () => {
@@ -87,7 +107,8 @@ export const RichCard = ({
         mermaidApi.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
-          theme: 'dark',
+          suppressErrorRendering: true,
+          theme: diagramTheme,
           // Render labels as native SVG `<text>`, NOT as HTML inside
           // `<foreignObject>` (the SVG→HTML XSS escape hatch the mermaid sink
           // forbids — see MERMAID_DOMPURIFY_CONFIG). Without this, flowchart /
@@ -97,16 +118,15 @@ export const RichCard = ({
           // flowchart / class / state diagrams.
           htmlLabels: false,
         });
-      } catch (err) {
-        // The whole mermaid module failed to load — render error islands for all.
-        if (process.env.NODE_ENV !== 'test') console.warn('[mermaid] load failed', err);
-        for (const { key } of mermaid) {
-          next.set(key, `<div class="nn-mermaid nn-mermaid-error">${escapeText(t('editor.richText.mermaidError'))}</div>`);
+      } catch {
+        for (const block of mermaid) {
+          next.set(block.key, failureIsland(block, t('editor.richText.diagramAt', block), t('editor.richText.diagramUnavailable')));
         }
         if (!cancelled) setIslands(next);
         return;
       }
-      for (const { key, source } of mermaid) {
+      for (const block of mermaid) {
+        const { key, source } = block;
         if (cancelled) return;
         try {
           // A unique DOM id per render call (mermaid injects a scratch node).
@@ -114,10 +134,9 @@ export const RichCard = ({
           const { svg } = await mermaidApi.render(id, source);
           const safe = sanitizeMermaidSvg(svg);
           next.set(key, `<div class="nn-mermaid">${safe}</div>`);
-        } catch (err) {
-          // A single bad diagram must never break the whole card render.
-          if (process.env.NODE_ENV !== 'test') console.warn('[mermaid] render failed', err);
-          next.set(key, `<div class="nn-mermaid nn-mermaid-error">${escapeText(t('editor.richText.mermaidError'))}</div>`);
+        } catch {
+          // Source and parser exceptions must not leak through the browser console.
+          next.set(key, failureIsland(block, t('editor.richText.diagramAt', block), t('editor.richText.diagramSyntax')));
         }
       }
       if (!cancelled) setIslands(next);
@@ -125,7 +144,11 @@ export const RichCard = ({
     return () => {
       cancelled = true;
     };
-  }, [mermaid, t]);
+  }, [mermaid, t, diagramTheme]);
 
-  return <SafeHtml html={html} mermaidIslands={islands} {...rest} />;
+  if (error) return <div {...rest} role="alert">{t('editor.errors.invalidCloze')}</div>;
+  const visibleIslands = new Map(mermaid.map(({ key }) => [key, islands.get(key)
+    ?? `<div class="nn-mermaid" role="status">${escapeText(t('states.loading'))}</div>`]));
+  for (const block of mathErrors) visibleIslands.set(block.key, failureIsland(block, t('editor.richText.mathAt', block), t('editor.richText.mathSyntax')));
+  return <SafeHtml html={html} mermaidIslands={visibleIslands} {...rest} />;
 };

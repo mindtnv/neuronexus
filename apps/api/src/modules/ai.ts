@@ -343,7 +343,7 @@ interface HistoryRow {
   id: string;
   role: string;
   content: string;
-  toolCalls: { id: string; name: string; arguments: string }[] | null;
+  toolCalls: { id: string; name: string; arguments: string; confirmationToken?: string }[] | null;
   toolCallId: string | null;
   /** Composer @-mentions on a user row (C7) — appended at history-build time. */
   mentions: MessageMention[] | null;
@@ -362,6 +362,7 @@ interface AssembledToolCall {
   name: string;
   /** Raw JSON string the model emitted (parsed at execute time). */
   arguments: string;
+  confirmationToken?: string;
 }
 
 /** An in-memory transcript row, committed in ONE transaction at turn end. */
@@ -832,7 +833,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnOutcome> {
           },
         ],
       });
-      transcript.push({ role: 'assistant', content: '', toolCalls: [firstWrite], grounding: groundingSnapshot });
+      transcript.push({ role: 'assistant', content: '', toolCalls: [{ ...firstWrite, confirmationToken: impact.confirmationToken }], grounding: groundingSnapshot });
 
       emit({ type: 'tool_call', id: firstWrite.id, name: firstWrite.name, args: firstWrite.arguments, status: 'running' });
       emit({
@@ -967,6 +968,7 @@ async function persistTranscript(args: {
             id: tc.id,
             name: tc.name,
             arguments: tc.arguments,
+            ...(tc.confirmationToken ? { confirmationToken: tc.confirmationToken } : {}),
           })),
           model: model ?? null,
           usage: usageHere,
@@ -1228,6 +1230,7 @@ function findPendingToolCall(
           id: match.id,
           name: match.name,
           arguments: match.arguments,
+          confirmationToken: match.confirmationToken,
           rowId: r.id,
           grounding: r.grounding,
         };
@@ -1974,7 +1977,7 @@ export const chatModule = new Elysia({ prefix: '/chat' })
               // back. So a racing/double Apply never double-executes.
               try {
                 result = await db.transaction(async (tx) => {
-                  const r = await tool.execute({ ...toolCtx, tx }, execArgs);
+                  const r = await tool.execute({ ...toolCtx, tx, confirmationToken: pending.confirmationToken }, execArgs);
                   const content = capToolResult(
                     r.ok ? `${r.text}${selectionNote}` : JSON.stringify({ ok: false, error: r.error }),
                   );

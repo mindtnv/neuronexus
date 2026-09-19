@@ -41,6 +41,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${interTight.variable} ${jetbrainsMono.variable} ${instrumentSerif.variable}`}
     >
       <head>

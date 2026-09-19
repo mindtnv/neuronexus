@@ -1,4 +1,5 @@
 const m = {
+  firstCard: 'Add your first card',
   newDeck: 'New deck',
   newSubDeck: 'New sub-deck',
   underParent: 'Under',

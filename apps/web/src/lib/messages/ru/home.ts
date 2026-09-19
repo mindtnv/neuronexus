@@ -1,4 +1,8 @@
 const m = {
+  estNew: '{n} новых',
+  countsError: 'Не удалось обновить очередь.',
+  countsLoading: 'Проверяем, что готово к повторению…',
+  forecastError: 'Не удалось обновить прогноз.',
   welcome: 'С возвращением, {name}',
   todayBadge: 'Сегодня · {date}',
   cardsDue: 'карт к повтору',
@@ -30,7 +34,7 @@ const m = {
   knowledgeGraph: 'Граф знаний',
   graphSub: '{nodes} узлов · {links} связей · {clusters} кластеров',
   forecast: 'Прогноз',
-  forecastSub: 'ближайшие 7 дней',
+  forecastSub: '7 учебных дней · UTC',
   aiSuggestions: 'Подсказки ИИ',
   suggestionsBadge: '{n} новых',
   suggestions: {

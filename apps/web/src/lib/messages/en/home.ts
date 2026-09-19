@@ -1,4 +1,8 @@
 const m = {
+  estNew: '{n} new',
+  countsError: 'Could not refresh the study queue.',
+  countsLoading: 'Checking what is ready to study…',
+  forecastError: 'Could not refresh the forecast.',
   welcome: 'Welcome back, {name}',
   todayBadge: 'Today · {date}',
   cardsDue: 'cards due',
@@ -30,7 +34,7 @@ const m = {
   knowledgeGraph: 'Knowledge graph',
   graphSub: '{nodes} nodes · {links} links · {clusters} clusters',
   forecast: 'Forecast',
-  forecastSub: 'next 7 days',
+  forecastSub: '7 study days · UTC',
   aiSuggestions: 'AI suggestions',
   suggestionsBadge: '{n} new',
   suggestions: {

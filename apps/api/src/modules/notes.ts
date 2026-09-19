@@ -4,20 +4,25 @@
 //   PATCH  /notes/:id     → re-generate; FSRS preserved on surviving templateOrds
 //   DELETE /notes/:id     → delete (cascade drops cards via FK)
 //
-// Trust boundary (plan must-fix #1/#2): field values are SANITIZED here on save
-// via `sanitizeFieldValues` (parser-based `sanitize-html`). The card render*
-// columns are a plaintext SEARCH cache derived from the sanitized values via the
-// shared `generateCards` — never a security artifact (display HTML is rendered
-// lazily + re-sanitized in the browser).
+// Field values are lossless Markdown SOURCE, not safe HTML. The historical
+// sanitizeFieldValues helper copies source without interpreting its syntax.
+// render* is a disposable search cache; display parses Markdown with html:false
+// and sanitizes the resulting HTML at the browser sink.
 //
 // Deck assignment (Decision A1): all generated cards get the note's chosen
 // deckId. FSRS is initialised per generated card via `newFsrsCard`.
 
-import { Elysia, t } from 'elysia';
+import { Elysia, t, status as reply } from 'elysia';
 import { and, eq } from 'drizzle-orm';
 import { cards, db, decks, noteTypes, notes, type Db } from '@neuronexus/db';
 import {
   generateCards,
+  acceptedAnswerVariants,
+  ClozeSyntaxError,
+  NoteContentError,
+  type NoteContentErrorCode,
+  isLegacyClozeCard,
+  MAX_CLOZE_NUMBER,
   newFsrsCard,
   stateLabel,
   type FieldValues,
@@ -34,6 +39,7 @@ import type { Logger } from 'pino';
 import { sanitizeFieldValues } from '../sanitize.ts';
 import { defFromRow } from './note-types.ts';
 import { enqueueIndex } from '../ai/index-queue.ts';
+import { applyRegeneration, loadRegenerationCards, NoteWriteConflict, planRegeneration, regenerationImpact, regenerationToken } from './card-regeneration';
 
 /** A Drizzle transaction handle (the arg passed to `db.transaction(async (tx) => …)`). */
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -95,8 +101,8 @@ function freshFsrsColumns(now: Date) {
 
 /** Resolved (validation-only, no DB write) inputs for a note create. */
 export type NoteCreateResolution =
-  | { ok: true; def: NoteTypeDef; sanitized: FieldValues; generated: ReturnType<typeof generateCards> }
-  | { ok: false; error: 'deck_not_found' | 'note_type_not_found' };
+  | { ok: true; def: NoteTypeDef; typeUpdatedAt: Date; sanitized: FieldValues; acceptedAnswers: string[]; generated: ReturnType<typeof generateCards> }
+  | { ok: false; error: 'deck_not_found' | 'note_type_not_found' | 'invalid_cloze' | NoteContentErrorCode };
 
 /**
  * Validate deck + note-type ownership and pre-compute the sanitized field values
@@ -105,7 +111,7 @@ export type NoteCreateResolution =
  */
 export async function resolveNoteCreate(
   userId: string,
-  input: { deckId: string; noteTypeId: string; fieldValues: FieldValues },
+  input: { deckId: string; noteTypeId: string; fieldValues: FieldValues; acceptedAnswers?: string[] },
 ): Promise<NoteCreateResolution> {
   const [deck] = await db
     .select({ id: decks.id })
@@ -125,8 +131,10 @@ export async function resolveNoteCreate(
 
   const sanitized = sanitizeFieldValues(input.fieldValues);
   const def = defFromRow(noteType);
-  const generated = generateCards(def, sanitized);
-  return { ok: true, def, sanitized, generated };
+  let generated: ReturnType<typeof generateCards>;
+  let acceptedAnswers: string[];
+  try { acceptedAnswers = acceptedAnswerVariants(input.acceptedAnswers ?? []); generated = generateCards(def, sanitized); } catch (error) { if (error instanceof ClozeSyntaxError) return { ok: false, error: 'invalid_cloze' }; if (error instanceof NoteContentError) return { ok: false, error: error.code }; throw error; }
+  return { ok: true, def, typeUpdatedAt: noteType.updatedAt, sanitized, acceptedAnswers, generated };
 }
 
 /**
@@ -141,19 +149,24 @@ export async function insertNoteAndCards(
     userId: string;
     deckId: string;
     noteTypeId: string;
+    expectedTypeUpdatedAt: Date;
     sanitized: FieldValues;
+    acceptedAnswers?: string[];
     tags: string[];
     generated: ReturnType<typeof generateCards>;
     now?: Date;
   },
 ): Promise<{ note: typeof notes.$inferSelect; cards: (typeof cards.$inferSelect)[] }> {
   const now = input.now ?? new Date();
+  const [currentType] = await tx.select().from(noteTypes).where(eq(noteTypes.id, input.noteTypeId)).for('share');
+  if (!currentType || currentType.updatedAt.getTime() !== input.expectedTypeUpdatedAt.getTime()) throw new NoteWriteConflict('note_type_changed');
   const [note] = await tx
     .insert(notes)
     .values({
       userId: input.userId,
       noteTypeId: input.noteTypeId,
       fieldValues: input.sanitized,
+      acceptedAnswers: input.acceptedAnswers ?? [],
       tags: input.tags,
     })
     .returning();
@@ -167,6 +180,7 @@ export async function insertNoteAndCards(
         deckId: input.deckId,
         noteId: note!.id,
         templateOrd: g.templateOrd,
+        clozeNumber: g.clozeNumber,
         renderText: g.renderText,
         renderFrontText: g.renderFrontText,
         renderBackText: g.renderBackText,
@@ -186,9 +200,11 @@ export type NoteUpdateResolution =
       note: typeof notes.$inferSelect;
       nextFieldValues: FieldValues;
       nextTags: string[];
+      nextAcceptedAnswers: string[];
       generated: ReturnType<typeof generateCards>;
+      typeUpdatedAt: Date;
     }
-  | { ok: false; error: 'not_found' | 'note_type_not_found' };
+  | { ok: false; error: 'not_found' | 'note_type_not_found' | 'invalid_cloze' | 'invalid_cloze_split' | NoteContentErrorCode };
 
 /**
  * Load + validate a note for a field/tags update and pre-compute the next
@@ -199,7 +215,7 @@ export type NoteUpdateResolution =
 export async function resolveNoteUpdate(
   userId: string,
   noteId: string,
-  patch: { fieldValues?: FieldValues; tags?: string[] },
+  patch: { acceptedAnswers?: string[]; fieldValues?: FieldValues; tags?: string[]; clozeRetainHistoryFor?: Record<string, number> },
 ): Promise<NoteUpdateResolution> {
   const [note] = await db
     .select()
@@ -220,10 +236,24 @@ export async function resolveNoteUpdate(
       ? sanitizeFieldValues(patch.fieldValues)
       : (note.fieldValues as FieldValues);
   const nextTags = patch.tags ?? note.tags;
+  let nextAcceptedAnswers: string[];
+  try { nextAcceptedAnswers = acceptedAnswerVariants(patch.acceptedAnswers ?? note.acceptedAnswers); }
+  catch (error) { if (error instanceof NoteContentError) return { ok: false, error: error.code }; throw error; }
 
   const def = defFromRow(noteType);
-  const generated = generateCards(def, nextFieldValues);
-  return { ok: true, note, nextFieldValues, nextTags, generated };
+  const existing = await db.select({ clozeNumber: cards.clozeNumber, templateOrd: cards.templateOrd, renderKind: cards.renderKind }).from(cards)
+    .where(and(eq(cards.noteId, noteId), eq(cards.userId, userId)));
+  const legacy = existing.some(isLegacyClozeCard);
+  let generated: ReturnType<typeof generateCards>;
+  try { generated = generateCards(def, nextFieldValues, { legacyCloze: legacy && patch.clozeRetainHistoryFor === undefined }); }
+  catch (error) { if (error instanceof ClozeSyntaxError) return { ok: false, error: 'invalid_cloze' }; if (error instanceof NoteContentError) return { ok: false, error: error.code }; throw error; }
+  if (patch.clozeRetainHistoryFor !== undefined && (def.kind !== 'cloze' || !legacy ||
+    existing.filter(isLegacyClozeCard).some((card) => !generated.some((next) => next.templateOrd === card.templateOrd && next.clozeNumber === patch.clozeRetainHistoryFor![String(card.templateOrd)])) ||
+    Object.keys(patch.clozeRetainHistoryFor).some((ord) => !existing.some((card) => isLegacyClozeCard(card) && String(card.templateOrd) === ord)))) {
+    return { ok: false, error: 'invalid_cloze_split' };
+  }
+  if (!generated.length) return { ok: false, error: 'no_cards_generated' };
+  return { ok: true, note, nextAcceptedAnswers, typeUpdatedAt: noteType.updatedAt, nextFieldValues, nextTags, generated };
 }
 
 /**
@@ -233,111 +263,123 @@ export async function resolveNoteUpdate(
  * route body; FSRS-on-survivors and the destructive drop are NOT reimplemented
  * by callers (Principle 2). The caller enqueues the index after commit.
  */
-export async function applyNoteUpdate(
-  tx: Tx,
-  input: {
-    userId: string;
-    noteId: string;
-    nextFieldValues: FieldValues;
-    nextTags: string[];
-    generated: ReturnType<typeof generateCards>;
-    now?: Date;
-  },
-): Promise<{
-  note: typeof notes.$inferSelect;
-  cards: (typeof cards.$inferSelect)[];
-  updated: number;
-  inserted: number;
-  deleted: number;
-}> {
-  const now = input.now ?? new Date();
-  const generatedByOrd = new Map(input.generated.map((g) => [g.templateOrd, g]));
-
-  const [updatedNote] = await tx
-    .update(notes)
-    .set({ fieldValues: input.nextFieldValues, tags: input.nextTags, updatedAt: now })
-    .where(eq(notes.id, input.noteId))
-    .returning();
-
-  const existing = await tx.select().from(cards).where(eq(cards.noteId, input.noteId));
-  const existingByOrd = new Map(existing.map((c) => [c.templateOrd, c]));
-  const noteDeckId = existing[0]?.deckId;
-
-  let updated = 0;
-  let inserted = 0;
-  let deleted = 0;
-
-  for (const g of input.generated) {
-    const prior = existingByOrd.get(g.templateOrd);
-    if (prior) {
-      await tx
-        .update(cards)
-        .set({
-          renderText: g.renderText,
-          renderFrontText: g.renderFrontText,
-          renderBackText: g.renderBackText,
-          renderKind: g.renderKind,
-          updatedAt: now,
-        })
-        .where(eq(cards.id, prior.id));
-      updated += 1;
-    } else if (noteDeckId) {
-      await tx.insert(cards).values({
-        userId: input.userId,
-        deckId: noteDeckId,
-        noteId: input.noteId,
-        templateOrd: g.templateOrd,
-        renderText: g.renderText,
-        renderFrontText: g.renderFrontText,
-        renderBackText: g.renderBackText,
-        renderKind: g.renderKind,
-        ...freshFsrsColumns(now),
-      });
-      inserted += 1;
-    }
-  }
-
-  for (const c of existing) {
-    if (!generatedByOrd.has(c.templateOrd)) {
-      await tx.delete(cards).where(eq(cards.id, c.id));
-      deleted += 1;
-    }
-  }
-
-  const finalCards = await tx.select().from(cards).where(eq(cards.noteId, input.noteId));
-  return { note: updatedNote!, cards: finalCards, updated, inserted, deleted };
+export interface NoteUpdateInput {
+  nextAcceptedAnswers?: string[];
+  clozeRetainHistoryFor?: Record<string, number>;
+  userId: string;
+  noteId: string;
+  nextFieldValues: FieldValues;
+  nextTags: string[];
+  generated: ReturnType<typeof generateCards>;
+  expectedUpdatedAt: Date;
+  expectedTypeUpdatedAt: Date;
+  deckId?: string;
+  now?: Date;
 }
 
-/**
- * Read-only blast-radius diff for a note field update: how many cards a
- * regeneration would CREATE vs DELETE, given the resolved `generated` set vs the
- * note's existing cards-by-`templateOrd`. Mirrors {@link applyNoteUpdate}'s
- * diff (a survivor whose deck is missing can't be inserted — same `noteDeckId`
- * guard) so `dryRun` predicts what `execute` will actually do. No writes.
- */
-export async function noteUpdateImpact(
-  noteId: string,
-  generated: ReturnType<typeof generateCards>,
-): Promise<{ willCreateCards: number; willDeleteCards: number }> {
-  const existing = await db
-    .select({ id: cards.id, templateOrd: cards.templateOrd, deckId: cards.deckId })
-    .from(cards)
-    .where(eq(cards.noteId, noteId));
-  const existingOrds = new Set(existing.map((c) => c.templateOrd));
-  const generatedOrds = new Set(generated.map((g) => g.templateOrd));
-  const noteDeckId = existing[0]?.deckId;
+/** Lock type -> note -> cards, the same order as note-type reconciliation. */
+export async function prepareNoteUpdate(tx: Tx, input: NoteUpdateInput) {
+  const [initial] = await tx.select().from(notes).where(and(eq(notes.id, input.noteId), eq(notes.userId, input.userId)));
+  if (!initial) throw new NoteWriteConflict('note_changed');
+  const [type] = await tx.select().from(noteTypes).where(eq(noteTypes.id, initial.noteTypeId)).for('share');
+  if (!type || type.updatedAt.getTime() !== input.expectedTypeUpdatedAt.getTime()) throw new NoteWriteConflict('note_type_changed');
+  const [note] = await tx.select().from(notes).where(and(eq(notes.id, input.noteId), eq(notes.userId, input.userId))).for('update');
+  if (!note || note.noteTypeId !== type.id || note.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()) throw new NoteWriteConflict('note_changed');
+  const existing = await loadRegenerationCards(tx, input.userId, [input.noteId]);
+  const plan = planRegeneration(existing, input.generated, undefined, input.clozeRetainHistoryFor);
+  const deckId = input.deckId ?? existing[0]?.deckId;
+  if (plan.create.length && !deckId) throw new NoteWriteConflict('note_deck_required');
+  const impact = { ...regenerationImpact([plan]), ...(input.clozeRetainHistoryFor !== undefined ? { retainedClozeTargets: input.clozeRetainHistoryFor } : {}) };
+  const preview = { impact, sourceVersion: note.updatedAt.toISOString(), confirmationToken: regenerationToken({
+    userId: input.userId, note, typeVersion: type.updatedAt, existing,
+    patch: { acceptedAnswers: input.nextAcceptedAnswers ?? note.acceptedAnswers, fields: input.nextFieldValues, tags: input.nextTags, deckId: input.deckId, clozeRetainHistoryFor: input.clozeRetainHistoryFor },
+  }) };
+  return { note, plan, deckId, preview };
+}
 
-  let willCreateCards = 0;
-  for (const g of generated) {
-    // A new ord only materialises when there's a deck to inherit (applyNoteUpdate
-    // skips otherwise) — match that so the prediction is exact.
-    if (!existingOrds.has(g.templateOrd) && noteDeckId) willCreateCards += 1;
-  }
-  let willDeleteCards = 0;
-  for (const c of existing) {
-    if (!generatedOrds.has(c.templateOrd)) willDeleteCards += 1;
-  }
-  return { willCreateCards, willDeleteCards };
+export async function applyNoteUpdate(tx: Tx, input: NoteUpdateInput, prepared?: Awaited<ReturnType<typeof prepareNoteUpdate>>) {
+  const state = prepared ?? await prepareNoteUpdate(tx, input);
+  const now = new Date(Math.max((input.now ?? new Date()).getTime(), state.note.updatedAt.getTime() + 1));
+  const [updatedNote] = await tx.update(notes)
+    .set({ acceptedAnswers: input.nextAcceptedAnswers ?? state.note.acceptedAnswers, fieldValues: input.nextFieldValues, tags: input.nextTags, updatedAt: now })
+    .where(and(eq(notes.id, input.noteId), eq(notes.userId, input.userId))).returning();
+  const indexIds = await applyRegeneration(tx, { userId: input.userId, noteId: input.noteId,
+    plan: state.plan, deckId: state.deckId, moveToDeckId: input.deckId, now });
+  const finalCards = await tx.select().from(cards).where(and(eq(cards.noteId, input.noteId), eq(cards.userId, input.userId)));
+  return { note: updatedNote!, cards: finalCards, indexIds, updated: state.plan.keep.length,
+    inserted: state.plan.create.length, deleted: state.plan.remove.length };
+}
+
+type NoteEdit = { acceptedAnswers?: string[]; expectedTypeUpdatedAt?: string; clozeRetainHistoryFor?: Record<string, number>; fieldValues?: FieldValues; tags?: string[]; deckId?: string; preview?: boolean; confirmationToken?: string; expectedUpdatedAt?: string };
+const noteEditOptions = {
+      auth: true as const,
+      params: t.Object({ id: t.String({ format: 'uuid' }) }),
+      body: t.Partial(
+        t.Object({
+          clozeRetainHistoryFor: t.Record(t.String({ pattern: '^(0|[1-9][0-9]*)$', maxLength: 3 }), t.Integer({ minimum: 1, maximum: MAX_CLOZE_NUMBER }), { minProperties: 1, maxProperties: 32 }),
+          preview: t.Boolean(),
+          confirmationToken: t.String({ maxLength: 64 }),
+          expectedUpdatedAt: t.String({ format: 'date-time' }),
+          expectedTypeUpdatedAt: t.String({ format: 'date-time' }),
+          acceptedAnswers: t.Optional(t.Array(t.String({ minLength: 1, maxLength: 256 }), { maxItems: 20 })),
+          fieldValues: fieldValuesSchema,
+          tags: t.Array(t.String()),
+          deckId: t.String({ format: 'uuid' }),
+        }),
+      ),
+    };
+async function editNote(context: { user: { id: string }; params: { id: string }; body: NoteEdit }) {
+      const { user, params, body } = context;
+      const status = reply;
+      const log = requestLogFromContext(context);
+      const resolved = await resolveNoteUpdate(user.id, params.id, {
+        fieldValues: body.fieldValues,
+        acceptedAnswers: body.acceptedAnswers,
+        tags: body.tags,
+        clozeRetainHistoryFor: body.clozeRetainHistoryFor,
+      });
+      if (!resolved.ok) return status(resolved.error === 'not_found' || resolved.error === 'note_type_not_found' ? 404 : 400, { error: resolved.error });
+      if (body.expectedTypeUpdatedAt && new Date(body.expectedTypeUpdatedAt).getTime() !== resolved.typeUpdatedAt.getTime()) return status(409, { error: 'note_type_changed' });
+      if (body.deckId !== undefined) {
+        const [target] = await db.select({ id: decks.id }).from(decks)
+          .where(and(eq(decks.id, body.deckId), eq(decks.userId, user.id))).limit(1);
+        if (!target) return status(400, { error: 'deck_not_found' });
+      }
+
+      const input: NoteUpdateInput = {
+        userId: user.id, noteId: params.id, nextFieldValues: resolved.nextFieldValues,
+        nextTags: resolved.nextTags, nextAcceptedAnswers: resolved.nextAcceptedAnswers, generated: resolved.generated, deckId: body.deckId, clozeRetainHistoryFor: body.clozeRetainHistoryFor,
+        expectedUpdatedAt: body.expectedUpdatedAt ? new Date(body.expectedUpdatedAt) : resolved.note.updatedAt,
+        expectedTypeUpdatedAt: resolved.typeUpdatedAt,
+      };
+      const result = await db.transaction(async (tx) => {
+        const prepared = await prepareNoteUpdate(tx, input);
+        if (body.preview) return prepared.preview;
+        if ((prepared.preview.impact.willDeleteCards > 0 || body.clozeRetainHistoryFor !== undefined || body.confirmationToken) &&
+          body.confirmationToken !== prepared.preview.confirmationToken) {
+          throw new NoteWriteConflict(body.confirmationToken ? 'preview_changed' : 'card_removal_confirmation_required');
+        }
+        return applyNoteUpdate(tx, input, prepared);
+      }).catch((error) => { if (error instanceof NoteWriteConflict) return error; throw error; });
+      if (result instanceof NoteWriteConflict) return status(409, { error: result.code });
+      if ('impact' in result) return result;
+
+      log.info(
+        {
+          noteId: params.id,
+          noteTypeId: resolved.note.noteTypeId,
+          cardsUpdated: result.updated,
+          cardsInserted: result.inserted,
+          cardsDeleted: result.deleted,
+        },
+        'note.update',
+      );
+
+      // RAG index hook (Slice 3): re-enqueue surviving + new cards after commit.
+      // The sourceHash skip means an unchanged render_text costs nothing.
+      enqueueCardsForIndex(result.cards.map((c) => c.id), log);
+
+      return { note: result.note, cards: result.cards };
 }
 
 export const notesModule = new Elysia({ prefix: '/notes' })
@@ -352,8 +394,11 @@ export const notesModule = new Elysia({ prefix: '/notes' })
         deckId: body.deckId,
         noteTypeId: body.noteTypeId,
         fieldValues: body.fieldValues,
+        acceptedAnswers: body.acceptedAnswers,
       });
       if (!resolved.ok) return status(400, { error: resolved.error });
+      if (body.expectedTypeUpdatedAt && new Date(body.expectedTypeUpdatedAt).getTime() !== resolved.typeUpdatedAt.getTime()) return status(409, { error: 'note_type_changed' });
+      if (resolved.generated.length === 0) return status(400, { error: 'no_cards_generated' });
 
       const now = new Date();
       const result = await db.transaction((tx) =>
@@ -361,12 +406,15 @@ export const notesModule = new Elysia({ prefix: '/notes' })
           userId: user.id,
           deckId: body.deckId,
           noteTypeId: body.noteTypeId,
+          expectedTypeUpdatedAt: resolved.typeUpdatedAt,
           sanitized: resolved.sanitized,
+          acceptedAnswers: resolved.acceptedAnswers,
           tags: body.tags ?? [],
           generated: resolved.generated,
           now,
         }),
-      );
+      ).catch((error) => { if (error instanceof NoteWriteConflict) return error; throw error; });
+      if (result instanceof NoteWriteConflict) return status(409, { error: result.code });
 
       log.info(
         {
@@ -386,63 +434,16 @@ export const notesModule = new Elysia({ prefix: '/notes' })
       auth: true,
       body: t.Object({
         noteTypeId: t.String({ format: 'uuid' }),
+        expectedTypeUpdatedAt: t.Optional(t.String({ format: 'date-time' })),
+        acceptedAnswers: t.Optional(t.Array(t.String({ minLength: 1, maxLength: 256 }), { maxItems: 20 })),
         fieldValues: fieldValuesSchema,
         tags: t.Optional(t.Array(t.String())),
         deckId: t.String({ format: 'uuid' }),
       }),
     },
   )
-  .patch(
-    '/:id',
-    async (context) => {
-      const { user, params, body, status } = context;
-      const log = requestLogFromContext(context);
-      const resolved = await resolveNoteUpdate(user.id, params.id, {
-        fieldValues: body.fieldValues,
-        tags: body.tags,
-      });
-      if (!resolved.ok) return status(404, { error: resolved.error });
-
-      const now = new Date();
-      const result = await db.transaction((tx) =>
-        applyNoteUpdate(tx, {
-          userId: user.id,
-          noteId: params.id,
-          nextFieldValues: resolved.nextFieldValues,
-          nextTags: resolved.nextTags,
-          generated: resolved.generated,
-          now,
-        }),
-      );
-
-      log.info(
-        {
-          noteId: params.id,
-          noteTypeId: resolved.note.noteTypeId,
-          cardsUpdated: result.updated,
-          cardsInserted: result.inserted,
-          cardsDeleted: result.deleted,
-        },
-        'note.update',
-      );
-
-      // RAG index hook (Slice 3): re-enqueue surviving + new cards after commit.
-      // The sourceHash skip means an unchanged render_text costs nothing.
-      enqueueCardsForIndex(result.cards.map((c) => c.id), log);
-
-      return { note: result.note, cards: result.cards };
-    },
-    {
-      auth: true,
-      params: t.Object({ id: t.String({ format: 'uuid' }) }),
-      body: t.Partial(
-        t.Object({
-          fieldValues: fieldValuesSchema,
-          tags: t.Array(t.String()),
-        }),
-      ),
-    },
-  )
+  .patch('/:id', editNote, noteEditOptions)
+  .post('/:id/preview', (context) => editNote({ ...context, body: { ...context.body, preview: true } }), noteEditOptions)
   .delete(
     '/:id',
     async ({ user, params, status }) => {

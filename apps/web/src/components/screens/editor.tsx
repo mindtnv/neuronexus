@@ -1,44 +1,58 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
 import { NNCardForm } from '@/components/card-form';
+import { NNBtn, NNLoadError, NNPageSkeleton } from '@/components/ui';
+import { raiseToast } from '@/components/toasts';
 import { useNN } from '@/lib/store';
+import { api, ok } from '@/lib/api';
+import { cardFromApi } from '@/lib/mappers';
+import { useSessionResource } from '@/lib/session-resource';
+import { useT } from '@/lib/i18n';
+import { clearStudyHandoff } from '@/lib/review-session';
 
-// ─────────────────────────────────────────────
-// Editor screen — thin wrapper over the reusable NNCardForm.
-// Reads card/deck from the URL, supplies navigation via callbacks (the form
-// itself never touches the router — Architect tension e).
-// ─────────────────────────────────────────────
 export const NNEditor = () => {
+  const t = useT();
   const router = useAppNavigation();
-  const searchParams = useSearchParams();
-  const cardId = searchParams?.get('card') ?? null;
-  const deckQuery = searchParams?.get('deck') ?? null;
-
-  const cards = useNN((s) => s.cards);
+  const params = useSearchParams();
+  const cardId = params.get('card');
+  const deckQuery = params.get('deck');
+  const noteTypeQuery = params.get('noteType') ?? undefined;
+  const rawReturn = params.get('returnTo');
+  const returnTo = rawReturn && /^\/review(?:\?|$)/.test(rawReturn) ? rawReturn : null;
+  const bootstrapped = useNN((s) => s.bootstrapped);
   const decks = useNN((s) => s.decks);
+  const fetcher = useCallback(async () => cardId ? cardFromApi(await ok(await api.cards({ id: cardId }).get())) : null, [cardId]);
+  const resource = useSessionResource({ key: `editor:${cardId ?? 'new'}`, enabled: bootstrapped && Boolean(cardId), keepPreviousData: false, fetcher });
+  const editing = resource.data?.id === cardId ? resource.data : null;
+  const defaultDeckId = deckQuery && decks.some((deck) => deck.id === deckQuery) ? deckQuery : decks[0]?.id ?? '';
 
-  const editing = useMemo(
-    () => (cardId ? cards.find((c) => c.id === cardId) ?? null : null),
-    [cards, cardId],
-  );
+  if (!bootstrapped || (cardId && !editing && !resource.error)) return <NNPageSkeleton />;
+  if (cardId && resource.error) return <div style={{ padding: 24 }}>
+    <NNLoadError title={t('editor.errors.loadFailed')} description={t(resource.error.status === 404 ? 'editor.errors.notFound' : 'review.loadFailedBody')}
+      retryLabel={t('review.retry')} onRetry={resource.refresh} requestId={resource.error.requestId} />
+    <NNBtn variant="ghost" onClick={() => router.push(returnTo ?? '/cards')}>{t('actions.cancel')}</NNBtn>
+  </div>;
 
-  const defaultDeckId = useMemo(() => {
-    if (deckQuery && decks.some((d) => d.id === deckQuery)) return deckQuery;
-    return decks[0]?.id ?? '';
-  }, [deckQuery, decks]);
-
-  return (
-    <NNCardForm
-      key={editing?.id ?? 'new'}
-      card={editing}
-      defaultDeckId={defaultDeckId}
-      showFsrsHeader
-      autoFocusFront
-      onSaved={(c) => router.replace(`/editor?card=${encodeURIComponent(c.id)}`, { track: false })}
-      onDeleted={() => router.push('/decks')}
-    />
-  );
+  return <NNCardForm
+    key={cardId ?? `new:${defaultDeckId}:${noteTypeQuery ?? ''}`}
+    card={editing}
+    defaultDeckId={defaultDeckId}
+    defaultNoteTypeId={noteTypeQuery}
+    showFsrsHeader
+    autoFocusFront
+    saveLabel={returnTo ? t('editor.saveAndReturn') : undefined}
+    footerExtra={returnTo
+      ? <NNBtn size="sm" variant="ghost" onClick={() => router.push(returnTo)}>{t('actions.cancel')}</NNBtn>
+      : editing ? <NNBtn size="sm" variant="soft" onClick={() => router.push(`/editor?${new URLSearchParams({ deck: editing.deckId, ...(editing.noteType ? { noteType: editing.noteType.id } : {}) })}`)}>{t('editor.addAnother')}</NNBtn> : undefined}
+    onSaved={(card) => {
+      raiseToast({ kind: 'success', title: t('editor.saved') });
+      if (returnTo) router.replace(returnTo);
+      else if (cardId === card.id) resource.mutate(card);
+      else router.replace(`/editor?card=${encodeURIComponent(card.id)}`, { track: false });
+    }}
+    onDeleted={() => { clearStudyHandoff(); router.push(returnTo ?? '/decks'); }}
+  />;
 };

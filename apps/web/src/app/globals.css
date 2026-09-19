@@ -833,6 +833,19 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-topbar-desktop-only { display: inline-flex; align-items: center; }
 .nn-bottom-tabs { display: none; }
 .nn-route-slot { padding-bottom: 0; }
+.nn-app-shell[data-zen="true"] .nn-route-slot { padding-bottom: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .nn-review-layout,
+  .nn-review-layout *,
+  .nn-review-loading * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  .nn-review-card { box-shadow: var(--shadow-lg) !important; }
+  .nn-review-layout button { transform: none !important; }
+  .nn-shortcut-dialog { animation: none !important; transition: none !important; }
+}
 
 @media (min-width: 720px) and (max-width: 1100px) {
   .nn-sidebar-responsive { width: 60px; }
@@ -2931,3 +2944,18 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
     transform: none;
   }
 }
+
+/* A malformed block keeps its source readable without swallowing the card. */
+.nn-rendered .nn-content-error {
+  display: block;
+  padding: 12px;
+  margin: 10px 0;
+  border: 1px solid var(--rose-400);
+  border-radius: var(--r-md);
+  color: var(--text);
+  background: var(--surface-2);
+  font: 13px/1.5 var(--font-sans);
+  text-align: left;
+}
+.nn-rendered .nn-content-error strong { color: var(--rose-400); }
+.nn-rendered .nn-content-error pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -31,6 +31,9 @@ export type { FsrsCard };
 export const RATINGS = [1, 2, 3, 4] as const;
 export type Rating = (typeof RATINGS)[number];
 
+// A forgotten browser tab must not count as hours spent on one answer.
+export const MAX_REVIEW_DURATION_MS = 10 * 60 * 1000;
+
 export const RATING_LABELS = {
   1: 'Again',
   2: 'Hard',
@@ -65,6 +68,19 @@ export const ANKI_DEFAULTS = {
   // Leech threshold: Anki's default is 8 consecutive (or total) lapses.
   leechThreshold: 8,
 } as const;
+
+/** Prevent zero-delay loops and date overflow in persisted study presets. */
+export function isValidLearningSteps(steps: readonly string[] | null | undefined): boolean {
+  if (!Array.isArray(steps) || steps.length === 0 || steps.length > 20) return false;
+  const seconds = { s: 1, m: 60, h: 3600, d: 86400 };
+  return steps.every((step) => {
+    const match = /^(\d+)(s|m|h|d)$/.exec(step);
+    if (!match) return false;
+    const amount = Number(match[1]);
+    const duration = amount * seconds[match[2] as keyof typeof seconds];
+    return Number.isSafeInteger(amount) && amount > 0 && duration <= ANKI_DEFAULTS.maximumInterval * 86400;
+  });
+}
 
 export interface SchedulerOptions {
   /** Target recall probability, 0.7–0.99. Defaults to 0.9. */

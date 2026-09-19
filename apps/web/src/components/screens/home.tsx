@@ -2,10 +2,9 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAppNavigation } from '@/components/navigation';
-import { State } from 'ts-fsrs';
-import { addDays, format, isSameDay, startOfDay, startOfMonth, subDays } from 'date-fns';
+import { format, startOfMonth, subDays } from 'date-fns';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNPlant, NNSkeleton } from '@/components/ui';
-import { countDueCards } from '@/lib/cards';
+import { useStudyForecast, useStudyOverview } from '@/lib/use-study-overview';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
 import { reviewFromApi } from '@/lib/mappers';
@@ -23,8 +22,9 @@ export const NNHome = () => {
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const bootstrapped = useNN((s) => s.bootstrapped);
-  const cards = useNN((s) => s.cards);
   const profile = useNN((s) => s.profile);
+  const study = useStudyOverview();
+  const serverForecast = useStudyForecast(7, study.data?.overall.serverNow);
   const listLibrary = useNN((s) => s.listLibrary);
   const listNotebooks = useNN((s) => s.listNotebooks);
 
@@ -96,35 +96,19 @@ export const NNHome = () => {
     };
   }, [bootstrapped, listLibrary, listNotebooks]);
 
-  const now = useMemo(() => new Date(), []);
+  const now = useMemo(() => new Date(study.data?.overall.serverNow ?? Date.now()), [study.data?.overall.serverNow]);
 
-  const dueCount = useMemo(
-    () => countDueCards(cards, now),
-    [cards, now],
-  );
-
-  const { newCount, learningCount, criticalCount } = useMemo(() => {
-    let nw = 0;
-    let lr = 0;
-    let cr = 0;
-    const nowMs = now.getTime();
-    for (const c of cards) {
-      const dueMs = new Date(c.fsrs.due).getTime();
-      const state = c.fsrs.state as unknown as State;
-      if (state === State.New) nw++;
-      if (state === State.Learning || state === State.Relearning) lr++;
-      if (c.fsrs.reps >= 3 && c.fsrs.lapses >= 1 && dueMs <= nowMs) cr++;
-    }
-    return { newCount: nw, learningCount: lr, criticalCount: cr };
-  }, [cards, now]);
-
-  const reviewCount = Math.max(0, dueCount - newCount - learningCount);
-  const estMinutes = Math.round(dueCount * 0.25);
+  const counts = study.data?.overall;
+  const dueCount = counts?.totalAvailable ?? 0;
+  const newCount = counts?.availableNew ?? 0;
+  const learningCount = counts?.dueLearning ?? 0;
+  const reviewCount = counts?.availableReview ?? 0;
+  const estMinutes = dueCount > 0 ? Math.max(1, Math.round(dueCount * 0.25)) : 0;
 
   // Today's reviewed minutes — sums durationMs across today's reviews (fallback
   // to the server ledger below, which is authoritative once it rolls up).
   const todayReviewedMinutes = useMemo(() => {
-    const today = startOfDay(now).getTime();
+    const today = new Date(`${now.toISOString().slice(0, 10)}T00:00:00Z`).getTime();
     const msToday = recentReviews
       .filter((r) => r.reviewedAt >= today)
       .reduce((sum, r) => sum + (r.durationMs || 0), 0);
@@ -137,10 +121,10 @@ export const NNHome = () => {
   // reviews if the server hasn't rolled up yet (e.g., during first bootstrap).
   const todayMinutesServer = (() => {
     if (!profile) return todayReviewedMinutes;
-    const todayIso = format(now, 'yyyy-MM-dd');
+    const todayIso = now.toISOString().slice(0, 10);
     return profile.todayMinutesDate === todayIso ? profile.todayMinutes : 0;
   })();
-  const todayMinutes = todayMinutesServer || todayReviewedMinutes;
+  const todayMinutes = profile ? todayMinutesServer : todayReviewedMinutes;
   const goalPct = Math.min(100, Math.round((todayMinutes / Math.max(1, dailyGoalMinutes)) * 100));
   const streakFreezes = profile?.streakFreezes ?? 0;
 
@@ -156,23 +140,22 @@ export const NNHome = () => {
     return xp >= 1000 ? `${(xp / 1000).toFixed(1)}k` : String(xp);
   }, [profile]);
 
-  // Forecast: next 7 days bucketed by due date.
+  // Server buckets use UTC study days; zero-fill only a successful response.
   const forecast = useMemo(() => {
-    const buckets: { day: string; date: string; n: number; clr: 'lime' | 'amber' }[] = [];
-    for (let i = 0; i < 7; i++) {
-      const d = addDays(now, i);
-      const n = cards.filter((c) => isSameDay(new Date(c.fsrs.due), d)).length;
-      const label =
-        i === 0 ? t('time.today') : i === 1 ? t('time.tomorrow') : format(d, 'EEEE', { locale: dateLocale });
-      buckets.push({
-        day: label,
-        date: format(d, 'MMM d', { locale: dateLocale }),
-        n,
-        clr: n > 50 ? 'amber' : 'lime',
-      });
-    }
-    return buckets;
-  }, [cards, dateLocale, now, t]);
+    if (!serverForecast.data) return [];
+    const counts = new Map(serverForecast.data.buckets.map((bucket) => [bucket.day, bucket.count]));
+    const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    return Array.from({ length: 7 }, (_, i) => {
+      const day = new Date(dayStart + i * 86_400_000).toISOString().slice(0, 10);
+      const labelDate = new Date(`${day}T12:00:00`);
+      const n = counts.get(day) ?? 0;
+      return {
+        day: format(labelDate, 'EEEE', { locale: dateLocale }),
+        date: format(labelDate, 'MMM d', { locale: dateLocale }), n,
+        clr: n > 50 ? 'amber' as const : 'lime' as const,
+      };
+    });
+  }, [serverForecast.data, dateLocale, now, t]);
 
   const forecastMax = Math.max(80, ...forecast.map((b) => b.n));
 
@@ -202,8 +185,8 @@ export const NNHome = () => {
   // Flex ratios for the todo/learn/critical bar — avoid 0 widths.
   const barReview = Math.max(0, reviewCount);
   const barLearn = Math.max(0, learningCount);
-  const barCrit = Math.max(0, criticalCount);
-  const barTotal = barReview + barLearn + barCrit;
+  const barNew = Math.max(0, newCount);
+  const barTotal = barReview + barLearn + barNew;
 
   // While the initial snapshot is loading we swap the whole page for a real
   // skeleton layout — shape matches the post-bootstrap grid so there's no
@@ -260,16 +243,17 @@ export const NNHome = () => {
                 letterSpacing: -2,
               }}
             >
-              {dueCount}
+              {counts ? dueCount : '—'}
             </div>
             <div style={{ color: 'var(--text-muted)', fontSize: 15 }}>{t('home.cardsDue')}</div>
           </div>
           <div style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, maxWidth: 420 }}>
-            {t('home.estPrefix')}
+            {counts ? <>{t('home.estPrefix')}
             <span className="mono" style={{ color: 'var(--text)' }}>{t('home.min', { n: estMinutes })}</span>
             {t('home.estMid', { review: reviewCount, learning: learningCount })}
-            <span style={{ color: 'var(--amber-400)' }}>{t('home.estCritical', { n: criticalCount })}</span>
-            {t('home.estTail')}
+            <span style={{ color: 'var(--amber-400)' }}>{t('home.estNew', { n: newCount })}</span>
+            </> : !study.error ? t('home.countsLoading') : null}
+            {study.error && <span role="alert">{t('home.countsError')} <NNBtn size="sm" variant="ghost" onClick={study.reload}>{t('review.retry')}</NNBtn></span>}
           </div>
 
           <div style={{ display: 'flex', gap: 2, marginBottom: 20, height: 6, borderRadius: 3, overflow: 'hidden' }}>
@@ -277,7 +261,7 @@ export const NNHome = () => {
               <>
                 <div style={{ flex: barReview, background: 'var(--lime-500)' }} />
                 <div style={{ flex: barLearn, background: 'var(--violet-500)' }} />
-                <div style={{ flex: barCrit, background: 'var(--amber-500)' }} />
+                <div style={{ flex: barNew, background: 'var(--amber-500)' }} />
               </>
             ) : (
               <div style={{ flex: 1, background: 'var(--surface-3)' }} />
@@ -365,7 +349,7 @@ export const NNHome = () => {
             }}
           >
             {[
-              { v: String(cards.length), l: t('home.stats.cards') },
+              { v: counts ? String(counts.total) : '—', l: t('home.stats.cards') },
               { v: retentionPct != null ? `${retentionPct}%` : '—', l: t('home.stats.retention') },
               { v: xpDisplay, l: t('home.stats.xp') },
             ].map((s) => (
@@ -397,6 +381,8 @@ export const NNHome = () => {
             <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('home.forecastSub')}</span>
           </div>
           <div style={{ padding: '8px 8px' }}>
+            {serverForecast.error && <div role="alert" style={{ padding: 12, fontSize: 13 }}>{t('home.forecastError')} <NNBtn size="sm" variant="ghost" onClick={serverForecast.reload}>{t('review.retry')}</NNBtn></div>}
+            {!serverForecast.data && !serverForecast.error && <NNSkeleton width="100%" height={200} />}
             {forecast.map((r, i) => (
               <div
                 key={i}

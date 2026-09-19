@@ -1,4 +1,10 @@
 const m = {
+  scheduledDay: 'По расписанию на {date}',
+  nextReview: 'Следующий повтор: {time}.',
+  saved: 'Сохранены на сервере',
+  scheduleSaved: 'Оценки учтены. Следующие повторы назначены по расписанию карточек.',
+  nextLearning: 'Ближайший шаг обучения: {time}.',
+  scopeMissing: 'Эта колода больше недоступна. Выбери другую в списке колод.',
   complete: 'Сессия завершена',
   heading: 'Отличная работа, {name}.',
   defaultUserName: 'друг',
@@ -14,11 +20,13 @@ const m = {
     suffix: '— твой папоротник выпустил новый лист.',
   },
   kpi: {
+    answers: 'Ответов',
+    uniqueHint: 'Разные карточки',
     cardsReviewed: 'Повторено карт',
     retention: 'retention',
     retentionSub: 'good + easy',
     duration: 'Время',
-    durationSub: 'мм:сс',
+    durationSub: 'Активное время · мм:сс',
     xpEarned: 'Получено XP',
     xpSub: 'всего {total}',
   },
@@ -41,6 +49,7 @@ const m = {
     noneAgain: 'В этот раз все карты получили «Трудно» или выше.',
   },
   tomorrow: {
+    hint: 'По текущему расписанию · учебный день UTC',
     title: 'Завтра',
     due: '{n} к повтору',
     eta: '~{min} мин · лучше всего в 9:30',
@@ -48,9 +57,12 @@ const m = {
   newAvailable: {
     title: 'Доступны новые карты',
     inQueue: '{n} в очереди',
-    hint: 'Учить сейчас · продлить сессию?',
+    hint: 'С учётом обычного дневного лимита',
   },
   actions: {
+    continue: 'Продолжить повторение',
+    repeatPractice: 'Повторить тренировку',
+    checkQueue: 'Проверить повторы',
     visitGarden: 'В сад',
     viewGraph: 'Открыть граф',
     finish: 'Готово',

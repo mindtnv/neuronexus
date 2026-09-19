@@ -1,5 +1,5 @@
 import { Elysia, t } from 'elysia';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { db, deckOptionsPreset, decks } from '@neuronexus/db';
 import { authPlugin } from '../auth-plugin.ts';
 
@@ -53,14 +53,17 @@ export const decksModule = new Elysia({ prefix: '/decks' })
   )
   .patch(
     '/:id',
-    async ({ user, params, body, status }) => {
+    async ({ user, params, body, status }) => db.transaction(async (tx) => {
       // Cycle guard: if setting parentId, ensure target isn't a descendant of this deck.
       if (body.parentId) {
         if (body.parentId === params.id) return status(400, { error: 'cycle' });
-        const all = await db
+        const all = await tx
           .select({ id: decks.id, parentId: decks.parentId })
           .from(decks)
-          .where(eq(decks.userId, user.id));
+          .where(eq(decks.userId, user.id))
+          .orderBy(asc(decks.id))
+          .for('update');
+        if (!all.some((deck) => deck.id === body.parentId)) return status(400, { error: 'parent_not_found' });
         let cursor: string | null = body.parentId;
         const seen = new Set<string>();
         while (cursor) {
@@ -76,21 +79,21 @@ export const decksModule = new Elysia({ prefix: '/decks' })
       // `ON DELETE SET NULL` only unbinds on preset DELETE — this guards the
       // bind direction so a user can't attach another user's preset.
       if (body.presetId) {
-        const owned = await db
+        const owned = await tx
           .select({ id: deckOptionsPreset.id })
           .from(deckOptionsPreset)
           .where(and(eq(deckOptionsPreset.id, body.presetId), eq(deckOptionsPreset.userId, user.id)))
           .limit(1);
         if (owned.length === 0) return status(404, { error: 'preset_not_found' });
       }
-      const [updated] = await db
+      const [updated] = await tx
         .update(decks)
         .set(body)
         .where(and(eq(decks.id, params.id), eq(decks.userId, user.id)))
         .returning();
       if (!updated) return status(404, { error: 'not_found' });
       return updated;
-    },
+    }),
     {
       auth: true,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),

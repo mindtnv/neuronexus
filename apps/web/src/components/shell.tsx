@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { NNBtn, NNIcon, NNLogo } from './ui';
 import { AppLink, useAppNavigation } from './navigation';
 import { APP_NAV, FOOTER_NAV, NAV_SECTIONS, NAV_SECTION_LABEL, getActiveNavId, type AppNavItem } from './nav-config';
-import { countDueCards } from '@/lib/cards';
+import { useStudyOverview } from '@/lib/use-study-overview';
 import { signOut } from '@/lib/auth';
 import { useNN } from '@/lib/store';
 import {
@@ -123,8 +123,8 @@ export const NNSidebar = ({
     }
   };
 
-  const cards = useNN((s) => s.cards);
-  const dueCount = useNN((s) => countDueCards(s.cards));
+  const study = useStudyOverview();
+  const dueCount = study.data?.overall.totalAvailable ?? 0;
   const profile = useNN((s) => s.profile);
 
   // Window Controls Overlay: the logo plate is the window's top-left corner, so
@@ -133,9 +133,9 @@ export const NNSidebar = ({
   // 45px drag strip under the lights. Branding lives in the workspace chip.
   const { active: wcoActive } = useWindowControlsOverlay();
 
-  const totalCards = cards.length || 0;
-  const workspaceName = t('app.workspace', { name: (profile?.name ?? 'Alex').toLowerCase() });
-  const workspaceInitials = (profile?.name ?? 'Alex').slice(0, 2).toUpperCase();
+  const totalCards = study.data?.overall.total ?? '—';
+  const workspaceName = t('app.workspace', { name: (profile?.name ?? '…').toLowerCase() });
+  const workspaceInitials = (profile?.name ?? '').slice(0, 2).toUpperCase();
 
   return (
     <aside
@@ -205,7 +205,7 @@ export const NNSidebar = ({
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text)' }}>{workspaceName}</div>
               <div style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>
-                {totalCards} {t(totalCards === 1 ? 'units.card' : 'units.cards')}
+                {t('app.cardCount', { n: totalCards })}
               </div>
             </div>
           </div>

@@ -1,14 +1,18 @@
 'use client';
 
 import { NNAppPage } from '@/components/app-page';
-import { NNEmpty } from '@/components/screens/empty';
+import { useEffect } from 'react';
+import { useAppNavigation } from '@/components/navigation';
+import { NNPageSkeleton } from '@/components/ui';
 import { useT } from '@/lib/i18n';
 
 export default function Page() {
   const t = useT();
+  const router = useAppNavigation();
+  useEffect(() => { router.replace('/review'); }, [router]);
   return (
     <NNAppPage title={t('nav.review')}>
-      <NNEmpty kind="done" />
+      <NNPageSkeleton />
     </NNAppPage>
   );
 }

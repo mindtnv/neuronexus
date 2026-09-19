@@ -80,10 +80,11 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
   return (
     <div
       className="nn-app-shell"
+      data-zen={zenMode ? 'true' : undefined}
       style={{
         display: 'flex',
-        height: '100vh',
-        minHeight: '100dvh',
+        height: '100dvh',
+        minHeight: 0,
         overflow: 'hidden',
         background: 'var(--bg)',
         position: 'relative',

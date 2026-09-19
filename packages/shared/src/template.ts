@@ -1,9 +1,7 @@
 // Pure-TS template / HTML-escape engine for note-types (Milestone 1, Phase 2 —
-// Decision B1). DOM-free, Node-free: depends only on string ops + the canonical
-// cloze grammar from `card-query-match.ts`. NO HTML SANITIZER lives here — a safe
-// allowlist sanitizer needs a parser/DOM; sanitization happens at the edges
-// (sanitize-html on the server save edge, DOMPurify in the browser). This engine
-// only ESCAPES interpolated values and STRUCTURES the output.
+// Decision B1). DOM-free: Markdown parsing derives the search cache; the small
+// template engine composes structure. This is not an HTML security boundary:
+// rendered HTML must pass through the browser's mandatory DOMPurify sink.
 //
 // ── Template syntax (own, NOT Anki-byte-compatible) ──────────────────────────
 //
@@ -31,6 +29,11 @@
 //
 // All functions are pure and deterministic (no Date.now / Math.random).
 
+import MarkdownIt from 'markdown-it';
+import { cardClozePlugin, cardMathPlugin, cardMediaPlugin } from './card-markdown';
+import { ClozeSyntaxError, MAX_CLOZE_CARDS } from './cloze';
+import { CARD_MEDIA_TOKEN_RE, mediaSourceFromTag, NoteContentError } from './note-content';
+import { normalizeFieldName, typedAnswerField, validFieldNames } from './note-fields';
 import { stripCloze } from './card-query-match.ts';
 import type { FieldValues, NoteTypeDef, RenderKind } from './note-type.ts';
 
@@ -180,13 +183,14 @@ function renderTokens(
   i: number,
   fields: FieldValues,
   stopName: string | null,
-): { out: string; next: number } {
+): { out: string; next: number; used: Set<string> } {
+  const used = new Set<string>();
   let out = '';
   while (i < tokens.length) {
     const tok = tokens[i];
     if (tok.t === 'close') {
       if (stopName !== null && tok.name === stopName) {
-        return { out, next: i + 1 };
+        return { out, next: i + 1, used };
       }
       // Unmatched/foreign close tag → ignore the tag, keep rendering.
       i += 1;
@@ -198,17 +202,17 @@ function renderTokens(
       continue;
     }
     if (tok.t === 'var') {
-      out += tok.name in fields ? fields[tok.name] : '';
+      if (Object.hasOwn(fields, tok.name)) { out += fields[tok.name]; used.add(tok.name); }
       i += 1;
       continue;
     }
     // open section
     const show = tok.inverted ? !isNonEmpty(fields, tok.name) : isNonEmpty(fields, tok.name);
     const inner = renderTokens(tokens, i + 1, fields, tok.name);
-    if (show) out += inner.out;
+    if (show) { out += inner.out; for (const name of inner.used) used.add(name); }
     i = inner.next;
   }
-  return { out, next: i };
+  return { out, next: i, used };
 }
 
 /**
@@ -236,93 +240,86 @@ export function renderTemplate(
 const IMG_TAG_RE = /<img\b[^>]*>/gi;
 const IMG_ALT_RE = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
 
-// ── Markdown plaintext strip (Step 5, plan H5) ───────────────────────────────
-//
-// Field values are stored as MARKDOWN SOURCE and rendered to HTML client-side
-// (`apps/web/src/lib/render-card.tsx`). For the search-text cache we strip the
-// markdown markup here too, so a card whose body is `# Title` / `**bold**` /
-// `- item` / a `| table |` is searchable by its WORDS, not its punctuation.
-//
-// HONEST CAVEAT (plan H5): this is a BEST-EFFORT REGEX APPROXIMATION, NOT the
-// same AST the client markdown-it renderer uses. It is a search-cache heuristic,
-// NOT a security artifact and NOT a "single-source" client/server contract. It
-// only needs to remove the COMMON markers so search matches the prose.
-//
-// CRITICAL ORDERING (the one pinned invariant, plan H5 test vector): an inline
-// code span `` `a|b` `` must keep its `|` in the search text — the pipe lives
-// inside code, not a table cell. So inline-code CONTENT is stashed behind a
-// pipe-free sentinel BEFORE the table-pipe strip runs, then restored after. This
-// keeps `code` searchable verbatim while still flattening real markdown tables.
-const INLINE_CODE_RE = /`([^`\n]+)`/g;
-
-function stripMarkdown(s: string): string {
-  // 1. Stash inline-code CONTENT so its inner punctuation (notably `|`) survives
-  //    the table-pipe strip below. Sentinel is digit-only + NUL-free → no markdown
-  //    syntax, no table pipe, restored 1:1 afterwards.
-  const code: string[] = [];
-  let out = s.replace(INLINE_CODE_RE, (_full, inner: string) => {
-    const key = `nncode${code.length}`;
-    code.push(inner);
-    return key;
-  });
-  out = out
-    // 2. Fenced-code fences (``` / ~~~, with optional language) → drop the fence
-    //    line marker, keep the code body text.
-    .replace(/^[ \t]*(?:```|~~~)[^\n]*$/gm, '')
-    // 3. ATX heading markers at line start: `### Title` → `Title`.
-    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
-    // 4. Blockquote markers at line start: `> quote` → `quote`.
-    .replace(/^[ \t]*>[ \t]?/gm, '')
-    // 5. List bullets / ordered markers at line start: `- a`, `* a`, `1. a`.
-    .replace(/^[ \t]*(?:[-*+]|\d+\.)[ \t]+/gm, '')
-    // 6. Table separator rows (`|---|:--:|`) → drop entirely.
-    .replace(/^[ \t]*\|?[ \t]*:?-{2,}:?(?:[ \t]*\|[ \t]*:?-{2,}:?)*[ \t]*\|?[ \t]*$/gm, '')
-    // 7. Remaining table cell pipes → space (inline code is stashed, so a `|`
-    //    inside code is NOT touched here).
-    .replace(/\|/g, ' ')
-    // 8. Emphasis / strong markers (`**x**`, `__x__`, `*x*`, `_x_`) → drop the
-    //    markers, keep the text. Run strong (doubled) before emphasis (single).
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    .replace(/\*([^*\n]+)\*/g, '$1')
-    .replace(/_([^_\n]+)_/g, '$1');
-  // 9. Restore inline-code content verbatim (pipe and all).
-  return out.replace(/nncode(\d+)/g, (_m, i: string) => code[Number(i)] ?? '');
-}
-
-// Strip HTML tags + markdown → plaintext for the search-text path (never the
-// display path). Order matters (M2 Phase 5 + Step 5):
-//   1. `<img>` → its `alt` text (extract before the tag is deleted; drop if no
-//      alt) so an image is searchable by its description.
-//   2. remaining HTML tags → space.
-//   3. math `\(…\)`/`\[…\]` → its formula SOURCE (delimiters removed) so a
-//      `field:`/bareword search on `\(x^2\)` matches `x^2`.
-//   4. markdown markers (headings/lists/blockquote/emphasis/tables) → stripped,
-//      best-effort (plan H5 — NOT the client AST; a search-cache heuristic).
-// Steps 1+3 keep media + math discoverable with ZERO query-structure change
-// (one-AST-two-consumers). Pure string ops; DOM-free.
-//
-// Belt-and-suspenders: a defensive length cap (`SEARCH_TEXT_CAP`) bounds the
-// input BEFORE the (now linear-time) math pass. The search-text column is just a
-// plaintext cache — a 32 KiB ceiling is far above any real card body and caps
-// the worst-case work even if the regex ever regressed.
+// Parse field Markdown before substituting template HTML. This keeps code
+// escaped until AFTER structural tags have been removed from the search cache.
 const SEARCH_TEXT_CAP = 32_768;
-function stripTags(html: string): string {
-  const capped = html.length > SEARCH_TEXT_CAP ? html.slice(0, SEARCH_TEXT_CAP) : html;
-  const noTags = capped
-    .replace(IMG_TAG_RE, (tag) => {
-      const m = IMG_ALT_RE.exec(tag);
-      const alt = m ? (m[1] ?? m[2] ?? '') : '';
-      return alt ? ` ${alt} ` : ' ';
-    })
-    .replace(/<[^>]*>/g, ' ')
-    .replace(MATH_RE, (full, disp: string | undefined, inline: string | undefined) =>
-      disp !== undefined ? disp : inline !== undefined ? inline : full,
-    );
-  return stripMarkdown(noTags)
-    .replace(/\s+/g, ' ')
-    .trim();
+const searchMarkdown = new MarkdownIt({ html: false, linkify: false, typographer: false });
+searchMarkdown.use(cardMathPlugin, MATH_RE).use(cardClozePlugin).use(cardMediaPlugin);
+
+function searchFields(fields: FieldValues, cloze?: { side: 'front' | 'back'; number: number; legacy?: boolean }, fieldNumbers?: Map<string, Set<number>>): FieldValues {
+  return Object.fromEntries(Object.entries(fields).map(([name, value]) => {
+    if (/^\s*<img\b[^>]*>\s*$/i.test(value)) throw new NoteContentError('html_image_requires_markdown');
+    const numbers = new Set<number>();
+    fieldNumbers?.set(name, numbers);
+    return [name, searchMarkdown.render(value, { cloze, onClozeNumber: fieldNumbers ? (number: number) => numbers.add(number) : undefined })];
+  }));
 }
+
+function stripTags(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(IMG_TAG_RE, (tag) => {
+      if (!CARD_MEDIA_TOKEN_RE.test(mediaSourceFromTag(tag) ?? '')) return ' ';
+      const m = IMG_ALT_RE.exec(tag);
+      return ` ${m ? (m[1] ?? m[2] ?? '') : ''} `;
+    })
+    .replace(/<\/?(?:span|strong|em|b|i|u|code|a)\b[^>]*>/gi, '')
+    .replace(/<[^>]*>/g, ' ')
+    // Decode entities exactly once, after tag removal. Applying unescapeAll to
+    // the whole string would also damage backslash examples inside code.
+    .replace(/&(?:#\d+|#x[\da-f]+|[a-z][\da-z]+);/gi, (entity) => searchMarkdown.utils.unescapeAll(entity))
+    .replace(/\s+/g, ' ').trim().slice(0, SEARCH_TEXT_CAP);
+}
+
+function hasQuestionImage(html: string): boolean {
+  return [...html.replace(/<!--[\s\S]*?-->/g, '').matchAll(IMG_TAG_RE)].some(([tag]) => CARD_MEDIA_TOKEN_RE.test(mediaSourceFromTag(tag) ?? ''));
+}
+
+/** Visible text for short answers; images are not implicitly answers. */
+export function fieldPlainText(source: string): string {
+  if (typeof source !== 'string') return ''; // Missing prototype-named fields are not inherited values.
+  return stripTags(searchMarkdown.render(source, {}).replace(IMG_TAG_RE, ''));
+}
+
+export interface TemplateIssue { templateOrd: number; side: 'front' | 'back'; code: string; offset: number; field?: string; tag?: string }
+// The display sanitizer drops these containers WITH their contents. Reject them
+// as authoring errors; this is not a replacement for the mandatory render sink.
+const NON_RENDERING_TEMPLATE_TAGS = new Set(['annotation-xml', 'audio', 'colgroup', 'desc', 'foreignobject', 'head',
+  'iframe', 'math', 'mi', 'mn', 'mo', 'ms', 'mtext', 'noembed', 'noframes', 'noscript', 'plaintext', 'script',
+  'selectedcontent', 'style', 'svg', 'template', 'title', 'video', 'xmp']);
+export function validateTemplates(fields: NoteTypeDef['fields'], templates: NoteTypeDef['templates']): TemplateIssue[] {
+  const known = new Set(fields.map((field) => normalizeFieldName(field.name)));
+  const issues: TemplateIssue[] = [];
+  for (const template of templates) for (const side of ['front', 'back'] as const) {
+    const source = side === 'front' ? template.frontTemplate : template.backTemplate;
+    const markup = source.replace(/<!--[\s\S]*?-->/g, (comment) => ' '.repeat(comment.length));
+    for (const match of markup.matchAll(/<\/?([a-z][\w:-]*)(?=[\s/>]|$)(?:[^"'<>]|"[^"]*"|'[^']*')*(?:>|$)/gi)) {
+      const tag = match[1].toLowerCase();
+      if (issues.length < 20 && (NON_RENDERING_TEMPLATE_TAGS.has(tag) || !match[0].endsWith('>'))) issues.push({ templateOrd: template.ord, side, code: 'unsupported_html', offset: match.index, tag });
+    }
+    const stack: { name: string; offset: number }[] = [];
+    let last = 0; let references = 0;
+    const add = (code: string, offset: number, field?: string) => { if (issues.length < 20) issues.push({ templateOrd: template.ord, side, code, offset, ...(field ? { field } : {}) }); };
+    for (const match of source.matchAll(new RegExp(TAG_RE.source, 'g'))) {
+      const gap = source.slice(last, match.index);
+      if (/\{\{|\}\}/.test(gap)) add('malformed_tag', last);
+      const name = normalizeFieldName(match[2]); const sigil = match[1];
+      if (!known.has(name)) add('unknown_field', match.index, name);
+      if (sigil === '#' || sigil === '^') {
+        stack.push({ name, offset: match.index });
+        if (stack.length > 64) add('template_nesting', match.index);
+      } else if (sigil === '/') {
+        if (stack.pop()?.name !== name) add('mismatched_section', match.index, name);
+      } else references++;
+      last = match.index + match[0].length;
+    }
+    if (/\{\{|\}\}/.test(source.slice(last))) add('malformed_tag', last);
+    for (const open of stack) add('unclosed_section', open.offset, open.name);
+    if (side === 'front' && references === 0 && !stripTags(markup.replace(new RegExp(TAG_RE.source, 'g'), '')) && !hasQuestionImage(source)) add('empty_question', 0);
+  }
+  return issues;
+}
+
 
 /**
  * PLAINTEXT extraction for SQL search. Renders each side of every template,
@@ -337,11 +334,13 @@ export function renderTextFor(
   fields: FieldValues,
 ): { renderText: string; renderFrontText: string; renderBackText: string } {
   const isCloze = noteType.kind === 'cloze';
+  const frontFields = searchFields(fields, isCloze ? { side: 'front', number: 0 } : undefined);
+  const backFields = isCloze ? searchFields(fields, { side: 'back', number: 0 }) : frontFields;
   const fronts: string[] = [];
   const backs: string[] = [];
   for (const tpl of noteType.templates) {
-    const front = renderTemplate(tpl.frontTemplate, fields, { side: 'front', cloze: isCloze });
-    const back = renderTemplate(tpl.backTemplate, fields, { side: 'back', cloze: isCloze });
+    const front = renderTemplate(tpl.frontTemplate, frontFields);
+    const back = renderTemplate(tpl.backTemplate, backFields);
     const frontText = stripTags(front);
     const backText = stripTags(back);
     if (frontText) fronts.push(frontText);
@@ -360,40 +359,59 @@ export function renderTextFor(
  * search columns + the template ordinal + the note-type's render kind. Display
  * HTML is rendered lazily elsewhere (from sanitized field values + template).
  */
-export function generateCards(
-  noteType: NoteTypeDef,
-  fields: FieldValues,
-): {
+export interface GeneratedCard {
   templateOrd: number;
+  clozeNumber: number | null;
   renderText: string;
   renderFrontText: string;
   renderBackText: string;
   renderKind: RenderKind;
-}[] {
+}
+
+function numbersForTemplate(template: string, renderedFields: FieldValues, fieldNumbers: Map<string, Set<number>>): number[] {
+  // Track which field substitutions the template actually renders. Metadata is
+  // never inferred from author-controlled HTML attributes or code examples.
+  const used = renderTokens(tokenize(template), 0, renderedFields, null).used;
+  const numbers = [...new Set([...used].flatMap((name) => [...(fieldNumbers.get(name) ?? [])]))].sort((a, b) => a - b);
+  if (numbers.length > MAX_CLOZE_CARDS) throw new ClozeSyntaxError(0, 'too_many_cloze_cards');
+  return numbers;
+}
+
+export function clozeNumbersFor(noteType: Pick<NoteTypeDef, 'templates'>, fields: FieldValues): number[] {
+  const fieldNumbers = new Map<string, Set<number>>();
+  const rendered = searchFields(fields, { side: 'back', number: 0 }, fieldNumbers);
+  return [...new Set(noteType.templates.flatMap((template) => numbersForTemplate(template.frontTemplate, rendered, fieldNumbers)))].sort((a, b) => a - b);
+}
+
+export function generateCards(noteType: NoteTypeDef, fields: FieldValues, options: { legacyCloze?: boolean } = {}): GeneratedCard[] {
+  if (!validFieldNames(noteType.fields) || validateTemplates(noteType.fields, noteType.templates).length) throw new NoteContentError('invalid_template');
+  if (noteType.kind === 'typein' && !fieldPlainText(fields[typedAnswerField(noteType.fields)?.name ?? ''] ?? '')) throw new NoteContentError('typein_answer_required');
   const isCloze = noteType.kind === 'cloze';
-  const out: {
-    templateOrd: number;
-    renderText: string;
-    renderFrontText: string;
-    renderBackText: string;
-    renderKind: RenderKind;
-  }[] = [];
-  const ordered = [...noteType.templates].sort((a, b) => a.ord - b.ord);
-  for (const tpl of ordered) {
-    const front = renderTemplate(tpl.frontTemplate, fields, { side: 'front', cloze: isCloze });
-    const back = renderTemplate(tpl.backTemplate, fields, { side: 'back', cloze: isCloze });
-    const renderFrontText = stripTags(front);
-    const renderBackText = stripTags(back);
-    // Empty-front skip: optional reverse cards aren't generated.
-    if (!renderFrontText) continue;
-    const renderText = [renderFrontText, renderBackText].filter(Boolean).join(' ');
-    out.push({
-      templateOrd: tpl.ord,
-      renderText,
-      renderFrontText,
-      renderBackText,
-      renderKind: noteType.kind,
-    });
+  const fieldNumbers = new Map<string, Set<number>>();
+  const revealedFields = searchFields(fields, isCloze ? { side: 'back', number: 0, legacy: options.legacyCloze } : undefined, fieldNumbers);
+  const out: GeneratedCard[] = [];
+  for (const tpl of [...noteType.templates].sort((a, b) => a.ord - b.ord)) {
+    const numbers: (number | null)[] = isCloze
+      ? options.legacyCloze ? [0] : numbersForTemplate(tpl.frontTemplate, revealedFields, fieldNumbers)
+      : [null];
+    for (const clozeNumber of numbers) {
+      const frontFields = isCloze ? searchFields(fields, { side: 'front', number: clozeNumber ?? 0, legacy: options.legacyCloze }) : revealedFields;
+      const front = renderTemplate(tpl.frontTemplate, frontFields);
+      const back = renderTemplate(tpl.backTemplate, revealedFields);
+      const renderFrontText = stripTags(front);
+      const renderBackText = stripTags(back);
+      if (!renderFrontText && !hasQuestionImage(front)) continue;
+      if (noteType.kind === 'typein') {
+        const answer = typedAnswerField(noteType.fields)!.name;
+        if (renderTokens(tokenize(tpl.frontTemplate), 0, frontFields, null).used.has(answer) ||
+          !renderTokens(tokenize(tpl.backTemplate), 0, revealedFields, null).used.has(answer)) {
+          throw new NoteContentError('typein_answer_placement');
+        }
+      }
+      if (out.length >= MAX_CLOZE_CARDS) throw new ClozeSyntaxError(0, 'too_many_cloze_cards');
+      out.push({ templateOrd: tpl.ord, clozeNumber, renderFrontText, renderBackText,
+        renderText: [renderFrontText, renderBackText].filter(Boolean).join(' '), renderKind: noteType.kind });
+    }
   }
   return out;
 }

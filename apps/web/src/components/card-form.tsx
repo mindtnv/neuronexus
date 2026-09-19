@@ -11,12 +11,23 @@ import { useDialog } from '@/components/dialog';
 import { NNSelect, type NNSelectOption } from '@/components/nn-select';
 import { buildDeckTree, deckPathLabel, flattenTree } from '@/lib/decks';
 import { renderCardHtml } from '@/lib/render-card';
+import { NoteConversionDialog } from './note-conversion';
 import { RichCard } from '@/components/rich-card';
+import { api, ApiError, ok } from '@/lib/api';
+import { cardFromApi, noteTypeFromApi } from '@/lib/mappers';
 import {
   MAX_MEDIA_BYTES,
   MAX_MEDIA_LABEL,
   MEDIA_MIME_ALLOWLIST,
+  generateCards,
+  NoteContentError,
+  fieldPlainText,
+  typedAnswerField,
+  acceptedAnswerVariants,
+  ClozeSyntaxError,
+  renameFieldValues,
   type FieldValues,
+  type CardRegenerationPreview,
 } from '@neuronexus/shared';
 
 // ─────────────────────────────────────────────
@@ -85,6 +96,9 @@ const RichField = ({
   minHeight,
   autoFocus,
   resetKey,
+  blocked = false,
+  label,
+  onUploadChange,
 }: {
   value: string;
   onChange: (markdown: string) => void;
@@ -93,6 +107,9 @@ const RichField = ({
   minHeight: number;
   autoFocus?: boolean;
   resetKey: string;
+  blocked?: boolean;
+  label?: string;
+  onUploadChange?: (pending: boolean) => void;
 }) => {
   const t = useT();
   const ref = useRef<HTMLTextAreaElement | null>(null);
@@ -100,6 +117,11 @@ const RichField = ({
   const uploadMedia = useNN((s) => s.uploadMedia);
   const [uploading, setUploading] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const uploadLock = useRef(false);
+  const identity = useRef(resetKey);
+  identity.current = resetKey;
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   // Auto-grow: keep the textarea height matched to its content (no scrollbar mid-
   // edit). Runs on every value change AND on entity switch (resetKey).
@@ -187,7 +209,7 @@ const RichField = ({
     const file = e.target.files?.[0];
     // Reset the input so picking the same file again re-triggers change.
     e.target.value = '';
-    if (!file) return;
+    if (!file || uploadLock.current || blocked) return;
     setMediaError(null);
     if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
       setMediaError(t('editor.media.badType'));
@@ -201,23 +223,35 @@ const RichField = ({
     const el = ref.current;
     const start = el?.selectionStart ?? value.length;
     const end = el?.selectionEnd ?? value.length;
+    const original = value;
+    const owner = resetKey;
+    uploadLock.current = true;
+    onUploadChange?.(true);
     setUploading(true);
     try {
       const { token } = await uploadMedia(file);
+      if (!alive.current || identity.current !== owner) return;
       // Insert MARKDOWN image syntax with the RELATIVE token only — markdown-it
       // renders it to `<img src="/m/<uuid>">`, the sole img-src shape the render
       // edge's MEDIA_TOKEN_RE keeps; a Next `/m/:uuid` rewrite resolves it at
       // display time. Alt is the file name (sans extension) for accessibility.
-      const alt = file.name.replace(/\.[^.]+$/, '');
+      const alt = file.name.replace(/\.[^.]+$/, '').replace(/[\\\[\]]/g, '\\$&').replace(/[\r\n]/g, ' ');
       const snippet = `![${alt}](${token})`;
-      const next = value.slice(0, start) + snippet + value.slice(end);
-      const caret = start + snippet.length;
+      const latest = ref.current?.value ?? original;
+      // The captured selection belongs to the original text. If typing has
+      // changed it, append the image without replacing any newer edits.
+      const next = latest === original
+        ? latest.slice(0, start) + snippet + latest.slice(end)
+        : `${latest}${latest.endsWith('\n') ? '' : '\n'}${snippet}`;
+      const caret = latest === original ? start + snippet.length : next.length;
       applyEdit(next, caret, caret);
     } catch (err) {
       console.error('image upload failed', err);
-      setMediaError(t('editor.media.failed'));
+      if (alive.current) setMediaError(t('editor.media.failed'));
     } finally {
-      setUploading(false);
+      uploadLock.current = false;
+      onUploadChange?.(false);
+      if (alive.current) setUploading(false);
     }
   };
 
@@ -259,10 +293,10 @@ const RichField = ({
       key={key}
       type="button"
       title={title}
-      disabled={disabled}
+      disabled={blocked || disabled}
       onMouseDown={(e) => {
         e.preventDefault();
-        if (!disabled) onActivate();
+        if (!blocked && !disabled) onActivate();
       }}
       style={{
         minWidth: 28,
@@ -321,7 +355,9 @@ const RichField = ({
       )}
       <textarea
         ref={ref}
+        disabled={blocked}
         data-nn-field
+        aria-label={label}
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
@@ -358,6 +394,7 @@ export interface NNCardFormProps {
   card?: Card | null;
   /** Deck pre-selected when creating a new note. */
   defaultDeckId?: string;
+  defaultNoteTypeId?: string;
   /** Called after a successful save (create or update) with a resulting card. */
   onSaved?: (card: Card) => void;
   /** Called after a successful delete with the deleted card id. */
@@ -368,6 +405,7 @@ export interface NNCardFormProps {
   autoFocusFront?: boolean;
   /** Extra controls rendered in the top action bar (e.g. prev/next). */
   footerExtra?: React.ReactNode;
+  saveLabel?: string;
   /**
    * Layout hint. `'panel'` (default) is the tall side/standalone form; `'dock'`
    * lays the dynamic fields out in two columns on non-mobile to suit the
@@ -379,11 +417,13 @@ export interface NNCardFormProps {
 export const NNCardForm = ({
   card,
   defaultDeckId,
+  defaultNoteTypeId,
   onSaved,
   onDeleted,
   showFsrsHeader = true,
   autoFocusFront = false,
   footerExtra,
+  saveLabel,
   layout = 'panel',
 }: NNCardFormProps) => {
   const t = useT();
@@ -399,11 +439,14 @@ export const NNCardForm = ({
   const deleteNote = useNN((s) => s.deleteNote);
 
   const editing = card ?? null;
+  const [baseVersion, setBaseVersion] = useState(editing?.note?.updatedAt);
+  const [latest, setLatest] = useState<Card | null>(null);
+  const [latestType, setLatestType] = useState<NoteType | null>(null);
 
   // Default note-type: Basic if present, else the first available.
   const defaultNoteType = useMemo<NoteType | undefined>(() => {
-    return noteTypes.find((nt) => nt.kind === 'basic') ?? noteTypes[0];
-  }, [noteTypes]);
+    return noteTypes.find((nt) => nt.id === defaultNoteTypeId) ?? noteTypes.find((nt) => nt.kind === 'basic') ?? noteTypes[0];
+  }, [noteTypes, defaultNoteTypeId]);
 
   // The note-type backing the form. When editing, prefer the card's embedded
   // noteType (it carries the templates needed to preview); fall back to the
@@ -420,7 +463,7 @@ export const NNCardForm = ({
       return {
         id: editing.noteType.id,
         name: editing.noteType.name || editing.noteType.kind,
-        fields: [],
+        fields: editing.noteType.fields ?? [],
         templates: editing.noteType.templates,
         styling: editing.noteType.styling,
         kind: editing.noteType.kind,
@@ -442,13 +485,28 @@ export const NNCardForm = ({
 
   const [deckId, setDeckId] = useState<string>(resolvedDefaultDeckId);
   const [fieldValues, setFieldValues] = useState<FieldValues>({});
+  const [acceptedAnswersText, setAcceptedAnswersText] = useState(editing?.note?.acceptedAnswers?.join('\n') ?? '');
   const [tagsText, setTagsText] = useState<string>(editing?.tags?.join(', ') ?? '');
+  const [converting, setConverting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const mutationLock = useRef(false);
+  const uploadCount = useRef(0);
+  const [uploadingFields, setUploadingFields] = useState(0);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const onUploadChange = useCallback((pending: boolean) => {
+    uploadCount.current = Math.max(0, uploadCount.current + (pending ? 1 : -1));
+    if (mounted.current) setUploadingFields(uploadCount.current);
+  }, []);
   const [error, setError] = useState<string | null>(null);
 
   // Preview flip card (replaces the always-on dual front+back inline preview).
   const [showPreview, setShowPreview] = useState(false);
   const [flipped, setFlipped] = useState(false);
+  const [previewKey, setPreviewKey] = useState('');
+  const [clozeRetainHistoryFor, setClozeRetainHistoryFor] = useState<Record<string, number> | undefined>();
+  useEffect(() => { setPreviewKey(''); setClozeRetainHistoryFor(undefined); }, [editing?.id]);
 
   // The active note-type: the store entry for `noteTypeId`, or the editing one.
   const activeNoteType = useMemo<NoteType | undefined>(() => {
@@ -473,16 +531,20 @@ export const NNCardForm = ({
       setDeckId(editing.deckId);
       setNoteTypeId(editing.noteType?.id ?? defaultNoteType?.id ?? '');
       setFieldValues({ ...(editing.note?.fieldValues ?? {}) });
+      setAcceptedAnswersText(editing.note?.acceptedAnswers?.join('\n') ?? '');
       setTagsText(editing.tags.join(', '));
     } else {
       setDeckId(resolvedDefaultDeckId);
       setNoteTypeId(defaultNoteType?.id ?? '');
       setFieldValues({});
+      setAcceptedAnswersText('');
       setTagsText('');
     }
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing?.id, resolvedDefaultDeckId, defaultNoteType?.id]);
+
+  useEffect(() => { setBaseVersion(editing?.note?.updatedAt); setLatest(null); setLatestType(null); }, [editing?.id]);
 
   const setField = useCallback((name: string, markdown: string) => {
     setFieldValues((prev) => ({ ...prev, [name]: markdown }));
@@ -509,26 +571,60 @@ export const NNCardForm = ({
   );
 
   const noteTypeOptions = useMemo<NNSelectOption<string>[]>(
-    () => noteTypes.map((nt) => ({ value: nt.id, label: nt.name })),
-    [noteTypes],
+    () => noteTypes.map((nt) => ({ value: nt.id, label: nt.isBuiltin && nt.kind !== 'custom'
+      ? t(nt.kind === 'cloze' ? 'editor.variants.cloze' : nt.kind === 'typein' ? 'editor.variants.type' : 'editor.variants.basic') : nt.name })),
+    [noteTypes, t],
   );
 
   // Live preview: render front + back HTML from the note-type template + the
-  // current field values. The FIRST field is the "front" reference for the
-  // required-field check. (Preview MUST still DOMPurify — shared only escapes.)
-  const preview = useMemo(() => {
-    if (!activeNoteType || activeNoteType.templates.length === 0) {
-      return { front: '', back: '' };
+  // current field values. Question validity comes from the same generator as the API.
+  const legacyCloze = isCloze && editing?.clozeNumber === 0;
+  const generation = useMemo(() => {
+    if (!activeNoteType) return { cards: [], legacyCards: [], numbered: [], error: null };
+    try {
+      const legacyCards = legacyCloze ? generateCards(activeNoteType, fieldValues, { legacyCloze: true }) : [];
+      let numbered: ReturnType<typeof generateCards> = [];
+      try { numbered = generateCards(activeNoteType, fieldValues); }
+      catch (error) { if (!legacyCloze || clozeRetainHistoryFor !== undefined || !(error instanceof ClozeSyntaxError)) throw error; }
+      return { cards: legacyCloze && clozeRetainHistoryFor === undefined ? legacyCards : numbered,
+        legacyCards, numbered, error: null };
+    } catch (error) {
+      if (error instanceof ClozeSyntaxError) return { cards: [], legacyCards: [], numbered: [], error: 'invalid_cloze' };
+      if (error instanceof NoteContentError) return { cards: [], legacyCards: [], numbered: [], error: error.code };
+      throw error;
     }
+  }, [activeNoteType, fieldValues, legacyCloze, clozeRetainHistoryFor]);
+  const splitChoices = generation.legacyCards.map((card) => ({ templateOrd: card.templateOrd,
+    name: activeNoteType?.templates.find((template) => template.ord === card.templateOrd)?.name ?? '',
+    numbers: generation.numbered.filter((next) => next.templateOrd === card.templateOrd && next.clozeNumber).map((next) => next.clozeNumber!),
+  }));
+  const splitExplanation = clozeRetainHistoryFor === undefined ? '' : splitChoices.map((choice) =>
+    `${choice.name}: ${t('editor.cloze.splitHint', { n: clozeRetainHistoryFor[String(choice.templateOrd)] ?? '—' })}`).join('\n');
+  const keyFor = (card: { templateOrd: number; clozeNumber: number | null }) => `${card.templateOrd}:${card.clozeNumber ?? 'plain'}`;
+  const selectedPreview = generation.cards.find((card) => keyFor(card) === previewKey)
+    ?? generation.cards.find((card) => card.templateOrd === editing?.templateOrd && (card.clozeNumber ?? null) === (editing?.clozeNumber ?? null))
+    ?? generation.cards[0];
+  const selectedPreviewKey = selectedPreview ? keyFor(selectedPreview) : '';
+  const omittedTemplates = activeNoteType?.templates.filter((template) => !generation.cards.some((card) => card.templateOrd === template.ord)) ?? [];
+  useEffect(() => setFlipped(false), [selectedPreviewKey]);
+  const preview = useMemo(() => {
+    if (!activeNoteType || !selectedPreview) return { front: '', back: '' };
     return {
-      front: renderCardHtml(activeNoteType, fieldValues, 'front'),
-      back: renderCardHtml(activeNoteType, fieldValues, 'back'),
+      front: renderCardHtml(activeNoteType, fieldValues, 'front', selectedPreview.templateOrd, selectedPreview.clozeNumber),
+      back: renderCardHtml(activeNoteType, fieldValues, 'back', selectedPreview.templateOrd, selectedPreview.clozeNumber),
     };
-  }, [activeNoteType, fieldValues]);
+  }, [activeNoteType, fieldValues, selectedPreview]);
 
+  const contentError = (code: string) => t(code === 'invalid_cloze' ? 'editor.errors.invalidCloze'
+    : code === 'html_image_requires_markdown' ? 'editor.errors.htmlImage'
+    : code === 'typein_answer_required' ? 'editor.errors.typeinAnswer'
+    : code === 'typein_answer_placement' ? 'editor.errors.typeinPlacement'
+    : 'editor.errors.invalidTemplate');
+  const answerField = typedAnswerField(fields);
   const handleSave = async () => {
+    if (mutationLock.current || uploadCount.current > 0) return;
     setError(null);
-    if (!deckId) {
+    if (!deckId || !decks.some((deck) => deck.id === deckId)) {
       setError(t('editor.errors.pickDeck'));
       return;
     }
@@ -536,53 +632,103 @@ export const NNCardForm = ({
       setError(t('editor.errors.pickNoteType'));
       return;
     }
-    // At least the first field must be non-empty (mirrors the empty-front skip:
-    // a note whose front renders empty generates no card). The value is now raw
-    // markdown source, so a plain trim is the emptiness test.
-    const firstField = fields[0]?.name;
-    const firstValue = firstField ? (fieldValues[firstField] ?? '') : '';
-    if (!firstValue.trim()) {
-      setError(t('editor.errors.frontRequired'));
+    if (generation.error) { setError(contentError(generation.error)); return; }
+    let acceptedAnswers: string[];
+    try { acceptedAnswers = acceptedAnswerVariants(acceptedAnswersText.split('\n').map((line) => line.trim()).filter(Boolean)); }
+    catch { setError(t('editor.errors.invalidAnswers')); return; }
+    if (clozeRetainHistoryFor !== undefined && !splitChoices.every((choice) => choice.numbers.includes(clozeRetainHistoryFor[String(choice.templateOrd)]))) {
+      setError(t('editor.errors.invalidClozeSplit')); return;
+    }
+    if (generation.cards.length === 0) {
+      setError(t(isCloze ? 'editor.errors.clozeRequired' : 'editor.errors.noCards'));
       return;
     }
+    mutationLock.current = true;
     setSaving(true);
     try {
       if (editing) {
-        await updateNote(editing.noteId, { fieldValues, tags });
-        const saved = useNN.getState().cards.find((c) => c.noteId === editing.noteId);
-        if (saved) onSaved?.(saved);
+        const patch = { fieldValues, tags, acceptedAnswers, expectedTypeUpdatedAt: activeNoteType.updatedAt, ...(deckId !== editing.deckId ? { deckId } : {}),
+          ...(clozeRetainHistoryFor !== undefined ? { clozeRetainHistoryFor } : {}) };
+        const preview = await ok(await (api as any).notes({ id: editing.noteId }).preview.post({
+          ...patch, preview: true, expectedUpdatedAt: baseVersion,
+        })) as CardRegenerationPreview;
+        if (!mounted.current) return;
+        if (preview.impact.willDeleteCards || clozeRetainHistoryFor !== undefined) {
+          const details = preview.impact.removedCards.map((card) => `• ${card.front} (${card.reviews})`).join('\n');
+          if (!(await confirm({ title: t('noteTypes.impact.title'), danger: preview.impact.willDeleteCards > 0,
+            confirmLabel: clozeRetainHistoryFor !== undefined ? t('editor.cloze.split') : undefined,
+            message: `${t('noteTypes.impact.counts', { create: preview.impact.willCreateCards, keep: preview.impact.willKeepCards,
+              remove: preview.impact.willDeleteCards, reviews: preview.impact.willDeleteReviews })}${clozeRetainHistoryFor !== undefined ? `\n${splitExplanation}` : ''}\n\n${details}`,
+          }))) return;
+        }
+        if (!mounted.current) return;
+        const updated = await updateNote(editing.noteId, { ...patch,
+          expectedUpdatedAt: preview.sourceVersion, confirmationToken: preview.confirmationToken });
+        const saved = updated.find((c) => c.id === editing.id) ?? updated[0];
+        if (mounted.current) {
+          if (saved) { setBaseVersion(saved.note?.updatedAt); setLatest(null); setLatestType(null); }
+          if (saved) onSaved?.(saved);
+          else setError(t('editor.errors.noCards'));
+        }
       } else {
         const created = await addNote({
           noteTypeId: activeNoteType.id,
+          expectedTypeUpdatedAt: activeNoteType.updatedAt,
           deckId,
           fieldValues,
+          acceptedAnswers,
           tags,
         });
-        if (created[0]) onSaved?.(created[0]);
+        if (mounted.current) {
+          if (created[0]) onSaved?.(created[0]);
+          else setError(t('editor.errors.noCards'));
+        }
       }
     } catch (err) {
-      console.error('save failed', err);
-      setError(err instanceof Error ? err.message : t('editor.errors.saveFailed'));
+      if (mounted.current) {
+        if (err instanceof ApiError && err.status === 409) {
+          setError(t('editor.errors.changed'));
+          try {
+            if (editing) {
+              const current = cardFromApi(await ok(await (api as any).cards({ id: editing.id }).get()));
+              if (mounted.current) setLatest(current);
+            }
+            if (err.safeMessage === 'note_type_changed') {
+              const rows = await ok(await (api as any)['note-types'].get()) as any[];
+              const current = rows.find((row) => row.id === activeNoteType.id);
+              if (current && mounted.current) setLatestType(noteTypeFromApi(current));
+            }
+          } catch { /* Preserve the local draft if reloading is unavailable. */ }
+        } else setError(t('editor.errors.saveFailed'));
+      }
     } finally {
-      setSaving(false);
+      mutationLock.current = false;
+      if (mounted.current) setSaving(false);
     }
   };
 
   const handleDelete = async () => {
-    if (!editing) return;
-    if (!(await confirm({ title: t('editor.deleteConfirm'), danger: true }))) return;
+    if (!editing || mutationLock.current) return;
+    mutationLock.current = true;
     try {
+      if (!(await confirm({ title: t('editor.deleteConfirm'), danger: true }))) return;
+      if (!mounted.current) return;
+      setDeleting(true);
+      setError(null);
       await deleteNote(editing.noteId);
-      onDeleted?.(editing.id);
+      if (mounted.current) onDeleted?.(editing.id);
     } catch (err) {
       console.error('deleteNote failed', err);
-      setError(err instanceof Error ? err.message : t('editor.errors.deleteFailed'));
+      if (mounted.current) setError(t('editor.errors.deleteFailed'));
+    } finally {
+      mutationLock.current = false;
+      if (mounted.current) setDeleting(false);
     }
   };
 
   // ⌘/Ctrl+Enter triggers save.
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat) {
       e.preventDefault();
       if (!saving) void handleSave();
     }
@@ -605,6 +751,15 @@ export const NNCardForm = ({
         overflow: isMobile ? 'auto' : 'hidden',
       }}
     >
+      {converting && editing && <NoteConversionDialog cards={[editing]} onClose={() => setConverting(false)} onConverted={(converted) => {
+        setConverting(false); const saved = converted.find((card) => card.id === editing.id) ?? converted[0];
+        if (saved) {
+          setNoteTypeId(saved.noteType?.id ?? noteTypeId); setFieldValues({ ...(saved.note?.fieldValues ?? {}) });
+          setTagsText(saved.tags.join(', ')); setAcceptedAnswersText((saved.note?.acceptedAnswers ?? []).join('\n'));
+          setBaseVersion(saved.note?.updatedAt); setLatest(null); setLatestType(null); setError(null);
+          setPreviewKey(''); setFlipped(false); setClozeRetainHistoryFor(undefined); onSaved?.(saved);
+        }
+      }} />}
       <div style={{ padding: isMobile ? '16px 14px' : 24, overflow: isMobile ? 'visible' : 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: 20, flexWrap: 'wrap' }}>
           <NNBadge tone={deckTone} size="sm">{currentDeck?.name ?? t('editor.noDeck')}</NNBadge>
@@ -614,13 +769,23 @@ export const NNCardForm = ({
           </span>
           <div style={{ flex: 1 }}/>
           {footerExtra}
+          {editing && layout !== 'dock' && <NNBtn size="sm" variant="soft" disabled={saving || deleting || uploadingFields > 0} onClick={() => {
+            if (JSON.stringify(fieldValues) !== JSON.stringify(editing.note?.fieldValues ?? {}) || tagsText !== editing.tags.join(', ') || deckId !== editing.deckId || acceptedAnswersText !== (editing.note?.acceptedAnswers ?? []).join('\n')) {
+              setError(t('noteTypes.convert.saveFirst')); return;
+            }
+            setConverting(true);
+          }}>{t('noteTypes.convert.open')}</NNBtn>}
           {editing && (
-            <NNBtn size="sm" variant="danger" icon="x" onClick={handleDelete}>{t('actions.delete')}</NNBtn>
+            <NNBtn size="sm" variant="danger" icon="x" onClick={handleDelete} loading={deleting} disabled={saving}>{t('actions.delete')}</NNBtn>
           )}
-          <NNBtn size="sm" variant="primary" icon="check" onClick={handleSave}>
-            {saving ? t('editor.saving') : editing ? t('actions.save') : t('actions.create')}
+          <NNBtn size="sm" variant="primary" icon="check" onClick={handleSave} loading={saving} disabled={deleting || uploadingFields > 0}>
+            {saving ? t('editor.saving') : saveLabel ?? (editing ? t('actions.save') : t('actions.create'))}
           </NNBtn>
         </div>
+
+        {decks.length === 0 && <div style={{ marginBottom: 16 }}>
+          <NNBtn variant="soft" onClick={() => router.push('/decks')}>{t('decks.newDeck')}</NNBtn>
+        </div>}
 
         {/* Compact FSRS status line — existing cards only, when the header is on.
             New cards / browser inline editor render nothing (no em-dash rows). */}
@@ -658,6 +823,7 @@ export const NNCardForm = ({
               placeholder={t('editor.noDecksYet')}
               emptyText={t('editor.noDecksYet')}
               ariaLabel={t('editor.deckLabel')}
+              disabled={saving || deleting}
             />
           </div>
           <div>
@@ -691,10 +857,12 @@ export const NNCardForm = ({
               ariaLabel={t('editor.noteTypeLabel')}
               // Changing the note-type only matters for NEW notes (an existing
               // note keeps its type; clone/convert is Phase 5b).
-              disabled={!!editing || noteTypes.length === 0}
+              disabled={saving || deleting || uploadingFields > 0 || !!editing || noteTypes.length === 0}
             />
           </div>
         </div>
+
+        {editing && <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 14px' }}>{t('editor.sharedNoteHint')}</p>}
 
         {/* Dynamic fields. `data-nn-fields` marks the Tab-navigation ring: the
             RichField keydown handler walks the `textarea[data-nn-field]` siblings
@@ -710,10 +878,14 @@ export const NNCardForm = ({
         >
           {fields.map((field, i) => {
             const isFront = i === 0;
+            const fieldLabel = activeNoteType?.isBuiltin
+              ? field.name === 'Front' ? t('review.questionLabel') : field.name === 'Back' ? t('review.answerLabel')
+                : field.name === 'Text' ? t('editor.fields.clozeText') : field.name === 'Extra' ? t('editor.fields.extra') : field.name
+              : field.name;
             return (
               <div key={field.name} style={{ marginBottom: layout === 'dock' && !isMobile ? 0 : 14 }}>
                 <div style={labelStyle}>
-                  <span>{field.name}</span>
+                  <span>{fieldLabel}</span>
                   {isCloze && isFront && (
                     <span style={{ textTransform: 'none', letterSpacing: 0, color: 'var(--text-dim)' }}>
                       {t('editor.fields.clozeHint', { syntax: '{{c1::…}}' })}
@@ -728,6 +900,9 @@ export const NNCardForm = ({
                   minHeight={isFront ? (isMobile ? 90 : 100) : isMobile ? 120 : 110}
                   autoFocus={autoFocusFront && !editing && isFront}
                   resetKey={resetKey}
+                  blocked={saving || deleting}
+                  label={fieldLabel}
+                  onUploadChange={onUploadChange}
                 />
               </div>
             );
@@ -739,6 +914,8 @@ export const NNCardForm = ({
           <div style={labelStyle}><span>{t('editor.tagsLinks')}</span></div>
           <input
             value={tagsText}
+            disabled={saving || deleting}
+            aria-label={t('editor.tagsLinks')}
             onChange={(e) => setTagsText(e.target.value)}
             placeholder={t('editor.tagsPlaceholder')}
             style={{ ...inputStyle, marginBottom: 8 }}
@@ -757,7 +934,7 @@ export const NNCardForm = ({
         </div>
 
         {error && (
-          <div style={{
+          <div role="alert" style={{
             marginTop: 14, padding: '10px 12px',
             background: 'var(--tone-rose-bg)', border: '1px solid var(--tone-rose-border)',
             borderRadius: 10, color: 'var(--rose-400)', fontSize: 12.5,
@@ -765,6 +942,70 @@ export const NNCardForm = ({
             {error}
           </div>
         )}
+
+        {(latest?.note || latestType) && <NNCard padding={14} style={{ marginTop: 12 }}>
+          <div>{t('editor.conflict.latest')}</div>
+          {Object.entries(latest?.note?.fieldValues ?? {}).map(([name, value]) => <div key={name} style={{ marginTop: 8 }}>
+            <label>{name}<textarea readOnly value={value} style={{ width: '100%', minHeight: 64 }} /></label>
+          </div>)}
+          {latestType && <div>
+            <p>{latestType.name} · {latestType.fields.map((field) => field.name).join(', ')}</p>
+            {latestType.templates.map((template) => <details key={template.id ?? template.ord}>
+              <summary>{template.name}</summary><pre style={{ whiteSpace: 'pre-wrap' }}>{template.frontTemplate}{'\n'}{template.backTemplate}</pre>
+            </details>)}
+          </div>}
+          <NNBtn disabled={saving} size="sm" onClick={async () => {
+            if (await confirm({ title: t('editor.conflict.keepDraft'), danger: true })) {
+              if (latestType) {
+                const renames = new Map((activeNoteType?.fields ?? []).flatMap((old) => {
+                  const next = latestType.fields.find((field) => field.id && field.id === old.id);
+                  return next ? [[old.name, next.name] as const] : [];
+                }));
+                const mapped = renameFieldValues(fieldValues, renames);
+                if (!mapped) { setError(t('editor.errors.schemaCollision')); return; }
+                useNN.setState((state) => ({ noteTypes: [...state.noteTypes.filter((type) => type.id !== latestType.id), latestType] }));
+                setFieldValues(mapped);
+              }
+              setBaseVersion(latest?.note?.updatedAt); setLatest(null); setLatestType(null); setError(null);
+            }
+          }}>{t('editor.conflict.reviewDraft')}</NNBtn>
+        </NNCard>}
+
+        {activeNoteType?.kind === 'typein' && <div style={{ marginTop: 14 }}>
+          <p>{t('editor.typein.target', { field: answerField?.name ?? '' })}: <strong>{fieldPlainText(fieldValues[answerField?.name ?? ''] ?? '') || '—'}</strong></p>
+          <label style={{ display: 'block' }}>{t('editor.typein.alternatives')}
+            <textarea value={acceptedAnswersText} onChange={(event) => setAcceptedAnswersText(event.target.value)} rows={3}
+              style={{ width: '100%', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: 10 }} />
+          </label>
+          <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t('editor.typein.hint')}</p>
+        </div>}
+        {generation.error && !error && showPreview && <div role="status" style={{ marginTop: 12, color: 'var(--rose-400)' }}>{contentError(generation.error)}</div>}
+        {legacyCloze && <NNCard padding={14} style={{ marginTop: 12 }}>
+          <p>{t('editor.cloze.legacy')}</p>
+          {splitChoices.some((choice) => !choice.numbers.length) && <p>{t('editor.cloze.addNumbers')}</p>}
+          {clozeRetainHistoryFor === undefined ? <NNBtn size="sm" disabled={saving || !splitChoices.length || splitChoices.some((choice) => !choice.numbers.length)}
+            onClick={() => setClozeRetainHistoryFor(Object.fromEntries(splitChoices.map((choice) => [String(choice.templateOrd), choice.numbers[0]])))}>{t('editor.cloze.split')}</NNBtn>
+            : <>
+              {splitChoices.map((choice) => <div key={choice.templateOrd}>
+                <label>{choice.name}</label>
+                <NNSelect value={String(clozeRetainHistoryFor[String(choice.templateOrd)])} disabled={saving}
+                  onChange={(value) => setClozeRetainHistoryFor((previous) => ({ ...previous, [String(choice.templateOrd)]: Number(value) }))}
+                  options={choice.numbers.map((number) => ({ value: String(number), label: `c${number}` }))} ariaLabel={t('editor.cloze.historyTarget')} />
+              </div>)}
+              <p style={{ whiteSpace: 'pre-wrap' }}>{splitExplanation}</p>
+              <NNBtn size="sm" disabled={saving} onClick={() => setClozeRetainHistoryFor(undefined)}>{t('actions.cancel')}</NNBtn>
+            </>}
+
+        </NNCard>}
+        {!generation.error && activeNoteType && <div style={{ marginTop: 14 }}>
+          <label>{t('editor.previewQuestion', { n: generation.cards.length })}</label>
+          {generation.cards.length > 1 && <NNSelect value={selectedPreviewKey} onChange={setPreviewKey} options={generation.cards.map((card) => ({
+            value: keyFor(card), label: `${activeNoteType?.templates.find((template) => template.ord === card.templateOrd)?.name ?? String(card.templateOrd + 1)}${card.clozeNumber ? ` · c${card.clozeNumber}` : ''}`,
+          }))} ariaLabel={t('editor.previewQuestion', { n: generation.cards.length })} />}
+          {omittedTemplates.length > 0 && <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>
+            {t('editor.omittedTemplates', { names: omittedTemplates.map((template) => template.name).join(', ') })}
+          </p>}
+        </div>}
 
         {/* Preview: a single flip card behind a toggle (replaces the always-on
             dual front+back inline preview). Reuses the `preview` memo + SafeHtml,
@@ -804,7 +1045,8 @@ export const NNCardForm = ({
                     tgt.tagName === 'A' ||
                     tgt.tagName === 'IMG' ||
                     tgt.closest('button') ||
-                    tgt.closest('a')
+                    tgt.closest('a') ||
+                    tgt.closest('.nn-content-error')
                   )
                     return;
                   setFlipped((v) => !v);
@@ -851,6 +1093,8 @@ export const NNCardForm = ({
                   <RichCard
                     noteType={activeNoteType}
                     fieldValues={fieldValues}
+                    templateOrd={selectedPreview?.templateOrd}
+                    clozeNumber={selectedPreview?.clozeNumber}
                     side={activeNoteType.kind === 'cloze' ? (flipped ? 'back' : 'front') : 'front'}
                     style={{
                       fontFamily: 'var(--font-serif)',
@@ -910,6 +1154,8 @@ export const NNCardForm = ({
                               <RichCard
                                 noteType={activeNoteType}
                                 fieldValues={fieldValues}
+                                templateOrd={selectedPreview?.templateOrd}
+                                clozeNumber={selectedPreview?.clozeNumber}
                                 side="back"
                                 style={{
                                   fontFamily: 'var(--font-serif)',
