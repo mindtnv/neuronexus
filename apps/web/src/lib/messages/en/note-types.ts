@@ -160,6 +160,11 @@ const m = {
   },
   // Errors
   errors: {
+    kindCopyHint: "Open Edit and save a copy first. Change the mode of the unused copy, then select notes to convert to it.",
+    tooLarge: 'This change affects too much material for one operation (up to 1,000 notes, 2,000 cards and 2 MB of text). Nothing changed; your draft is preserved.',
+    busy: 'The collection is busy or the change took too long. Nothing changed; your draft is preserved. Try again shortly.',
+    copyHint: 'Save these edits as a new type, then select notes to convert in smaller batches. Existing notes keep their current type until you confirm each conversion.',
+
     unsupportedHtml: "Template {template}, position {position}: <{tag}> markup is not displayed or is not closed. Remove it; put HTML code examples in Markdown fields.",
     invalidFields: "Field names must be unique ignoring case, without braces or control characters.",
     answerRequired: "Choose the correct answer field.",

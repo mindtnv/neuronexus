@@ -67,3 +67,14 @@ Owners SHALL be able to convert selected notes to an accessible target type with
 #### Scenario: Concurrent changes or foreign selection
 - **WHEN** source/target definitions, selected notes or reviews change after preview, or a selected resource is foreign
 - **THEN** no partial conversion occurs and the operation requires a fresh authorized preview
+
+### Requirement: Bounded type-wide edits
+Type-wide regeneration SHALL admit at most 1000 notes, 2000 existing or resulting cards, and 2 MiB of source, field-expanded templates or generated search text per operation. Exceeding the limit SHALL leave the type and its notes/cards unchanged and offer a copy-and-convert path. Metadata-only edits SHALL not regenerate the collection.
+
+#### Scenario: Large collection or slow database
+- **WHEN** an edit exceeds admission limits, cannot obtain a lock within 750 ms, or exceeds its 5-second transaction work budget or 2-second SQL statement timeout
+- **THEN** it returns a recoverable error without partially applying the type, preserves the editor draft, and does not enqueue rolled-back card changes
+
+#### Scenario: Copy a large type
+- **WHEN** an owner saves the preserved draft as a new type
+- **THEN** the original definition and notes remain unchanged and the new copy can be applied through explicit bounded note conversion

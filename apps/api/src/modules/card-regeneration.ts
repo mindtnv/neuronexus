@@ -64,17 +64,21 @@ export function regenerationToken(value: unknown): string {
 export async function applyRegeneration(tx: Tx, input: {
   userId: string; noteId: string; deckId?: string; plan: RegenerationPlan; now: Date;
   moveToDeckId?: string;
+  checkBudget?: () => void;
 }): Promise<string[]> {
   const { plan, now } = input;
+  input.checkBudget?.();
   if (plan.create.length && !input.deckId) throw new NoteWriteConflict('note_deck_required');
   // Confirmed removals happen first; changed ordinals temporarily vacate their
   // unique slots. Readers outside this transaction never observe these ords.
   if (plan.remove.length) await tx.delete(cards).where(and(eq(cards.userId, input.userId), inArray(cards.id, plan.remove.map((card) => card.id))));
   for (const { before, after } of plan.keep) {
+    input.checkBudget?.();
     if (before.templateOrd !== after.templateOrd) await tx.update(cards).set({ templateOrd: -before.templateOrd - 1 }).where(eq(cards.id, before.id));
   }
   const indexIds: string[] = [];
   for (const { before, after } of plan.keep) {
+    input.checkBudget?.();
     await tx.update(cards).set({ ...after,
       ...(input.moveToDeckId ? { deckId: input.moveToDeckId } : {}),
       updatedAt: sql`greatest(${cards.updatedAt} + interval '1 millisecond', ${now.toISOString()}::timestamptz)`,
@@ -82,6 +86,7 @@ export async function applyRegeneration(tx: Tx, input: {
     if (before.renderText !== after.renderText) indexIds.push(before.id);
   }
   for (const generated of plan.create) {
+    input.checkBudget?.();
     const [created] = await tx.insert(cards).values({ ...generated, userId: input.userId, noteId: input.noteId,
       deckId: input.deckId!, ...fsrsResetColumns(now),
     }).returning({ id: cards.id });

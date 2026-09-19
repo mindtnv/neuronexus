@@ -14,8 +14,9 @@
 // of that type are recomputed IN-TRANSACTION (FSRS preserved), and the change is
 // logged `{ noteTypeId, cardsRerendered }`.
 
+import { isDeepStrictEqual } from 'node:util';
 import { Elysia, t, status as reply } from 'elysia';
-import { and, asc, eq, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, or, sql } from 'drizzle-orm';
 import { cards, db, noteTypes, notes } from '@neuronexus/db';
 import {
   generateCards,
@@ -42,6 +43,8 @@ import { authPlugin } from '../auth-plugin.ts';
 import { logCorrelation, requestLogFromContext, safeError } from '../logger.ts';
 import { enqueueIndex } from '../ai/index-queue';
 import { applyRegeneration, loadRegenerationCards, planRegeneration, regenerationImpact, regenerationToken, type RegenerationPlan } from './card-regeneration';
+
+import { NOTE_TYPE_BUDGET, NoteTypeBudgetError, startNoteTypeBudget, noteTypeBudgetFailure, noteTypeExpansionBytes } from './note-type-budget';
 
 const renderKindSchema = t.Union([
   t.Literal('basic'),
@@ -225,18 +228,33 @@ async function editNoteType(context: { user: { id: string }; params: { id: strin
 
       // Owned row: detect whether render output could change (templates/styling/
       // kind). Field renames also change render output (template references).
-      const templatesChanged = body.templates !== undefined;
+      const templatesChanged = !isDeepStrictEqual(nextTemplates, oldTemplates);
       const stylingChanged = body.styling !== undefined && body.styling !== target.styling;
       const kindChanged = body.kind !== undefined && body.kind !== target.kind;
-      const fieldsChanged = body.fields !== undefined;
+      const fieldsChanged = !isDeepStrictEqual(nextFields, oldFields);
       const needsRerender = templatesChanged || stylingChanged || kindChanged || fieldsChanged;
 
       const indexIds: string[] = [];
       const result = await db.transaction(async (tx) => {
+        const checkBudget = await startNoteTypeBudget(tx);
         const [locked] = await tx.select().from(noteTypes)
           .where(eq(noteTypes.id, params.id)).for('update');
         if (!locked) return status(404, { error: 'not_found' });
         if (locked.updatedAt.getTime() !== target.updatedAt.getTime()) return status(409, { error: 'note_type_changed' });
+        if (needsRerender) {
+          // Check complete scope before loading source or taking thousands of
+          // note/card locks. The type lock excludes concurrent note creation.
+          const [scope] = await tx.select({ n: sql<number>`count(*)::int`,
+            bytes: sql<number>`coalesce(sum(octet_length(${notes.fieldValues}::text)), 0)::bigint`.mapWith(Number),
+          }).from(notes).where(and(eq(notes.noteTypeId, params.id), eq(notes.userId, user.id)));
+          if (scope!.n > NOTE_TYPE_BUDGET.notes || scope!.bytes > NOTE_TYPE_BUDGET.sourceBytes)
+            throw new NoteTypeBudgetError('note_type_operation_too_large');
+          const [cardScope] = await tx.select({ n: sql<number>`count(*)::int` }).from(cards)
+            .innerJoin(notes, eq(notes.id, cards.noteId))
+            .where(and(eq(notes.noteTypeId, params.id), eq(notes.userId, user.id), eq(cards.userId, user.id)));
+          if (cardScope!.n > NOTE_TYPE_BUDGET.cards) throw new NoteTypeBudgetError('note_type_operation_too_large');
+          checkBudget();
+        }
         const typeNotes = needsRerender ? await tx.select({ id: notes.id, fieldValues: notes.fieldValues, updatedAt: notes.updatedAt })
           .from(notes).where(and(eq(notes.noteTypeId, params.id), eq(notes.userId, user.id))).orderBy(asc(notes.id)).for('update') : [];
         const renamedValues = new Map<string, FieldValues>();
@@ -249,15 +267,25 @@ async function editNoteType(context: { user: { id: string }; params: { id: strin
         const plans = new Map<string, RegenerationPlan>();
         const def = defFromRow({ ...target, fields: nextFields, templates: nextTemplates, kind: nextKind, styling: nextStyling });
         const validation: NonNullable<CardRegenerationPreview['validation']> = { checkedNotes: typeNotes.length, invalidNotes: 0, samples: [] };
+        let expandedBytes = 0;
+        let generatedCount = 0;
+        let generatedBytes = 0;
         for (const note of typeNotes) {
+          checkBudget();
           const values = renameFieldValues(note.fieldValues, renames);
           if (!values) return status(400, { error: 'field_value_collision' });
+          expandedBytes += noteTypeExpansionBytes(nextTemplates, values);
+          if (expandedBytes > NOTE_TYPE_BUDGET.sourceBytes) throw new NoteTypeBudgetError('note_type_operation_too_large');
           renamedValues.set(note.id, values);
           const prior = existingByNote.get(note.id) ?? [];
           let generated: ReturnType<typeof generateCards> = [];
           let invalid: string | undefined;
-          try { generated = generateCards(def, values, { legacyCloze: prior.some(isLegacyClozeCard) }); }
+          try { generated = generateCards(def, values, { legacyCloze: prior.some(isLegacyClozeCard), checkBudget }); }
           catch (error) { if (error instanceof NoteContentError || error instanceof ClozeSyntaxError) invalid = error instanceof NoteContentError ? error.code : 'invalid_cloze'; else throw error; }
+          generatedCount += generated.length;
+          generatedBytes += generated.reduce((n, card) => n + Buffer.byteLength(card.renderText), 0);
+          if (generatedCount > NOTE_TYPE_BUDGET.cards || generatedBytes > NOTE_TYPE_BUDGET.sourceBytes)
+            throw new NoteTypeBudgetError('note_type_operation_too_large');
           if (!generated.length) invalid ??= 'no_cards_generated';
           if (invalid) validation.invalidNotes++;
           const sample = { front: prior[0]?.renderFrontText.slice(0, 160) ?? '',
@@ -277,6 +305,7 @@ async function editNoteType(context: { user: { id: string }; params: { id: strin
           patch: { name: body.name, fields: body.fields, templates: body.templates, kind: body.kind, styling: body.styling },
           notes: typeNotes, cards: existing,
         });
+        checkBudget();
         if (body.preview) return { impact, validation, ...(kindChanged ? { kindTransition: { from: target.kind, to: nextKind, resetsQuestions: !(['basic', 'custom'].includes(target.kind) && ['basic', 'custom'].includes(nextKind)) } } : {}), confirmationToken, sourceVersion: locked.updatedAt.toISOString() };
         if (validation.invalidNotes) return status(400, { error: 'invalid_existing_notes', validation });
         if ((kindChanged || impact.willDeleteCards > 0 || body.confirmationToken) && body.confirmationToken !== confirmationToken) {
@@ -300,23 +329,30 @@ async function editNoteType(context: { user: { id: string }; params: { id: strin
         if (!updated) return status(404, { error: 'not_found' });
 
         for (const note of typeNotes) {
+          checkBudget();
           const fieldValues = renamedValues.get(note.id)!;
           if (renames.size) await tx.update(notes).set({
             fieldValues, updatedAt: new Date(Math.max(now.getTime(), note.updatedAt.getTime() + 1)),
           }).where(eq(notes.id, note.id));
           const prior = existingByNote.get(note.id)?.[0];
           indexIds.push(...await applyRegeneration(tx, { userId: user.id, noteId: note.id,
-            deckId: prior?.deckId, plan: plans.get(note.id)!, now,
+            deckId: prior?.deckId, plan: plans.get(note.id)!, now, checkBudget,
           }));
         }
+        checkBudget();
         log.info({ noteTypeId: params.id, cardsRerendered: impact.willKeepCards,
           cardsCreated: impact.willCreateCards, cardsRemoved: impact.willDeleteCards,
         }, 'note_type.rerender');
 
         return updated;
+      }).catch((error: unknown) => {
+        const code = noteTypeBudgetFailure(error);
+        if (!code) throw error;
+        indexIds.length = 0; // The entire transaction was rolled back.
+        return status(code === 'note_type_operation_too_large' ? 413 : 503, { error: code, limits: NOTE_TYPE_BUDGET });
       });
-      // A rollback never reaches this point. Only changed search text or new
-      // cards are enqueued; deletions cascade their derived index rows.
+      // Budget failures clear the rolled-back IDs. Only committed changed text
+      // or new cards are enqueued; deletions cascade their derived index rows.
       try {
         for (const id of indexIds) enqueueIndex(id, logCorrelation(log));
       } catch (error) { log.warn({ err: safeError(error) }, 'ai.index.enqueue_failed'); }

@@ -169,3 +169,35 @@ test('mode conversion previews separately and applies only the exact confirmed i
   expect(writes[1].url).toEndWith('/kind');
   expect(writes[1].body).toMatchObject({ confirmationToken: 'kind-consent', kind: 'typein', answerFieldId: 'a' });
 });
+
+test('large type edits keep the draft and offer saving a separate copy without changing notes', async () => {
+  const requests: { url: string; method: string; body: any }[] = [];
+  globalThis.fetch = (async (url: any, init: any) => {
+    const body = init.body ? JSON.parse(init.body) : undefined;
+    requests.push({ url: String(url), method: init.method, body });
+    if (String(url).includes('/preview')) return Response.json({ error: 'note_type_operation_too_large' }, { status: 413 });
+    return Response.json({ ...type, ...body, id: 'new-copy', isBuiltin: false });
+  }) as typeof fetch;
+  await render();
+  const fieldsBefore = Array.from(host.querySelectorAll('textarea')).map(n => n.value);
+  await act(async () => button('noteTypes.actions.save').click());
+  expect(host.textContent).toContain('noteTypes.errors.tooLarge');
+  expect(host.textContent).toContain('noteTypes.errors.copyHint');
+  expect(Array.from(host.querySelectorAll('textarea')).map(n => n.value)).toEqual(fieldsBefore);
+  await act(async () => button('noteTypes.actions.saveCopy').click());
+  expect(requests).toHaveLength(2);
+  expect(requests[1]!.method).toBe('POST');
+  expect(new URL(requests[1]!.url).pathname).toBe('/note-types');
+  expect(requests[1]!.body).toMatchObject({ kind: 'custom', fields: type.fields, templates: type.templates });
+  expect(useNN.getState().noteTypes.find(n => n.id === type.id)?.templates).toEqual(type.templates);
+  expect(useNN.getState().noteTypes.some(n => n.id === 'new-copy')).toBe(true);
+});
+
+test('budget timeout preserves draft and reports a retryable error', async () => {
+  globalThis.fetch = (async (_url: any, _init: any) => Response.json({ error: 'note_type_operation_timeout' }, { status: 503 })) as typeof fetch;
+  await render();
+  await act(async () => button('noteTypes.actions.save').click());
+  expect(host.textContent).toContain('noteTypes.errors.busy');
+  expect((host.querySelector('fieldset') as HTMLFieldSetElement).disabled).toBe(false);
+  expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe(type.templates[0]!.frontTemplate);
+});

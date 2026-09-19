@@ -468,6 +468,7 @@ const NoteTypeForm = ({
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const [baseVersion, setBaseVersion] = useState(editing?.updatedAt);
   const [latest, setLatest] = useState<NoteType | null>(null);
+  const [offerCopy, setOfferCopy] = useState(false);
 
   const isClone = editing?.isBuiltin ?? false;
   const [draft, setDraft] = useState<Draft>(() =>
@@ -581,7 +582,7 @@ const NoteTypeForm = ({
     return null;
   };
 
-  const handleSave = async () => {
+  const handleSave = async (saveCopy = false) => {
     if (saveLock.current) return;
     const v = validate();
     if (v) {
@@ -600,7 +601,9 @@ const NoteTypeForm = ({
     };
     try {
       let saved: NoteType;
-      if (editing && !editing.isBuiltin) {
+      if (editing && saveCopy) {
+        saved = await addNoteType({ ...payload, kind: editing.kind });
+      } else if (editing && !editing.isBuiltin) {
         const preview = await ok(await (api as any)['note-types']({ id: editing.id }).preview.post({
           ...payload, preview: true, expectedUpdatedAt: baseVersion,
         })) as CardRegenerationPreview;
@@ -632,7 +635,11 @@ const NoteTypeForm = ({
       if (alive.current) onDone(saved);
     } catch (err) {
       if (!alive.current) return;
-      if (err instanceof ApiError && err.status === 409 && editing) {
+      if (err instanceof ApiError && err.safeMessage === 'note_type_operation_too_large') {
+        setError(t('noteTypes.errors.tooLarge')); setOfferCopy(true);
+      } else if (err instanceof ApiError && ['note_type_operation_busy', 'note_type_operation_timeout'].includes(err.safeMessage)) {
+        setError(t('noteTypes.errors.busy'));
+      } else if (err instanceof ApiError && err.status === 409 && editing) {
         setError(t('noteTypes.errors.changed'));
         try {
           const rows = await ok(await (api as any)['note-types'].get()) as any[];
@@ -660,14 +667,19 @@ const NoteTypeForm = ({
         </NNBtn>
         <div style={sectionTitleStyle}>{title}</div>
         <div style={{ flex: 1 }} />
-        <NNBtn size="sm" variant="primary" icon="check" onClick={handleSave} disabled={saving}>
+        <NNBtn size="sm" variant="primary" icon="check" onClick={() => handleSave()} disabled={saving}>
           {saving
             ? t('noteTypes.actions.saving')
             : isClone
               ? t('noteTypes.actions.saveCopy')
               : t('noteTypes.actions.save')}
         </NNBtn>
+        {editing && !isClone && <NNBtn size="sm" disabled={saving} onClick={() => handleSave(true)}>{t('noteTypes.actions.saveCopy')}</NNBtn>}
       </div>
+
+      {offerCopy && editing && <NNCard style={{ marginBottom: 16 }}>
+        <p>{t('noteTypes.errors.copyHint')}</p>
+      </NNCard>}
 
       {isClone && (
         <div style={{
@@ -861,7 +873,11 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
       await update(editing.id, { ...body, expectedUpdatedAt: preview.sourceVersion, confirmationToken: preview.confirmationToken });
       if (alive.current) onDone();
     } catch (error) {
-      if (alive.current) setError(t(error instanceof ApiError && error.status === 409 ? 'noteTypes.kind.changed' : 'noteTypes.errors.saveFailed'));
+      if (alive.current) {
+        const tooLarge = error instanceof ApiError && error.safeMessage === 'note_type_operation_too_large';
+        setError(tooLarge ? `${t('noteTypes.errors.tooLarge')} ${t('noteTypes.errors.kindCopyHint')}`
+          : t(error instanceof ApiError && ['note_type_operation_busy', 'note_type_operation_timeout'].includes(error.safeMessage) ? 'noteTypes.errors.busy' : error instanceof ApiError && error.status === 409 ? 'noteTypes.kind.changed' : 'noteTypes.errors.saveFailed'));
+      }
     } finally { lock.current = false; if (alive.current) setBusy(false); }
   };
   return <div style={{ padding: 24, maxWidth: 760, margin: '0 auto', width: '100%' }}>
@@ -937,7 +953,7 @@ export const NNNoteTypeEditor = () => {
     return (
       <NoteTypeForm
         editing={editing}
-        onDone={(saved) => { if (editing?.isBuiltin && saved.id !== editing.id) setCloneResult({ source: editing, target: saved }); else setCloneResult(null); goList(); }}
+        onDone={(saved) => { if (editing && saved.id !== editing.id) setCloneResult({ source: editing, target: saved }); else setCloneResult(null); goList(); }}
         onCancel={goList}
       />
     );

@@ -383,7 +383,7 @@ export function clozeNumbersFor(noteType: Pick<NoteTypeDef, 'templates'>, fields
   return [...new Set(noteType.templates.flatMap((template) => numbersForTemplate(template.frontTemplate, rendered, fieldNumbers)))].sort((a, b) => a - b);
 }
 
-export function generateCards(noteType: NoteTypeDef, fields: FieldValues, options: { legacyCloze?: boolean } = {}): GeneratedCard[] {
+export function generateCards(noteType: NoteTypeDef, fields: FieldValues, options: { legacyCloze?: boolean; checkBudget?: () => void } = {}): GeneratedCard[] {
   if (!validFieldNames(noteType.fields) || validateTemplates(noteType.fields, noteType.templates).length) throw new NoteContentError('invalid_template');
   if (noteType.kind === 'typein' && !fieldPlainText(fields[typedAnswerField(noteType.fields)?.name ?? ''] ?? '')) throw new NoteContentError('typein_answer_required');
   const isCloze = noteType.kind === 'cloze';
@@ -391,10 +391,12 @@ export function generateCards(noteType: NoteTypeDef, fields: FieldValues, option
   const revealedFields = searchFields(fields, isCloze ? { side: 'back', number: 0, legacy: options.legacyCloze } : undefined, fieldNumbers);
   const out: GeneratedCard[] = [];
   for (const tpl of [...noteType.templates].sort((a, b) => a.ord - b.ord)) {
+    options.checkBudget?.();
     const numbers: (number | null)[] = isCloze
       ? options.legacyCloze ? [0] : numbersForTemplate(tpl.frontTemplate, revealedFields, fieldNumbers)
       : [null];
     for (const clozeNumber of numbers) {
+      options.checkBudget?.();
       const frontFields = isCloze ? searchFields(fields, { side: 'front', number: clozeNumber ?? 0, legacy: options.legacyCloze }) : revealedFields;
       const front = renderTemplate(tpl.frontTemplate, frontFields);
       const back = renderTemplate(tpl.backTemplate, revealedFields);
