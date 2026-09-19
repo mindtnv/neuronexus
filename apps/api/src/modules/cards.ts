@@ -13,6 +13,7 @@ import {
   profile,
   sourceChunks,
   sources,
+  type Db,
 } from '@neuronexus/db';
 import {
   parseCardQuery,
@@ -474,6 +475,7 @@ export async function patchCard(
   userId: string,
   cardId: string,
   body: CardPatch,
+  executor: Db | Parameters<Parameters<Db['transaction']>[0]>[0] = db,
 ): Promise<CardPatchResult> {
   if (body.forget === true && body.setDue !== undefined) {
     return { ok: false, code: 400, error: 'forget_and_setdue_exclusive' };
@@ -483,7 +485,7 @@ export async function patchCard(
 
   // If moving the card to a different deck, verify ownership of the target deck.
   if (body.deckId !== undefined) {
-    const deck = await db
+    const deck = await executor
       .select({ id: decks.id })
       .from(decks)
       .where(and(eq(decks.id, body.deckId), eq(decks.userId, userId)))
@@ -506,7 +508,7 @@ export async function patchCard(
     patch.due = d;
   }
 
-  const [updated] = await db
+  const [updated] = await executor
     .update(cards)
     .set(patch)
     .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))

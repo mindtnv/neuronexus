@@ -42,6 +42,7 @@ export function censorSensitiveText(value: string, limit = DEFAULT_TEXT_LIMIT): 
   const censored = value
     .replace(/(^|\n)\s*params\s*:[^\n]*/gi, '$1params:[REDACTED]')
     .replace(/\bBearer\s+[^\s"',;]+/gi, 'Bearer [REDACTED]')
+    .replace(/\bnn_pat_[A-Za-z0-9_-]+/g, '[REDACTED]')
     .replace(/\b(?:sk|hs)[-_][A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
     .replace(
       /\b(api[_-]?key|access[_-]?key|authorization|cookie|password|secret|token|prompt|content|document|field[_-]?values)\b\s*[:=]\s*[^\s,"';}]+/gi,

@@ -176,6 +176,13 @@
       "when": 1786346527075,
       "tag": "0024_pale_vapor",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789766571000,
+      "tag": "0025_overconfident_ghost_rider",
+      "breakpoints": true
     }
   ]
 }
