@@ -47,8 +47,8 @@ async function snapshot(ctx: ToolContext, args: McpArgs) {
 }
 
 export function legacyTools(): KnowledgeTool[] {
-  const regular = buildToolRegistry({ webSearchEnabled: false, fetchPageEnabled: false });
-  const notebook = buildToolRegistry({ notebook: true, webSearchEnabled: false, fetchPageEnabled: false })
+  const regular = buildToolRegistry({ knowledge: false, webSearchEnabled: false, fetchPageEnabled: false });
+  const notebook = buildToolRegistry({ notebook: true, knowledge: false, webSearchEnabled: false, fetchPageEnabled: false })
     .filter(t => !regular.some(r => r.name === t.name));
   return [...regular, ...notebook].map(tool => {
     const inNotebook = notebook.includes(tool);

@@ -819,3 +819,56 @@ describe('agentic chat — confirm-before-write (Phase B)', () => {
     ]);
   });
 });
+
+describe('knowledge tool confirmations', () => {
+  beforeEach(async () => { await resetTestDb(); capturedAgentMessages = []; });
+  afterEach(() => __resetAiClientForTests());
+
+  test('notebook preview persists, applies once, and exposes current capability guidance', async () => {
+    const { notebooks } = await import('@neuronexus/db');
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const conv = await createConversation(cookie);
+    __setAiClientForTests({ chatStreamAgentic: scriptedAgentStream([writeTurn({id:'new-nb',name:'create_notebook',args:{title:'From chat'}}),answerTurn('Created')]) });
+    const frames = await readSse(await streamReq(cookie,conv,'Create a notebook'));
+    expect(frames.some(f=>f.event==='await_confirmation')).toBe(true);
+    expect(await db.select().from(notebooks).where(eq(notebooks.userId,userId))).toHaveLength(0);
+    const pending=(await transcriptRows(conv)).find(r=>r.toolCalls?.some(t=>t.id==='new-nb'))!;
+    expect(pending.toolCalls![0]!.impact?.snapshotHash).toHaveLength(64);
+    expect(pending.toolCalls![0]!.impact?.resourcePreview?.fields[0]?.after).toBe('From chat');
+    const applied=await readSse(await resumeReq(cookie,conv,{resumeToolCallId:'new-nb',decision:'apply'}));
+    expect(applied.some(f=>f.event==='tool_result' && (f.data as {ok:boolean}).ok)).toBe(true);
+    await readSse(await resumeReq(cookie,conv,{resumeToolCallId:'new-nb',decision:'apply'}));
+    expect(await db.select().from(notebooks).where(eq(notebooks.userId,userId))).toHaveLength(1);
+    expect(JSON.stringify(capturedAgentMessages[0])).toContain('<available_tools>');
+    expect(JSON.stringify(capturedAgentMessages[0])).toContain('list_library');
+  });
+
+  test('stale notebook approval fails without overwriting concurrent edits', async () => {
+    const { notebooks }=await import('@neuronexus/db');
+    const {cookie,userId}=await signUpAndCookie(app,uniqueEmail());
+    const [nb]=await db.insert(notebooks).values({userId,title:'Before'}).returning();
+    const conv=await createConversation(cookie);
+    __setAiClientForTests({chatStreamAgentic:scriptedAgentStream([writeTurn({id:'edit-nb',name:'update_notebook',args:{id:nb!.id,title:'Proposed'}}),answerTurn('Please request a new preview')])});
+    await readSse(await streamReq(cookie,conv,'Rename'));
+    await db.update(notebooks).set({title:'Concurrent'}).where(eq(notebooks.id,nb!.id));
+    const frames=await readSse(await resumeReq(cookie,conv,{resumeToolCallId:'edit-nb',decision:'apply'}));
+    expect(frames.some(f=>f.event==='tool_result' && !(f.data as {ok:boolean}).ok)).toBe(true);
+    expect((await db.select().from(notebooks).where(eq(notebooks.id,nb!.id)))[0]!.title).toBe('Concurrent');
+  });
+
+  test('source import waits for approval; rejection has no side effects; apply parses after commit', async () => {
+    const { sources, sourceChunks }=await import('@neuronexus/db');
+    const { drainSourceIngest }=await import('../src/ai/source-ingest.ts');
+    const {cookie,userId}=await signUpAndCookie(app,uniqueEmail());
+    for (const decision of ['reject','apply'] as const) {
+      const conv=await createConversation(cookie);
+      __setAiClientForTests({chatStreamAgentic:scriptedAgentStream([writeTurn({id:'import',name:'create_text_source',args:{title:'An article',text:'A useful public article about binary search and sorted arrays.'}}),answerTurn('Done')])});
+      await readSse(await streamReq(cookie,conv,'Add this text'));
+      expect(await db.select().from(sources).where(eq(sources.userId,userId))).toHaveLength(0);
+      await readSse(await resumeReq(cookie,conv,{resumeToolCallId:'import',decision}));
+      await drainSourceIngest({timeoutMs:3000});
+      expect(await db.select().from(sources).where(eq(sources.userId,userId))).toHaveLength(decision==='apply'?1:0);
+    }
+    expect((await db.select().from(sourceChunks).where(eq(sourceChunks.userId,userId))).length).toBeGreaterThan(0);
+  });
+});

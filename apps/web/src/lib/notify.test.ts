@@ -128,7 +128,7 @@ describe('notify — Notification API present, permission granted', () => {
     setNotificationsEnabled(true);
     notifyDue(4);
     expect(notifInstances).toHaveLength(1);
-    expect(notifInstances[0]?.title).toBe('NeuroNexus');
+    expect(notifInstances[0]?.title).toBe('Reomi');
   });
 
   test('notifyDue does NOT fire when n === 0', () => {

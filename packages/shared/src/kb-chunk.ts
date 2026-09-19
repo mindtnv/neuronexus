@@ -337,6 +337,15 @@ export interface MessageMention {
 export interface ConfirmImpact {
   /** Server consistency token; never supplied by the model. */
   confirmationToken?: string;
+  /** Server-generated fingerprint for stale-approval checks, never model-authored. */
+  snapshotHash?: string;
+  resourcePreview?: {
+    title?: string;
+    fields: { field: string; before?: string; after?: string }[];
+    affected?: { kind: string; count: number }[];
+    destructive?: boolean;
+  };
+
   willDeleteCards?: number;
   willCreateCards?: number;
   affectsSiblings?: boolean;
@@ -421,6 +430,7 @@ export interface ChatModelOption {
  * OpenAI wire shape so a persisted row replays straight back into `messages[]`.
  */
 export interface ToolCallRecord {
+  impact?: ConfirmImpact;
   id: string;
   name: string;
   arguments: string;

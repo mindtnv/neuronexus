@@ -1,8 +1,13 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
+
 import { AppLink, useAppNavigation } from '@/components/navigation';
-import { NNIcon, NNBtn, NNCard, NNPlant, NNBadge } from '@/components/ui';
+import { Modal } from '@/components/design-system/modal';
+import { TextInput, Field, PageSurface, SegmentedControl } from '@/components/design-system/primitives';
+import { NNAppPage } from '@/components/app-page';
+import { NNIcon, NNBtn, NNCard, NNBadge } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { useStudyOverview } from '@/lib/use-study-overview';
 import type { DeckColor } from '@/lib/types';
@@ -10,7 +15,9 @@ import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
+import { filterDeckTree, type DeckFilter } from '@/lib/deck-filter';
 import { buildDeckTree, flattenTree, deckPathLabel, deckRowTarget, DeckNode } from '@/lib/decks';
+
 
 // ─────────────────────────────────────────────
 // Decks screen — nested tree view
@@ -34,6 +41,12 @@ export const NNDecks = () => {
   const deleteDeck = useNN((s) => s.deleteDeck);
   const bindDeckPreset = useNN((s) => s.bindDeckPreset);
 
+  const [deckSearch, setDeckSearch] = useState('');
+  const [deckFilter, setDeckFilter] = useState<DeckFilter>('all');
+  const [filterCollapsed, setFilterCollapsed] = useState<Set<string>>(() => new Set());
+  const filterActive = Boolean(deckSearch.trim()) || deckFilter !== 'all';
+  const clearFilters = () => { setDeckSearch(''); setDeckFilter('all'); setFilterCollapsed(new Set()); };
+
   // Collapsed nodes stored in localStorage; default is expanded.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   useEffect(() => {
@@ -43,6 +56,10 @@ export const NNDecks = () => {
     } catch {}
   }, []);
   const toggleCollapsed = (id: string) => {
+    if (filterActive) {
+      setFilterCollapsed(previous => { const next = new Set(previous); next.has(id) ? next.delete(id) : next.add(id); return next; });
+      return;
+    }
     setCollapsed((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -57,8 +74,16 @@ export const NNDecks = () => {
   const router = useAppNavigation();
 
   const [creating, setCreating] = useState(false);
-  const createLock = useRef(false);
-  const [saving, setSaving] = useState(false);
+  const createRequested = useSearchParams()?.get('create') === '1';
+  useEffect(() => {
+    if (!createRequested) return;
+    setNewParentId(null); setCreating(true);
+    router.replace('/decks');
+  }, [createRequested, router]);
+  const [createBusy, setCreateBusy] = useState(false);
+  const createPending = useRef(false);
+  const [createError, setCreateError] = useState('');
+
   const [newName, setNewName] = useState('');
   const [newColor, setNewColor] = useState<DeckColor>('lime');
   const [newParentId, setNewParentId] = useState<string | null>(null);
@@ -66,26 +91,35 @@ export const NNDecks = () => {
 
 
   const tree = useMemo(() => buildDeckTree(decks), [decks]);
-  // Tree flattening: nodes are expanded if NOT collapsed.
-  const expanded = useMemo(() => {
-    const s = new Set<string>();
-    const walk = (ns: DeckNode[]) => {
-      for (const n of ns) {
-        if (!collapsed.has(n.deck.id)) s.add(n.deck.id);
-        walk(n.children);
-      }
-    };
-    walk(tree);
-    return s;
-  }, [tree, collapsed]);
-  const rows = useMemo(() => flattenTree(tree, expanded), [tree, expanded]);
-
+  const childCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const deck of decks) if (deck.parentId) counts.set(deck.parentId, (counts.get(deck.parentId) ?? 0) + 1);
+    return counts;
+  }, [decks]);
   const aggregate = useMemo(() => new Map(Object.entries(study.data?.decks ?? {}).map(([id, counts]) =>
     [id, { total: counts.total, due: counts.totalAvailable }])), [study.data]);
   const direct = useMemo(() => new Map(Object.entries(study.data?.direct ?? {}).map(([id, counts]) =>
     [id, { total: counts.total }])), [study.data]);
 
+  const filteredTree = useMemo(() => filterDeckTree(tree, deckSearch, deckFilter, aggregate), [tree, deckSearch, deckFilter, aggregate]);
+  const effectiveCollapsed = filterActive ? filterCollapsed : collapsed;
+  const expanded = useMemo(() => new Set(decks.filter(deck => !effectiveCollapsed.has(deck.id)).map(deck => deck.id)), [decks, effectiveCollapsed]);
+  const rows = useMemo(() => flattenTree(filteredTree, expanded), [filteredTree, expanded]);
+  const filterNodes = useMemo(() => flattenTree(filteredTree, new Set(decks.map(deck => deck.id))), [filteredTree, decks]);
+  const hasOpenBranch = filterNodes.some(node => node.children.length > 0 && !effectiveCollapsed.has(node.deck.id));
+  const toggleAll = () => {
+    const next = hasOpenBranch ? new Set(filterNodes.filter(node => node.children.length > 0).map(node => node.deck.id)) : new Set<string>();
+    if (filterActive) setFilterCollapsed(next);
+    else {
+      setCollapsed(next);
+      try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...next])); } catch {}
+    }
+  };
+
+
+
   const resetForm = () => {
+    setCreateError('');
     setNewName('');
     setNewColor('lime');
     setNewParentId(null);
@@ -104,9 +138,9 @@ export const NNDecks = () => {
 
   const handleCreate = async () => {
     const name = newName.trim();
-    if (!name || createLock.current) return;
-    createLock.current = true;
-    setSaving(true);
+    if (!name || createPending.current) return;
+    createPending.current = true; setCreateBusy(true); setCreateError('');
+
     try {
       await addDeck({
         name,
@@ -127,11 +161,10 @@ export const NNDecks = () => {
       }
       resetForm();
     } catch (err) {
-      console.error('addDeck failed', err);
-      raiseToast({ kind: 'error', title: t('common.toasts.error') });
+      setCreateError(t('toasts.error'));
     } finally {
-      createLock.current = false;
-      setSaving(false);
+      createPending.current = false; setCreateBusy(false);
+
     }
   };
 
@@ -157,121 +190,70 @@ export const NNDecks = () => {
   const parentLabel = newParentId ? deckPathLabel(decks, newParentId) : null;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: isMobile ? 14 : 24 }}>
-      <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1 }} />
-        {/* Import PDF lives behind a feature flag until the LLM integration
-            lands — hidden from the deck toolbar so we don't route users to a
-            placeholder screen. */}
-        {decks.length > 0 && <NNBtn size="sm" variant="soft" icon="filter" onClick={() => router.push('/review/custom-study')}>
-          {t('review.customStudy.title')}
-        </NNBtn>}
-        <NNBtn size="sm" variant="primary" icon="plus" onClick={() => openCreateAt(null)}>
-          {t('decks.newDeck')}
-        </NNBtn>
+    <NNAppPage
+      title={t('nav.decks')}
+      subtitle={study.data ? String(study.data.overall.total) : undefined}
+      actions={<NNBtn className="reomi-create-icon" variant="soft" icon="plus" ariaLabel={t('decks.newDeck')} title={t('decks.newDeck')} onClick={() => openCreateAt(null)} />}
+    >
+    <PageSurface className="reomi-decks-page">
+      <Modal open={creating} title={t('decks.newDeck')} closeLabel={t('actions.close')} busy={createBusy} onClose={resetForm}>
+        <form onSubmit={event => { event.preventDefault(); void handleCreate(); }}>
+          <div className="reomi-modal-body">
+            {parentLabel && <p className="reomi-modal-description">{t('decks.underParent')}: <strong>{parentLabel}</strong></p>}
+            <Field label={t('decks.name')} error={createError || undefined}>
+              <TextInput autoFocus required maxLength={100} value={newName} disabled={createBusy}
+                onChange={event => setNewName(event.target.value)} placeholder={t('decks.namePlaceholder')} />
+            </Field>
+            <fieldset className="reomi-color-field"><legend>{t('decks.color')}</legend>
+              <div className="reomi-color-options">
+                {COLOR_OPTIONS.map(color => <button key={color} type="button" disabled={createBusy}
+                  aria-label={color} data-tooltip={color} aria-pressed={color === newColor} onClick={() => setNewColor(color)}
+                  style={{ background: color === 'neutral' ? 'var(--surface-3)' : `var(--${color}-500)` }}>
+                  {color === newColor && <NNIcon name="check" size={16} />}
+                </button>)}
+              </div>
+            </fieldset>
+          </div>
+          <footer className="reomi-modal-footer">
+            <NNBtn variant="ghost" disabled={createBusy} onClick={resetForm}>{t('actions.cancel')}</NNBtn>
+            <NNBtn variant="primary" type="submit" loading={createBusy} disabled={!newName.trim()}>{t('actions.create')}</NNBtn>
+          </footer>
+        </form>
+      </Modal>
+
+      <div className="reomi-decks-toolbar">
+        <div className="reomi-decks-search"><NNIcon name="search" size={16} />
+          <TextInput value={deckSearch} aria-label={t('decks.filters.search')} placeholder={t('decks.filters.search')}
+            onChange={event => { setDeckSearch(event.target.value); setFilterCollapsed(new Set()); }} />
+        </div>
+        <SegmentedControl label={t('decks.filters.label')} value={deckFilter}
+          options={(['all', 'due', 'empty'] as const).map(value => ({ value, label: t(`decks.filters.${value}`), tooltip: t(`decks.filterHints.${value}`) }))}
+          onChange={value => { setDeckFilter(value); setFilterCollapsed(new Set()); }} />
+        <span className="reomi-decks-count">{t('decks.filters.count', { n: filterNodes.length })}</span>
+        {filterActive && <NNBtn icon="x" variant="ghost" ariaLabel={t('decks.filters.clear')} title={t('decks.filters.clear')} onClick={clearFilters} />}
+        <NNBtn icon={hasOpenBranch ? 'chevd' : 'chevr'} variant="ghost" disabled={!filterNodes.some(node => node.children.length > 0)}
+          ariaLabel={t(hasOpenBranch ? 'decks.filters.collapseAll' : 'decks.filters.expandAll')}
+          title={t(hasOpenBranch ? 'decks.filters.collapseAll' : 'decks.filters.expandAll')} onClick={toggleAll} />
       </div>
 
-      {creating && (
-        <NNCard style={{ marginBottom: 14 }}>
-          {parentLabel && (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-              {t('decks.underParent')}: <span style={{ color: 'var(--text)', fontWeight: 500 }}>{parentLabel}</span>
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <div style={{ flex: '1 1 220px', minWidth: 200 }}>
-              <div className="nn-section-label" style={{ marginBottom: 6 }}>{t('decks.name')}</div>
-              <input
-                autoFocus
-                aria-label={t('decks.name')}
-                maxLength={100}
-                disabled={saving}
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat) void handleCreate();
-                  else if (e.key === 'Escape' && !saving) resetForm();
-                }}
-                placeholder={t('decks.namePlaceholder')}
-                style={inputStyle}
-              />
-            </div>
-            <div>
-              <div className="nn-section-label" style={{ marginBottom: 6 }}>{t('decks.color')}</div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {COLOR_OPTIONS.map((c) => {
-                  const selected = c === newColor;
-                  const bg = c === 'neutral' ? 'var(--surface-3)' : `var(--${c}-500)`;
-                  return (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => setNewColor(c)}
-                      aria-label={t(`decks.colors.${c}`)}
-                      title={t(`decks.colors.${c}`)}
-                      style={{
-                        width: 26,
-                        height: 26,
-                        borderRadius: '50%',
-                        background: bg,
-                        border: selected ? '2px solid var(--text)' : '2px solid var(--border)',
-                        boxShadow: selected ? '0 0 0 2px var(--surface)' : 'none',
-                        cursor: 'pointer',
-                        padding: 0,
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-            <div style={{ flex: 1 }} />
-            <div style={{ display: 'flex', gap: 8, alignSelf: 'flex-end' }}>
-              <NNBtn size="sm" variant="ghost" onClick={resetForm} disabled={saving}>
-                {t('actions.cancel')}
-              </NNBtn>
-              <NNBtn size="sm" variant="primary" icon="check" onClick={handleCreate} loading={saving} disabled={!newName.trim()}>
-                {t('actions.create')}
-              </NNBtn>
-            </div>
-          </div>
-        </NNCard>
-      )}
+      {study.error && <div role="alert">{t('home.countsError')} <NNBtn onClick={study.reload}>{t('review.retry')}</NNBtn></div>}
+      {decks.length > 0 && <NNBtn size="sm" variant="soft" icon="filter" onClick={() => router.push('/review/custom-study')}>{t('review.customStudy.title')}</NNBtn>}
+      {decks.length === 0 ? (
 
-      {rows.length > 0 && (
-        <div
-          style={{
-            marginBottom: 14,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            color: 'var(--text-dim)',
-            fontSize: 11,
-          }}
-        >
-          <NNPlant stage={profile?.plantStage ?? 0} size={isMobile ? 34 : 40} />
-          <div>
-            <div style={{ color: 'var(--text-muted)' }}>{t('decks.totalCards', { n: study.data?.overall.total ?? '—' })}</div>
-            <div>{t('decks.gardenHint')}</div>
-          </div>
-        </div>
-      )}
-
-      {study.error && <div role="alert" style={{ marginBottom: 12, color: 'var(--text-muted)', fontSize: 13 }}>
-        {t('home.countsError')} <NNBtn size="sm" variant="soft" onClick={study.reload}>{t('review.retry')}</NNBtn>
-      </div>}
-      {decks.length === 0 && !creating ? (
         <NNCard style={{ textAlign: 'center', padding: 40, color: 'var(--text-dim)' }}>
           <div style={{ fontSize: 14, marginBottom: 8 }}>{t('decks.emptyTitle')}</div>
           <div style={{ fontSize: 12 }}>{t('decks.emptyHint')}</div>
         </NNCard>
+      ) : rows.length === 0 ? (
+        <div className="reomi-decks-empty"><NNIcon name="search" size={24} /><p>{t('decks.filters.noResults')}</p><NNBtn variant="soft" onClick={clearFilters}>{t('decks.filters.clear')}</NNBtn></div>
       ) : (
-        <NNCard padding={0} style={{ overflow: 'visible' }}>
-          {rows.map((node) => {
+        <NNCard className="reomi-deck-list" padding={0} style={{ overflow: 'visible' }}>
+          {rows.map((node, rowIndex) => {
             const d = node.deck;
             const agg = aggregate.get(d.id) ?? { total: 0, due: 0 };
             const own = direct.get(d.id) ?? { total: 0, due: 0 };
             const hasChildren = node.children.length > 0;
-            const isCollapsed = collapsed.has(d.id);
+            const isCollapsed = effectiveCollapsed.has(d.id);
             const menuOpen = openMenuId === d.id;
             const indentPx = node.depth * 20;
             return (
@@ -310,7 +292,7 @@ export const NNDecks = () => {
                 }}
                 onFocus={(e) => {
                   if (e.target !== e.currentTarget) return;
-                  (e.currentTarget as HTMLDivElement).style.outline = '2px solid var(--lime-500)';
+                  (e.currentTarget as HTMLDivElement).style.outline = '2px solid var(--accent-500)';
                   (e.currentTarget as HTMLDivElement).style.outlineOffset = '-2px';
                 }}
                 onBlur={(e) => {
@@ -323,7 +305,7 @@ export const NNDecks = () => {
                   alignItems: 'center',
                   gap: 10,
                   padding: isMobile ? '10px 14px' : '12px 16px',
-                  borderBottom: '1px solid var(--border)',
+                  borderBottom: rowIndex === rows.length - 1 ? 'none' : '1px solid var(--panel-edge)',
                   position: 'relative',
                   cursor: 'pointer',
                   background: 'transparent',
@@ -389,7 +371,7 @@ export const NNDecks = () => {
                   </span>
                   {hasChildren && (
                     <NNBadge size="xs" tone="neutral">
-                      {t('decks.subCount', { n: node.children.length })}
+                      {t('decks.subCount', { n: childCounts.get(d.id) ?? node.children.length })}
                     </NNBadge>
                   )}
                   {!isMobile && d.presetId && (() => {
@@ -402,8 +384,9 @@ export const NNDecks = () => {
                   })()}
                   {/* demoted total — desktop only; carries the (own.total) parenthetical */}
                   {!isMobile && (
-                    <span className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0, marginLeft: 2 }}>
+                    <span className="mono" tabIndex={0} data-tooltip={t('decks.totalCards', { n: agg.total })} style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0, marginLeft: 2 }}>
                       {study.data ? agg.total : '—'}
+
                       {hasChildren && own.total > 0 && <span> ({own.total})</span>}
                     </span>
                   )}
@@ -427,7 +410,7 @@ export const NNDecks = () => {
                         onClick={(e) => e.stopPropagation()}
                         aria-label={t('decks.review')}
                         title={t('decks.review')}
-                        style={{ ...iconActionStyle, color: 'var(--lime-400)' }}
+                        style={{ ...iconActionStyle, color: 'var(--accent-500)' }}
                       >
                         <NNIcon name="bolt" size={14} />
                       </AppLink>
@@ -441,7 +424,7 @@ export const NNDecks = () => {
                     href={`/review?deck=${encodeURIComponent(d.id)}`}
                     onClick={(e) => e.stopPropagation()}
                     aria-label={t('decks.review')}
-                    title={t('decks.review')}
+                    data-tooltip={t('decks.reviewCount', { n: agg.due })}
                     className="mono"
                     style={{
                       flexShrink: 0,
@@ -449,8 +432,8 @@ export const NNDecks = () => {
                       textAlign: 'center',
                       padding: '3px 9px',
                       borderRadius: 999,
-                      background: 'var(--lime-500)',
-                      color: 'var(--ink-900)',
+                      background: 'var(--accent-500)',
+                      color: 'var(--text-on-accent)',
                       fontSize: 12,
                       fontWeight: 600,
                       textDecoration: 'none',
@@ -504,7 +487,8 @@ export const NNDecks = () => {
                     <NNIcon name="dots" size={14} />
                   </button>
                   {menuOpen && (
-                    <div
+                    <div className="reomi-deck-menu"
+                      onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setOpenMenuId(null); } }}
                       onClick={(e) => e.stopPropagation()}
                       style={{
                         position: 'absolute',
@@ -546,7 +530,7 @@ export const NNDecks = () => {
                         <button
                           type="button"
                           onClick={() => { setOpenMenuId(null); router.push(`/review?deck=${encodeURIComponent(d.id)}`); }}
-                          style={menuItemStyle('var(--lime-400)')}
+                          style={menuItemStyle('var(--accent-500)')}
                         >
                           <NNIcon name="bolt" size={13} />
                           <span>{t('decks.review')}</span>
@@ -653,21 +637,11 @@ export const NNDecks = () => {
           })}
         </NNCard>
       )}
-    </div>
+    </PageSurface>
+    </NNAppPage>
   );
 };
 
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '10px 12px',
-  borderRadius: 10,
-  background: 'var(--surface-2)',
-  border: '1px solid var(--border)',
-  color: 'var(--text)',
-  fontFamily: 'var(--font-sans)',
-  fontSize: 14,
-  outline: 'none',
-};
 
 const iconActionStyle: React.CSSProperties = {
   width: 28,
@@ -686,10 +660,9 @@ const menuItemStyle = (color?: string): React.CSSProperties => ({
   alignItems: 'center',
   gap: 8,
   width: '100%',
-  padding: '8px 10px',
-  background: 'transparent',
+  padding: '10px 12px',
   border: 'none',
-  borderRadius: 6,
+  borderRadius: 8,
   color: color ?? 'var(--text)',
   fontFamily: 'var(--font-sans)',
   fontSize: 12.5,

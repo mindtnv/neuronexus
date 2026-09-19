@@ -1,6 +1,7 @@
 'use client';
 
 import React, { CSSProperties, ReactNode } from 'react';
+import { Button, Surface, type ButtonProps } from './design-system/primitives';
 
 // ─────────────────────────────────────────────
 // Icon — minimal line-style, Lucide-ish
@@ -195,134 +196,19 @@ export type BtnVariant = 'primary' | 'violet' | 'amber' | 'ghost' | 'soft' | 'ou
 export type BtnSize = 'sm' | 'md' | 'lg' | 'xl';
 
 export const NNBtn = ({
-  children,
-  variant = 'ghost',
-  size = 'md',
-  icon,
-  iconRight,
-  onClick,
-  style,
-  block,
-  active,
-  type,
-  title,
-  ariaLabel,
-  disabled,
-  loading = false,
-  loadingLabel,
-}: {
-  children?: ReactNode;
-  variant?: BtnVariant;
-  size?: BtnSize;
+  icon, iconRight, ariaLabel, ...props
+}: ButtonProps & {
   icon?: IconName | (string & {});
   iconRight?: IconName | (string & {});
-  onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  style?: CSSProperties;
-  block?: boolean;
-  active?: boolean;
-  type?: 'button' | 'submit' | 'reset';
-  title?: string;
   ariaLabel?: string;
-  disabled?: boolean;
-  /** Keeps the button's dimensions stable while an action is in flight. */
-  loading?: boolean;
-  /** Optional accessible label announced instead of the normal label while busy. */
-  loadingLabel?: string;
-}) => {
-  const sizes: Record<BtnSize, { h: number; px: number; fs: number; gap: number; r: number }> = {
-    sm: { h: 28, px: 10, fs: 12.5, gap: 6, r: 8 },
-    md: { h: 34, px: 12, fs: 13.5, gap: 7, r: 9 },
-    lg: { h: 42, px: 18, fs: 15, gap: 9, r: 11 },
-    xl: { h: 52, px: 24, fs: 16, gap: 10, r: 14 },
-  };
-  const variants: Record<BtnVariant, { bg: string; color: string; border: string }> = {
-    primary: { bg: 'var(--accent-500)', color: 'var(--text-on-accent)', border: 'var(--accent-500)' },
-    violet: { bg: 'var(--violet-500)', color: 'var(--text-on-violet)', border: 'var(--violet-500)' },
-    amber: { bg: 'var(--amber-500)', color: 'var(--text-on-amber)', border: 'var(--amber-500)' },
-    ghost: { bg: 'transparent', color: 'var(--text)', border: 'transparent' },
-    soft: { bg: 'var(--surface-3)', color: 'var(--text)', border: 'var(--border)' },
-    outline: { bg: 'transparent', color: 'var(--text)', border: 'var(--border-2)' },
-    danger: { bg: 'transparent', color: 'var(--rose-500)', border: 'var(--border)' },
-  };
-  const s = sizes[size];
-  const v = variants[variant];
-  const unavailable = disabled || loading;
-  return (
-    <button
-      type={type ?? 'button'}
-      onClick={onClick}
-      title={title}
-      aria-label={loading ? (loadingLabel ?? ariaLabel ?? title) : (ariaLabel ?? title)}
-      aria-busy={loading || undefined}
-      disabled={unavailable}
-      style={{
-        height: s.h,
-        padding: `0 ${s.px}px`,
-        fontSize: s.fs,
-        gap: s.gap,
-        borderRadius: s.r,
-        background: active ? 'var(--surface-3)' : v.bg,
-        color: v.color,
-        border: `1px solid ${v.border}`,
-        fontFamily: 'var(--font-sans)',
-        fontWeight: 500,
-        letterSpacing: -0.1,
-        cursor: unavailable ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.5 : 1,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        transition: 'background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease, transform 120ms ease',
-        width: block ? '100%' : undefined,
-        whiteSpace: 'nowrap',
-        ...style,
-      }}
-      onMouseEnter={(e) => {
-        if (variant === 'ghost' && !unavailable) e.currentTarget.style.background = 'var(--surface-3)';
-      }}
-      onMouseLeave={(e) => {
-        if (variant === 'ghost' && !active) e.currentTarget.style.background = 'transparent';
-      }}
-    >
-      <span
-        style={{
-          display: 'inline-grid',
-          gridTemplateAreas: '"content"',
-          alignItems: 'center',
-          justifyItems: 'center',
-        }}
-      >
-        <span
-          style={{
-            gridArea: 'content',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: s.gap,
-            opacity: loading ? 0 : 1,
-            transition: 'opacity 120ms ease',
-          }}
-        >
-          {icon && <NNIcon name={icon} size={s.fs + 2} />}
-          {children}
-          {iconRight && <NNIcon name={iconRight} size={s.fs + 2} />}
-        </span>
-        <span
-          aria-hidden
-          className={loading ? 'nn-spin' : undefined}
-          style={{
-            gridArea: 'content',
-            display: 'inline-flex',
-            opacity: loading ? 1 : 0,
-            pointerEvents: 'none',
-            transition: 'opacity 120ms ease',
-          }}
-        >
-          <NNIcon name="sync" size={s.fs + 2} />
-        </span>
-      </span>
-    </button>
-  );
-};
+}) => (
+  <Button
+    {...props}
+    aria-label={ariaLabel ?? props['aria-label'] ?? props.title}
+    leading={icon ? <NNIcon name={icon} size={16} /> : props.leading}
+    trailing={iconRight ? <NNIcon name={iconRight} size={16} /> : props.trailing}
+  />
+);
 
 // ─────────────────────────────────────────────
 // Badge / Chip
@@ -410,34 +296,7 @@ export const NNTag = ({ children, color = 'sky' }: { children: ReactNode; color?
 // ─────────────────────────────────────────────
 // Card
 // ─────────────────────────────────────────────
-export const NNCard = ({
-  children,
-  padding = 20,
-  style,
-  hoverable,
-  onClick,
-}: {
-  children?: ReactNode;
-  padding?: number;
-  style?: CSSProperties;
-  hoverable?: boolean;
-  onClick?: () => void;
-}) => (
-  <div
-    onClick={onClick}
-    style={{
-      background: 'var(--surface)',
-      border: '1px solid var(--border)',
-      borderRadius: 'var(--r-lg)',
-      padding,
-      cursor: onClick || hoverable ? 'pointer' : 'default',
-      transition: 'background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease',
-      ...style,
-    }}
-  >
-    {children}
-  </div>
-);
+export const NNCard = Surface;
 
 // ─────────────────────────────────────────────
 // Kbd — keyboard shortcut display
@@ -468,24 +327,19 @@ export const NNKbd = ({ children }: { children: ReactNode }) => (
 // ─────────────────────────────────────────────
 // Logo
 // ─────────────────────────────────────────────
-export const NNLogo = ({ size = 28, showText = true }: { size?: number; showText?: boolean }) => (
-  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
-    <svg width={size} height={size} viewBox="0 0 32 32">
-      <defs>
-        <linearGradient id="nn-logo-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="var(--accent-400)" />
-          <stop offset="1" stopColor="var(--violet-500)" />
-        </linearGradient>
-      </defs>
-      <circle cx="8" cy="9" r="3" fill="url(#nn-logo-g)" />
-      <circle cx="24" cy="9" r="2.2" fill="var(--amber-500)" />
-      <circle cx="16" cy="22" r="2.8" fill="var(--violet-400)" />
-      <circle cx="6" cy="22" r="1.8" fill="var(--sky-400)" />
-      <path d="M8 9 L16 22 M24 9 L16 22 M8 9 L6 22" stroke="var(--text-dim)" strokeWidth="1.1" fill="none" strokeLinecap="round" />
-    </svg>
+// Keep the existing component API so every screen shares the Reomi identity.
+export const NNLogo = ({ size = 25, showText = true }: { size?: number; showText?: boolean }) => (
+  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+    <span
+      className="reomi-brand-mark"
+      role={showText ? undefined : 'img'}
+      aria-label={showText ? undefined : 'Reomi'}
+      aria-hidden={showText || undefined}
+      style={{ width: size, height: size }}
+    />
     {showText && (
-      <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, letterSpacing: -0.3, color: 'var(--text)' }}>
-        neuro<span style={{ color: 'var(--accent-400)' }}>nexus</span>
+      <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, letterSpacing: -0.45, color: 'var(--text)' }}>
+        reomi
       </span>
     )}
   </div>
@@ -798,10 +652,11 @@ export const NNPageSkeleton = ({ compact = false }: { compact?: boolean }) => (
   <div
     aria-busy="true"
     aria-label="Loading"
+    className="reomi-page-surface"
     style={{
       flex: 1,
       overflow: 'hidden',
-      padding: compact ? 16 : 24,
+      padding: compact ? 16 : 'var(--page-padding)',
       display: 'flex',
       flexDirection: 'column',
       gap: 14,

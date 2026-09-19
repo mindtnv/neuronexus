@@ -9,12 +9,12 @@
 import type { Metadata, Viewport } from "next";
 
 export const metadata: Metadata = {
-  title: "NeuroNexus",
+  title: "Reomi",
   description: "Anki reimagined — graph, garden, AI.",
-  applicationName: "NeuroNexus",
+  applicationName: "Reomi",
   appleWebApp: {
     capable: true,
-    title: "NeuroNexus",
+    title: "Reomi",
     statusBarStyle: "black-translucent",
   },
 };

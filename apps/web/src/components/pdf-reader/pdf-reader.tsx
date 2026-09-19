@@ -1070,7 +1070,6 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             saveState={saveState}
             canUndo={curState.undo.length > 0}
             canRedo={curState.redo.length > 0}
-            mode="pdf"
             marksCount={marks.length + inkPages.length}
             marksPanelOpen={marksPanelOpen}
             onToggleMarksPanel={() => setMarksPanelOpen((v) => !v)}
@@ -1086,7 +1085,6 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             onUndo={() => undoPage(currentPage)}
             onRedo={() => redoPage(currentPage)}
             onJumpPage={(p) => scrollToPage(Math.max(1, Math.min(numPages, p)), true)}
-            onMode={onMode}
             onRetrySave={retrySave}
             t={t}
           />

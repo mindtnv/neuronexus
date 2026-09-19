@@ -18,6 +18,9 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState<DraftStatus>('idle');
   const clean = useRef(fingerprint);
+  // An explicitly restored buffer remains recoverable until save or discard,
+  // even if it matches a stale cached baseline when fresher props arrive.
+  const restored = useRef(false);
   const baselineValue = useRef(value);
   const revision = useRef<string | null>(null);
   const offered = useRef<EditorDraft<T> | null>(null);
@@ -30,7 +33,7 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
   const update = (next: DraftStatus) => { if (alive.current) setStatus(next); };
   const errorStatus = (error: unknown) => error instanceof DraftStorageError ? error.code : 'unavailable';
   const serializedValue = draftFingerprint(value);
-  const dirty = () => clean.current !== live.current.fingerprint;
+  const dirty = () => restored.current || clean.current !== live.current.fingerprint;
   const flush = (closing = false): boolean => {
     if ((!owned() && !(closing && scope.ownerId)) || !loaded.current || offered.current || invalid.current) return false;
     if (!dirty()) return true;
@@ -52,12 +55,13 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     } catch (error) { update(errorStatus(error)); }
   };
   const markSaved = (fingerprint = live.current.fingerprint) => {
-    invalid.current = false; clean.current = fingerprint; live.current.fingerprint = fingerprint; baselineValue.current = live.current.value;
+    restored.current = false; invalid.current = false; clean.current = fingerprint; live.current.fingerprint = fingerprint; baselineValue.current = live.current.value;
     offered.current = null; if (alive.current) setPending(null); clear(true);
   };
   const restore = () => {
     if (!offered.current || !owned()) return;
     const record = offered.current;
+    restored.current = true;
     offered.current = null; setPending(null); lastSaved.current = draftFingerprint(record.value);
     live.current.onRestore(record.value); update('saved');
   };
@@ -67,7 +71,7 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
       try { clearInvalidEditorDraft(scope); revision.current = null; update('idle'); } catch (error) { update(errorStatus(error)); return; }
     } else clear();
     offered.current = null; setPending(null);
-    invalid.current = false;
+    invalid.current = false; restored.current = false;
     if (reset) { live.current.value = baselineValue.current; live.current.fingerprint = clean.current; live.current.onRestore(baselineValue.current); }
     else flush();
   };

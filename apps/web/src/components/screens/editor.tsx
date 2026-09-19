@@ -7,6 +7,7 @@ import { EditorDraftLibrary } from '@/components/editor-draft-library';
 import { NNCardForm } from '@/components/card-form';
 import { NNBtn, NNLoadError, NNPageSkeleton } from '@/components/ui';
 import { raiseToast } from '@/components/toasts';
+
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
 import { cardFromApi } from '@/lib/mappers';
@@ -25,6 +26,7 @@ export const NNEditor = () => {
   const rawReturn = params.get('returnTo');
   const returnTo = rawReturn && /^\/review(?:\?|$)/.test(rawReturn) ? rawReturn : null;
   const bootstrapped = useNN((s) => s.bootstrapped);
+
   const decks = useNN((s) => s.decks);
   const fetcher = useCallback(async () => cardId ? cardFromApi(await ok(await api.cards({ id: cardId }).get())) : null, [cardId]);
   const resource = useSessionResource({ key: `editor:${cardId ?? 'new'}`, enabled: bootstrapped && Boolean(cardId), keepPreviousData: false, fetcher });
@@ -40,7 +42,9 @@ export const NNEditor = () => {
     <NNBtn variant="ghost" onClick={() => router.push(returnTo ?? '/cards')}>{t('actions.cancel')}</NNBtn>
   </div>;
 
-  return <NNCardForm
+  return <div className="reomi-page-surface reomi-editor-workspace"><NNCardForm
+    compactHeader
+    heading={editing ? t('editor.editCardTitle') : t('editor.newCard')}
     key={cardId ?? `new:${defaultDeckId}:${noteTypeQuery ?? ''}`}
     card={editing}
     defaultDeckId={defaultDeckId}
@@ -58,5 +62,6 @@ export const NNEditor = () => {
       else router.replace(`/editor?card=${encodeURIComponent(card.id)}`, { track: false });
     }}
     onDeleted={() => { clearStudyHandoff(); router.push(returnTo ?? '/decks'); }}
-  />;
+  /></div>;
+
 };

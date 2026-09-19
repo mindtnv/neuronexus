@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReviewCardInfo } from '@/components/review-card-info';
+import { deckPathLabel } from '@/lib/decks';
 import { AppLink, useAppNavigation } from '@/components/navigation';
 import { useSearchParams } from 'next/navigation';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNKbd, NNSkeleton, NNTag } from '@/components/ui';
@@ -130,8 +132,6 @@ export const NNReviewClassic = () => {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
 
-  // Flip-glow pulse
-  const [glow, setGlow] = useState(false);
 
   const lockRef = useRef(false);
   const mountedRef = useRef(true);
@@ -260,13 +260,7 @@ export const NNReviewClassic = () => {
     }) };
   }, [current, currentDeckConfig, serverOffset, revealed]);
 
-  // Pulse glow whenever reveal-state changes
-  useEffect(() => {
-    if (!current) return;
-    setGlow(true);
-    const t = setTimeout(() => setGlow(false), 220);
-    return () => clearTimeout(t);
-  }, [revealed, current]);
+
 
   // Reset per-card state when card changes
   useEffect(() => {
@@ -601,47 +595,111 @@ export const NNReviewClassic = () => {
   // subtree, ballooned inline code / tables. Question stays the largest element
   // but no longer dominates; cloze a touch smaller (the prompt carries blanks).
   const frontFontSize = isMobile
-    ? (isCloze ? 22 : 24)
-    : (isCloze ? 26 : 28);
+    ? (isCloze ? 21 : 23)
+    : (isCloze ? 24 : 26);
 
   // Which section controls reveal/ratings visibility per render kind.
   const showAnswerSection = isTypein ? submitted : revealed;
   const showRatings = showAnswerSection;
 
+  const cardInfo = <ReviewCardInfo card={current} deckName={deckPathLabel(decks, current.deckId) || t('review.queueFallback')} />;
+
   return (
-    <div className="nn-review-layout" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-    <div
-      className="nn-review-scroll"
-      aria-busy={busy || undefined}
-      style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: isMobile ? '0 14px 20px' : '0 32px 24px',
-        display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative' }}
-    >
-      <div style={{ width: '100%', maxWidth: 760, padding: isMobile ? '12px 0 14px' : '16px 0 20px', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ flex: 1, minWidth: 0, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <NNBadge icon="stack" size="sm" tone={deck?.color ?? 'neutral'} style={{ maxWidth: '100%', color: 'var(--text)' }}>
-              <span title={deck?.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{deck?.name ?? t('review.queueFallback')}</span>
-            </NNBadge>
-            {sessionMode === 'filtered' && <NNBadge size="sm" tone="violet">{t('review.customStudy.filterBadge')}</NNBadge>}
-          </div>
-          <span className="mono" style={{ color: 'var(--text-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>+{xpGained} XP</span>
-          {canUndo && <NNBtn size="sm" variant="ghost" icon="sync" onClick={handleUndo} disabled={busy}
-            ariaLabel={t('editor.review.undo.button')} title={`${t('editor.review.undo.button')} (⌘Z)`}>
-            {!isMobile && t('editor.review.undo.button')}
-          </NNBtn>}
-          {revealed && <NNBtn size="sm" variant="ghost" icon="stars" onClick={() => setSimilarOpen((value) => !value)}
-            title={t('review.similar.open')} ariaLabel={t('review.similar.open')} />}
-          <NNBtn size="sm" variant="ghost" icon={zenMode ? 'x' : 'target'} onClick={toggleZen}
-            title={`${t(zenMode ? 'review.exitFocus' : 'review.focusMode')} (f)`} ariaLabel={t(zenMode ? 'review.exitFocus' : 'review.focusMode')} />
+    <div className="reomi-review-layout nn-review-layout" aria-busy={busy || undefined} data-zen={zenMode || undefined}><div className="reomi-review-panels">
+    <div className="reomi-review-workspace" data-zen={zenMode || undefined}>
+      <div className="reomi-review-scroll nn-review-scroll nn-scroll">
+      {/* Zen mode: subtle floating exit affordance — the topbar is hidden, so
+          this keeps the exit discoverable. Calm, top-right, never competes. */}
+      {zenMode && (
+        <button
+          type="button"
+          onClick={() => setZen(false)}
+          title={`${t('review.exitFocus')} · Esc`}
+          aria-label={t('review.exitFocus')}
+          style={{
+            position: 'absolute',
+            top: isMobile ? 10 : 18,
+            right: isMobile ? 12 : 24,
+            zIndex: 30,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '6px 10px',
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 9,
+            color: 'var(--text-muted)',
+            fontSize: 11.5,
+            fontFamily: 'inherit',
+            cursor: 'pointer',
+            opacity: 0.7,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
+          onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
+        >
+          <NNIcon name="x" size={12} color="var(--text-muted)" />
+          <span>{t('review.exitFocus')}</span>
+          <NNKbd>Esc</NNKbd>
+        </button>
+      )}
+
+      <div className="reomi-review-tools">
+        <div className="reomi-review-context">
+          <span className="mono" style={{ color: 'var(--text-muted)', fontSize: 12 }}>+{xpGained} XP</span>
+          {sessionMode === 'filtered' && <NNBadge size="sm" tone="violet">{t('review.customStudy.filterBadge')}</NNBadge>}
+          <NNBadge size="xs" tone="neutral">
+            {renderKindLabel(renderKind, t)}
+          </NNBadge>
+          {current.tags.map((t) => (
+            <NNTag key={t} color={deck?.color === 'neutral' ? 'sky' : deck?.color ?? 'sky'}>
+              {t}
+            </NNTag>
+          ))}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+
+        <NNBtn className="reomi-review-edit" icon="edit" variant="ghost" disabled={busy || Boolean(pendingPeek)} onClick={handleEdit} ariaLabel={t('review.hints.edit')} />
+
+        {canUndo && (
+          <NNBtn
+            size="sm"
+            variant="ghost"
+            icon="sync"
+            onClick={handleUndo}
+            disabled={busy}
+            title={`${t('editor.review.undo.button')} (⌘Z)`}
+            ariaLabel={t('editor.review.undo.button')}
+          >
+
+          </NNBtn>
+        )}
+        {revealed && (
+          <NNBtn
+            size="sm"
+            variant="ghost"
+            icon="stars"
+            onClick={() => setSimilarOpen((v) => !v)}
+            title={t('review.similar.open')}
+            ariaLabel={t('review.similar.open')}
+          />
+        )}
+        <NNBtn
+          size="sm"
+          variant="ghost"
+          icon={zenMode ? 'x' : 'target'}
+          onClick={() => toggleZen()}
+          title={`${zenMode ? t('review.exitFocus') : t('review.focusMode')} (f)`}
+          ariaLabel={zenMode ? t('review.exitFocus') : t('review.focusMode')}
+        />
+      </div>
+        <div style={{ width: '100%', maxWidth: 760, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
           <div role="progressbar" aria-label={t('review.progress', { answers: completed, remaining: queue.length })}
             aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}
             style={{ flex: 1, minWidth: 30, height: 5, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
             <div style={{ width: `${progress}%`, height: '100%', background: 'var(--accent-400)', transition: 'width 200ms ease' }} />
           </div>
           <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('review.progress', { answers: completed, remaining: queue.length })}</span>
-        </div>
+
+
       </div>
 
       {/* Similar-cards drawer — desktop: floating right panel; mobile: bottom
@@ -705,6 +763,7 @@ export const NNReviewClassic = () => {
         </aside>
       )}
 
+      <details className="reomi-review-info-mobile"><summary>{t('review.info.title')}</summary>{cardInfo}</details>
       {/* Card */}
       {sessionMode === 'filtered' && <p style={{ width: '100%', maxWidth: 760, fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px' }}>{t('review.customStudy.scheduleNotice')}</p>}
       {mutationError && <div role="alert" style={{ width: '100%', maxWidth: 760, marginBottom: 12, color: 'var(--rose-400)', fontSize: 13 }}>
@@ -714,7 +773,7 @@ export const NNReviewClassic = () => {
       {busy && <div role="status" style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{t('review.saving')}</div>}
       <div
         ref={cardRef}
-        className="nn-review-card"
+        className="reomi-review-card nn-review-card"
         role="article"
         aria-label={t('review.cardLabel')}
         tabIndex={-1}
@@ -725,48 +784,18 @@ export const NNReviewClassic = () => {
           if (selection?.toString() && selection.anchorNode && e.currentTarget.contains(selection.anchorNode)) return;
           if (isTypein && !submitted) return;
           setRevealed((v) => !v);
-        }}
-        style={{
-          width: '100%',
-          maxWidth: 760,
-          // Modest floor so a one-line card has presence, then the card HUGS its
-          // content (the flex spacer that forced 380px of emptiness is gone).
-          minHeight: isMobile ? 160 : 200,
-          borderRadius: 'var(--r-xl)',
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          flexShrink: 0,
-          padding: isMobile ? '20px 18px' : '28px 32px',
-          cursor: isTypein && !submitted ? 'default' : 'pointer',
-          display: 'flex',
-          flexDirection: 'column',
-          position: 'relative',
-          overflow: 'hidden',
-          boxShadow: glow
-            ? '0 0 0 1px color-mix(in srgb, var(--lime-400) 30%, transparent), var(--shadow-lg)'
-            : 'var(--shadow-lg)',
-          transition: 'box-shadow 220ms ease, transform 220ms ease',
-        }}
-      >
-        {/* Card meta row — friendly kind chip + tags */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: isMobile ? 16 : 18, flexWrap: 'wrap', alignItems: 'center' }}>
-          <NNBadge size="xs" tone="neutral">
-            {renderKindLabel(renderKind, t)}
-          </NNBadge>
-          {current.tags.map((t) => (
-            <NNTag key={t} color={deck?.color === 'neutral' ? 'sky' : deck?.color ?? 'sky'}>
-              {t}
-            </NNTag>
-          ))}
-        </div>
 
+        }}
+        data-revealed={showAnswerSection || undefined}
+        style={{ cursor: !revealed && !isTypein ? 'pointer' : 'auto' }}
+      >
         {/* Question eyebrow — explicit hierarchy label */}
         <div
           style={{
             fontSize: 10.5,
             fontWeight: 600,
-            letterSpacing: 1.6,
-            textTransform: 'uppercase',
+            letterSpacing: 0,
+            textTransform: 'none',
             color: 'var(--text-dim)',
             fontFamily: 'var(--font-sans)',
             marginBottom: 12,
@@ -780,6 +809,7 @@ export const NNReviewClassic = () => {
             blanks on the front; once revealed it switches to the answer side. */}
         {renderNoteType && (
           <RichCard
+            className="reomi-review-question"
             noteType={renderNoteType}
             fieldValues={renderFieldValues}
             side={promptSide}
@@ -909,34 +939,18 @@ export const NNReviewClassic = () => {
             flips to the answer side; rendering it here too would duplicate).
             For non-cloze, the answer is a quiet reveal: an "Answer" eyebrow, a
             thin accent rule on the left, and calm --text serif (NOT lime). */}
-        {!isCloze && (
+        {!isCloze && showAnswerSection && (
           <>
-            <div
-              style={{
-                margin: isMobile ? '20px 0 0' : '24px 0 0',
-                height: 1,
-                background: 'linear-gradient(to right, var(--border-2), transparent)',
-              }}
-            />
-            <div
-              style={{
-                opacity: showAnswerSection ? 1 : 0,
-                transform: showAnswerSection ? 'translateY(0)' : 'translateY(8px)',
-                transition: 'opacity 240ms ease, transform 240ms ease',
-                pointerEvents: showAnswerSection ? 'auto' : 'none',
-                minHeight: showAnswerSection ? 40 : 0,
-                marginTop: showAnswerSection ? (isMobile ? 18 : 22) : 0,
-              }}
-            >
+            <div className="reomi-review-answer">
               {showAnswerSection && renderNoteType && (
                 <>
                   <div
                     style={{
                       fontSize: 10.5,
                       fontWeight: 600,
-                      letterSpacing: 1.6,
-                      textTransform: 'uppercase',
-                      color: 'var(--lime-400)',
+                      letterSpacing: 0,
+                      textTransform: 'none',
+                      color: 'var(--text-muted)',
                       fontFamily: 'var(--font-sans)',
                       marginBottom: 12,
                     }}
@@ -945,8 +959,7 @@ export const NNReviewClassic = () => {
                   </div>
                   <div
                     style={{
-                      borderLeft: '2px solid var(--lime-500)',
-                      paddingLeft: isMobile ? 14 : 18,
+                      paddingLeft: 0,
                     }}
                   >
                     <RichCard
@@ -955,6 +968,8 @@ export const NNReviewClassic = () => {
                       side="back"
                       templateOrd={current.templateOrd}
             clozeNumber={current.clozeNumber}
+                      className="reomi-review-answer-content"
+
                       style={{
                         fontSize: isMobile ? 16 : 17,
                         fontWeight: 400,
@@ -972,20 +987,6 @@ export const NNReviewClassic = () => {
           </>
         )}
 
-        {!showAnswerSection && !isTypein && (
-          <div
-            style={{
-              fontSize: 13.5,
-              color: 'var(--text-dim)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              marginTop: isMobile ? 18 : 20,
-            }}
-          >
-            <NNKbd>Space</NNKbd> {t('review.toRevealAnswer')}
-          </div>
-        )}
 
       </div>
 
@@ -1046,6 +1047,7 @@ export const NNReviewClassic = () => {
       </div>
 
     </div>
+
       {/* Feature #1 — held lapse-peek overlay. On Again for a provenance card we
           pause the queue and float the cited passage here (replacing the rating
           bar, which is moot — the grade already committed). «Понятно, дальше» /
@@ -1055,11 +1057,12 @@ export const NNReviewClassic = () => {
           role="dialog"
           aria-label={t('review.peek.title')}
           style={{
-            position: 'fixed',
+            position: 'absolute',
             left: 0,
             right: 0,
-            bottom: isMobile ? 68 : 0,
-            padding: isMobile ? '10px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 32px 18px',
+            bottom: 0,
+            padding: isMobile ? '10px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 24px 18px',
+
             display: 'flex',
             justifyContent: 'center',
             zIndex: 25,
@@ -1087,24 +1090,13 @@ export const NNReviewClassic = () => {
         </div>
       )}
 
-      <div
-        style={{
-          flexShrink: 0,
-          maxHeight: '55%',
-          overflow: 'auto',
-          padding: isMobile ? '10px 14px calc(12px + env(safe-area-inset-bottom, 0px))' : '14px 32px 18px',
-          background: 'var(--bg)',
-          borderTop: '1px solid var(--border)',
-          display: pendingPeek || (isTypein && !submitted && !zenMode) ? 'none' : 'flex',
-          justifyContent: 'center',
-          zIndex: 20,
-          pointerEvents: 'none',
-        }}
-      >
-        <div style={{ width: '100%', maxWidth: 760, pointerEvents: 'auto' }}>
-          {zenMode && <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
-            <NNBtn size="sm" variant="ghost" icon="x" onClick={() => setZen(false)}>{t('review.exitFocus')}</NNBtn>
-          </div>}
+      <div className="reomi-review-actions" style={{ display: pendingPeek || (isTypein && !submitted) ? 'none' : 'flex' }}>
+        <div className="reomi-review-action-content">
+          <div className="reomi-review-action-caption">
+            <span>{showRatings ? t('review.ratePrompt') : t('review.recallPrompt')}</span>
+            <span className="reomi-review-shortcuts"><NNKbd>J</NNKbd> {t('review.hints.prev')} · <NNKbd>K</NNKbd> {t('review.hints.skip')}</span>
+          </div>
+
           {showRatings && previews ? (
             <div
               style={{
@@ -1119,39 +1111,12 @@ export const NNReviewClassic = () => {
                 return (
                   <button
                     key={r.k}
-                    type="button"
-                    disabled={busy || cardUnavailable}
+                    type="button" disabled={busy || cardUnavailable}
+                    className="reomi-rating"
                     onClick={() => handleGrade(r.k)}
                     title={`${t(r.labelKey)} — ${t(`${r.labelKey}Hint`)} · ${r.k}`}
-                    style={{
-                      padding: isMobile ? '9px 8px' : '12px 14px',
-                      borderRadius: 'var(--r-lg)',
-                      cursor: busy || cardUnavailable ? 'default' : 'pointer',
-                      opacity: busy || cardUnavailable ? 0.5 : 1,
-                      background: r.bg,
-                      border: `1px solid var(--border-2)`,
-                      borderTop: `2px solid ${r.hue}`,
-                      color: 'var(--text)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'flex-start',
-                      gap: isMobile ? 3 : 5,
-                      fontFamily: 'var(--font-sans)',
-                      transition: 'transform 120ms ease, background 140ms ease, border-color 140ms ease',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = r.bgHover;
-                      e.currentTarget.style.borderColor = r.hue;
-                      e.currentTarget.style.borderTopColor = r.hue;
-                    }}
-                    onMouseDown={(e) => (e.currentTarget.style.transform = 'scale(0.97)')}
-                    onMouseUp={(e) => (e.currentTarget.style.transform = 'scale(1)')}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.transform = 'scale(1)';
-                      e.currentTarget.style.background = r.bg;
-                      e.currentTarget.style.borderColor = 'var(--border-2)';
-                      e.currentTarget.style.borderTopColor = r.hue;
-                    }}
+                    style={{ '--rating-color': r.hue } as React.CSSProperties}
+
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 5 : 8, width: '100%' }}>
                       <span
@@ -1197,6 +1162,8 @@ export const NNReviewClassic = () => {
         </div>
       </div>
     </div>
+    <aside className="reomi-review-inspector nn-scroll" aria-label={t('review.info.title')}>{cardInfo}</aside>
+    </div></div>
   );
 };
 
@@ -1206,72 +1173,21 @@ export const NNReviewClassic = () => {
 
 function ReviewSkeleton({ isMobile }: { isMobile: boolean }) {
   return (
-    <div
-      className="nn-review-loading"
-      role="status"
-      aria-busy="true"
-      style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        padding: isMobile ? '16px 14px 32px' : '24px 40px 48px',
-        gap: 18,
-      }}
-    >
-      {/* Top bar: progress + session meta */}
-      <div
-        style={{
-          width: '100%',
-          maxWidth: 720,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 14,
-        }}
-      >
-        <NNSkeleton width={90} height={26} radius={999} />
-        <NNSkeleton width="100%" height={6} radius={3} />
-        <NNSkeleton width={72} height={16} />
-      </div>
+    <div className="reomi-review-layout nn-review-loading" role="status" aria-busy="true"><div className="reomi-review-panels">
+      <div className="reomi-review-workspace">
+        <div className="reomi-review-scroll nn-scroll">
+          <div className="reomi-review-tools"><NNSkeleton width={150} height={20} /><span style={{ flex: 1 }} /><NNSkeleton width={68} height={28} /></div>
+          <div className="reomi-review-card" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <NNSkeleton width={64} height={12} />
+            <NNSkeleton width="85%" height={isMobile ? 28 : 38} />
+            <NNSkeleton width="55%" height={isMobile ? 24 : 32} />
+          </div>
+        </div>
+        <div className="reomi-review-actions"><NNSkeleton width="100%" height={64} radius={14} style={{ maxWidth: 760 }} /></div>
 
-      {/* Card body */}
-      <div
-        style={{
-          width: '100%',
-          maxWidth: 720,
-          padding: isMobile ? 22 : 32,
-          borderRadius: 18,
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-          minHeight: isMobile ? 320 : 380,
-        }}
-      >
-        <NNSkeleton width={60} height={20} radius={6} />
-        <NNSkeleton width="80%" height={isMobile ? 28 : 40} />
-        <NNSkeleton width="50%" height={isMobile ? 22 : 32} style={{ marginTop: 12 }} />
-        <div style={{ flex: 1 }} />
-        <NNSkeleton width="100%" height={14} />
-        <NNSkeleton width="30%" height={12} />
       </div>
-
-      {/* Ratings row */}
-      <div
-        style={{
-          width: '100%',
-          maxWidth: 720,
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, 1fr)',
-          gap: isMobile ? 6 : 10,
-        }}
-      >
-        {Array.from({ length: 4 }).map((_, i) => (
-          <NNSkeleton key={i} height={isMobile ? 56 : 64} radius={12} />
-        ))}
-      </div>
-    </div>
+      <aside className="reomi-review-inspector" aria-hidden><NNSkeleton width="60%" height={16} />{Array.from({ length: 10 }, (_, index) => <NNSkeleton key={index} height={12} style={{ marginTop: 22 }} />)}</aside>
+    </div></div>
   );
 }
 

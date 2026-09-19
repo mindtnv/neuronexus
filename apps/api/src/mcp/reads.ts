@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import type { User } from '@neuronexus/db';
+import type { ToolContext } from '../ai/tools.ts';
 import type { McpPrincipal } from './tokens.ts';
 import { withInternalRead } from './internal-read.ts';
 import { McpToolError, type KnowledgeTool, type McpArgs } from './types.ts';
@@ -41,11 +43,11 @@ const READS: ReadSpec[] = [
   { name: 'get_concept_map', description: 'Notebook concept graph from stored vectors.', path: '/notebooks/:id/concept-map', fields: { id } },
 ];
 
-export function readTools(principal: McpPrincipal, handle: (request: Request) => Promise<Response>): KnowledgeTool[] {
+export function readTools(principal: Pick<McpPrincipal, 'user'> | ((ctx: ToolContext) => Promise<User>), handle: (request: Request) => Promise<Response>): KnowledgeTool[] {
   return READS.map((spec) => ({
     name: spec.name, description: spec.description, readOnly: true,
     schema: z.strictObject({ ...spec.fields, ...(spec.arrayPage ? page : {}) }),
-    async execute(_ctx, args: McpArgs) {
+    async execute(ctx, args: McpArgs) {
       let path = spec.path;
       const query = new URLSearchParams();
       for (const [key, value] of Object.entries(args)) {
@@ -53,7 +55,7 @@ export function readTools(principal: McpPrincipal, handle: (request: Request) =>
         else if (value !== undefined && !(spec.arrayPage && (key === 'offset' || key === 'limit'))) query.set(key, String(value));
       }
       const req = new Request(`http://localhost${path}?${query}`);
-      const response = await withInternalRead(req, principal.user, () => handle(req));
+      const response = await withInternalRead(req, typeof principal === 'function' ? await principal(ctx) : principal.user, () => handle(req));
       if (!response.ok) throw new McpToolError(`read_failed_${response.status}`);
       let data = await response.json();
       if (spec.arrayPage) {

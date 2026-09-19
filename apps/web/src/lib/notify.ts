@@ -79,7 +79,7 @@ export function notifyDue(n: number): void {
 
   try {
     // eslint-disable-next-line no-new
-    new Notification('NeuroNexus', {
+    new Notification('Reomi', {
       body: `${n} card${n === 1 ? '' : 's'} due for review`,
       icon: '/icons/icon-192.png',
       tag: 'nn-due', // dedup: replaces a previous due notification

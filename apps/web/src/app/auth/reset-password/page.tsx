@@ -78,7 +78,6 @@ function ResetPasswordForm() {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <NNLogo />
-        <span style={{ fontSize: 18, fontWeight: 600 }}>NeuroNexus</span>
       </div>
       <h1 style={{ fontSize: 22, margin: 0, fontWeight: 600 }}>Новый пароль</h1>
       <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: 0 }}>

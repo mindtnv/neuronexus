@@ -1,7 +1,8 @@
 const common = {
   app: {
     cardCount: 'Cards: {n}',
-    name: 'NeuroNexus',
+    name: 'Reomi',
+
     tagline: 'Anki reimagined — graph, garden, AI.',
     workspace: "{name}'s brain",
   },
@@ -24,6 +25,8 @@ const common = {
     },
   },
   topbar: {
+    switchToLight: 'Switch to light mode',
+    switchToDark: 'Switch to dark mode',
     newCard: 'New card',
     searchPlaceholder: 'Search cards, tags, topics…',
     menuLabel: 'Menu',
@@ -80,6 +83,7 @@ const common = {
     signingOut: 'Signing out…',
   },
   chrome: {
+    resizeSidebar: 'Resize sidebar',
     toggleSidebar: 'Toggle sidebar',
     wcoHintTitle: 'Merge the title bar',
     wcoHint: 'Click ⌄ in the window title bar — the app toolbar will take its place. One click, remembered forever.',

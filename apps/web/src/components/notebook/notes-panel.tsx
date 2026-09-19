@@ -16,6 +16,7 @@
 // All data is panel-local; the parent owns the store methods + the imperative
 // composer-prefill handoff. Inline styles + CSS vars + ui.tsx primitives only.
 
+import { ReadingText, TextInput, TextArea } from '@/components/design-system/primitives';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NOTE_CONTENT_MAX, NOTE_TITLE_MAX } from '@neuronexus/shared';
 import { NNBtn, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
@@ -58,16 +59,16 @@ const NoteMarkdown = ({ content }: { content: string }) => {
     [content],
   );
   return (
-    <SafeHtml
+    <ReadingText><SafeHtml
       html={html}
       style={{
-        fontFamily: 'var(--font-sans)',
-        fontSize: 13.5,
-        lineHeight: 1.6,
+        fontFamily: 'inherit',
+        fontSize: 'inherit',
+        lineHeight: 'inherit',
         color: 'var(--text)',
         wordBreak: 'break-word',
       }}
-    />
+    /></ReadingText>
   );
 };
 
@@ -305,21 +306,22 @@ export const NotesPanel = ({
           )}
         </div>
 
-        <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
+        <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
           {editing ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <input
+              <TextInput
                 value={editTitle}
                 onChange={(e) => setEditTitle(e.target.value)}
                 maxLength={NOTE_TITLE_MAX}
+                aria-label={t('notebooks.notes.titlePlaceholder')}
                 placeholder={t('notebooks.notes.titlePlaceholder')}
-                style={inputStyle}
               />
-              <textarea
+              <TextArea
                 value={editContent}
                 onChange={(e) => setEditContent(e.target.value)}
+                aria-label={t('notebooks.notes.contentPlaceholder')}
                 placeholder={t('notebooks.notes.contentPlaceholder')}
-                style={{ ...inputStyle, minHeight: 220, resize: 'vertical', lineHeight: 1.55 }}
+                style={{ minHeight: 220 }}
               />
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span
@@ -399,7 +401,7 @@ export const NotesPanel = ({
           display: 'flex',
           flexDirection: 'column',
           gap: 8,
-          padding: '10px 10px 8px',
+          padding: '12px 14px',
           borderBottom: '1px solid var(--border)',
           flexShrink: 0,
         }}
@@ -442,11 +444,12 @@ export const NotesPanel = ({
           >
             <NNIcon name="search" size={13} color="var(--text-dim)" />
           </span>
-          <input
+          <TextInput
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            aria-label={t('notebooks.notes.search')}
             placeholder={t('notebooks.notes.search')}
-            style={{ ...inputStyle, height: 30, paddingLeft: 27 }}
+            style={{ paddingLeft: 30 }}
           />
         </div>
 
@@ -462,19 +465,20 @@ export const NotesPanel = ({
               borderRadius: 'var(--r-md)',
             }}
           >
-            <input
+            <TextInput
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
               maxLength={NOTE_TITLE_MAX}
+              aria-label={t('notebooks.notes.titlePlaceholder')}
               placeholder={t('notebooks.notes.titlePlaceholder')}
-              style={inputStyle}
               autoFocus
             />
-            <textarea
+            <TextArea
               value={newContent}
               onChange={(e) => setNewContent(e.target.value)}
+              aria-label={t('notebooks.notes.contentPlaceholder')}
               placeholder={t('notebooks.notes.contentPlaceholder')}
-              style={{ ...inputStyle, minHeight: 90, resize: 'vertical', lineHeight: 1.5 }}
+              style={{ minHeight: 110 }}
             />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span
@@ -619,16 +623,3 @@ const NoteRow = ({
     </div>
   </div>
 );
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '7px 9px',
-  fontSize: 13,
-  fontFamily: 'var(--font-sans)',
-  color: 'var(--text)',
-  background: 'var(--surface-2)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--r-md)',
-  outline: 'none',
-  boxSizing: 'border-box',
-};

@@ -28,7 +28,7 @@ const studyCard = {
 };
 
 function button(key: string): HTMLButtonElement {
-  const element = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes(key));
+  const element = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes(key) || b.getAttribute('aria-label') === key);
   if (!element) throw new Error(`Button not found: ${key}`);
   return element;
 }

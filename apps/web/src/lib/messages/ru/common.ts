@@ -1,7 +1,8 @@
 const common = {
   app: {
     cardCount: 'Карточек: {n}',
-    name: 'NeuroNexus',
+    name: 'Reomi',
+
     tagline: 'Anki на стероидах — граф, сад, AI.',
     workspace: 'мозг {name}',
   },
@@ -24,6 +25,8 @@ const common = {
     },
   },
   topbar: {
+    switchToLight: 'Включить светлую тему',
+    switchToDark: 'Включить тёмную тему',
     newCard: 'Новая карточка',
     searchPlaceholder: 'Поиск карт, тегов, тем…',
     menuLabel: 'Меню',
@@ -80,6 +83,7 @@ const common = {
     signingOut: 'Выходим…',
   },
   chrome: {
+    resizeSidebar: 'Изменить ширину боковой панели',
     toggleSidebar: 'Скрыть/показать панель',
     wcoHintTitle: 'Слить шапку с окном',
     wcoHint: 'Нажмите ⌄ в заголовке окна — тулбар приложения займёт его место. Достаточно одного раза, выбор запомнится.',

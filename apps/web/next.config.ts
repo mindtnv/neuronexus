@@ -2,6 +2,10 @@ import type { NextConfig } from 'next';
 import withSerwistInit from '@serwist/next';
 
 const nextConfig: NextConfig = {
+  devIndicators: false,
+  ...(process.env.NODE_ENV === 'development' && process.env.DESIGN_HOST
+    ? { allowedDevOrigins: [process.env.DESIGN_HOST] }
+    : {}),
   transpilePackages: ['@neuronexus/auth', '@neuronexus/shared', '@neuronexus/api'],
   // Produce a minimal runtime bundle at .next/standalone — consumed by the
   // web Dockerfile for a ~120 MB final image.

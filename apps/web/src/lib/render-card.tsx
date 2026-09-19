@@ -32,7 +32,11 @@ import go from 'highlight.js/lib/languages/go';
 import rust from 'highlight.js/lib/languages/rust';
 import markdown from 'highlight.js/lib/languages/markdown';
 import yaml from 'highlight.js/lib/languages/yaml';
+import csharp from 'highlight.js/lib/languages/csharp';
+import cpp from 'highlight.js/lib/languages/cpp';
+import java from 'highlight.js/lib/languages/java';
 import { cardClozePlugin, cardMathPlugin, cardMediaPlugin, ClozeSyntaxError, MATH_RE, renderTemplate, type NoteTypeDef, type FieldValues } from '@neuronexus/shared';
+
 
 // ── Syntax highlighting (Step 6a, plan A2) ───────────────────────────────────
 //
@@ -59,6 +63,9 @@ hljs.registerLanguage('go', go);
 hljs.registerLanguage('rust', rust);
 hljs.registerLanguage('markdown', markdown);
 hljs.registerLanguage('yaml', yaml);
+hljs.registerLanguage('csharp', csharp);
+hljs.registerLanguage('cpp', cpp);
+hljs.registerLanguage('java', java);
 
 // ── Markdown (Step 5, plan A1a/H3) ───────────────────────────────────────────
 //
@@ -351,7 +358,9 @@ export function sanitizeMermaidSvg(svg: string): string {
 // the single-sink invariant.
 //
 // HARDENING (validation fix #6): the placeholder prefix is PER-RENDER-UNIQUE,
-// minted from crypto.randomUUID() at the start of each render. Because the prefix
+// minted from crypto.getRandomValues() at the start of each render. Unlike
+// randomUUID(), this is available on private-network HTTP previews as well.
+// Because the prefix
 // differs every render, author input can never alias a key.
 //
 // Step 5 change: the placeholder is now ALSO markdown-it-safe. The old token was
@@ -379,7 +388,8 @@ export function sanitizeMermaidSvg(svg: string): string {
 // verbatim exactly like the rest of the key.
 const PLACEHOLDER_TERM = 'z';
 function newPlaceholderPrefix(): string {
-  return `nnph${crypto.randomUUID().replace(/-/g, '')}`;
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return `nnph${Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 
 /**
@@ -712,6 +722,7 @@ export function restoreMermaidIslands(html: string, islands: Map<string, string>
 }
 
 export interface SafeHtmlProps extends React.HTMLAttributes<HTMLDivElement> {
+  hostRef?: React.RefObject<HTMLDivElement | null>;
   /** Pre-sanitized OR raw HTML — it is sanitized here regardless. */
   html: string;
   /**
@@ -739,7 +750,7 @@ export interface SafeHtmlProps extends React.HTMLAttributes<HTMLDivElement> {
  * stripped by the main allow-list (which has no `<svg>`). This keeps the single
  * inject node: there is still exactly ONE `dangerouslySetInnerHTML`.
  */
-export const SafeHtml = ({ html, mermaidIslands, ...rest }: SafeHtmlProps) => {
+export const SafeHtml = ({ html, mermaidIslands, hostRef, ...rest }: SafeHtmlProps) => {
   // `nn-rendered` applies the shared img/inline-code display CSS (globals.css) to
   // every render site that flows through this single sink. Merge defensively so a
   // caller-provided className isn't clobbered; placed AFTER the `...rest` spread so
@@ -751,6 +762,7 @@ export const SafeHtml = ({ html, mermaidIslands, ...rest }: SafeHtmlProps) => {
   return (
     <div
       {...rest}
+      ref={hostRef}
       className={`nn-rendered ${rest.className ?? ''}`.trim()}
       dangerouslySetInnerHTML={{ __html: injected }}
     />

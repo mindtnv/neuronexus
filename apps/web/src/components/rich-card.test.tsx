@@ -76,7 +76,7 @@ test('a broken diagram shows escaped source, preserves other content and never l
     expect(host.textContent).toContain('editor.richText.diagramSyntax');
     expect(host.textContent).not.toContain('Hidden answer');
     expect(host.textContent).not.toContain('private-parser-source');
-    expect(host.querySelector('svg')?.textContent).toBe('Working diagram');
+    expect(host.querySelector('.nn-mermaid svg')?.textContent).toBe('Working diagram');
     expect(warn).not.toHaveBeenCalled();
     expect(initialize.mock.calls[0][0]?.suppressErrorRendering).toBe(true);
   } finally { initialize.mockRestore(); render.mockRestore(); warn.mockRestore(); }

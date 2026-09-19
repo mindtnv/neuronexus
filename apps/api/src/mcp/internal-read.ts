@@ -1,7 +1,7 @@
 import type { User } from '@neuronexus/db';
 
 // Identity is associated with the Request object, never with a header that a
-// remote caller could forge. Only the curated MCP GET bridge creates entries.
+// remote caller could forge. Only the curated MCP and authenticated chat GET bridges create entries.
 const identities = new WeakMap<Request, User>();
 export function internalReadUser(request: Request) {
   return request.method === 'GET' ? identities.get(request) : undefined;

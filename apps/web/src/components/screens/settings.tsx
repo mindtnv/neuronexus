@@ -1,8 +1,8 @@
 'use client';
 
 import { downloadProfileExport } from '@/lib/profile-export';
+import React, { createContext, useContext, useCallback, useEffect, useRef, useState } from 'react';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppNavigation } from '@/components/navigation';
 import { ANKI_DEFAULTS, MIN_RETENTION, MAX_RETENTION, isValidLearningSteps } from '@neuronexus/shared';
 import { NNBadge, NNBtn, NNIcon, NNLoadError, NNPageSkeleton, NNSkeleton } from '@/components/ui';
@@ -13,9 +13,12 @@ import type { DeckOptionsPreset } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
+import { TextInput, TextArea, SegmentedControl } from '@/components/design-system/primitives';
 import { LocaleToggle } from '@/components/locale-toggle';
 import { McpSettings } from '@/components/mcp-settings';
-import { getTheme, setTheme, THEME_PREFS, THEME_SWATCHES, type ThemePref } from '@/lib/theme';
+import { PALETTE_IDS, PALETTE_VARIANTS, resolveTheme } from '@/lib/theme';
+import { ORIGINAL_PALETTE_IDS } from '@/lib/theme-originals';
+import { useAppearance } from '@/lib/use-appearance';
 import { useSessionResource } from '@/lib/session-resource';
 import type { Profile } from '@/lib/types';
 import {
@@ -44,6 +47,10 @@ type AiStatusFlags = {
 // ─────────────────────────────────────────────
 
 // ── Default values for a new preset form ─────────────────────────────────────
+const SETTINGS_TABS = ['general', 'appearance', 'learning', 'ai', 'connections', 'data'] as const;
+type SettingsTab = typeof SETTINGS_TABS[number];
+const SettingsTabContext = createContext<SettingsTab>('general');
+
 const PRESET_DEFAULTS = {
   name: '',
   newPerDay: 20,
@@ -64,6 +71,8 @@ function parseSteps(raw: string): string[] {
 
 export const NNSettings = () => {
   const t = useT();
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+  const tabsRef = useRef<HTMLDivElement>(null);
   const { confirm } = useDialog();
   const router = useAppNavigation();
   const bp = useBreakpoint();
@@ -289,15 +298,8 @@ export const NNSettings = () => {
   const unlocked = profile?.unlockedSpecies ?? ['fern'];
   const currentSpecies = profile?.plantSpecies ?? 'fern';
 
-  // ── Theme preference (P3.3a) ─────────────────────────────────────────────
-  const [theme, setThemePref] = useState<ThemePref>('system');
-  useEffect(() => {
-    setThemePref(getTheme());
-  }, []);
-  const pickTheme = (next: ThemePref) => {
-    setThemePref(next);
-    setTheme(next);
-  };
+  const [theme, pickTheme] = useAppearance();
+  const resolvedMode = resolveTheme(theme).mode;
 
   // ── AI status (P3.3b) — read-only feature flags + models, lazy on mount ──
   const fetchAiStatus = useCallback(
@@ -311,30 +313,44 @@ export const NNSettings = () => {
   });
   const aiStatus = aiStatusResource.data;
 
-  const themeOptions: { key: ThemePref; label: string }[] = THEME_PREFS.map((key) => ({
-    key,
-    label: t(`settings.appearance.theme.${key}`),
-  }));
+  const paletteGroups = [
+    { label: t('settings.appearance.originalPalettes'), ids: PALETTE_IDS.filter(id => (ORIGINAL_PALETTE_IDS as readonly string[]).includes(id)) },
+    { label: t('settings.appearance.classicPalettes'), ids: PALETTE_IDS.filter(id => !(ORIGINAL_PALETTE_IDS as readonly string[]).includes(id)) },
+  ];
 
   if (!profile && bootstrapStatus !== 'error') return <NNPageSkeleton />;
 
   return (
     <div
-      className="nn-scroll"
+      className="nn-scroll reomi-settings"
       aria-busy={profileSaving || undefined}
-      style={{ flex: 1, overflow: 'auto', padding: isMobile ? '16px 14px' : '28px 40px', maxWidth: 880, width: '100%', margin: '0 auto' }}
     >
       {profileSaveError && (
         <div role="alert" style={{ marginBottom: 12, color: 'var(--rose-500)', fontSize: 12 }}>
           {profileSaveError}
         </div>
       )}
+      <div className="reomi-settings-tabs" role="tablist" aria-label={t('settings.tabs.label')} ref={tabsRef}>
+        {SETTINGS_TABS.map((tab, index) => <button key={tab} type="button" role="tab"
+          id={`settings-tab-${tab}`} aria-controls="settings-panel" aria-selected={activeTab === tab}
+          tabIndex={activeTab === tab ? 0 : -1} onClick={() => setActiveTab(tab)}
+          onKeyDown={event => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            const next = event.key === 'Home' ? 0 : event.key === 'End' ? SETTINGS_TABS.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+            setActiveTab(SETTINGS_TABS[next]);
+            tabsRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+          }}>{t(`settings.tabs.${tab}`)}</button>)}
+      </div>
+      <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${activeTab}`} tabIndex={0}>
+      <SettingsTabContext.Provider value={activeTab}>
       {/* ── Profile ── */}
-      <Section title={t('settings.profile.title')} subtitle={t('settings.profile.subtitle')}>
+      <Section group="general" title={t('settings.profile.title')} subtitle={t('settings.profile.subtitle')}>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 14 : 18 }}>
           <Field label={t('settings.profile.name')}>
-            <input
+            <TextInput
               type="text"
+              aria-label={t('settings.profile.name')}
               value={nameDraft}
               onChange={(e) => setNameDraft(e.target.value)}
               onBlur={() => {
@@ -342,70 +358,46 @@ export const NNSettings = () => {
                 if (next && next !== profile?.name) saveProfile({ name: next });
               }}
               placeholder={t('settings.profile.namePlaceholder')}
-              style={inputStyle}
+
             />
           </Field>
           <Field label={t('settings.profile.dailyGoal')}>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {dailyGoalOptions.map((m) => {
-                const active = currentGoal === m;
-                return (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => {
-                      if (!active) saveProfile({ dailyGoalMinutes: m });
-                    }}
-                    style={{
-                      flex: 1,
-                      padding: '10px 6px',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                      background: active ? 'var(--accent-500)' : 'var(--surface-2)',
-                      color: active ? 'var(--text-on-accent)' : 'var(--text)',
-                      border: active ? '1px solid var(--accent-500)' : '1px solid var(--border)',
-                      fontSize: 13,
-                      fontWeight: 500,
-                    }}
-                  >
-                    {t('settings.profile.minLabel', { n: m })}
-                  </button>
-                );
-              })}
-            </div>
+            <SegmentedControl
+              label={t('settings.profile.dailyGoal')}
+              value={String(currentGoal)}
+              options={dailyGoalOptions.map(minutes => ({ value: String(minutes), label: t('settings.profile.minLabel', { n: minutes }) }))}
+              onChange={minutes => { if (Number(minutes) !== currentGoal) saveProfile({ dailyGoalMinutes: Number(minutes) }); }}
+            />
           </Field>
         </div>
       </Section>
 
       {/* ── Appearance (P3.3) — theme + language ── */}
-      <Section title={t('settings.appearance.title')} subtitle={t('settings.appearance.subtitle')}>
+      <Section group="appearance" title={t('settings.appearance.title')} subtitle={t('settings.appearance.subtitle')}>
+        <div style={{ marginBottom: 24 }}>
+          <Field label={t('settings.appearance.modeLabel')}>
+            <SegmentedControl label={t('settings.appearance.modeLabel')} value={theme.mode}
+              options={(['light', 'dark', 'system'] as const).map(value => ({ value, label: t(`settings.appearance.theme.${value}`) }))}
+              onChange={mode => pickTheme({ ...theme, mode })} />
+          </Field>
+        </div>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 14 : 18 }}>
           <div style={{ gridColumn: isMobile ? undefined : '1 / -1' }}>
             <Field label={t('settings.appearance.themeLabel')}>
+              {paletteGroups.map(group => <div key={group.label} className="reomi-palette-group">
+              <h3>{group.label}<span>{group.ids.length}</span></h3>
               <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))', gap: 8 }}>
-                {themeOptions.map((o) => {
-                  const active = theme === o.key;
-                  const swatches = THEME_SWATCHES[o.key];
+                {group.ids.map((key) => {
+                  const o = { key, label: t(`settings.appearance.theme.${key}`) };
+                  const active = theme.palette === o.key;
+                  const swatches = PALETTE_VARIANTS[o.key][resolvedMode].swatches;
                   return (
                     <button
                       key={o.key}
                       type="button"
-                      onClick={() => { if (!active) pickTheme(o.key); }}
+                      onClick={() => { if (!active) pickTheme({ ...theme, palette: o.key }); }}
                       aria-pressed={active}
-                      style={{
-                        minHeight: 58,
-                        padding: '9px 10px',
-                        borderRadius: 8,
-                        cursor: 'pointer',
-                        background: active ? 'color-mix(in srgb, var(--accent-500) 16%, var(--surface))' : 'var(--surface-2)',
-                        color: 'var(--text)',
-                        border: active ? '1px solid var(--accent-500)' : '1px solid var(--border)',
-                        fontSize: 13,
-                        fontWeight: 600,
-                        fontFamily: 'inherit',
-                        boxShadow: active ? 'var(--glow-accent)' : 'none',
-                        textAlign: 'left',
-                      }}
+                      className="reomi-theme-option"
                     >
                       <span style={{ display: 'flex', gap: 4, marginBottom: 7 }} aria-hidden="true">
                         {swatches.map((color, idx) => (
@@ -426,6 +418,7 @@ export const NNSettings = () => {
                   );
                 })}
               </div>
+              </div>)}
             </Field>
           </div>
           <Field label={t('settings.appearance.language')}>
@@ -435,7 +428,7 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── AI status (P3.3b) — read-only feature flags from GET /ai/status ── */}
-      <Section
+      <Section group="ai"
         title={t('settings.aiStatus.title')}
         subtitle={t('settings.aiStatus.subtitle')}
         accent={<NNBadge tone="neutral" size="xs">{t('settings.aiStatus.hint')}</NNBadge>}
@@ -477,8 +470,8 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Agent instructions (C5) — standing preferences for the chat agent ── */}
-      <Section title={t('settings.agent.title')} subtitle={t('settings.agent.subtitle')}>
-        <textarea
+      <Section group="ai" title={t('settings.agent.title')} subtitle={t('settings.agent.subtitle')}>
+        <TextArea
           value={agentDraft}
           maxLength={2000}
           rows={5}
@@ -491,7 +484,7 @@ export const NNSettings = () => {
           }}
           placeholder={t('settings.agent.placeholder')}
           aria-label={t('settings.agent.title')}
-          style={{ ...inputStyle, resize: 'vertical', minHeight: 96, lineHeight: 1.5 }}
+          style={{ minHeight: 120 }}
         />
         <div
           style={{
@@ -511,7 +504,7 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Desired retention ── */}
-      <Section
+      <Section group="learning"
         title={t('settings.retention.title')}
         subtitle={t('settings.retention.subtitle')}
         accent={<span style={{ fontSize: 28, fontWeight: 600, color: 'var(--lime-400)', letterSpacing: -1 }} className="mono">{retentionDraft}%</span>}
@@ -541,7 +534,7 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Plant species picker ── */}
-      <Section title={t('settings.garden.title')} subtitle={t('settings.garden.subtitle', { n: unlocked.length })}>
+      <Section group="learning" title={t('settings.garden.title')} subtitle={t('settings.garden.subtitle', { n: unlocked.length })}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
           {SPECIES.map((s) => {
             const isUnlocked = unlocked.includes(s.key);
@@ -582,7 +575,7 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── FSRS algorithm info (read-only) ── */}
-      <Section
+      <Section group="learning"
         title={t('settings.weights.title')}
         subtitle={t('settings.weightsSubtitle')}
         accent={<NNBadge tone="neutral" size="xs">{t('settings.weights.advanced')}</NNBadge>}
@@ -596,7 +589,7 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Deck Options presets ── */}
-      <Section
+      <Section group="learning"
         title={t('settings.deckOptions.title')}
         subtitle={t('settings.deckOptions.subtitle')}
         accent={
@@ -679,7 +672,7 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Notifications (E2) ── */}
-      <Section title={t('settings.notifications.title')} subtitle={t('settings.notifications.subtitle')}>
+      <Section group="general" title={t('settings.notifications.title')} subtitle={t('settings.notifications.subtitle')}>
         {notifUnavailable ? (
           <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
             {t('settings.notifications.unavailable')}
@@ -737,9 +730,9 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Your data (export) ── */}
-      {session?.user?.id && <Section title={t('settings.mcp.title')} subtitle={t('settings.mcp.subtitle')}><McpSettings key={session.user.id} /></Section>}
+      {session?.user?.id && <Section group="connections" title={t('settings.mcp.title')} subtitle={t('settings.mcp.subtitle')}><McpSettings key={session.user.id} /></Section>}
 
-      <Section title={t('settings.data.title')} subtitle={t('settings.data.subtitle')}>
+      <Section group="data" title={t('settings.data.title')} subtitle={t('settings.data.subtitle')}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{t('settings.data.exportDesc')}</div>
@@ -752,7 +745,7 @@ export const NNSettings = () => {
       </Section>
 
       {/* ── Danger zone ── */}
-      <div style={{ ...cardStyle, borderColor: 'color-mix(in srgb, var(--rose-400) 25%, transparent)', marginBottom: 24 }}>
+      <div className="reomi-settings-danger" hidden={activeTab !== 'data'}>
         {/* Sign out */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid color-mix(in srgb, var(--rose-400) 15%, transparent)' }}>
           <div style={{ flex: 1, minWidth: 200 }}>
@@ -767,12 +760,12 @@ export const NNSettings = () => {
           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--rose-500)', marginBottom: 2 }}>{t('settings.danger.deleteAccount')}</div>
           <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>{t('settings.danger.deleteAccountDesc')}</div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <input
+            <TextInput
               type="email"
               value={confirmEmail}
               onChange={(e) => setConfirmEmail(e.target.value)}
               placeholder={t('settings.danger.confirmEmailPlaceholder')}
-              style={{ ...inputStyle, maxWidth: 280 }}
+              style={{ maxWidth: 280 }}
             />
             <NNBtn
               size="md"
@@ -786,65 +779,42 @@ export const NNSettings = () => {
           {deleteError && <div style={{ fontSize: 12, color: 'var(--rose-500)', marginTop: 8 }}>{deleteError}</div>}
         </div>
       </div>
+      </SettingsTabContext.Provider>
+      </div>
     </div>
   );
 };
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
-const cardStyle: React.CSSProperties = {
-  padding: 20,
-  borderRadius: 14,
-  background: 'var(--surface)',
-  border: '1px solid var(--border)',
-  marginBottom: 12,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '10px 12px',
-  borderRadius: 8,
-  background: 'var(--surface-2)',
-  border: '1px solid var(--border)',
-  color: 'var(--text)',
-  fontSize: 13,
-  outline: 'none',
-  fontFamily: 'inherit',
-  boxSizing: 'border-box',
-};
-
 function Section({
+  group,
   title,
   subtitle,
   accent,
   children,
 }: {
+  group: SettingsTab;
   title: string;
   subtitle?: string;
   accent?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const activeTab = useContext(SettingsTabContext);
   return (
-    <div style={cardStyle}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 200 }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>{title}</div>
-          {subtitle && <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>{subtitle}</div>}
-        </div>
+    <section className="reomi-settings-section" hidden={group !== activeTab}>
+      <header className="reomi-settings-section-heading">
+        <h2>{title}</h2>
+        {subtitle && <p>{subtitle}</p>}
         {accent}
-      </div>
-      {children}
-    </div>
+      </header>
+      <div className="reomi-settings-section-body">{children}</div>
+    </section>
   );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="nn-section-label" style={{ marginBottom: 6 }}>{label}</div>
-      {children}
-    </div>
-  );
+  return <div className="reomi-settings-field"><div className="reomi-settings-field-label">{label}</div>{children}</div>;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -944,23 +914,23 @@ function PresetForm({
     <div style={{ display: 'grid', gap: 10 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <Field label={t('settings.deckOptions.fields.name')}>
-          <input
+          <TextInput
             type="text"
             value={form.name}
             onChange={(e) => set('name', e.target.value)}
             placeholder={t('settings.deckOptions.fields.namePlaceholder')}
-            style={inputStyle}
+
           />
         </Field>
         <Field label={t('settings.deckOptions.fields.desiredRetention')}>
-          <input
+          <TextInput
             type="number"
             value={form.desiredRetentionPct}
             onChange={(e) => set('desiredRetentionPct', e.target.value)}
             placeholder={t('settings.deckOptions.fields.desiredRetentionPlaceholder')}
             min={MIN_RETENTION * 100}
             max={MAX_RETENTION * 100}
-            style={inputStyle}
+
           />
           <div style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 3 }}>
             {t('settings.deckOptions.fields.desiredRetentionHint')}
@@ -969,68 +939,68 @@ function PresetForm({
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <Field label={t('settings.deckOptions.fields.newPerDay')}>
-          <input
+          <TextInput
             type="number"
             value={form.newPerDay}
             onChange={(e) => set('newPerDay', Number(e.target.value))}
             min={0}
             max={9999}
-            style={inputStyle}
+
           />
         </Field>
         <Field label={t('settings.deckOptions.fields.reviewsPerDay')}>
-          <input
+          <TextInput
             type="number"
             value={form.reviewsPerDay}
             onChange={(e) => set('reviewsPerDay', Number(e.target.value))}
             min={0}
             max={9999}
-            style={inputStyle}
+
           />
         </Field>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <Field label={t('settings.deckOptions.fields.learningSteps')}>
-          <input
+          <TextInput
             type="text"
             value={form.learningSteps}
             onChange={(e) => set('learningSteps', e.target.value)}
             placeholder={t('settings.deckOptions.fields.learningStepsPlaceholder')}
-            style={inputStyle}
+
           />
           <div style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 3 }}>
             {t('settings.deckOptions.fields.learningStepsHint')}
           </div>
         </Field>
         <Field label={t('settings.deckOptions.fields.relearningSteps')}>
-          <input
+          <TextInput
             type="text"
             value={form.relearningSteps}
             onChange={(e) => set('relearningSteps', e.target.value)}
             placeholder={t('settings.deckOptions.fields.relearningStepsPlaceholder')}
-            style={inputStyle}
+
           />
         </Field>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <Field label={t('settings.deckOptions.fields.leechThreshold')}>
-          <input
+          <TextInput
             type="number"
             value={form.leechThreshold}
             onChange={(e) => set('leechThreshold', Number(e.target.value))}
             min={1}
             max={99}
-            style={inputStyle}
+
           />
         </Field>
         <Field label={t('settings.deckOptions.fields.maximumInterval')}>
-          <input
+          <TextInput
             type="number"
             value={form.maximumInterval}
             onChange={(e) => set('maximumInterval', Number(e.target.value))}
             min={1}
             max={36500}
-            style={inputStyle}
+
           />
         </Field>
       </div>

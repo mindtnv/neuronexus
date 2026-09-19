@@ -23,7 +23,7 @@
 // acceptable for the current scale. KaTeX idempotency is unaffected (it lives
 // inside `renderCardHtml`).
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   renderCardHtmlWithMermaid,
   sanitizeMermaidSvg,
@@ -31,6 +31,7 @@ import {
   type ContentBlock,
 } from '@/lib/render-card';
 import { useT } from '@/lib/i18n';
+import { useCodeCopyButtons } from './chat/code-copy';
 import type { FieldValues, NoteTypeDef } from '@neuronexus/shared';
 
 export interface RichCardProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -146,9 +147,13 @@ export const RichCard = ({
     };
   }, [mermaid, t, diagramTheme]);
 
+  const codeHost = useRef<HTMLDivElement>(null);
+  const codeLabels = useMemo(() => ({ copy: t('chat.message.codeCopy'), copied: t('chat.message.codeCopied') }), [t]);
+  useCodeCopyButtons(codeHost, { html: html + [...islands.values()].join(''), final: true }, codeLabels);
   if (error) return <div {...rest} role="alert">{t('editor.errors.invalidCloze')}</div>;
   const visibleIslands = new Map(mermaid.map(({ key }) => [key, islands.get(key)
     ?? `<div class="nn-mermaid" role="status">${escapeText(t('states.loading'))}</div>`]));
   for (const block of mathErrors) visibleIslands.set(block.key, failureIsland(block, t('editor.richText.mathAt', block), t('editor.richText.mathSyntax')));
-  return <SafeHtml html={html} mermaidIslands={visibleIslands} {...rest} />;
+  return <SafeHtml hostRef={codeHost} html={html} mermaidIslands={visibleIslands} {...rest} />;
+
 };

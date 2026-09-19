@@ -218,6 +218,26 @@ jobs:
             dep=$(curl -fsS "${auth[@]}" -X POST "$COOLIFY_URL/deploy?uuid=$uuid" \
               | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0]["deployment_uuid"])')
             echo "queued $uuid → deployment $dep"
+            # Complete the API rollout (including migrations) before starting web.
+            deployment_status=""
+            for i in $(seq 1 60); do
+              deployment_status=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/deployments/$dep" \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
+              case "$deployment_status" in
+                finished) break ;;
+                failed|cancelled) echo "::error::deployment $dep is $deployment_status"; exit 1 ;;
+              esac
+              sleep 5
+            done
+            [ "$deployment_status" = "finished" ] || { echo "::error::deployment $dep timed out"; exit 1; }
+            status=""
+            for i in $(seq 1 24); do
+              status=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/applications/$uuid" \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
+              case "$status" in running:healthy*) break ;; esac
+              sleep 5
+            done
+            case "$status" in running:healthy*) ;; *) echo "::error::app $uuid is $status"; exit 1 ;; esac
           done
       - name: Wait for deployments to finish
         run: |

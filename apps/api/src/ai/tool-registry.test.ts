@@ -3,12 +3,14 @@
 // No DB / network — these read no rows.
 
 import { describe, expect, test, afterEach } from 'bun:test';
+import { buildKnowledgeTools } from './knowledge-tools.ts';
 import { buildToolRegistry, toOpenAiTools, type Tool } from './tools.ts';
 import { __setWebSearchProviderForTests, __resetWebSearchProviderForTests } from './web-search.ts';
 import { __setPageReaderForTests, __resetPageReaderForTests } from './page-reader.ts';
 import { buildAgentSystemPrompt } from '@neuronexus/shared';
 
 // The write/SRS tools always present in Phase B (no extra env gate).
+const KNOWLEDGE_TOOLS = buildKnowledgeTools().map(tool => tool.name);
 const WRITE_SRS_TOOLS = ['create_card', 'edit_card', 'suspend', 'set_due', 'forget'];
 // Read tools always present (semantic card search + the two progress read-tools,
 // S4 — plus the deterministic browse tools list_decks/browse_cards/get_card).
@@ -27,7 +29,7 @@ describe('buildToolRegistry — web_search gating', () => {
 
   test('excludes web_search when disabled (write/SRS still present)', () => {
     const names = buildToolRegistry({ webSearchEnabled: false }).map((t) => t.name);
-    expect(names).toEqual([...READ_TOOLS, ...WRITE_SRS_TOOLS]);
+    expect(names).toEqual([...READ_TOOLS, ...WRITE_SRS_TOOLS, ...KNOWLEDGE_TOOLS]);
   });
 
   test('includes web_search when enabled', () => {
@@ -42,7 +44,7 @@ describe('buildToolRegistry — web_search gating', () => {
     expect(names).toContain('web_search');
     __setWebSearchProviderForTests(null);
     const off = buildToolRegistry().map((t) => t.name);
-    expect(off).toEqual([...READ_TOOLS, ...WRITE_SRS_TOOLS]);
+    expect(off).toEqual([...READ_TOOLS, ...WRITE_SRS_TOOLS, ...KNOWLEDGE_TOOLS]);
   });
 });
 
@@ -53,7 +55,7 @@ describe('buildToolRegistry — fetch_page gating (deep research)', () => {
     const names = buildToolRegistry({ webSearchEnabled: true, fetchPageEnabled: true }).map(
       (t) => t.name,
     );
-    expect(names).toEqual([...READ_TOOLS, 'web_search', 'fetch_page', ...WRITE_SRS_TOOLS]);
+    expect(names).toEqual([...READ_TOOLS, 'web_search', 'fetch_page', ...WRITE_SRS_TOOLS, ...KNOWLEDGE_TOOLS]);
   });
 
   test('absent by default under test env; an injected reader flips it on', () => {
@@ -164,6 +166,7 @@ describe('toOpenAiTools — gateway schema shape', () => {
       'get_card',
       'web_search',
       ...WRITE_SRS_TOOLS,
+      ...KNOWLEDGE_TOOLS,
     ]);
   });
 });

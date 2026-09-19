@@ -22,45 +22,21 @@ export const CardsViewSwitcher = () => {
   const pathname = usePathname() ?? '';
 
   return (
-    <div
-      role="tablist"
-      style={{
-        display: 'inline-flex',
-        gap: 2,
-        padding: 2,
-        borderRadius: 10,
-        background: 'var(--surface-2)',
-        border: '1px solid var(--border)',
-      }}
-    >
+    <nav className="reomi-view-switcher" aria-label={t('cards.title')}>
       {VIEWS.map((v) => {
         const active = pathname.startsWith(v.match);
         return (
           <AppLink
             key={v.href}
             href={v.href}
-            role="tab"
-            aria-selected={active}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '6px 12px',
-              borderRadius: 8,
-              fontSize: 12.5,
-              fontWeight: 500,
-              letterSpacing: -0.1,
-              textDecoration: 'none',
-              background: active ? 'var(--surface-3)' : 'transparent',
-              color: active ? 'var(--text)' : 'var(--text-muted)',
-            }}
+            aria-current={active ? 'page' : undefined}
           >
             <NNIcon name={v.icon} size={14} />
             <span>{t(v.labelKey)}</span>
           </AppLink>
         );
       })}
-    </div>
+    </nav>
   );
 };
 

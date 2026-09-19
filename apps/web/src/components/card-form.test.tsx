@@ -423,6 +423,19 @@ describe('editor draft recovery', () => {
     expect((container.querySelector('textarea[data-nn-field]') as HTMLTextAreaElement).value).toBe(source);
     expect(button('actions.save').disabled).toBe(false);
   });
+  test('restoring a cached-baseline draft survives a fresher same-card response', async () => {
+    const oldType = noteTypeFromApi(BASIC_NOTE_TYPE);
+    writeEditorDraft(draftScope, { fieldValues: { Front: 'Question', Back: 'Answer' }, deckId: 'deck', baseDeckId: 'deck',
+      noteTypeId: oldType.id, noteType: oldType, tagsText: '', acceptedAnswersText: '', baseVersion: row.note.updatedAt }, null);
+    await render();
+    const fresh = cardFromApi({ ...row, note: { ...row.note, updatedAt: '2026-09-20T00:00:00.000Z', fieldValues: { Front: 'Changed elsewhere', Back: 'Answer' } } });
+    await render({ card: fresh });
+    await act(async () => button('editor.draft.restore').click());
+    await flushDraft();
+    expect((readEditorDraft(draftScope)?.value as any).fieldValues.Front).toBe('Question');
+    await remountForm({ card: fresh });
+    expect(container.textContent).toContain('editor.draft.found');
+  });
   test('restored source keeps its original version when the server changed during absence', async () => {
     await render(); await changeFront('My old-base changes'); await flushDraft();
     const fresh = cardFromApi({ ...row, note: { ...row.note, updatedAt: '2026-09-20T00:00:00.000Z', fieldValues: { Front: 'Changed elsewhere', Back: 'Answer' } } });

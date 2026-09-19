@@ -1,206 +1,27 @@
-// Theme preference (P3.3a) — system + concrete built-in themes.
-//
-// Dark is the product default, but the app now always stamps a concrete
-// `data-theme` and its light/dark family (`data-theme-mode`) on <html>. Custom
-// themes can opt into the light-mode component fixes without pretending to be
-// the stock light theme.
-//
-// The persisted PREFERENCE lives in localStorage; the anti-FOUC inline script in
-// app/layout.tsx mirrors this resolution synchronously before paint. Keep the
-// theme ids and scheme map in lock-step with that script.
-
-export type ThemeId =
-  | 'dark'
-  | 'light'
-  | 'aurora'
-  | 'bloom'
-  | 'dracula'
-  | 'nord'
-  | 'solarized'
-  | 'gruvbox'
-  | 'catppuccin'
-  | 'monokai'
-  | 'rosepine'
-  | 'tokyonight'
-  | 'onedark'
-  | 'everforest'
-  | 'kanagawa'
-  | 'ayu'
-  | 'material'
-  | 'synthwave';
-export type ThemePref = ThemeId | 'system';
-export type ThemeMode = 'dark' | 'light';
-
-export const THEME_IDS = [
-  'dark',
-  'light',
-  'aurora',
-  'bloom',
-  'dracula',
-  'nord',
-  'solarized',
-  'gruvbox',
-  'catppuccin',
-  'monokai',
-  'rosepine',
-  'tokyonight',
-  'onedark',
-  'everforest',
-  'kanagawa',
-  'ayu',
-  'material',
-  'synthwave',
-] as const satisfies readonly ThemeId[];
-export const THEME_PREFS = ['system', ...THEME_IDS] as const satisfies readonly ThemePref[];
-
-export const THEME_MODES: Record<ThemeId, ThemeMode> = {
-  dark: 'dark',
-  light: 'light',
-  aurora: 'dark',
-  bloom: 'light',
-  dracula: 'dark',
-  nord: 'dark',
-  solarized: 'light',
-  gruvbox: 'dark',
-  catppuccin: 'dark',
-  monokai: 'dark',
-  rosepine: 'dark',
-  tokyonight: 'dark',
-  onedark: 'dark',
-  everforest: 'dark',
-  kanagawa: 'dark',
-  ayu: 'dark',
-  material: 'dark',
-  synthwave: 'dark',
-};
-
-export const THEME_SWATCHES: Record<ThemePref, readonly [string, string, string]> = {
-  system: ['#0a0b0d', '#faf8f3', '#9ad155'],
-  dark: ['#0a0b0d', '#1c1f25', '#9ad155'],
-  light: ['#faf8f3', '#ffffff', '#7bb53a'],
-  aurora: ['#06110f', '#14342f', '#77d38e'],
-  bloom: ['#f7faf7', '#ffffff', '#d85a82'],
-  dracula: ['#282a36', '#44475a', '#bd93f9'],
-  nord: ['#2e3440', '#3b4252', '#88c0d0'],
-  solarized: ['#fdf6e3', '#eee8d5', '#268bd2'],
-  gruvbox: ['#282828', '#3c3836', '#fabd2f'],
-  catppuccin: ['#1e1e2e', '#313244', '#cba6f7'],
-  monokai: ['#272822', '#3e3d32', '#a6e22e'],
-  rosepine: ['#191724', '#26233a', '#ebbcba'],
-  tokyonight: ['#1a1b26', '#24283b', '#7aa2f7'],
-  onedark: ['#282c34', '#353b45', '#61afef'],
-  everforest: ['#2b3339', '#323d43', '#a7c080'],
-  kanagawa: ['#1f1f28', '#2a2a37', '#ffa066'],
-  ayu: ['#0f1419', '#1f2430', '#ffb454'],
-  material: ['#263238', '#37474f', '#80cbc4'],
-  synthwave: ['#241b2f', '#33264a', '#ff7edb'],
-};
-
-// Installed desktop PWAs use theme-color for the OS/window-controls chrome.
-// Keep this aligned with each theme's --surface token, not its accent color.
-export const THEME_CHROME_COLORS: Record<ThemeId, string> = {
-  dark: '#111317',
-  light: '#ffffff',
-  aurora: '#0b1714',
-  bloom: '#ffffff',
-  dracula: '#343746',
-  nord: '#343b49',
-  solarized: '#fffaf0',
-  gruvbox: '#32302f',
-  catppuccin: '#242438',
-  monokai: '#303126',
-  rosepine: '#211f30',
-  tokyonight: '#1f2335',
-  onedark: '#2f343f',
-  everforest: '#303a40',
-  kanagawa: '#252532',
-  ayu: '#171d26',
-  material: '#2d3b42',
-  synthwave: '#2a2040',
-};
-
+import { PALETTE_IDS, PALETTE_VARIANTS, LEGACY_MODES, type PaletteId, type ThemeMode } from './theme-catalog';
+import { createThemeRuntime, type Appearance, type ThemeRuntimeConfig } from './theme-runtime';
+export { PALETTE_IDS, PALETTE_VARIANTS, THEME_CSS } from './theme-catalog';
+export type { PaletteId, ThemeMode } from './theme-catalog';
+export type ThemePref = Omit<Appearance, 'palette'> & { palette: PaletteId };
+export const DEFAULT_THEME: ThemePref = { version: 2, mode: 'system', palette: 'default' };
 export const THEME_LS_KEY = 'nn:theme';
+export const THEME_CHANGE_EVENT = 'nn:appearance';
+export const THEME_CONFIG: ThemeRuntimeConfig = {
+  key: THEME_LS_KEY, event: THEME_CHANGE_EVENT, palettes: PALETTE_IDS, legacyModes: LEGACY_MODES,
+  chrome: Object.fromEntries(PALETTE_IDS.map(id => [id, { light: PALETTE_VARIANTS[id].light.chrome, dark: PALETTE_VARIANTS[id].dark.chrome }])),
+};
+const runtime = createThemeRuntime(THEME_CONFIG);
+export const normalizeTheme = (raw: unknown): ThemePref => runtime.normalize(raw) as ThemePref;
+export const getTheme = (): ThemePref => runtime.read() as ThemePref;
+export const resolveTheme = (preference: ThemePref): { palette: PaletteId; mode: ThemeMode } => runtime.resolve(preference) as { palette: PaletteId; mode: ThemeMode };
+export const setTheme = (preference: ThemePref): void => runtime.set(preference);
+export const applyTheme = (preference: ThemePref): void => runtime.apply(preference);
+export const THEME_INIT_SCRIPT = `(${createThemeRuntime.toString()})(${JSON.stringify(THEME_CONFIG)}).apply();`;
 
-function isThemePref(raw: string | null): raw is ThemePref {
-  return typeof raw === 'string' && (THEME_PREFS as readonly string[]).includes(raw);
-}
-
-/** Read the persisted preference; defaults to 'system' when unset/unavailable. */
-export function getTheme(): ThemePref {
-  try {
-    const raw = localStorage.getItem(THEME_LS_KEY);
-    if (isThemePref(raw)) return raw;
-  } catch {
-    /* localStorage unavailable (SSR / private mode) — fall through. */
-  }
-  return 'system';
-}
-
-/** True when the OS currently prefers a light scheme (false on the server). */
-function systemPrefersLight(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
-  return window.matchMedia('(prefers-color-scheme: light)').matches;
-}
-
-/** Resolve a preference to the concrete theme to paint. */
-export function resolveTheme(pref: ThemePref): ThemeId {
-  if (pref === 'system') return systemPrefersLight() ? 'light' : 'dark';
-  return pref;
-}
-
-function updateThemeColorMeta(color: string): void {
-  if (typeof document === 'undefined') return;
-  const metas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
-  if (metas.length === 0) {
-    const meta = document.createElement('meta');
-    meta.name = 'theme-color';
-    meta.content = color;
-    document.head.appendChild(meta);
-    return;
-  }
-  for (const meta of metas) {
-    meta.content = color;
-    meta.removeAttribute('media');
-  }
-}
-
-/** Apply a preference to <html>: set the concrete theme + its light/dark family. */
-export function applyTheme(pref: ThemePref): void {
-  if (typeof document === 'undefined') return;
-  const theme = resolveTheme(pref);
-  const root = document.documentElement;
-  root.setAttribute('data-theme', theme);
-  root.setAttribute('data-theme-mode', THEME_MODES[theme]);
-  updateThemeColorMeta(THEME_CHROME_COLORS[theme]);
-}
-
-/** Persist + apply a new preference in one call. */
-export function setTheme(pref: ThemePref): void {
-  try {
-    localStorage.setItem(THEME_LS_KEY, pref);
-  } catch {
-    /* ignore — apply still runs so the current tab reflects the choice. */
-  }
-  applyTheme(pref);
-}
-
-/**
- * Subscribe to OS scheme changes — only meaningful while the preference is
- * 'system'. Returns an unsubscribe fn. The caller re-reads the current
- * preference at change time so a stale closure can't re-apply 'system' after the
- * user switched to an explicit scheme.
- */
 export function subscribeSystemTheme(onChange: () => void): () => void {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {};
-  const mq = window.matchMedia('(prefers-color-scheme: light)');
-  const handler = () => onChange();
-  // addEventListener is the modern API; older Safari only has addListener.
-  if (typeof mq.addEventListener === 'function') {
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
-  mq.addListener(handler);
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
-  return () => mq.removeListener(handler);
+  let mq: MediaQueryList;
+  try { mq = window.matchMedia('(prefers-color-scheme: light)'); } catch { return () => {}; }
+  if (typeof mq.addEventListener === 'function') { mq.addEventListener('change', onChange); return () => mq.removeEventListener('change', onChange); }
+  mq.addListener(onChange); return () => mq.removeListener(onChange);
 }

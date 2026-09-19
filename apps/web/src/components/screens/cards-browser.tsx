@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
 import { format } from 'date-fns';
@@ -13,12 +13,16 @@ import {
 } from '@neuronexus/shared';
 import { NNBtn, NNBadge, NNTag, NNIcon, NNLoadError, NNSkeleton } from '@/components/ui';
 import type { BadgeTone } from '@/components/ui';
+import { TextInput } from '@/components/design-system/primitives';
+import { CardColumnPicker } from '@/components/card-column-picker';
+import { CARD_COLUMNS, defaultCardColumns, readCardColumns, saveCardColumns, cardTableMinWidth, type SortField } from '@/lib/card-columns';
 import { CardsViewSwitcher } from '@/components/cards-view-switcher';
 import { raiseToast } from '@/components/toasts';
 import { NoteConversionDialog } from '@/components/note-conversion';
-import { NNCardForm } from '@/components/card-form';
-import { SimilarCardsPanel } from '@/components/similar-cards';
-import { SourceLinksPanel } from '@/components/source-links';
+import { NNTopbar } from '@/components/shell';
+import { cardCreationDeck } from '@/lib/card-creation-deck';
+import { CardDetailPanel } from '@/components/card-detail-panel';
+
 import { RENDER_KIND_BADGE_TONE } from '@/lib/source-kind';
 import { useNN } from '@/lib/store';
 import type { Card } from '@/lib/types';
@@ -31,7 +35,7 @@ import {
   flattenTree,
   getDescendantIds,
 } from '@/lib/decks';
-import { addOrReplaceToken, toggleToken } from '@/lib/card-query-ui';
+import { addOrReplaceToken, toggleToken, tokenizeQuery } from '@/lib/card-query-ui';
 import { toApiError } from '@/lib/resource-state';
 import { api, ok, type ApiError } from '@/lib/api';
 import { cardFromApi } from '@/lib/mappers';
@@ -40,31 +44,7 @@ import { studyDateIso } from '@/lib/study-date';
 const DEFAULT_CARDS_PAGE = 500;
 
 // Sort keys map: UI column → server `sort` field (the part before the direction).
-type SortField = 'created' | 'updated' | 'due' | 'lapses' | 'reps' | 'front';
 type SortDir = 'asc' | 'desc';
-
-interface ColumnDef {
-  id: string;
-  labelKey: string;
-  sort?: SortField;
-  align?: 'left' | 'right';
-  /** Hidden on mobile when false. */
-  mobile?: boolean;
-  width: string;
-}
-
-const COLUMNS: ColumnDef[] = [
-  { id: 'question', labelKey: 'cards.columns.question', sort: 'front', mobile: true, width: 'minmax(160px, 1.4fr)' },
-  { id: 'answer', labelKey: 'cards.columns.answer', mobile: true, width: 'minmax(140px, 1.2fr)' },
-  { id: 'deck', labelKey: 'cards.columns.deck', width: '140px' },
-  { id: 'variant', labelKey: 'cards.columns.variant', width: '80px' },
-  { id: 'state', labelKey: 'cards.columns.state', mobile: true, width: '90px' },
-  { id: 'due', labelKey: 'cards.columns.due', sort: 'due', align: 'right', width: '90px' },
-  { id: 'lapses', labelKey: 'cards.columns.lapses', sort: 'lapses', align: 'right', width: '70px' },
-  { id: 'tags', labelKey: 'cards.columns.tags', width: '140px' },
-  { id: 'created', labelKey: 'cards.columns.created', sort: 'created', align: 'right', width: '90px' },
-  { id: 'edited', labelKey: 'cards.columns.edited', sort: 'updated', align: 'right', width: '90px' },
-];
 
 const STATE_CHIPS: { value: string; labelKey: string }[] = [
   { value: 'is:new', labelKey: 'cards.states.new' },
@@ -122,6 +102,10 @@ export const NNCardsBrowser = () => {
   const dateLocale = useDateLocale();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
+  const [columnIds, setColumnIds] = useState(() => defaultCardColumns(isMobile));
+  useLayoutEffect(() => { setColumnIds(readCardColumns(isMobile)); }, [isMobile]);
+  const changeColumns = (ids: string[]) => { setColumnIds(ids); saveCardColumns(ids, isMobile); };
+
   const router = useAppNavigation();
   const searchParams = useSearchParams();
 
@@ -177,19 +161,10 @@ export const NNCardsBrowser = () => {
   const [focusError, setFocusError] = useState<ApiError | null>(null);
   const [focusAttempt, setFocusAttempt] = useState(0);
 
-  // Bottom dock height, persisted across sessions. Clamped on read so a stale /
-  // hand-edited value can't blow past the viewport.
-  const [dockHeight, setDockHeight] = useState<number>(() => {
-    if (typeof window === 'undefined') return 320;
-    let raw: string | null = null;
-    try { raw = window.localStorage.getItem('nn:cards:dockHeight'); } catch {}
-    const parsed = raw ? Number(raw) : NaN;
-    const max = window.innerHeight * 0.7;
-    if (!Number.isFinite(parsed)) return Math.min(320, max);
-    return Math.max(160, Math.min(parsed, max));
-  });
+
 
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
+  const [filtersVisible, setFiltersVisible] = useState(true);
 
   const urlWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -227,6 +202,7 @@ export const NNCardsBrowser = () => {
   }, [urlQ]);
 
   // Deep links must resolve beyond the bootstrap page, with a visible error.
+
   const focusParam = searchParams.get('focus');
   useEffect(() => {
     if (!focusParam || !bootstrapped) return;
@@ -474,7 +450,7 @@ export const NNCardsBrowser = () => {
   // Row click. Three distinct intents:
   //  • Shift+click   → range-add to `selected` (bulk), leaves the dock untouched.
   //  • Ctrl/Cmd+click → toggle `id` in `selected` (bulk), leaves the dock untouched.
-  //  • plain click   → open the bottom dock on this card (`focusedId`); never
+  //  • plain click   → open the detail panel on this card (`focusedId`); never
   //                    touches `selected`, so a single look never raises the bulk bar.
   const onRowSelect = (id: string, e: React.MouseEvent) => {
     if ((e.shiftKey || e.metaKey || e.ctrlKey) && (!serverActive || searching || bulkBusy)) return;
@@ -514,7 +490,7 @@ export const NNCardsBrowser = () => {
     lastClickedRef.current = id;
   };
 
-  // The focused card drives the bottom edit dock (resolved from the live mirror
+  // The focused card drives the card detail panel (resolved from the live mirror
   // so saves/edits reflect without a manual refetch).
   const focusedCard = useMemo(
     () => (focusedId ? cards.find((c) => c.id === focusedId) ?? null : null),
@@ -553,40 +529,10 @@ export const NNCardsBrowser = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [focusedId]);
 
-  // Hand-rolled vertical resize for the dock: drag the top edge. Dragging UP makes
-  // the dock taller (startHeight + (startY - clientY)), clamped to [160, 70vh].
-  // The committed height is persisted on pointer-up.
-  // `latest` tracks the live committed height so pointer-up persists the exact
-  // final value rather than a possibly-stale `dockHeight` from the render closure.
-  const dockDragRef = useRef<{ startY: number; startHeight: number; latest: number } | null>(null);
-  const onDockResizeDown = (e: React.PointerEvent) => {
-    e.preventDefault();
-    dockDragRef.current = { startY: e.clientY, startHeight: dockHeight, latest: dockHeight };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  };
-  const onDockResizeMove = (e: React.PointerEvent) => {
-    const drag = dockDragRef.current;
-    if (!drag) return;
-    const max = window.innerHeight * 0.7;
-    const next = Math.max(160, Math.min(drag.startHeight + (drag.startY - e.clientY), max));
-    drag.latest = next;
-    setDockHeight(next);
-  };
-  const onDockResizeUp = (e: React.PointerEvent) => {
-    const drag = dockDragRef.current;
-    if (!drag) return;
-    dockDragRef.current = null;
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    try {
-      window.localStorage.setItem('nn:cards:dockHeight', String(Math.round(drag.latest)));
-    } catch {
-      /* localStorage unavailable (private mode / SSR) — height stays in-memory. */
-    }
-  };
-
   // Capture the selection once; a whole scheduling batch is one server write.
   const performBulk = async (operation: (ids: string[]) => Promise<void>) => {
     if (bulkLock.current || selected.size === 0 || !serverActive || searching) return;
+
     const ids = [...selected];
     if (ids.length > 1000) { setBulkError(true); return; }
     bulkLock.current = true;
@@ -640,12 +586,18 @@ export const NNCardsBrowser = () => {
     return format(d, sameYear ? 'MMM d' : 'MMM d, yyyy', { locale: dateLocale });
   };
 
-  const visibleColumns = COLUMNS.filter((c) => !isMobile || c.mobile);
+  const visibleColumns = CARD_COLUMNS.filter(c => columnIds.includes(c.id));
+  const tableMinWidth = cardTableMinWidth(visibleColumns);
   const gridTemplate = `36px ${visibleColumns.map((c) => c.width).join(' ')}`;
 
   const loading = !bootstrapped;
 
   // ── render ──────────────────────────────────────────────────────────────────
+
+  const creationDeck = cardCreationDeck(query, decks);
+  const createCard = async () => {
+    router.push(creationDeck ? `/editor?deck=${encodeURIComponent(creationDeck.id)}` : '/editor');
+  };
 
   const sidebar = (
     <Sidebar
@@ -660,18 +612,56 @@ export const NNCardsBrowser = () => {
   );
 
   return (
-    <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
-      {/* Sidebar (desktop/tablet inline; mobile drawer) */}
-      {!isMobile && (
-        <aside
-          style={{
-            width: 220,
-            flexShrink: 0,
-            borderRight: '1px solid var(--border)',
-            overflow: 'auto',
-            background: 'var(--surface)',
-          }}
-        >
+    <>
+    <NNTopbar title={t('cards.title')} actions={<NNBtn className="reomi-create-icon" variant="soft" icon="plus"
+      ariaLabel={t('topbar.newCard')} title={creationDeck ? t('cards.createInDeck', { name: creationDeck.name }) : t('topbar.newCard')}
+      onClick={() => void createCard()} />} />
+    <div className="reomi-cards-workspace" data-filters={!isMobile && filtersVisible ? 'open' : 'closed'}>
+      {/* Query bar */}
+      <div className="reomi-cards-toolbar">
+        <NNBtn size="md" variant={(isMobile ? sidebarOpen : filtersVisible) ? 'soft' : 'ghost'} icon="filter"
+          ariaLabel={t('cards.sidebar.filters')}
+          title={t('cards.sidebar.filters')}
+          aria-expanded={isMobile ? sidebarOpen : filtersVisible}
+          onClick={() => isMobile ? setSidebarOpen(true) : setFiltersVisible(value => !value)}
+        />
+        <CardsViewSwitcher />
+        <div className="reomi-cards-search">
+          <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+            <NNIcon name="search" size={16} color="var(--text-dim)" />
+          </span>
+          <TextInput
+            aria-label={t('cards.search.placeholder')}
+            aria-invalid={Boolean(queryError) || undefined}
+            aria-describedby={queryError ? 'cards-query-error' : undefined}
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onQueryEnter();
+              }
+            }}
+            placeholder={t('cards.search.placeholder')}
+            style={{ paddingLeft: 34 }}
+          />
+        </div>
+        <CardColumnPicker selected={columnIds} onChange={changeColumns} onReset={() => changeColumns(defaultCardColumns(isMobile))} />
+        <NNBtn variant="ghost" icon="clock" onClick={() => router.push('/editor?drafts=1')}
+          title={t('editor.draft.libraryTitle')} ariaLabel={t('editor.draft.libraryTitle')} />
+        <NNBtn
+          size="md"
+          variant="ghost"
+          icon="grid"
+          onClick={() => router.push('/note-types')}
+          title={t('noteTypes.pageTitle')}
+          ariaLabel={t('noteTypes.pageTitle')}
+        />
+      </div>
+
+      {/* Filters belong to the cards workspace, not the global navigation. */}
+      {!isMobile && filtersVisible && (
+        <aside className="reomi-cards-filters nn-scroll" aria-label={t('cards.sidebar.filters')}>
           {sidebar}
         </aside>
       )}
@@ -702,6 +692,7 @@ export const NNCardsBrowser = () => {
 
       {/* Main column */}
       <div
+        className="reomi-cards-main"
         aria-busy={searching || loadingMore}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}
       >
@@ -716,87 +707,23 @@ export const NNCardsBrowser = () => {
           {t(noteTypeScope ? conversionTarget ? 'noteTypes.convert.selectionHint' : 'noteTypes.convert.sourceHint' : 'noteTypes.convert.targetHint', { source: noteTypes.find((type) => type.id === noteTypeScope)?.name ?? '', target: noteTypes.find((type) => type.id === conversionTarget)?.name ?? '' })}
           <NNBtn size="sm" variant="ghost" onClick={() => { const params = new URLSearchParams(searchParams.toString()); params.delete('noteTypeId'); params.delete('convertTo'); router.replace(`/cards?${params.toString()}`, { track: false }); }}>{t('noteTypes.convert.clearScope')}</NNBtn>
         </div>}
-        {/* Query bar */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: isMobile ? '10px 12px' : '12px 16px',
-            flexWrap: 'wrap',
-            borderBottom: '1px solid var(--border)',
-            flexShrink: 0,
-          }}
-        >
-          <CardsViewSwitcher />
-          {isMobile && (
-            <NNBtn size="sm" variant="soft" icon="filter" onClick={() => setSidebarOpen(true)} ariaLabel={t('cards.sidebar.decks')} />
-          )}
-          <div style={{ position: 'relative', flex: 1 }}>
-            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
-              <NNIcon name="search" size={16} color="var(--text-dim)" />
-            </span>
-            <input
-              value={query}
-              onChange={(e) => onQueryChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  onQueryEnter();
-                }
-              }}
-              placeholder={t('cards.search.placeholder')}
-              style={{
-                width: '100%',
-                padding: '9px 12px 9px 32px',
-                borderRadius: 10,
-                background: 'var(--surface)',
-                border: `1px solid ${queryError ? 'var(--rose-400)' : 'var(--border)'}`,
-                color: 'var(--text)',
-                fontFamily: 'var(--font-sans)',
-                fontSize: 13.5,
-                outline: 'none',
-                boxSizing: 'border-box',
-              }}
-            />
-          </div>
-          {!isMobile && (
-            <span style={{ fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }} className="mono">
-              {t('cards.search.help')}
-            </span>
-          )}
-          <NNBtn size="sm" variant="soft" icon="clock" onClick={() => router.push('/editor?drafts=1')}
-            title={t('editor.draft.libraryTitle')} ariaLabel={t('editor.draft.libraryTitle')}>
-            {!isMobile ? t('editor.draft.shortTitle') : undefined}
-          </NNBtn>
-          <NNBtn
-            size="sm"
-            variant="soft"
-            icon="grid"
-            onClick={() => router.push('/note-types')}
-            title={t('noteTypes.pageTitle')}
-            ariaLabel={t('noteTypes.pageTitle')}
-          >
-            {!isMobile ? t('noteTypes.pageTitle') : undefined}
-          </NNBtn>
-        </div>
-
         {/* Status line: result count / provisional / error */}
-        <div
+        <div className="reomi-cards-status"
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: 10,
             padding: '6px 16px',
-            borderBottom: '1px solid var(--border)',
+            borderTop: '1px solid var(--panel-edge)',
             fontSize: 11.5,
             color: 'var(--text-dim)',
             flexShrink: 0,
-            minHeight: 30,
+            minHeight: 32,
+            order: 10,
           }}
         >
           {queryError ? (
-            <span style={{ color: 'var(--rose-400)' }}>{queryError}</span>
+            <span id="cards-query-error" role="alert" style={{ color: 'var(--rose-400)' }}>{queryError}</span>
           ) : (
             <>
               <span>
@@ -813,6 +740,7 @@ export const NNCardsBrowser = () => {
               )}
             </>
           )}
+          {!isMobile && <span className="reomi-cards-query-help" title={t('cards.search.help')}>{t('cards.search.help')}</span>}
         </div>
 
         {bulkError && <div role="alert" style={{ padding: 12, fontSize: 13, color: 'var(--rose-400)' }}>
@@ -825,9 +753,10 @@ export const NNCardsBrowser = () => {
             dock nor the floating bulk pill reformats or clips it. */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, flexDirection: 'column' }}>
           {/* Table */}
-          <div style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
+          <div className="reomi-cards-table-scroll" tabIndex={0} aria-label={t('cards.title')} style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
+            <div className="reomi-cards-table" style={{ minWidth: tableMinWidth, width: '100%' }}>
             {/* Header */}
-            <div
+            <div className="reomi-cards-table-header"
               style={{
                 display: 'grid',
                 gridTemplateColumns: gridTemplate,
@@ -1018,126 +947,19 @@ export const NNCardsBrowser = () => {
                 </NNBtn>
               </div>
             )}
+            </div>
           </div>
         </div>
 
-        {/* Bottom edit dock (Anki Browse). A sibling AFTER the table, so the table
-            never shrinks. Resizable by dragging the top edge; height persisted. */}
-        {focusedCard && (
-          <div
-            style={{
-              flexShrink: 0,
-              height: isMobile ? `min(${dockHeight}px, 60vh)` : dockHeight,
-              borderTop: '1px solid var(--border)',
-              background: 'var(--surface)',
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden',
-              position: 'relative',
-            }}
-          >
-            {/* Resize handle — thin drag strip on the top edge (chrome only, so
-                user-select:none is safe here; it never covers card content). */}
-            <div
-              role="separator"
-              aria-orientation="horizontal"
-              aria-label={t('cards.panel.resize')}
-              onPointerDown={onDockResizeDown}
-              onPointerMove={onDockResizeMove}
-              onPointerUp={onDockResizeUp}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                height: 6,
-                cursor: 'ns-resize',
-                touchAction: 'none',
-                userSelect: 'none',
-                zIndex: 2,
-              }}
-            />
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '8px 12px',
-                borderBottom: '1px solid var(--border)',
-                flexShrink: 0,
-                userSelect: 'none',
-              }}
-            >
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('cards.panel.editing')}</span>
-              <div style={{ flex: 1 }} />
-              <NNBtn size="sm" variant="ghost" icon="chevl" ariaLabel={t('cards.panel.prev')} onClick={() => movePanel(-1)} />
-              <NNBtn size="sm" variant="ghost" icon="chevr" ariaLabel={t('cards.panel.next')} onClick={() => movePanel(1)} />
-              <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('cards.panel.close')} onClick={() => void changeFocused(null)} />
-            </div>
-            <div
-              style={{
-                flex: 1,
-                overflow: isMobile ? 'auto' : 'hidden',
-                display: 'flex',
-                flexDirection: isMobile ? 'column' : 'row',
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0, overflow: isMobile ? 'visible' : 'auto', display: 'flex' }}>
-                <NNCardForm
-                  key={focusedCard.id}
-                  card={focusedCard}
-                  showFsrsHeader={false}
-                  layout="dock"
-                  onDeleted={(id) => {
-                    setFocusedId(null);
-                    setSelected((prev) => {
-                      if (!prev.has(id)) return prev;
-                      const next = new Set(prev);
-                      next.delete(id);
-                      return next;
-                    });
-                  }}
-                />
-              </div>
-              {/* Semantic "similar cards" rail — desktop: right column; mobile:
-                  a section under the form. Clicking a card focuses the dock on
-                  it (refetchCard upserts cards outside the 500-row mirror). */}
-              <aside
-                style={{
-                  width: isMobile ? '100%' : 300,
-                  flexShrink: 0,
-                  borderLeft: isMobile ? 'none' : '1px solid var(--border)',
-                  borderTop: isMobile ? '1px solid var(--border)' : 'none',
-                  padding: '10px 12px',
-                  overflow: isMobile ? 'visible' : 'auto',
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: 'var(--text-dim)',
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.6,
-                    marginBottom: 8,
-                  }}
-                >
-                  {t('cards.panel.similar.title')}
-                </div>
-                <SimilarCardsPanel
-                  cardId={focusedCard.id}
-                  onOpen={(id) => {
-                    void router.confirmLeave().then(allowed => { if (allowed) void refetchCard(id).then(() => setFocusedId(id)); });
-                  }}
-                />
-                {/* Source backlinks (NotebookLM M3) — renders nothing for cards
-                    without provenance. */}
-                <div style={{ marginTop: 12 }}>
-                  <SourceLinksPanel cardId={focusedCard.id} />
-                </div>
-              </aside>
-            </div>
-          </div>
-        )}
+        {focusedCard && <CardDetailPanel card={focusedCard}
+          deckName={deckPathLabel(decks, focusedCard.deckId)} index={rows.findIndex(card => card.id === focusedCard.id)} total={rows.length}
+          onMove={movePanel} onClose={() => void changeFocused(null)} onDirtyChange={() => {}}
+          onOpen={id => { void router.confirmLeave().then(allowed => { if (allowed) void refetchCard(id).then(() => setFocusedId(id)); }); }}
+          onDeleted={id => {
+            setFocusedId(null);
+            setSelected(prev => { const next = new Set(prev); next.delete(id); return next; });
+          }} />}
+
 
         {/* Floating contextual bulk pill — appears ONLY for checkbox / Ctrl+Shift
             selection. position:fixed so it never reflows page layout; sits above
@@ -1149,7 +971,7 @@ export const NNCardsBrowser = () => {
               position: 'fixed',
               left: '50%',
               transform: 'translateX(-50%)',
-              bottom: `calc(${focusedCard ? (isMobile ? `min(${dockHeight}px, 60vh)` : `${dockHeight}px`) : '0px'} + ${isMobile ? '80px' : '16px'} + ${isMobile ? 'env(safe-area-inset-bottom, 4px)' : '0px'})`,
+              bottom: isMobile ? 'calc(80px + env(safe-area-inset-bottom, 4px))' : 16,
               zIndex: 50,
               display: 'flex',
               alignItems: 'center',
@@ -1181,6 +1003,7 @@ export const NNCardsBrowser = () => {
         )}
       </div>
     </div>
+    </>
   );
 };
 
@@ -1220,9 +1043,7 @@ const sectionLabelStyle: React.CSSProperties = {
   fontSize: 10.5,
   fontWeight: 600,
   color: 'var(--text-dim)',
-  textTransform: 'uppercase',
-  letterSpacing: 0.8,
-  padding: '14px 14px 6px',
+  padding: '20px 10px 8px',
 };
 
 const itemStyle: React.CSSProperties = {
@@ -1230,8 +1051,8 @@ const itemStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: 8,
   width: '100%',
-  padding: '6px 14px',
-  background: 'transparent',
+  padding: '7px 10px',
+  borderRadius: 10,
   border: 'none',
   color: 'var(--text-muted)',
   fontFamily: 'var(--font-sans)',
@@ -1265,8 +1086,8 @@ const Sidebar = ({
   );
 
   return (
-    <div style={{ paddingBottom: 16 }}>
-      <button type="button" onClick={onAll} style={{ ...itemStyle, fontWeight: 600, color: 'var(--text)', paddingTop: 12 }}>
+    <div className="reomi-cards-filter-list">
+      <button type="button" onClick={onAll} className="reomi-filter-all" aria-pressed={!activeQuery.trim()}>
         <NNIcon name="stack" size={14} />
         <span>{t('cards.sidebar.allCards')}</span>
       </button>
@@ -1277,7 +1098,8 @@ const Sidebar = ({
           key={node.deck.id}
           type="button"
           onClick={() => onDeck(node.deck.name)}
-          style={{ ...itemStyle, paddingLeft: 14 + node.depth * 14 }}
+          aria-pressed={tokenizeQuery(activeQuery).includes(addOrReplaceToken('', 'deck', node.deck.name))}
+          style={{ ...itemStyle, paddingLeft: 10 + node.depth * 12 }}
         >
           <span
             style={{

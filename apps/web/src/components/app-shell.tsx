@@ -4,17 +4,21 @@ import React, { useEffect, useLayoutEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useNN } from '@/lib/store';
-import { useUI, readSidebarCollapsed, detectDisplayMode, readWindowControlsOverlay } from '@/lib/ui-store';
+import { useUI, readSidebarCollapsed, readSidebarWidth, detectDisplayMode, readWindowControlsOverlay } from '@/lib/ui-store';
+import { SidebarResizeHandle } from './sidebar-resize-handle';
 import { NNSidebar } from './shell';
 import { BottomTabs } from './bottom-tabs';
 import GlobalOverlays from './overlays/global-overlays';
 import { ToastsStack, raiseToast } from './toasts';
 import { NNLoadError } from './ui';
+import { Tooltips } from './design-system/tooltips';
 
 const AppShellContent = ({ children }: { children: React.ReactNode }) => {
   const bp = useBreakpoint();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
+  const sidebarWidth = useUI((s) => s.sidebarWidth);
+  const setSidebarWidth = useUI((s) => s.setSidebarWidth);
   const sidebarCollapsed = useUI((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useUI((s) => s.setSidebarCollapsed);
   const zenMode = useUI((s) => s.zenMode);
@@ -27,9 +31,10 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
   // shell. The server markup remains deterministic, while the first visible
   // client frame already has the user's actual sidebar choice.
   useLayoutEffect(() => {
+    setSidebarWidth(readSidebarWidth());
     const persisted = readSidebarCollapsed();
     if (persisted !== null) setSidebarCollapsed(persisted);
-  }, [setSidebarCollapsed]);
+  }, [setSidebarCollapsed, setSidebarWidth]);
 
   // Zen is /review-only: leaving /review (route change) auto-exits focus mode.
   useEffect(() => {
@@ -86,13 +91,15 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
         height: '100dvh',
         minHeight: 0,
         overflow: 'hidden',
-        background: 'var(--bg)',
+        background: 'var(--shell-background, var(--bg))',
         position: 'relative',
-      }}
+        '--nn-sidebar-width': `${sidebarWidth}px`,
+      } as React.CSSProperties}
     >
       {!zenMode && !sidebarCollapsed ? (
-        <div className="nn-app-sidebar-slot">
+        <div className="nn-app-sidebar-slot" id="app-sidebar-slot">
           <NNSidebar responsive />
+          {bp !== 'mobile' && <SidebarResizeHandle />}
         </div>
       ) : null}
 
@@ -165,6 +172,7 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
 
       <GlobalOverlays />
       <ToastsStack />
+      <Tooltips />
     </div>
   );
 };

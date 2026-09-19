@@ -6,7 +6,7 @@ import { useNN } from './store';
 import { useStudyOverview } from './use-study-overview';
 import { setBadge } from './app-badge';
 import { notifyDue } from './notify';
-import { applyTheme, getTheme, subscribeSystemTheme } from './theme';
+import { applyTheme, getTheme, subscribeSystemTheme, THEME_LS_KEY } from './theme';
 import { clearSessionResourceCache } from './session-resource';
 
 // Pulls the user snapshot (profile / decks / cards) as soon as a session is
@@ -31,10 +31,13 @@ export function Bootstrap() {
   // change time so an explicit choice silently stops following the OS.
   useEffect(() => {
     applyTheme(getTheme());
-    return subscribeSystemTheme(() => {
+    const unsubscribe = subscribeSystemTheme(() => {
       const pref = getTheme();
-      if (pref === 'system') applyTheme('system');
+      if (pref.mode === 'system') applyTheme(pref);
     });
+    const sync = (event: StorageEvent) => { if (event.key === THEME_LS_KEY || event.key === null) applyTheme(getTheme()); };
+    window.addEventListener('storage', sync);
+    return () => { unsubscribe(); window.removeEventListener('storage', sync); };
   }, []);
 
   // ── App badge (E1) ──────────────────────────────────────────────────────

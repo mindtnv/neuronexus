@@ -70,7 +70,7 @@ describe('study overview screens', () => {
 
   test('decks use server totals and daily availability', async () => {
     await render(<NNDecks />);
-    expect(container.textContent).toContain('601 cards across all decks');
+    expect(container.querySelector('.nn-topbar-subtitle')?.textContent).toBe('601');
     const review = container.querySelector('a[href="/review?deck=deck"]');
     expect(review).not.toBeNull();
     expect(container.textContent).toContain('601');

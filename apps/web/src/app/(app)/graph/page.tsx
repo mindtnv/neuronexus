@@ -14,10 +14,12 @@ export default function Page() {
   const summary = getGraphSummary(cards, decks);
   return (
     <NNAppPage title={t('nav.graph')} subtitle={summary.nodes > 0 ? `· ${summary.nodes}` : undefined}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+      <div className="reomi-graph-workspace">
+      <div className="reomi-graph-toolbar">
         <CardsViewSwitcher />
       </div>
       <NNGraph />
+      </div>
     </NNAppPage>
   );
 }
