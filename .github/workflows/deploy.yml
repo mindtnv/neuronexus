@@ -215,7 +215,7 @@ jobs:
           for uuid in "$API_APP_UUID" "$WEB_APP_UUID"; do
             curl -fsS "${auth[@]}" -X PATCH "$COOLIFY_URL/applications/$uuid" \
               -d "{\"docker_registry_image_tag\":\"$GITHUB_SHA\"}" > /dev/null
-            dep=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/deploy?uuid=$uuid" \
+            dep=$(curl -fsS "${auth[@]}" -X POST "$COOLIFY_URL/deploy?uuid=$uuid" \
               | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0]["deployment_uuid"])')
             echo "queued $uuid → deployment $dep"
           done
