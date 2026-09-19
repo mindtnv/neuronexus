@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAppNavigation } from '@/components/navigation';
 import { NNBtn, NNBadge, NNTag, NNCard, NNIcon } from '@/components/ui';
 import { useNN } from '@/lib/store';
@@ -81,6 +81,7 @@ const RichField = ({
   value,
   onChange,
   placeholder,
+  label,
   serif,
   minHeight,
   autoFocus,
@@ -89,6 +90,7 @@ const RichField = ({
   value: string;
   onChange: (markdown: string) => void;
   placeholder?: string;
+  label?: string;
   serif?: boolean;
   minHeight: number;
   autoFocus?: boolean;
@@ -105,15 +107,37 @@ const RichField = ({
   // edit). Runs on every value change AND on entity switch (resetKey).
   const autoGrow = useCallback(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || el.clientWidth === 0) return;
+    // scrollHeight includes padding but excludes borders; the textarea uses border-box.
+    const style = getComputedStyle(el);
+    const borders = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
     el.style.height = 'auto';
-    el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`;
+    el.style.height = `${Math.max(minHeight, Math.ceil(el.scrollHeight + borders) + 1)}px`;
+    el.scrollTop = 0;
   }, [minHeight]);
 
+  useLayoutEffect(() => { autoGrow(); }, [value, resetKey, autoGrow]);
+
   useEffect(() => {
-    autoGrow();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, resetKey, autoGrow]);
+    let cancelled = false;
+    const measure = () => { if (!cancelled) autoGrow(); };
+    // Local fonts may finish loading after the initial layout measurement.
+    void document.fonts.ready.then(measure);
+    document.fonts.addEventListener('loadingdone', measure);
+    return () => { cancelled = true; document.fonts.removeEventListener('loadingdone', measure); };
+  }, [autoGrow]);
+
+  useEffect(() => {
+    const container = ref.current?.parentElement;
+    if (!container) return;
+    let width = container.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const next = container.clientWidth;
+      if (next > 0 && next !== width) { width = next; autoGrow(); }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [autoGrow]);
 
   useEffect(() => {
     if (autoFocus) ref.current?.focus();
@@ -286,8 +310,8 @@ const RichField = ({
   );
 
   return (
-    <div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+    <div className="reomi-rich-field" data-front={serif || undefined}>
+      <div className="reomi-rich-field-toolbar" style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         {toolBtn('bold', 'B', t('editor.richText.bold'), () => wrap('**', '**'))}
         {toolBtn('italic', 'I', t('editor.richText.italic'), () => wrap('_', '_'))}
         {toolBtn('code', '`', t('editor.richText.inlineCode'), () => wrap('`', '`'))}
@@ -322,12 +346,14 @@ const RichField = ({
       <textarea
         ref={ref}
         data-nn-field
+        aria-label={label}
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         onInput={autoGrow}
         onKeyDown={onKeyDown}
         rows={1}
+        wrap="soft"
         spellCheck
         style={{
           width: '100%',
@@ -345,13 +371,23 @@ const RichField = ({
           outline: 'none',
           boxSizing: 'border-box',
           overflowWrap: 'anywhere',
-          resize: 'vertical',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          overflow: 'hidden',
+          resize: 'none',
           display: 'block',
         }}
       />
     </div>
   );
 };
+
+export interface CardFormDraft {
+  cardId?: string;
+  noteType?: NoteType;
+  fieldValues: FieldValues;
+  tags: string[];
+}
 
 export interface NNCardFormProps {
   /** The card to edit. Omit / null to create a new note. */
@@ -360,10 +396,17 @@ export interface NNCardFormProps {
   defaultDeckId?: string;
   /** Called after a successful save (create or update) with a resulting card. */
   onSaved?: (card: Card) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  /** Current unsaved content for an external preview; never persists changes. */
+  onDraftChange?: (draft: CardFormDraft) => void;
   /** Called after a successful delete with the deleted card id. */
   onDeleted?: (id: string) => void;
   /** Render the compact read-only FSRS status line in the header (existing cards only). Default true. */
   showFsrsHeader?: boolean;
+  compactHeader?: boolean;
+  heading?: string;
+  actionsPlacement?: 'header' | 'footer';
+  inlinePreview?: boolean;
   /** Auto-focus the first field when creating a new note. */
   autoFocusFront?: boolean;
   /** Extra controls rendered in the top action bar (e.g. prev/next). */
@@ -380,8 +423,14 @@ export const NNCardForm = ({
   card,
   defaultDeckId,
   onSaved,
+  onDirtyChange,
+  onDraftChange,
   onDeleted,
   showFsrsHeader = true,
+  compactHeader = false,
+  heading,
+  actionsPlacement = 'header',
+  inlinePreview = true,
   autoFocusFront = false,
   footerExtra,
   layout = 'panel',
@@ -441,7 +490,7 @@ export const NNCardForm = ({
   }, [editing, defaultDeckId, decks]);
 
   const [deckId, setDeckId] = useState<string>(resolvedDefaultDeckId);
-  const [fieldValues, setFieldValues] = useState<FieldValues>({});
+  const [fieldValues, setFieldValues] = useState<FieldValues>({ ...(editing?.note?.fieldValues ?? {}) });
   const [tagsText, setTagsText] = useState<string>(editing?.tags?.join(', ') ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -492,6 +541,17 @@ export const NNCardForm = ({
     () => tagsText.split(',').map((s) => s.trim()).filter(Boolean),
     [tagsText],
   );
+
+  useEffect(() => {
+    onDraftChange?.({ cardId: editing?.id, noteType: activeNoteType, fieldValues, tags });
+  }, [editing?.id, activeNoteType, fieldValues, tags, onDraftChange]);
+
+  useEffect(() => {
+    if (!editing || !onDirtyChange) return;
+    const saved = editing.note?.fieldValues ?? {};
+    const fieldsChanged = [...new Set([...Object.keys(saved), ...Object.keys(fieldValues)])].some(key => (saved[key] ?? '') !== (fieldValues[key] ?? ''));
+    onDirtyChange(fieldsChanged || tags.join(',') !== editing.tags.join(','));
+  }, [editing, fieldValues, tags, onDirtyChange]);
 
   const currentDeck = decks.find((d) => d.id === deckId);
 
@@ -595,8 +655,16 @@ export const NNCardForm = ({
   // OR note-type changes (so inputs re-hydrate from `fieldValues`).
   const resetKey = `${editing?.id ?? 'new'}::${noteTypeId}`;
 
+  const actionButtons = <>
+    {footerExtra}
+    {editing && <NNBtn size="sm" variant="danger" icon="x" onClick={handleDelete}>{t('actions.delete')}</NNBtn>}
+    <NNBtn size="sm" variant="primary" icon="check" loading={saving} onClick={handleSave}>
+      {saving ? t('editor.saving') : editing ? t('actions.save') : t('actions.create')}
+    </NNBtn>
+  </>;
+
   return (
-    <div
+    <div className="reomi-card-form" data-actions={actionsPlacement}
       onKeyDown={handleKeyDown}
       style={{
         flex: 1,
@@ -605,22 +673,19 @@ export const NNCardForm = ({
         overflow: isMobile ? 'auto' : 'hidden',
       }}
     >
-      <div style={{ padding: isMobile ? '16px 14px' : 24, overflow: isMobile ? 'visible' : 'auto' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: 20, flexWrap: 'wrap' }}>
+      <div className="reomi-card-form-scroll nn-scroll" style={{ padding: isMobile ? '16px 14px' : 24, overflow: isMobile ? 'visible' : 'auto' }}>
+        {actionsPlacement === 'header' && <div className="reomi-card-form-actions" style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: 20, flexWrap: 'wrap' }}>
+          {compactHeader ? <span className="reomi-card-form-heading">{heading ?? t('cards.panel.content')}</span> : <>
           <NNBadge tone={deckTone} size="sm">{currentDeck?.name ?? t('editor.noDeck')}</NNBadge>
           <span style={{ color: 'var(--text-dim)', fontSize: 13 }}>/</span>
           <span style={{ fontSize: 13, color: 'var(--text)' }}>
             {editing ? t('editor.editingCard', { id: editing.id.slice(0, 6) }) : t('editor.newCard')}
           </span>
+          </>}
           <div style={{ flex: 1 }}/>
-          {footerExtra}
-          {editing && (
-            <NNBtn size="sm" variant="danger" icon="x" onClick={handleDelete}>{t('actions.delete')}</NNBtn>
-          )}
-          <NNBtn size="sm" variant="primary" icon="check" onClick={handleSave}>
-            {saving ? t('editor.saving') : editing ? t('actions.save') : t('actions.create')}
-          </NNBtn>
-        </div>
+          {actionButtons}
+        </div>}
+
 
         {/* Compact FSRS status line — existing cards only, when the header is on.
             New cards / browser inline editor render nothing (no em-dash rows). */}
@@ -648,9 +713,9 @@ export const NNCardForm = ({
         )}
 
         {/* Deck + note-type selectors */}
-        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 8 : 12, marginBottom: 16 }}>
+        <div className="reomi-card-form-meta" style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 8 : 12, marginBottom: 16 }}>
           <div>
-            <div style={labelStyle}><span>{t('editor.deckLabel')}</span></div>
+            <div className="reomi-editor-label" style={labelStyle}><span>{t('editor.deckLabel')}</span></div>
             <NNSelect
               value={deckId}
               onChange={setDeckId}
@@ -661,7 +726,7 @@ export const NNCardForm = ({
             />
           </div>
           <div>
-            <div style={labelStyle}>
+            <div className="reomi-editor-label" style={labelStyle}>
               <span>{t('editor.noteTypeLabel')}</span>
               <div style={{ flex: 1 }} />
               <button
@@ -712,8 +777,8 @@ export const NNCardForm = ({
             const isFront = i === 0;
             return (
               <div key={field.name} style={{ marginBottom: layout === 'dock' && !isMobile ? 0 : 14 }}>
-                <div style={labelStyle}>
-                  <span>{field.name}</span>
+                <div className="reomi-editor-label" style={labelStyle}>
+                  <span>{compactHeader && field.name === 'Front' ? t('review.questionLabel') : compactHeader && field.name === 'Back' ? t('review.answerLabel') : field.name}</span>
                   {isCloze && isFront && (
                     <span style={{ textTransform: 'none', letterSpacing: 0, color: 'var(--text-dim)' }}>
                       {t('editor.fields.clozeHint', { syntax: '{{c1::…}}' })}
@@ -721,6 +786,7 @@ export const NNCardForm = ({
                   )}
                 </div>
                 <RichField
+                  label={compactHeader && field.name === 'Front' ? t('review.questionLabel') : compactHeader && field.name === 'Back' ? t('review.answerLabel') : field.name}
                   value={fieldValues[field.name] ?? ''}
                   onChange={(markdown) => setField(field.name, markdown)}
                   placeholder={isFront ? t('editor.fields.frontPlaceholder') : undefined}
@@ -736,27 +802,17 @@ export const NNCardForm = ({
 
         {/* Tags */}
         <div style={{ marginTop: 16 }}>
-          <div style={labelStyle}><span>{t('editor.tagsLinks')}</span></div>
+          <div className="reomi-editor-label" style={labelStyle}><span>{t('editor.tagsLinks')}</span></div>
           <input
             value={tagsText}
             onChange={(e) => setTagsText(e.target.value)}
             placeholder={t('editor.tagsPlaceholder')}
-            style={{ ...inputStyle, marginBottom: 8 }}
+            style={inputStyle}
           />
-          <div style={{
-            display: 'flex', flexWrap: 'wrap', gap: 6, padding: 10,
-            background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
-            minHeight: 42, alignItems: 'center',
-          }}>
-            {tags.length === 0 ? (
-              <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('editor.noTags')}</span>
-            ) : tags.map((tag, i) => (
-              <NNTag key={`${tag}-${i}`} color={deckTone === 'neutral' ? 'sky' : deckTone}>{tag}</NNTag>
-            ))}
-          </div>
+
         </div>
 
-        {error && (
+        {error && actionsPlacement === 'header' && (
           <div style={{
             marginTop: 14, padding: '10px 12px',
             background: 'var(--tone-rose-bg)', border: '1px solid var(--tone-rose-border)',
@@ -769,7 +825,7 @@ export const NNCardForm = ({
         {/* Preview: a single flip card behind a toggle (replaces the always-on
             dual front+back inline preview). Reuses the `preview` memo + SafeHtml,
             so images + KaTeX render exactly as in review. */}
-        <div style={{ marginTop: 22 }}>
+        {inlinePreview && <div style={{ marginTop: 22 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <NNBtn
               size="sm"
@@ -933,8 +989,12 @@ export const NNCardForm = ({
               </div>
             </NNCard>
           )}
-        </div>
+        </div>}
       </div>
+      {actionsPlacement === 'footer' && <footer className="reomi-card-form-footer">
+        {error && <p role="alert" className="reomi-card-form-footer-error">{error}</p>}
+        <div className="reomi-card-form-footer-actions">{actionButtons}</div>
+      </footer>}
     </div>
   );
 };

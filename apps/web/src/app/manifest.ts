@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "NeuroNexus",
-    short_name: "NeuroNexus",
+    name: "Reomi",
+    short_name: "Reomi",
     description: "Anki reimagined — graph, garden, AI.",
     start_url: "/",
     scope: "/",

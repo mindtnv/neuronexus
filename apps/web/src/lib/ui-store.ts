@@ -18,6 +18,22 @@ import { useBreakpoint } from './use-breakpoint';
 // no-op.
 
 const SIDEBAR_KEY = 'nn:sidebar-collapsed';
+const SIDEBAR_WIDTH_KEY = 'nn:sidebar-width';
+export const SIDEBAR_WIDTH_MIN = 72;
+export const SIDEBAR_WIDTH_FULL_MIN = 208;
+export const SIDEBAR_WIDTH_MAX = 360;
+export const SIDEBAR_WIDTH_EXPANDED = 232;
+export function clampSidebarWidth(value: number): number {
+  if (!Number.isFinite(value)) return SIDEBAR_WIDTH_EXPANDED;
+  return value < 160 ? SIDEBAR_WIDTH_MIN : Math.max(SIDEBAR_WIDTH_FULL_MIN, Math.min(SIDEBAR_WIDTH_MAX, Math.round(value)));
+}
+export function readSidebarWidth(): number {
+  try {
+    const value = typeof window !== 'undefined' ? window.localStorage.getItem(SIDEBAR_WIDTH_KEY) : null;
+    return value?.trim() ? clampSidebarWidth(Number(value)) : SIDEBAR_WIDTH_EXPANDED;
+  } catch { return SIDEBAR_WIDTH_EXPANDED; }
+}
+
 
 function persistSidebar(collapsed: boolean): void {
   try {
@@ -42,6 +58,8 @@ export function readSidebarCollapsed(): boolean | null {
 }
 
 interface UIState {
+  sidebarWidth: number;
+  setSidebarWidth: (width: number) => void;
   /** Desktop sidebar fully hidden (persisted). */
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
@@ -54,6 +72,12 @@ interface UIState {
 }
 
 export const useUI = create<UIState>((set, get) => ({
+  sidebarWidth: SIDEBAR_WIDTH_EXPANDED,
+  setSidebarWidth: (value) => {
+    const width = clampSidebarWidth(value);
+    set({ sidebarWidth: width });
+    try { if (typeof window !== 'undefined') window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width)); } catch {}
+  },
   sidebarCollapsed: false,
   toggleSidebar: () => {
     const next = !get().sidebarCollapsed;
@@ -188,8 +212,7 @@ export function useWindowControlsOverlay(): WcoState {
   return state;
 }
 
-// Inline-sidebar widths (shell.tsx renders from these same constants).
-export const SIDEBAR_WIDTH_EXPANDED = 232;
+// Compact rail content width (72 px outer width includes the floating inset).
 export const SIDEBAR_WIDTH_COLLAPSED = 60;
 
 /**
@@ -201,14 +224,13 @@ export function useWcoTopInsets(fullBleed = false): { wco: boolean; left: number
   const { active, rect, viewportWidth } = useWindowControlsOverlay();
   const bp = useBreakpoint();
   const sidebarCollapsed = useUI((s) => s.sidebarCollapsed);
+  const preferredWidth = useUI((s) => s.sidebarWidth);
   const zenMode = useUI((s) => s.zenMode);
   if (!active || !rect) return { wco: active, left: 0, right: 0 };
   const sidebarWidth =
     fullBleed || bp === 'mobile' || zenMode || sidebarCollapsed
       ? 0
-      : bp === 'tablet'
-        ? SIDEBAR_WIDTH_COLLAPSED
-        : SIDEBAR_WIDTH_EXPANDED;
+      : preferredWidth;
   const { left, right } = wcoTopInsets(rect, viewportWidth, sidebarWidth);
   return { wco: true, left, right };
 }

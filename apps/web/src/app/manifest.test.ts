@@ -5,8 +5,8 @@ describe('manifest route', () => {
   const m = manifest();
 
   test('identity + display fields', () => {
-    expect(m.name).toBe('NeuroNexus');
-    expect(m.short_name).toBe('NeuroNexus');
+    expect(m.name).toBe('Reomi');
+    expect(m.short_name).toBe('Reomi');
     expect(typeof m.description).toBe('string');
     expect(m.description!.length).toBeGreaterThan(0);
     expect(m.start_url).toBe('/');

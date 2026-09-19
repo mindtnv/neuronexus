@@ -52,6 +52,20 @@ function front(fields: Record<string, string>): string {
   return renderCardHtml(basicType, fields, 'front');
 }
 
+test('renders over private-network HTTP where crypto.randomUUID is unavailable', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(crypto, 'randomUUID');
+  Object.defineProperty(crypto, 'randomUUID', { configurable: true, value: undefined });
+  try {
+    const html = front({ Front: 'A formula: \\(x^2\\) and **a note**.' });
+    expect(html).toContain('katex');
+    expect(html).toContain('<strong>a note</strong>');
+    expect(html).not.toMatch(/nnph[0-9a-f]+/);
+  } finally {
+    if (descriptor) Object.defineProperty(crypto, 'randomUUID', descriptor);
+    else delete (crypto as Partial<Crypto>).randomUUID;
+  }
+});
+
 describe('KaTeX render — basic', () => {
   test('inline \\(x^2\\) produces a katex span', () => {
     const out = front({ Front: '\\(x^2\\)', Back: '' });
@@ -339,4 +353,17 @@ describe('single sink — dangerouslySetInnerHTML stays in render-card.tsx only'
     }
     expect(offenders).toEqual([]);
   });
+});
+
+test('C# fences and aliases retain syntax tokens through sanitization', () => {
+  for (const language of ['csharp', 'cs', 'c#']) {
+    const html = front({ Front: '```' + language + '\nIEnumerable<int> Fib() { yield return 1; } // iterator\n```' });
+    expect(html).toContain('hljs-keyword');
+    expect(html).toContain('hljs-number');
+    expect(html).toContain('hljs-comment');
+    expect(html).toContain('&lt;');
+  }
+  const html = front({ Front: '```csharp\nvar html = "<script>alert(1)</script>";\n```' });
+  expect(html).not.toContain('<script>');
+  expect(html).toContain('hljs-string');
 });

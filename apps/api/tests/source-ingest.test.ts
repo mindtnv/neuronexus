@@ -207,6 +207,7 @@ describe('source-ingest — crash + resume (no double embed)', () => {
     // A failed embed → casStatus to 'error' (the worker maps the throw).
     const afterCrash = await getStatus(srcId);
     expect(afterCrash.status).toBe('error');
+    expect(afterCrash.errorCode).toBe('index_failed');
 
     // Recover: reset to indexing (what resumeSourceIngestOnStartup does → pending,
     // but the SoT already exists so re-ingest re-parses + embeds the unembedded).

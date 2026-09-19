@@ -1,0 +1,22 @@
+.reomi-lab { max-width: 1240px; margin: auto; padding: 34px 36px 60px; color: var(--text); }
+.reomi-lab-header { display: flex; justify-content: space-between; align-items: end; gap: 32px; padding-bottom: 26px; }
+.reomi-lab-eyebrow { font-size: 11px; letter-spacing: .1em; color: var(--text-muted); }
+.reomi-lab-header h1 { font: 500 clamp(30px,4vw,45px)/1.2 var(--font-serif); margin: 14px 0; letter-spacing: -.025em; }
+.reomi-lab-header p { max-width: 620px; font-size: 14px; color: var(--text-muted); line-height: 1.65; }
+.reomi-lab-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.reomi-lab-controls label { display: grid; gap: 6px; font-size: 12px; }
+.reomi-lab-controls select { font: 13px var(--font-sans); padding: 10px; border-radius: 10px; color: var(--text); background: var(--surface); border: 1px solid var(--border-2); }
+.reomi-lab-links { display: flex; gap: 20px; flex-wrap: wrap; padding: 18px 0; border-block: 1px solid var(--border); font-size: 13px; }
+.reomi-lab-links a { color: var(--text); text-decoration: underline; text-underline-offset: 4px; }
+.reomi-lab-links span { color: var(--text-muted); font-size: 11px; }
+.reomi-lab-section { padding: 28px 0; border-bottom: 1px solid var(--border); }
+.reomi-lab-section > header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+.reomi-lab-section h2 { font-size: 19px; font-weight: 600; margin: 0; }
+.reomi-lab-section h3 { font-size: 16px; font-weight: 600; margin: 0 0 14px; }
+.reomi-lab-section > header code { font: 10px var(--font-mono); color: var(--text-muted); }
+.reomi-lab-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 18px; }
+.reomi-lab-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; }
+.reomi-lab-status { font-size: 12px; color: var(--text-muted); min-height: 18px; margin: 12px 0; }
+.reomi-lab-label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+.reomi-lab-footer { font-size: 12px; color: var(--text-muted); line-height: 1.7; padding-top: 28px; }
+@media(max-width:750px) { .reomi-lab { padding: 22px 16px 40px; } .reomi-lab-header { flex-direction: column; align-items: start; gap: 12px; } .reomi-lab-grid { grid-template-columns: 1fr; } }

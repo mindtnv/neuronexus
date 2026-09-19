@@ -135,20 +135,23 @@ async function ingestSourceWithResult(
   opts: { log?: Logger } = {},
 ): Promise<string | null> {
   const log = opts.log ?? rootLogger;
+  let phase: 'parse' | 'index' = 'parse';
   try {
     const claimed = await claimForParse(sourceId);
     if (!claimed) {
       // Not claimable as `pending` — maybe already `indexing` (resume) or gone.
+      phase = 'index';
       await resumeIndexing(sourceId, log);
       return null;
     }
     await parsePhase(claimed, log);
+    phase = 'index';
     await indexPhase(sourceId, log);
     return null;
   } catch (err) {
     if (err instanceof TerminalSkip) return null; // vanished / deleting — clean exit
     const code =
-      err instanceof SourceParseError ? err.code : ('parse_failed' as const);
+      err instanceof SourceParseError ? err.code : phase === 'index' ? ('index_failed' as const) : ('parse_failed' as const);
     log.error({ err: safeError(err), sourceId, code }, 'ai.source_ingest.failed');
     await casStatus(sourceId, ['pending', 'parsing', 'indexing'], 'error', { errorCode: code });
     return code;

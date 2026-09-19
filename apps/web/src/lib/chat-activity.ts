@@ -104,7 +104,7 @@ export interface PersistedMessageRow {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   citations?: Citation[] | null;
-  toolCalls?: { id: string; name: string; arguments: string }[] | null;
+  toolCalls?: { id: string; name: string; arguments: string; impact?: ConfirmImpact }[] | null;
   toolCallId?: string | null;
   createdAt?: string | null;
   usage?: MessageUsage | null;
@@ -117,6 +117,52 @@ export interface PersistedMessageRow {
 
 // Per-tool verb-phrase label key (single source — NO `chat.tool.label.*` split).
 export const TOOL_LABEL_KEY: Record<string, string> = {
+  get_capabilities: 'chat.tool.get_capabilities',
+  list_cards: 'chat.tool.list_cards',
+  list_tags: 'chat.tool.list_tags',
+  get_review_queue: 'chat.tool.get_review_queue',
+  get_card_sources: 'chat.tool.get_card_sources',
+  get_similar_cards: 'chat.tool.get_similar_cards',
+  get_semantic_graph: 'chat.tool.get_semantic_graph',
+  list_note_types: 'chat.tool.list_note_types',
+  list_deck_options: 'chat.tool.list_deck_options',
+  list_filtered_decks: 'chat.tool.list_filtered_decks',
+  get_retention: 'chat.tool.get_retention',
+  list_library: 'chat.tool.list_library',
+  search_library: 'chat.tool.search_library',
+  get_library_item: 'chat.tool.get_library_item',
+  read_source_chunks: 'chat.tool.read_source_chunks',
+  get_source_cards: 'chat.tool.get_source_cards',
+  get_source_marks: 'chat.tool.get_source_marks',
+  get_source_annotations: 'chat.tool.get_source_annotations',
+  list_notebooks: 'chat.tool.list_notebooks',
+  get_notebook: 'chat.tool.get_notebook',
+  list_notebook_sources: 'chat.tool.list_notebook_sources',
+  list_notebook_notes: 'chat.tool.list_notebook_notes',
+  list_artifacts: 'chat.tool.list_artifacts',
+  get_artifact: 'chat.tool.get_artifact',
+  list_quiz_attempts: 'chat.tool.list_quiz_attempts',
+  get_notebook_coverage: 'chat.tool.get_notebook_coverage',
+  get_concept_map: 'chat.tool.get_concept_map',
+  create_deck: 'chat.tool.create_deck',
+  update_deck: 'chat.tool.update_deck',
+  delete_deck: 'chat.tool.delete_deck',
+  create_notebook: 'chat.tool.create_notebook',
+  update_notebook: 'chat.tool.update_notebook',
+  delete_notebook: 'chat.tool.delete_notebook',
+  update_note: 'chat.tool.update_note',
+  delete_note: 'chat.tool.delete_note',
+  attach_source: 'chat.tool.attach_source',
+  detach_source: 'chat.tool.detach_source',
+  update_source: 'chat.tool.update_source',
+  set_reading_status: 'chat.tool.set_reading_status',
+  delete_card: 'chat.tool.delete_card',
+  delete_flashcard_note: 'chat.tool.delete_flashcard_note',
+  create_text_source: 'chat.tool.create_text_source',
+  create_url_source: 'chat.tool.create_url_source',
+  list_notes: 'chat.tool.list_notes',
+  read_note: 'chat.tool.read_note',
+
   search_cards: 'chat.tool.search_cards',
   web_search: 'chat.tool.web_search',
   card_progress: 'chat.tool.card_progress',
@@ -150,6 +196,52 @@ export const PLURAL_TOOL_NAMES = new Set([
 // Tool-type icon map (AC3.1) — parallel to TOOL_LABEL_KEY. Reuses existing
 // NNIcon names only (no new icons). Default fallback is `bolt`.
 export const TOOL_ICON_KEY: Record<string, IconName> = {
+  get_capabilities: 'settings',
+  list_cards: 'cards',
+  list_tags: 'tag',
+  get_review_queue: 'clock',
+  get_card_sources: 'doc',
+  get_similar_cards: 'cards',
+  get_semantic_graph: 'graph',
+  list_note_types: 'grid',
+  list_deck_options: 'settings',
+  list_filtered_decks: 'filter',
+  get_retention: 'chart',
+  list_library: 'library',
+  search_library: 'search',
+  get_library_item: 'doc',
+  read_source_chunks: 'doc',
+  get_source_cards: 'cards',
+  get_source_marks: 'edit',
+  get_source_annotations: 'edit',
+  list_notebooks: 'notebook',
+  get_notebook: 'notebook',
+  list_notebook_sources: 'library',
+  list_notebook_notes: 'note',
+  list_artifacts: 'doc',
+  get_artifact: 'doc',
+  list_quiz_attempts: 'chart',
+  get_notebook_coverage: 'cards',
+  get_concept_map: 'graph',
+  create_deck: 'plus',
+  update_deck: 'edit',
+  delete_deck: 'x',
+  create_notebook: 'notebook',
+  update_notebook: 'edit',
+  delete_notebook: 'x',
+  update_note: 'edit',
+  delete_note: 'x',
+  attach_source: 'plus',
+  detach_source: 'x',
+  update_source: 'edit',
+  set_reading_status: 'check',
+  delete_card: 'x',
+  delete_flashcard_note: 'x',
+  create_text_source: 'doc',
+  create_url_source: 'link',
+  list_notes: 'note',
+  read_note: 'note',
+
   get_card: 'brain',
   card_progress: 'brain',
   list_decks: 'stack',
@@ -211,6 +303,23 @@ export function parseToolArgs(raw: string): unknown {
 // `save_note` (notebook mode, Р14) joins them: it confirms before writing a note,
 // and reload must re-render its Apply/Reject affordance (not spin forever).
 export const WRITE_SRS_TOOL_NAMES = new Set([
+  'create_deck',
+  'update_deck',
+  'delete_deck',
+  'create_notebook',
+  'update_notebook',
+  'delete_notebook',
+  'update_note',
+  'delete_note',
+  'attach_source',
+  'detach_source',
+  'update_source',
+  'set_reading_status',
+  'delete_card',
+  'delete_flashcard_note',
+  'create_text_source',
+  'create_url_source',
+
   'create_card',
   'edit_card',
   'suspend',
@@ -291,6 +400,7 @@ export function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
           id: c.id,
           name: c.name,
           args: parseToolArgs(c.arguments),
+          impact: c.impact,
           status: 'running' as const,
         }));
         turnVM.toolCalls = [...(turnVM.toolCalls ?? []), ...calls];
@@ -471,7 +581,7 @@ export function toolLabel(name: string, args: unknown, ctx: ToolLabelCtx = {}): 
     default: {
       // Unknown tool — bare label key + a COMPACT readable arg line (B5: never
       // `[object Object]`, never raw JSON).
-      return { labelKey, params: {}, argMono: formatToolArgs(args) };
+      return { labelKey, params: {}, argMono: TOOL_LABEL_KEY[name] ? undefined : formatToolArgs(args) };
     }
   }
 }

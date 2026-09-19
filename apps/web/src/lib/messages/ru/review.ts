@@ -1,4 +1,23 @@
 const m = {
+  ratePrompt: 'Оцените, насколько легко вспомнился ответ',
+  recallPrompt: 'Сначала попробуйте вспомнить ответ',
+  info: {
+    title: 'О карточке',
+    deck: 'Колода',
+    type: 'Тип',
+    state: 'Состояние',
+    reviews: 'Повторений',
+    lapses: 'Ошибок',
+    lastReview: 'Последний повтор',
+    nextReview: 'Следующий повтор',
+    interval: 'Интервал',
+    stability: 'Устойчивость',
+    difficulty: 'Сложность',
+    created: 'Создана',
+    updated: 'Изменена',
+    days: '{n} дн.',
+  },
+  cardDetails: 'Данные карточки и клавиши',
   ratings: {
     again: 'Снова',
     hard: 'Трудно',

@@ -18,6 +18,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { IngestErrorCode, SourceKind, SourceMime, SourceStatus } from '@neuronexus/shared';
+import { PageSurface, TextInput, SegmentedControl } from '@/components/design-system/primitives';
 import { NNBtn, NNCard, NNIcon, NNBadge, NNInlineRefresh, NNLoadError, NNSkeleton, type IconName } from '@/components/ui';
 import {
   DuplicateSourceError,
@@ -423,7 +424,7 @@ export const LibraryScreen = () => {
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div
+    <PageSurface className="reomi-library"
       aria-busy={libraryResource.status === 'loading' || libraryResource.status === 'refreshing'}
       onDragOver={(e) => {
         if (e.dataTransfer?.types?.includes('Files')) {
@@ -436,7 +437,7 @@ export const LibraryScreen = () => {
         if (e.currentTarget === e.target) setDragActive(false);
       }}
       onDrop={onDrop}
-      style={{ padding: isMobile ? '12px 14px 40px' : '16px 24px 48px', maxWidth: 1180, margin: '0 auto', width: '100%', position: 'relative' }}
+      style={{ position: 'relative' }}
     >
       <input
         ref={fileInputRef}
@@ -632,7 +633,7 @@ export const LibraryScreen = () => {
           t={t}
         />
       )}
-    </div>
+    </PageSurface>
   );
 };
 
@@ -689,54 +690,25 @@ const LibraryHeader = ({
   isMobile: boolean;
   t: Tr;
 }) => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
+  <div className="reomi-library-toolbar">
     {/* Search-mode toggle + search + add */}
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
-        <button
-          type="button"
-          onClick={() => setSearchMode('title')}
-          className={`nn-lib-chip${searchMode === 'title' ? ' active' : ''}`}
-          title={t('library.search.byTitle')}
-        >
-          {t('library.search.byTitle')}
-        </button>
-        <button
-          type="button"
-          onClick={() => setSearchMode('content')}
-          className={`nn-lib-chip${searchMode === 'content' ? ' active' : ''}`}
-          title={t('library.search.byContent')}
-        >
-          {t('library.search.byContent')}
-        </button>
-      </div>
+      <SegmentedControl label={t('library.header.searchPlaceholder')} value={searchMode}
+        onChange={setSearchMode} options={[{ value: 'title', label: t('library.search.byTitle') }, { value: 'content', label: t('library.search.byContent') }]} />
       <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
         <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
           <NNIcon name="search" size={15} color="var(--text-dim)" />
         </span>
-        <input
+        <TextInput
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t(searchMode === 'content' ? 'library.search.contentPlaceholder' : 'library.header.searchPlaceholder')}
-          style={{
-            width: '100%',
-            height: 36,
-            padding: '0 12px 0 32px',
-            fontSize: 13.5,
-            fontFamily: 'var(--font-sans)',
-            color: 'var(--text)',
-            background: 'var(--surface-2)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--r-md)',
-            outline: 'none',
-            boxSizing: 'border-box',
-          }}
+          aria-label={t('library.header.searchPlaceholder')}
+          style={{ paddingLeft: 32 }}
         />
       </div>
       <div style={{ position: 'relative' }}>
-        <NNBtn variant="primary" size="sm" icon="plus" onClick={() => setAddMenuOpen(!addMenuOpen)}>
-          {!isMobile && t('library.header.add')}
-        </NNBtn>
+        <NNBtn className="reomi-create-icon" variant="soft" icon="plus" ariaLabel={t('library.header.add')} title={t('library.header.add')} aria-expanded={addMenuOpen} onClick={() => setAddMenuOpen(!addMenuOpen)} />
         {addMenuOpen && (
           <>
             <div onClick={() => setAddMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
@@ -756,115 +728,28 @@ const LibraryHeader = ({
       </div>
     </div>
 
-    {/* Filters row — hidden in content-search mode (plan §8.3). */}
     {searchMode === 'title' && (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      {/* Kind chips */}
-      <div style={{ display: 'flex', gap: 4 }}>
-        {KIND_FILTERS.map((k) => (
-          <FilterChip key={k} active={kind === k} onClick={() => setKind(k)}>
-            {t(`library.header.kind${k === 'all' ? 'All' : k === 'pdf' ? 'Pdf' : k === 'epub' ? 'Epub' : k === 'url' ? 'Url' : 'Text'}`)}
-          </FilterChip>
-        ))}
+      <div className="reomi-library-filters">
+        <label><span>{t('library.header.formatLabel')}</span><select value={kind} onChange={event => setKind(event.target.value as typeof kind)}>
+          {KIND_FILTERS.map(k => <option key={k} value={k}>{t(`library.header.kind${k === 'all' ? 'All' : k === 'pdf' ? 'Pdf' : k === 'epub' ? 'Epub' : k === 'url' ? 'Url' : 'Text'}`)}</option>)}
+        </select></label>
+        <label><span>{t('library.header.readingLabel')}</span><select value={reading} onChange={event => setReading(event.target.value as typeof reading)}>
+          {READING_FILTERS.map(r => <option key={r} value={r}>{t(`library.header.reading${r === 'all' ? 'All' : r === 'unread' ? 'Unread' : r === 'reading' ? 'Reading' : 'Finished'}`)}</option>)}
+        </select></label>
+        {allTags.length > 0 && <label><span>{t('library.header.tagLabel')}</span><select value={tag ?? ''} onChange={event => setTag(event.target.value || null)}>
+          <option value="">{t('library.header.tagAll')}</option>{allTags.map(value => <option key={value} value={value}>{value}</option>)}
+        </select></label>}
+        <button type="button" className="reomi-filter-toggle" aria-pressed={unattached} onClick={() => setUnattached(!unattached)}><NNIcon name="notebook" size={14} />{t('library.header.shelfUnattached')}</button>
+        <label className="reomi-library-sort"><span>{t('library.header.sortLabel')}</span><select value={sort} onChange={event => setSort(event.target.value as SortMode)}>
+          {SORTS.map(value => <option key={value} value={value}>{t(`library.header.sort${value === 'added' ? 'Added' : value === 'title' ? 'Title' : 'LastRead'}`)}</option>)}
+        </select></label>
+        <div className="reomi-library-views">
+          <NNBtn variant={view === 'grid' ? 'soft' : 'ghost'} icon="grid" aria-pressed={view === 'grid'} ariaLabel={t('library.header.viewGrid')} title={t('library.header.viewGrid')} onClick={() => setView('grid')} />
+          <NNBtn variant={view === 'list' ? 'soft' : 'ghost'} icon="stack" aria-pressed={view === 'list'} ariaLabel={t('library.header.viewList')} title={t('library.header.viewList')} onClick={() => setView('list')} />
+        </div>
       </div>
-      <span style={{ width: 1, height: 18, background: 'var(--border)' }} />
-      {/* Reading chips */}
-      <div style={{ display: 'flex', gap: 4 }}>
-        {READING_FILTERS.map((r) => (
-          <FilterChip key={r} active={reading === r} onClick={() => setReading(r)}>
-            {t(`library.header.reading${r === 'all' ? 'All' : r === 'unread' ? 'Unread' : r === 'reading' ? 'Reading' : 'Finished'}`)}
-          </FilterChip>
-        ))}
-      </div>
-      {/* "Not in any notebook" shelf chip */}
-      <FilterChip active={unattached} onClick={() => setUnattached(!unattached)}>
-        {t('library.header.shelfUnattached')}
-      </FilterChip>
-      {/* Tag filter dropdown (built from loaded items) */}
-      {allTags.length > 0 && (
-        <select
-          value={tag ?? ''}
-          onChange={(e) => setTag(e.target.value === '' ? null : e.target.value)}
-          aria-label={t('library.header.tagLabel')}
-          style={{
-            height: 28,
-            padding: '0 8px',
-            fontSize: 12,
-            fontFamily: 'var(--font-sans)',
-            color: tag ? 'var(--text)' : 'var(--text-muted)',
-            background: tag ? 'color-mix(in srgb, var(--lime-500) 16%, transparent)' : 'var(--surface-2)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--r-sm)',
-            cursor: 'pointer',
-            outline: 'none',
-            maxWidth: 160,
-          }}
-        >
-          <option value="">{t('library.header.tagAll')}</option>
-          {allTags.map((tg) => (
-            <option key={tg} value={tg}>{tg}</option>
-          ))}
-        </select>
-      )}
-      <div style={{ flex: 1 }} />
-      {/* Sort */}
-      <select
-        value={sort}
-        onChange={(e) => setSort(e.target.value as SortMode)}
-        aria-label={t('library.header.sortLabel')}
-        style={{
-          height: 28,
-          padding: '0 8px',
-          fontSize: 12,
-          fontFamily: 'var(--font-sans)',
-          color: 'var(--text-muted)',
-          background: 'var(--surface-2)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--r-sm)',
-          cursor: 'pointer',
-          outline: 'none',
-        }}
-      >
-        {SORTS.map((s) => (
-          <option key={s} value={s}>
-            {t(`library.header.sort${s === 'added' ? 'Added' : s === 'title' ? 'Title' : 'LastRead'}`)}
-          </option>
-        ))}
-      </select>
-      {/* View toggle */}
-      <div style={{ display: 'flex', gap: 2 }}>
-        <NNBtn
-          variant={view === 'grid' ? 'soft' : 'ghost'}
-          size="sm"
-          icon="grid"
-          active={view === 'grid'}
-          ariaLabel={t('library.header.viewGrid')}
-          title={t('library.header.viewGrid')}
-          onClick={() => setView('grid')}
-        />
-        <NNBtn
-          variant={view === 'list' ? 'soft' : 'ghost'}
-          size="sm"
-          icon="stack"
-          active={view === 'list'}
-          ariaLabel={t('library.header.viewList')}
-          title={t('library.header.viewList')}
-          onClick={() => setView('list')}
-        />
-      </div>
-    </div>
     )}
   </div>
-);
-
-const FilterChip = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    className={`nn-lib-chip${active ? ' active' : ''}`}
-  >
-    {children}
-  </button>
 );
 
 // ── Continue reading shelf ────────────────────────────────────────────────────
@@ -1056,14 +941,14 @@ const CoverPlaceholder = ({ item, size, aspect }: { item: LibraryItem | { id: st
 // ── Grid card ─────────────────────────────────────────────────────────────────
 
 const LibraryCard = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onOpen: () => void; onDetails: () => void; t: Tr }) => {
-  const notReady = item.status !== 'ready';
+  const notReady = item.status !== 'ready' && (item.total === 0 || item.status === 'deleting');
   const statusLabel = labelForStatus(item, t);
   return (
     <button type="button" onClick={onOpen} className="nn-lib-card">
       <div style={{ position: 'relative' }}>
         <CoverPlaceholder item={item} aspect />
         {notReady && (
-          <span style={{ position: 'absolute', top: 6, left: 6 }}>
+          <span className="reomi-library-status" title={statusLabel}>
             <NNBadge tone={statusTone(item.status)} size="xs">{statusLabel}</NNBadge>
           </span>
         )}
@@ -1137,7 +1022,7 @@ const LibraryCard = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onOpen
 // ── List row ──────────────────────────────────────────────────────────────────
 
 const LibraryListRow = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onOpen: () => void; onDetails: () => void; t: Tr }) => {
-  const notReady = item.status !== 'ready';
+  const notReady = item.status !== 'ready' && (item.total === 0 || item.status === 'deleting');
   return (
     <button type="button" onClick={onOpen} className="nn-lib-row">
       <CoverPlaceholder item={item} size={40} />
@@ -1188,6 +1073,7 @@ const LibraryListRow = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onO
 };
 
 function labelForStatus(item: LibraryItem, t: Tr): string {
+  if (['error', 'indexing'].includes(item.status) && item.total > 0) return t('library.status.readable');
   if (item.status === 'error' && item.errorCode) {
     return t(`library.status.${item.errorCode as IngestErrorCode}`);
   }
@@ -1507,9 +1393,10 @@ const DetailsPanel = ({
                   {detail.author || t('library.details.authorPlaceholder')}
                 </div>
                 {detail.status !== 'ready' && (
-                  <span style={{ marginTop: 4 }}>
-                    <NNBadge tone={statusTone(detail.status)} size="xs">{labelForStatus(detail, t)}</NNBadge>
-                  </span>
+                  <div style={{ marginTop: 4 }}>
+                    <NNBadge tone={detail.total > 0 && detail.status === 'error' ? 'neutral' : statusTone(detail.status)} size="xs">{labelForStatus(detail, t)}</NNBadge>
+                    {['error', 'indexing'].includes(detail.status) && detail.total > 0 && <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>{t(detail.status === 'error' ? 'library.status.index_failed' : 'library.status.indexWaiting')}</p>}
+                  </div>
                 )}
               </div>
             </div>

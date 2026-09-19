@@ -344,6 +344,11 @@ const notebooks = {
 
   // Center reader (M2 text mode + M4 PDF mode) — the active source's content.
   reader: {
+    readingGroup: 'Reading mode',
+    inkGroup: 'Document annotation',
+    navigationGroup: 'Zoom and pages',
+    inkOptions: 'Drawing options',
+
     empty: 'Select a source to read it here.',
     notReady: 'This source is still being indexed.',
     noText: 'No readable text in this source.',
@@ -484,6 +489,7 @@ const notebooks = {
     // INGEST_ERROR_CODES — one entry per code (parity-enforced).
     too_large: 'File is too large.',
     too_many_chunks: 'Source is too long to index.',
+    index_failed: 'AI indexing failed. The file is available to read.',
     parse_failed: 'Could not read this source.',
     fetch_failed: 'Could not fetch this URL.',
     unsupported_mime: 'Unsupported file type.',

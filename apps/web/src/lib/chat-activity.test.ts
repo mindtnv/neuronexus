@@ -739,3 +739,10 @@ describe('reconstructMessages — usage/model/mentions (C1/C7)', () => {
     expect(answer!.model).toBe('m-deep');
   });
 });
+
+test('knowledge write preview survives reconstruction and remains confirmable', () => {
+  const impact = { snapshotHash: 'abc', resourcePreview: { title: 'Notebook', fields: [{field:'title',before:'Old',after:'New'}] } };
+  const result = reconstructMessages([{ id:'pending-nb',role:'assistant',content:'',toolCalls:[{id:'call-nb',name:'update_notebook',arguments:'{"id":"notebook","title":"New"}',impact}] }]);
+  expect(result[0]?.toolCalls?.[0]?.awaitingConfirmation).toBe(true);
+  expect(result[0]?.toolCalls?.[0]?.impact).toEqual(impact);
+});

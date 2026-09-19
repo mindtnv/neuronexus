@@ -23,13 +23,14 @@
 // acceptable for the current scale. KaTeX idempotency is unaffected (it lives
 // inside `renderCardHtml`).
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   renderCardHtmlWithMermaid,
   sanitizeMermaidSvg,
   SafeHtml,
 } from '@/lib/render-card';
 import { useT } from '@/lib/i18n';
+import { useCodeCopyButtons } from './chat/code-copy';
 import type { FieldValues, NoteTypeDef } from '@neuronexus/shared';
 
 export interface RichCardProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -127,5 +128,8 @@ export const RichCard = ({
     };
   }, [mermaid, t]);
 
-  return <SafeHtml html={html} mermaidIslands={islands} {...rest} />;
+  const codeHost = useRef<HTMLDivElement>(null);
+  const codeLabels = useMemo(() => ({ copy: t('chat.message.codeCopy'), copied: t('chat.message.codeCopied') }), [t]);
+  useCodeCopyButtons(codeHost, { html: html + [...islands.values()].join(''), final: true }, codeLabels);
+  return <SafeHtml hostRef={codeHost} html={html} mermaidIslands={islands} {...rest} />;
 };

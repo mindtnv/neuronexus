@@ -18,10 +18,10 @@ export interface ConfirmDiffProps {
 }
 
 const lineStyle: React.CSSProperties = {
-  fontFamily: 'var(--font-mono)',
-  fontSize: 12,
+  fontFamily: 'var(--font-sans)',
+  fontSize: 13,
   lineHeight: 1.5,
-  padding: '3px 8px',
+  padding: '7px 10px',
   borderRadius: 'var(--r-xs)',
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
@@ -33,7 +33,7 @@ export const ConfirmDiff = ({ rows, proposalOnly, t }: ConfirmDiffProps) => {
   // index changes (rows arrive grouped in batch order from confirmDiffRows).
   const isBatch = rows.some((r) => r.cardIndex !== undefined);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className="reomi-confirm-diff" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <span
         style={{
           fontSize: 10.5,
@@ -47,7 +47,7 @@ export const ConfirmDiff = ({ rows, proposalOnly, t }: ConfirmDiffProps) => {
         {proposalOnly ? t('chat.confirm.proposed') : t('chat.confirm.changes')}
       </span>
       {rows.map((row, i) => (
-        <React.Fragment key={`${row.cardIndex ?? ''}:${row.field}:${i}`}>
+        <React.Fragment key={`${row.cardIndex ?? ''}:${row.field === 'Front' ? t('review.questionLabel') : row.field === 'Back' ? t('review.answerLabel') : row.field}:${i}`}>
           {isBatch && (i === 0 || rows[i - 1]!.cardIndex !== row.cardIndex) && (
             <span
               style={{
@@ -72,7 +72,7 @@ export const ConfirmDiff = ({ rows, proposalOnly, t }: ConfirmDiffProps) => {
               fontFamily: 'var(--font-sans)',
             }}
           >
-            {row.field}
+            {row.field === 'Front' ? t('review.questionLabel') : row.field === 'Back' ? t('review.answerLabel') : row.field}
           </span>
           {row.before !== undefined && (
             <div

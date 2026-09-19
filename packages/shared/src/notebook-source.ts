@@ -50,6 +50,7 @@ export const INGEST_ERROR_CODES = [
   'too_large',
   'too_many_chunks',
   'parse_failed',
+  'index_failed',
   'fetch_failed',
   'unsupported_mime',
   'empty_source',

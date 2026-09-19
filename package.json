@@ -28,7 +28,9 @@
     "db:seed": "bun run --filter @neuronexus/db db:seed",
     "db:studio": "bun run --filter @neuronexus/db db:studio",
     "mcp:smoke": "bun apps/api/scripts/mcp-smoke.ts",
-    "mcp:stdio": "bun apps/api/scripts/mcp-stdio.ts"
+    "mcp:stdio": "bun apps/api/scripts/mcp-stdio.ts",
+    "dev:design": "bun --env-file=.env.design apps/web/scripts/design-preview.mjs",
+    "db:seed:design": "bun --env-file=.env.design packages/db/src/seed-design.ts"
   },
   "devDependencies": {
     "@fission-ai/openspec": "1.13.1",

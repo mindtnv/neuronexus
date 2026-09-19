@@ -9,10 +9,8 @@ import { RouteContentFallback } from '@/components/route-fallbacks';
 export default function Page() {
   const t = useT();
   return (
-    <NNAppPage title={t('cards.title')}>
-      <Suspense fallback={<RouteContentFallback />}>
-        <NNCardsBrowser />
-      </Suspense>
-    </NNAppPage>
+    <Suspense fallback={<NNAppPage title={t('cards.title')}><RouteContentFallback /></NNAppPage>}>
+      <NNCardsBrowser />
+    </Suspense>
   );
 }
