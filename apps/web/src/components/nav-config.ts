@@ -14,19 +14,19 @@ export type AppNavItem = {
 
 export const APP_NAV: AppNavItem[] = [
   { id: 'home', href: '/', icon: 'home', labelKey: 'nav.home', section: 'root' },
-  { id: 'chat', href: '/chat', icon: 'sparkle', labelKey: 'nav.chat', section: 'root' },
-  { id: 'review', href: '/review', icon: 'bolt', labelKey: 'nav.review', section: 'memory' },
-  { id: 'decks', href: '/decks', icon: 'stack', labelKey: 'nav.decks', section: 'memory' },
-  { id: 'cards', href: '/cards', icon: 'grid', labelKey: 'nav.cards', section: 'memory' },
-  { id: 'library', href: '/library', icon: 'book', labelKey: 'nav.library', section: 'knowledge' },
-  { id: 'notebooks', href: '/notebooks', icon: 'doc', labelKey: 'nav.notebooks', section: 'knowledge' },
+  { id: 'chat', href: '/chat', icon: 'chat', labelKey: 'nav.chat', section: 'root' },
+  { id: 'review', href: '/review', icon: 'review', labelKey: 'nav.review', section: 'memory' },
+  { id: 'decks', href: '/decks', icon: 'decks', labelKey: 'nav.decks', section: 'memory' },
+  { id: 'cards', href: '/cards', icon: 'cards', labelKey: 'nav.cards', section: 'memory' },
+  { id: 'library', href: '/library', icon: 'library', labelKey: 'nav.library', section: 'knowledge' },
+  { id: 'notebooks', href: '/notebooks', icon: 'notebook', labelKey: 'nav.notebooks', section: 'knowledge' },
 ];
 
 // Stats + Settings render apart from the sections (pinned below a divider).
 // Gamification (garden, streak) deliberately has no sidebar entry — its entry
 // points are the plant on Home and the streak panel on Stats.
 export const FOOTER_NAV: AppNavItem[] = [
-  { id: 'stats', href: '/stats', icon: 'graph', labelKey: 'nav.stats', section: 'root' },
+  { id: 'stats', href: '/stats', icon: 'chart', labelKey: 'nav.stats', section: 'root' },
   { id: 'settings', href: '/settings', icon: 'settings', labelKey: 'nav.settings', section: 'root' },
 ];
 

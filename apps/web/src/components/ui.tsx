@@ -11,7 +11,9 @@ export type IconName =
   | 'chevd' | 'tag' | 'clock' | 'sparkle' | 'play' | 'pause' | 'eye'
   | 'edit' | 'link' | 'sync' | 'arrow' | 'trophy' | 'target' | 'mic'
   | 'image' | 'dots' | 'filter' | 'grid' | 'stars' | 'bulb' | 'pin'
-  | 'clip' | 'doc' | 'book' | 'send' | 'note' | 'copy' | 'warning';
+  | 'clip' | 'doc' | 'book' | 'send' | 'note' | 'copy' | 'warning'
+  | 'chat' | 'review' | 'decks' | 'cards' | 'library' | 'notebook' | 'chart'
+  | 'panel' | 'menu' | 'logout';
 
 export const NNIcon = ({
   name,
@@ -32,6 +34,16 @@ export const NNIcon = ({
     strokeLinejoin: 'round' as const,
   };
   const paths: Partial<Record<string, ReactNode>> = {
+    chat: <path d="M7 4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-6l-5 3v-3a3 3 0 0 1-3-3V8a4 4 0 0 1 4-4ZM8 9h8M8 13h5" {...p} />,
+    review: <path d="M4 10a8 8 0 1 1 1.4 6.7M4 4v6h6M12 7v5l3 2" {...p} />,
+    decks: <><rect x="4" y="9" width="16" height="12" rx="2.5" {...p} /><path d="M6 6h12M8 3h8" {...p} /></>,
+    cards: <><path d="m8 4 9-1a2 2 0 0 1 2.2 1.8L21 16" {...p} /><rect x="3" y="7" width="14" height="14" rx="2.5" {...p} /><path d="M7 12h6M7 16h4" {...p} /></>,
+    library: <><rect x="3" y="4" width="4" height="16" rx="1" {...p} /><path d="M10 4v16M3 8h4M3 16h4M14 5l4-1 4 15-4 1z" {...p} /></>,
+    notebook: <><rect x="5" y="3" width="15" height="18" rx="2.5" {...p} /><path d="M9 3v18M3 7h4M3 12h4M3 17h4M12 8h5M12 12h3" {...p} /></>,
+    chart: <path d="M4 3v15a2 2 0 0 0 2 2h15M9 15v-4M14 15V7M19 15V4" {...p} />,
+    panel: <><rect x="3" y="4" width="18" height="16" rx="3" {...p} /><path d="M9 4v16M6 8v3" {...p} /></>,
+    menu: <path d="M4 6h16M4 12h16M4 18h10" {...p} />,
+    logout: <path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M10 12h11M17 8l4 4-4 4" {...p} />,
     home: <path d="M3 10l9-7 9 7v10a1 1 0 01-1 1h-4v-7H8v7H4a1 1 0 01-1-1V10z" {...p} />,
     brain: (
       <path
@@ -68,7 +80,7 @@ export const NNIcon = ({
       <>
         <circle cx="12" cy="12" r="3" {...p} />
         <path
-          d="M19 12a1 1 0 00.6-.2l1.6-1-1-1.7-1.8.6a1 1 0 01-.9-.3 7 7 0 00-.9-.5 1 1 0 01-.4-.8V6h-2v1.2a1 1 0 01-.4.8 7 7 0 00-.9.5 1 1 0 01-.9.3l-1.8-.6-1 1.7 1.6 1a1 1 0 01.4.8v1a1 1 0 01-.4.8l-1.6 1 1 1.7 1.8-.6a1 1 0 01.9.3 7 7 0 00.9.5 1 1 0 01.4.8V18h2v-1.2a1 1 0 01.4-.8 7 7 0 00.9-.5 1 1 0 01.9-.3l1.8.6 1-1.7-1.6-1A1 1 0 0119 13v-1z"
+          d="m9.5 3-.6 2.4-1.4.8-2.4-.7-2.5 4.3 1.8 1.7v1l-1.8 1.7 2.5 4.3 2.4-.7 1.4.8.6 2.4h5l.6-2.4 1.4-.8 2.4.7 2.5-4.3-1.8-1.7v-1l1.8-1.7-2.5-4.3-2.4.7-1.4-.8-.6-2.4z"
           {...p}
         />
       </>

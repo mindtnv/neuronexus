@@ -1082,7 +1082,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   const header = (
     <div
-      className="nn-chrome"
+      className="nn-chrome nn-nb-ws-header"
       data-wco={wco ? '1' : undefined}
       style={{
         display: 'flex',
@@ -1091,7 +1091,6 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         padding: `7px ${12 + wcoRight}px 7px ${12 + wcoLeft}px`,
         borderBottom: '1px solid var(--border)',
         flexShrink: 0,
-        minHeight: 44,
       }}
     >
       <button

@@ -23,11 +23,11 @@ const common = {
     },
   },
   topbar: {
-    newCard: 'Новая карта',
+    newCard: 'Новая карточка',
     searchPlaceholder: 'Поиск карт, тегов, тем…',
     menuLabel: 'Меню',
     searchLabel: 'Поиск',
-    newCardLabel: 'Новая карта',
+    newCardLabel: 'Новая карточка',
   },
   actions: {
     save: 'Сохранить',
