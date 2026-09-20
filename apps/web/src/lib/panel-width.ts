@@ -23,3 +23,11 @@ export function readCardPanelWidth(): number {
     return raw?.trim() ? boundedPanelWidth(Number(raw), CARD_PANEL.min, CARD_PANEL.max, CARD_PANEL.default) : CARD_PANEL.default;
   } catch { return CARD_PANEL.default; }
 }
+
+export const CARD_FILTERS = { key: 'nn:cards:filters-width', min: 180, max: 440, default: 196 } as const;
+export function readCardFiltersWidth(): number {
+  try {
+    const raw = localStorage.getItem(CARD_FILTERS.key);
+    return raw?.trim() ? boundedPanelWidth(Number(raw), CARD_FILTERS.min, CARD_FILTERS.max, CARD_FILTERS.default) : CARD_FILTERS.default;
+  } catch { return CARD_FILTERS.default; }
+}

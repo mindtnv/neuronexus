@@ -1,0 +1,52 @@
+'use client';
+
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { NNIcon } from '@/components/ui';
+
+export interface CardMenuAction { label: string; icon: string; danger?: boolean; disabled?: boolean; run: () => void }
+export function CardActionsMenu({ x, y, label, closeLabel, actions, mobile, onClose }: {
+  x: number; y: number; label: string; closeLabel: string; actions: CardMenuAction[]; mobile: boolean;
+  onClose: (restoreFocus: boolean) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ x, y });
+  useLayoutEffect(() => {
+    const menu = ref.current;
+    if (!menu) return;
+    const rect = menu.getBoundingClientRect();
+    setPosition({ x: Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)), y: Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)) });
+    menu.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
+  }, [x, y, mobile]);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) onClose(false); };
+    const dismiss = () => onClose(false);
+    const scroll = (event: Event) => { if (!ref.current?.contains(event.target as Node)) dismiss(); };
+    document.addEventListener('pointerdown', outside);
+    window.addEventListener('resize', dismiss);
+    window.addEventListener('scroll', scroll, true);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      window.removeEventListener('resize', dismiss);
+      window.removeEventListener('scroll', scroll, true);
+    };
+  }, [onClose]);
+  return createPortal(<>
+    {mobile && <div className="reomi-card-menu-backdrop" aria-hidden="true" />}
+    <div ref={ref} className={`reomi-thread-menu reomi-card-menu${mobile ? ' is-sheet' : ''}`} role="menu" aria-label={label}
+      style={mobile ? undefined : { left: position.x, top: position.y }} onContextMenu={event => event.preventDefault()}
+      onKeyDown={event => {
+        if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); onClose(true); return; }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const buttons = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+        buttons[next]?.focus();
+      }}>
+      <div className="reomi-card-menu-heading"><span>{label}</span><button type="button" aria-label={closeLabel} onClick={() => onClose(true)}><NNIcon name="x" size={16}/></button></div>
+      {actions.map(action => <button key={action.label} type="button" role="menuitem" tabIndex={-1} disabled={action.disabled} data-danger={action.danger || undefined}
+        onClick={() => { onClose(true); action.run(); }}><NNIcon name={action.icon} size={16} /><span>{action.label}</span></button>)}
+    </div>
+  </>, document.body);
+}

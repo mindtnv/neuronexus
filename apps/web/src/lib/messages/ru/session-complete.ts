@@ -1,4 +1,9 @@
 const m = {
+  charts: {
+    distribution: 'Распределение оценок', timing: 'Время на ответ', total: 'Всего', seconds: 'с',
+    average: 'В среднем {seconds} с на ответ', order: 'Ответы по порядку', grouped: 'Среднее время по группам ответов',
+    answerTime: 'Ответ {first} · {seconds} с', groupTime: 'Ответы {first}–{last} · в среднем {seconds} с',
+  },
   scheduledDay: 'По расписанию на {date}',
   nextReview: 'Следующий повтор: {time}.',
   saved: 'Сохранены на сервере',

@@ -1,13 +1,9 @@
 'use client';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { NNBtn } from './ui';
-import { SegmentedControl } from './design-system/primitives';
+import { CardEditor } from './card-editor';
 import { ResizeHandle } from './design-system/resize-handle';
 import { CARD_PANEL, boundedPanelWidth, readCardPanelWidth } from '@/lib/panel-width';
-import { NNCardForm, type CardFormDraft } from './card-form';
-import { RichCard } from './rich-card';
-import { SimilarCardsPanel } from './similar-cards';
-import { SourceLinksPanel } from './source-links';
 import { useT } from '@/lib/i18n';
 import type { Card } from '@/lib/types';
 
@@ -17,14 +13,6 @@ export function CardDetailPanel({ card, deckName, index, total, onMove, onClose,
   onDeleted: (id: string) => void; onDirtyChange: (dirty: boolean) => void;
 }) {
   const t = useT();
-  const [mode, setMode] = useState<'view' | 'edit'>('edit');
-  const [clozeRevealed, setClozeRevealed] = useState(false);
-  const [draft, setDraft] = useState<CardFormDraft | null>(null);
-  const currentDraft = draft?.cardId === card.id ? draft : null;
-  const previewNoteType = currentDraft?.noteType ?? card.noteType;
-  const previewFields = currentDraft?.fieldValues ?? card.note?.fieldValues;
-  const previewTags = currentDraft?.tags ?? card.tags;
-  const isCloze = previewNoteType?.kind === 'cloze' || card.renderKind === 'cloze';
   const panel = useRef<HTMLElement>(null);
   const [preferredWidth, setPreferredWidth] = useState<number>(CARD_PANEL.default);
   const [availableWidth, setAvailableWidth] = useState(1200);
@@ -38,7 +26,6 @@ export function CardDetailPanel({ card, deckName, index, total, onMove, onClose,
     observer.observe(workspace);
     return () => observer.disconnect();
   }, []);
-  useEffect(() => { setMode('edit'); setClozeRevealed(false); }, [card.id]);
   const maxWidth = Math.min(CARD_PANEL.max, Math.max(CARD_PANEL.min, availableWidth - 160));
   const width = boundedPanelWidth(preferredWidth, CARD_PANEL.min, maxWidth, CARD_PANEL.default);
   const resize = (value: number) => {
@@ -62,30 +49,6 @@ export function CardDetailPanel({ card, deckName, index, total, onMove, onClose,
       <NNBtn size="sm" icon="chevr" ariaLabel={t('cards.panel.next')} disabled={index < 0 || index >= total - 1} onClick={() => onMove(1)} />
       <NNBtn size="sm" icon="x" ariaLabel={t('cards.panel.close')} onClick={onClose} />
     </header>
-    <div className="reomi-card-detail-tabs"><SegmentedControl label={t('cards.panel.mode')} value={mode} onChange={setMode} options={[
-      {value: 'view', label: t('cards.panel.view')}, {value: 'edit', label: t('cards.panel.edit')},
-    ]} /></div>
-    <div className="reomi-card-detail-preview nn-scroll" hidden={mode !== 'view'}>
-      {isCloze ? <section>
-        <div className="reomi-cloze-preview-header">
-          <h3>{t('cards.panel.clozeCard')}</h3>
-          <NNBtn size="sm" variant="soft" icon="eye" onClick={() => setClozeRevealed(value => !value)}>
-            {t(clozeRevealed ? 'cards.panel.hideCloze' : 'cards.panel.revealCloze')}
-          </NNBtn>
-        </div>
-        {previewNoteType && previewFields ? <RichCard noteType={previewNoteType} fieldValues={previewFields}
-          templateOrd={card.templateOrd} clozeNumber={card.clozeNumber} side={clozeRevealed ? 'back' : 'front'} />
-          : <p>{clozeRevealed ? card.renderBackText : card.renderFrontText}</p>}
-      </section> : (['front', 'back'] as const).map(side => <section key={`${card.id}-${side}`}>
-        <h3>{t(side === 'front' ? 'review.questionLabel' : 'review.answerLabel')}</h3>
-        {previewNoteType && previewFields ? <RichCard noteType={previewNoteType} fieldValues={previewFields} templateOrd={card.templateOrd} clozeNumber={card.clozeNumber} side={side} /> : <p>{side === 'front' ? card.renderFrontText : card.renderBackText}</p>}
-      </section>)}
-      {previewTags.length > 0 && <div className="reomi-card-detail-tags">{previewTags.map(tag => <span key={tag}>#{tag}</span>)}</div>}
-      <details className="reomi-card-detail-related" key={card.id}><summary>{t('cards.panel.similar.title')}</summary><SimilarCardsPanel cardId={card.id} onOpen={onOpen} /></details>
-      <SourceLinksPanel cardId={card.id} />
-    </div>
-    <div className="reomi-card-detail-form" hidden={mode !== 'edit'}>
-      <NNCardForm key={card.id} card={card} layout="panel" inlinePreview={false} actionsPlacement="footer" compactHeader showFsrsHeader={false} onDeleted={onDeleted} onDirtyChange={onDirtyChange} onDraftChange={setDraft} onSaved={() => onDirtyChange(false)} />
-    </div>
+    <CardEditor card={card} onOpen={onOpen} onDeleted={onDeleted} onDirtyChange={onDirtyChange} onSaved={() => onDirtyChange(false)} />
   </section>;
 }

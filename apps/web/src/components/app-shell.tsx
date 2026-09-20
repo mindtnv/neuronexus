@@ -21,8 +21,6 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
   const setSidebarWidth = useUI((s) => s.setSidebarWidth);
   const sidebarCollapsed = useUI((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useUI((s) => s.setSidebarCollapsed);
-  const zenMode = useUI((s) => s.zenMode);
-  const setZen = useUI((s) => s.setZen);
   const bootstrapStatus = useNN((s) => s.bootstrapStatus);
   const bootstrapError = useNN((s) => s.bootstrapError);
   const bootstrap = useNN((s) => s.bootstrap);
@@ -36,10 +34,7 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
     if (persisted !== null) setSidebarCollapsed(persisted);
   }, [setSidebarCollapsed, setSidebarWidth]);
 
-  // Zen is /review-only: leaving /review (route change) auto-exits focus mode.
-  useEffect(() => {
-    if (zenMode && pathname !== '/review') setZen(false);
-  }, [pathname, zenMode, setZen]);
+
 
   // One-time WCO onboarding hint: Chromium only merges the app into the window
   // titlebar after the user clicks the ⌄ toggle (then the choice persists), and
@@ -85,7 +80,6 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
   return (
     <div
       className="nn-app-shell"
-      data-zen={zenMode ? 'true' : undefined}
       style={{
         display: 'flex',
         height: '100dvh',
@@ -96,7 +90,7 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
         '--nn-sidebar-width': `${sidebarWidth}px`,
       } as React.CSSProperties}
     >
-      {!zenMode && !sidebarCollapsed ? (
+      {!sidebarCollapsed ? (
         <div className="nn-app-sidebar-slot" id="app-sidebar-slot">
           <NNSidebar responsive />
           {bp !== 'mobile' && <SidebarResizeHandle />}
@@ -168,7 +162,7 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
         </div>
       ) : null}
 
-      {!zenMode && !drawerOpen ? <BottomTabs /> : null}
+      {!drawerOpen ? <BottomTabs /> : null}
 
       <GlobalOverlays />
       <ToastsStack />

@@ -157,8 +157,12 @@ test('mode conversion previews separately and applies only the exact confirmed i
     return Response.json({ ...type, kind: body.kind });
   }) as typeof fetch;
   await render(new URLSearchParams({ kind: type.id }));
-  expect(host.textContent).toContain('noteTypes.kind.scope');
-  await act(async () => button('noteTypes.kind.preview').click());
+  const modeDialog = document.querySelector('[aria-labelledby="note-type-mode-title"]')!;
+  expect(modeDialog.textContent).toContain('noteTypes.kind.intro');
+  expect(host.textContent).toContain('noteTypes.list.title');
+  const mode = modeDialog.querySelector('select')!;
+  await act(async () => { mode.value = 'typein'; mode.dispatchEvent(new Event('change', { bubbles: true })); });
+  await act(async () => Array.from(modeDialog.querySelectorAll('button')).find(button => button.textContent?.includes('noteTypes.kind.preview'))!.click());
   expect(writes).toHaveLength(1);
   expect(writes[0].body).toMatchObject({ kind: 'typein', answerFieldId: 'a', expectedUpdatedAt: type.updatedAt });
   const dialog = host.querySelector('[role="dialog"]')!;

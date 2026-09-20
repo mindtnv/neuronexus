@@ -6,7 +6,7 @@ import { useNN } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import { useAppNavigation } from './navigation';
 import { useDialog } from './dialog';
-import { NNBtn, NNCard } from './ui';
+import { NNBtn, NNCard, NNIcon, NNBadge } from './ui';
 
 export function EditorDraftLibrary() {
   const owner = useNN(state => state.profile?.userId) ?? '';
@@ -31,27 +31,32 @@ export function EditorDraftLibrary() {
     catch { setError(t('editor.draft.downloadFailed')); }
 
   };
-  return <div style={{ padding: 24, maxWidth: 850, margin: '0 auto', width: '100%', boxSizing: 'border-box', flex: 1, minHeight: 0, overflow: 'auto' }}>
-    <h1>{t('editor.draft.libraryTitle')}</h1><p>{t('editor.draft.libraryHint')}</p>
-    <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
-      <NNBtn onClick={() => nav.push('/editor')}>{t('editor.newCard')}</NNBtn>
-      <NNBtn variant="ghost" onClick={() => { setError(''); refresh(n => n + 1); }}>{t('editor.draft.refresh')}</NNBtn>
-    </div>
-    {(result.failed || error) && <p role="alert">{error || t('editor.draft.unavailable')}</p>}
-    {!result.failed && result.entries.length === 0 && <p>{t('editor.draft.empty')}</p>}
+  return <div className="reomi-page-surface reomi-draft-workspace nn-scroll">
+    <header className="reomi-draft-heading"><div><h1>{t('editor.draft.libraryTitle')}</h1><p>{t('editor.draft.libraryHint')}</p></div>
+      <NNBtn variant="ghost" icon="sync" ariaLabel={t('editor.draft.refresh')} title={t('editor.draft.refresh')} onClick={() => { setError(''); refresh(n => n + 1); }} />
+      {result.entries.length > 0 && <NNBtn variant="primary" icon="plus" onClick={() => nav.push('/editor')}>{t('editor.newCard')}</NNBtn>}
+    </header>
+    {(result.failed || error) && <p role="alert" className="reomi-draft-error">{error || t('editor.draft.unavailable')}</p>}
+    {!result.failed && result.entries.length === 0 && <div className="reomi-draft-empty"><span aria-hidden><NNIcon name="note" size={28} /></span><h2>{t('editor.draft.empty')}</h2><p>{t('editor.draft.emptyHint')}</p><NNBtn variant="primary" icon="plus" onClick={() => nav.push('/editor')}>{t('editor.newCard')}</NNBtn></div>}
     {result.entries.map(entry => {
       const value = entry.record?.value;
       const note = isNoteDraftValue(value) ? value : null;
       const type = isTypeDraftValue(value) ? value : null;
       const firstField = note && [...(note.noteType?.fields ?? [])].sort((a, b) => a.ord - b.ord).map(field => note.fieldValues[field.name]).find(value => value?.trim());
       const label = type?.name || (note ? (note.label || firstField || Object.values(note.fieldValues).find(value => value.trim()))?.replace(/\s+/g, ' ').slice(0, 100) : '') || t('editor.draft.untitled');
-      return <NNCard key={`${owner}:${entry.scope.kind}:${entry.scope.entityId}`} style={{ marginBottom: 14 }}>
+      return <NNCard key={`${owner}:${entry.scope.kind}:${entry.scope.entityId}`} className="reomi-draft-card">
+        <NNBadge size="xs" tone="neutral">{t(entry.scope.kind === 'type' ? 'noteTypes.pageTitle' : 'cards.panel.title')}</NNBadge>
         <h2 style={{ fontSize: 16, overflowWrap: 'anywhere' }}>{entry.record ? label : t('editor.draft.invalid')}</h2>
         {entry.record && <p style={{ fontSize: 12 }}>{new Date(entry.record.updatedAt).toLocaleString()}</p>}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {note && <NNBtn size="sm" variant="primary" icon="edit" onClick={() => {
+            if (useNN.getState().profile?.userId !== owner) return;
+            nav.push(note.cardId ? `/editor?card=${encodeURIComponent(note.cardId)}` : `/editor?${new URLSearchParams({ deck: note.deckId, noteType: note.noteTypeId })}`);
+          }}>{t('editor.draft.openOriginal')}</NNBtn>}
+          {type && entry.record && <NNBtn size="sm" variant="primary" icon="edit" onClick={() => {
+            if (useNN.getState().profile?.userId === owner) nav.push(entry.scope.entityId === 'new' ? '/note-types?new=1' : `/note-types?edit=${encodeURIComponent(entry.scope.entityId)}`);
+          }}>{t('editor.draft.openOriginal')}</NNBtn>}
           {entry.record && <NNBtn size="sm" onClick={() => download(entry)}>{t('editor.draft.download')}</NNBtn>}
-          {note?.cardId && <NNBtn size="sm" onClick={() => nav.push(`/editor?card=${encodeURIComponent(note.cardId!)}`)}>{t('editor.draft.openOriginal')}</NNBtn>}
-          {entry.scope.kind === 'type' && entry.scope.entityId !== 'new' && entry.record && <NNBtn size="sm" onClick={() => nav.push(`/note-types?edit=${encodeURIComponent(entry.scope.entityId)}`)}>{t('editor.draft.openOriginal')}</NNBtn>}
           <NNBtn size="sm" variant="danger" onClick={() => void remove(entry)}>{t('editor.draft.discard')}</NNBtn>
         </div>
         {(note || type) && <details style={{ marginTop: 12 }}><summary>{t('editor.draft.showText')}</summary>

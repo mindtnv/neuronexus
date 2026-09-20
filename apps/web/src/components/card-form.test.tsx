@@ -384,7 +384,8 @@ test('a successful conversion removes the old scoped rows even when refreshing t
   await renderEditor(new URLSearchParams({ noteTypeId: source.id!, convertTo: target.id }), <NNCardsBrowser />);
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
   await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
-  await act(async () => button('noteTypes.convert.open').click());
+  await act(async () => button('cards.actions.open').click());
+  await act(async () => (Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(b => b.textContent?.includes('noteTypes.convert.open'))!).click());
   const modalButton = (text: string) => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((button) => button.textContent?.includes(text))!;
   await act(async () => modalButton('noteTypes.kind.preview').click());
   await act(async () => modalButton('noteTypes.convert.apply').click());
@@ -609,4 +610,170 @@ describe('editor draft recovery', () => {
     expect(useNN.getState().cards).toEqual([]);
   });
 
+});
+
+test('shared card editor previews unsaved fields and preserves them on returning to edit', async () => {
+  const { CardEditor } = await import('./card-editor');
+  let writes = 0;
+  globalThis.fetch = (async (_url: any, init?: RequestInit) => { if (init?.method && init.method !== 'GET') writes++; return Response.json({ items: [] }); }) as typeof fetch;
+  await renderEditor(new URLSearchParams(), <CardEditor card={card} />);
+  const field = container.querySelector('textarea')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, '**Unsaved preview**');
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => button('cards.panel.view').click());
+  expect(container.querySelector('.reomi-card-detail-preview strong')?.textContent).toBe('Unsaved preview');
+  expect(container.querySelector('.reomi-card-detail-preview')?.hasAttribute('hidden')).toBe(false);
+  await act(async () => button('cards.panel.edit').click());
+  expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('**Unsaved preview**');
+  expect(container.querySelector('.reomi-card-form-scroll .reomi-card-form-footer')).toBeNull();
+  expect(container.querySelector('.reomi-card-form-footer')).not.toBeNull();
+  expect(writes).toBe(0);
+});
+
+test('draft library resumes new cards and types with their correct scope and hides other owners', async () => {
+  useNN.setState({ profile: { userId: 'draft-library-owner' } as any });
+  writeEditorDraft({ ownerId: 'draft-library-owner', kind: 'note', entityId: 'new' }, {
+    fieldValues: { Front: 'Unfinished card', Back: 'Answer' }, deckId: 'deck', noteTypeId: BASIC_NOTE_TYPE.id,
+    tagsText: '', acceptedAnswersText: '', noteType: noteTypeFromApi(BASIC_NOTE_TYPE),
+  }, null);
+  writeEditorDraft({ ownerId: 'draft-library-owner', kind: 'type', entityId: 'new' }, {
+    name: 'Unfinished type', fields: BASIC_NOTE_TYPE.fields, templates: BASIC_NOTE_TYPE.templates, styling: '', kind: 'basic',
+  }, null);
+  await renderEditor(new URLSearchParams({ drafts: '1' }));
+  expect(container.querySelectorAll('.reomi-draft-card')).toHaveLength(2);
+  const rows = Array.from(container.querySelectorAll('.reomi-draft-card'));
+  for (const text of ['Unfinished card', 'Unfinished type']) {
+    const row = rows.find(row => row.textContent?.includes(text))!;
+    await act(async () => Array.from(row.querySelectorAll('button')).find(button => button.textContent?.includes('editor.draft.openOriginal'))!.click());
+    expect(navigations.at(-1)).toBe(text === 'Unfinished type' ? '/note-types?new=1' : `/editor?deck=deck&noteType=${BASIC_NOTE_TYPE.id}`);
+  }
+  await act(async () => useNN.setState({ profile: { userId: 'another-owner' } as any }));
+  expect(container.querySelectorAll('.reomi-draft-card')).toHaveLength(0);
+  expect(container.textContent).not.toContain('Unfinished');
+});
+
+describe('card context actions', () => {
+  async function mountCards() {
+    const second = { ...row, id: '01900000-0000-7000-8000-000000000002' };
+    globalThis.fetch = (async () => Response.json({ items: [row, second], nextCursor: null })) as unknown as typeof fetch;
+    await renderEditor(new URLSearchParams(), <NNCardsBrowser />);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); });
+    return Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+  }
+  test('right click preserves selected scope, another row scopes to one, Escape restores focus', async () => {
+    const checks = await mountCards();
+    await act(async () => { checks[0].click(); checks[1].click(); });
+    const firstRow = checks[0].closest('[data-card-row]') as HTMLElement;
+    await act(async () => firstRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 200, clientY: 200 })));
+    expect(checks.filter(c => c.checked)).toHaveLength(2);
+    expect(document.querySelector('[role="menu"]')).not.toBeNull();
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(firstRow);
+    await act(async () => firstRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true })));
+    expect(document.querySelector('[role="menu"]')).not.toBeNull();
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })));
+    expect(document.activeElement?.textContent).toContain('cards.bulk.delete');
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    await act(async () => checks[1].click());
+    const secondRow = checks[1].closest('[data-card-row]') as HTMLElement;
+    await act(async () => secondRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })));
+    expect(checks.map(c => c.checked)).toEqual([false, true]);
+  });
+  test('visible trigger opens actions; deleting still asks for confirmation', async () => {
+    await mountCards();
+    const trigger = container.querySelector<HTMLButtonElement>('.reomi-card-row-actions')!;
+    await act(async () => trigger.click());
+    const menu = document.querySelector('[role="menu"]')!;
+    const remove = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent?.includes('cards.bulk.delete'))!;
+    await act(async () => remove.click());
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('cards.bulk.deleteConfirm');
+  });
+});
+
+
+test('graph list collapses independently of cluster filters and starts closed on mobile', async () => {
+  const { NNGraphForce } = await import('./screens/graph');
+  const width = window.innerWidth;
+  globalThis.fetch = (async () => Response.json({ edges: [], nodes: [], reason: 'not_indexed' })) as unknown as typeof fetch;
+  await renderEditor(new URLSearchParams(), <NNGraphForce />);
+  const toggle = () => container.querySelector<HTMLButtonElement>('.reomi-graph-legend-toggle')!;
+  const list = () => container.querySelector<HTMLDivElement>('#graph-cluster-list')!;
+  expect(toggle().getAttribute('aria-expanded')).toBe('true');
+  const cluster = list().querySelector<HTMLButtonElement>('button')!;
+  await act(async () => cluster.click());
+  expect(cluster.getAttribute('aria-pressed')).toBe('false');
+  await act(async () => toggle().click());
+  expect(list().hidden).toBe(true);
+  await act(async () => toggle().click());
+  expect(cluster.getAttribute('aria-pressed')).toBe('false');
+  try {
+    await act(async () => { Object.defineProperty(window, 'innerWidth', { value: 432, configurable: true }); window.dispatchEvent(new Event('resize')); });
+    expect(list().hidden).toBe(true);
+    await act(async () => toggle().click());
+    expect(list().hidden).toBe(false);
+  } finally { Object.defineProperty(window, 'innerWidth', { value: width, configurable: true }); }
+});
+
+for (const action of ['addTag','removeTag'] as const) test(`${action} chooses existing tags and sends the selected value`, async () => {
+  const writes:any[]=[];
+  const tagged={...row,note:{...row.note,tags:['architecture']}};
+  globalThis.fetch=(async(url:any,init?:RequestInit)=>{
+    const path=String(url);
+    if(path.endsWith('/cards/tags')) return Response.json({tags:['architecture','csharp','patterns']});
+    if(path.endsWith('/cards/bulk')) { writes.push(JSON.parse(String(init?.body))); return Response.json({ok:true}); }
+    return Response.json({items:[tagged],nextCursor:null});
+  }) as typeof fetch;
+  await renderEditor(new URLSearchParams(),<NNCardsBrowser/>);
+  await act(async()=>{await new Promise(r=>setTimeout(r,350));});
+  await act(async()=>container.querySelector<HTMLButtonElement>('.reomi-card-row-actions')!.click());
+  await act(async()=>Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(b=>b.textContent?.includes(`cards.bulk.${action}`))!.click());
+  const dialog=document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain('#architecture');
+  if(action==='addTag') expect(dialog.textContent).toContain('#csharp');
+  else expect(dialog.textContent).not.toContain('#csharp');
+  expect(dialog.textContent).not.toContain('cards.bulk.tagPrompt');
+  const option=Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(b=>b.textContent?.includes('#architecture'))!;
+  await act(async()=>option.dispatchEvent(new MouseEvent('dblclick',{bubbles:true})));
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({action,cardIds:[row.id],payload:{tag:'architecture'}});
+});
+
+test('cards filter width persists, supports keyboard resizing and stays out of the mobile drawer', async () => {
+  const key='nn:cards:filters-width', previous=localStorage.getItem(key), width=window.innerWidth;
+  localStorage.removeItem(key);
+  globalThis.fetch=(async()=>Response.json({items:[row],tags:[],nextCursor:null})) as unknown as typeof fetch;
+  try {
+    await renderEditor(new URLSearchParams(),<NNCardsBrowser/>);
+    const separator=()=>container.querySelector<HTMLElement>('[role="separator"][aria-label="cards.sidebar.resize"]');
+    expect(separator()?.getAttribute('aria-valuenow')).toBe('196');
+    await act(async()=>separator()!.dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true})));
+    expect(localStorage.getItem(key)).toBe('440');
+    await act(async()=>root.render(null));
+    await renderEditor(new URLSearchParams(),<NNCardsBrowser/>);
+    expect(separator()?.getAttribute('aria-valuenow')).toBe('440');
+    await act(async()=>separator()!.dispatchEvent(new MouseEvent('dblclick',{bubbles:true})));
+    expect(localStorage.getItem(key)).toBe('196');
+    await act(async()=>{Object.defineProperty(window,'innerWidth',{value:432,configurable:true});window.dispatchEvent(new Event('resize'));});
+    expect(separator()).toBeNull();
+    expect(localStorage.getItem(key)).toBe('196');
+  } finally {
+    Object.defineProperty(window,'innerWidth',{value:width,configurable:true});
+    if(previous===null)localStorage.removeItem(key);else localStorage.setItem(key,previous);
+  }
+});
+
+test('empty card search offers scoped creation and clearing the search', async () => {
+  globalThis.fetch=(async()=>Response.json({items:[],tags:[],nextCursor:null})) as unknown as typeof fetch;
+  await renderEditor(new URLSearchParams({q:'deck:"Study"'}),<NNCardsBrowser/>);
+  await act(async()=>{await new Promise(r=>setTimeout(r,350));});
+  const empty=container.querySelector('.reomi-cards-empty')!;
+  expect(empty.textContent).toContain('cards.empty.deckHint');
+  await act(async()=>Array.from(empty.querySelectorAll<HTMLButtonElement>('button')).find(b=>b.textContent?.includes('topbar.newCard'))!.click());
+  expect(navigations).toContain('/editor?deck=deck');
+  await act(async()=>Array.from(empty.querySelectorAll<HTMLButtonElement>('button')).find(b=>b.textContent?.includes('cards.empty.clearSearch'))!.click());
+  expect(container.querySelector<HTMLInputElement>('.reomi-cards-search input')?.value).toBe('');
 });

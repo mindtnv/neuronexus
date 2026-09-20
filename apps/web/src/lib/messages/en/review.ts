@@ -1,4 +1,5 @@
 const m = {
+  waitingAuto: "The card will appear automatically when it is due.",
   cardLabel: 'Study card',
   retry: 'Try again',
   saving: 'Saving answer…',

@@ -9,6 +9,9 @@ import { useLocale } from '@/lib/i18n';
 import { PALETTE_IDS, type PaletteId, type ThemePref } from '@/lib/theme';
 import { useAppearance } from '@/lib/use-appearance';
 import { Field, ReadingText, SegmentedControl, Surface, TextArea, TextInput } from './primitives';
+import { ReviewSessionDone } from '../review-session-done';
+import { RichCard } from '../rich-card';
+import { BASIC_NOTE_TYPE } from '@neuronexus/shared';
 import { ChatUnavailable } from '@/components/chat/chat-unavailable';
 import './lab.css';
 
@@ -81,6 +84,10 @@ export function ComponentLab() {
     <Section title={ru ? 'Диалоги и обратная связь' : 'Dialogs and feedback'} source="DialogProvider / ToastsStack / NNSkeleton / NNLoadError">
       <div className="reomi-lab-row"><NNBtn variant="soft" onClick={async () => { const answer = await dialogs.confirm({ title: ru ? 'Удалить пример?' : 'Delete example?', message: ru ? 'Это демонстрация диалога, данные не удаляются.' : 'This is a dialog example; no data is deleted.', danger: true }); setMessage(answer ? 'Confirmed' : 'Cancelled'); }}>{ru ? 'Подтверждение' : 'Confirmation'}</NNBtn><NNBtn variant="soft" onClick={() => void dialogs.prompt({ title: ru ? 'Переименовать' : 'Rename', label: ru ? 'Название' : 'Title', defaultValue: 'Reomi', validate: v => v.trim() ? null : (ru ? 'Нужно название' : 'Title required') })}>{ru ? 'Ввод в диалоге' : 'Input dialog'}</NNBtn>{(['info', 'success', 'error'] as const).map(kind => <NNBtn key={kind} onClick={() => raiseToast({ kind, title: `${kind} · Reomi` })}>{kind} toast</NNBtn>)}</div>
       <div className="reomi-lab-grid"><Surface><NNSkeleton style={{ height: 20, width: '60%', marginBottom: 12 }} /><NNSkeleton style={{ height: 90 }} /></Surface><Surface>{retry ? <NNBadge tone="lime">{ru ? 'Повторная загрузка завершена' : 'Retry completed'}</NNBadge> : <NNLoadError title={ru ? 'Не удалось загрузить' : 'Could not load'} description={ru ? 'Пример состояния ошибки.' : 'An example error state.'} retryLabel={ru ? 'Повторить' : 'Retry'} onRetry={() => setRetry(true)} />}</Surface></div>
+    </Section>
+    <Section title={ru ? 'Повторение: завершение и содержимое' : 'Review: completion and content'} source="ReviewSessionDone / RichCard">
+      <div style={{ height: 680, display: 'flex' }}><ReviewSessionDone completed={7} xp={70} stats={{ cards: 5, durationMs: 185000, grades: { 1: 0, 2: 1, 3: 5, 4: 1 }, answers: [20000,35000,15000,30000,40000,25000,20000].map((durationMs, i) => ({ durationMs, rating: i === 1 ? 2 : i === 5 ? 4 : 3 })) }} /></div>
+      <Surface><RichCard noteType={BASIC_NOTE_TYPE} side="front" fieldValues={{ Front: '# `keyof` и lookup-типы `T[K]`\n\n> Короткая цитата с `кодом`.\n\n```mermaid\nsequenceDiagram\n  participant A as T1\n  participant B as T2\n  A->>B: lock row A\n  B->>A: ждёт A — deadlock\n```' }} /></Surface>
     </Section>
     <footer className="reomi-lab-footer">{ru ? 'Палитры — существующие темы. Golos Text — интерфейс, Literata — чтение. Компоненты лежат в components/design-system; NN-имена сохраняют совместимость.' : 'Existing themes. Golos Text for UI, Literata for reading. Components live in components/design-system; NN adapters preserve existing usage.'}</footer>
     <ToastsStack />

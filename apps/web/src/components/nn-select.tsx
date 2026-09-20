@@ -311,7 +311,7 @@ export function NNSelect<T extends string>({
       ? createPortal(
           <div
             ref={popoverRef}
-            className="nn-scroll"
+            className="nn-scroll reomi-select-popover"
             tabIndex={-1}
             onKeyDown={onKeyDown}
             style={{
@@ -322,9 +322,9 @@ export function NNSelect<T extends string>({
               width: rect.width,
               maxHeight: 320,
               overflowY: 'auto',
-              background: 'var(--surface-2)',
-              border: '1px solid var(--border-2)',
-              borderRadius: 'var(--r-md)',
+              background: 'var(--surface)',
+              border: '1px solid var(--panel-edge)',
+              borderRadius: 14,
               boxShadow: 'var(--shadow-lg)',
               zIndex: 90,
               outline: 'none',
@@ -340,8 +340,8 @@ export function NNSelect<T extends string>({
                   top: 0,
                   zIndex: 1,
                   padding: 6,
-                  background: 'var(--surface-3)',
-                  borderBottom: '1px solid var(--border-2)',
+                  background: 'var(--surface)',
+                  borderBottom: '1px solid var(--panel-edge)',
                 }}
               >
                 <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -366,7 +366,7 @@ export function NNSelect<T extends string>({
                       borderRadius: 'var(--r-sm)',
                       background: 'var(--surface-2)',
                       border: searchFocused ? '1px solid var(--accent-500)' : '1px solid var(--border)',
-                      boxShadow: searchFocused ? 'var(--glow-accent)' : undefined,
+                      boxShadow: searchFocused ? '0 0 0 2px color-mix(in srgb, var(--accent-500) 10%, transparent)' : undefined,
                       color: 'var(--text)',
                       fontFamily: 'var(--font-sans)',
                       fontSize: 13.5,
@@ -422,8 +422,8 @@ export function NNSelect<T extends string>({
                         padding: '8px 10px',
                         paddingLeft: 12 + depthPad,
                         borderRadius: 'var(--r-sm)',
-                        background: isHi ? 'var(--surface-3)' : 'transparent',
-                        color: opt.disabled ? 'var(--text-dim)' : 'var(--text)',
+                        background: isSel ? 'color-mix(in srgb, var(--accent-500) 10%, transparent)' : isHi ? 'var(--surface-2)' : 'transparent',
+                        color: opt.disabled ? 'var(--text-dim)' : isSel ? 'var(--accent-500)' : 'var(--text)',
                         fontSize: 13.5,
                         fontWeight: isSel ? 600 : 400,
                         cursor: opt.disabled ? 'not-allowed' : 'pointer',

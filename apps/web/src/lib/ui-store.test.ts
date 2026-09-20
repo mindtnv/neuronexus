@@ -1,4 +1,4 @@
-// UI store — sidebar collapse (persisted) + zen mode (ephemeral).
+// UI store — persisted sidebar preferences.
 //
 // The store is a Zustand singleton, so each test resets it via setState. We
 // stub `window.localStorage` per-test (happy-dom provides one, but we want
@@ -54,7 +54,7 @@ function restoreWindow(): void {
 
 beforeEach(() => {
   // Reset store to defaults before every test.
-  useUI.setState({ sidebarCollapsed: false, zenMode: false });
+  useUI.setState({ sidebarCollapsed: false });
 });
 
 afterEach(() => {
@@ -100,31 +100,6 @@ describe('ui-store — sidebar collapse', () => {
 
     data[SIDEBAR_KEY] = '0';
     expect(readSidebarCollapsed()).toBe(false);
-  });
-});
-
-describe('ui-store — zen mode (ephemeral)', () => {
-  test('toggleZen flips state', () => {
-    expect(useUI.getState().zenMode).toBe(false);
-    useUI.getState().toggleZen();
-    expect(useUI.getState().zenMode).toBe(true);
-    useUI.getState().toggleZen();
-    expect(useUI.getState().zenMode).toBe(false);
-  });
-
-  test('setZen sets state', () => {
-    useUI.getState().setZen(true);
-    expect(useUI.getState().zenMode).toBe(true);
-    useUI.getState().setZen(false);
-    expect(useUI.getState().zenMode).toBe(false);
-  });
-
-  test('zen mode never persists to localStorage', () => {
-    const { storage, data } = makeMemoryStorage();
-    setWindow({ localStorage: storage });
-    useUI.getState().setZen(true);
-    useUI.getState().toggleZen();
-    expect(Object.keys(data)).toHaveLength(0);
   });
 });
 

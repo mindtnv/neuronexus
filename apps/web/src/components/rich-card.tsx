@@ -31,6 +31,7 @@ import {
   type ContentBlock,
 } from '@/lib/render-card';
 import { useT } from '@/lib/i18n';
+import { mermaidTheme } from '@/lib/mermaid-theme';
 import { useCodeCopyButtons } from './chat/code-copy';
 import type { FieldValues, NoteTypeDef } from '@neuronexus/shared';
 
@@ -60,6 +61,14 @@ function failureIsland(block: ContentBlock, heading: string, advice: string): st
   return `<div class="nn-content-error" role="note"><strong>${escapeText(heading)}</strong><p>${escapeText(advice)}</p><pre><code>${escapeText(block.source)}</code></pre></div>`;
 }
 
+// Mermaid configuration is global: keep each initialize/render pair together.
+let diagramQueue: Promise<unknown> = Promise.resolve();
+function queueDiagram<T>(render: () => Promise<T>): Promise<T> {
+  const result = diagramQueue.then(render, render);
+  diagramQueue = result.catch(() => {});
+  return result;
+}
+
 export const RichCard = ({
   noteType,
   fieldValues,
@@ -79,15 +88,15 @@ export const RichCard = ({
   // placeholder-key → sanitized SVG (or a static error island). Keys not yet in
   // the map stay as inert placeholder text (a brief "loading" state) in SafeHtml.
   const [islands, setIslands] = useState<Map<string, string>>(new Map());
-  const [diagramTheme, setDiagramTheme] = useState<'dark' | 'default'>(() =>
-    typeof document !== 'undefined' && document.documentElement.dataset.themeMode === 'light' ? 'default' : 'dark');
+  const readTheme = () => typeof document === 'undefined' ? 'default:dark' : `${document.documentElement.dataset.theme ?? 'default'}:${document.documentElement.dataset.themeMode ?? 'dark'}`;
+  const [diagramTheme, setDiagramTheme] = useState(readTheme);
 
   useEffect(() => {
     if (!mermaid.length) return;
-    const update = () => setDiagramTheme(document.documentElement.dataset.themeMode === 'light' ? 'default' : 'dark');
+    const update = () => setDiagramTheme(readTheme());
     update();
     const observer = new MutationObserver(update);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-mode'] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-theme-mode'] });
     return () => observer.disconnect();
   }, [mermaid.length]);
 
@@ -105,20 +114,7 @@ export const RichCard = ({
       try {
         // Lazy import — mermaid is a large package, kept out of the shared bundle.
         mermaidApi = (await import('mermaid')).default;
-        mermaidApi.initialize({
-          startOnLoad: false,
-          securityLevel: 'strict',
-          suppressErrorRendering: true,
-          theme: diagramTheme,
-          // Render labels as native SVG `<text>`, NOT as HTML inside
-          // `<foreignObject>` (the SVG→HTML XSS escape hatch the mermaid sink
-          // forbids — see MERMAID_DOMPURIFY_CONFIG). Without this, flowchart /
-          // state labels live in foreignObject and get stripped → blank nodes.
-          // Root-level `htmlLabels` is the canonical v11 setting (it supersedes
-          // the deprecated per-diagram `flowchart.htmlLabels`) and applies across
-          // flowchart / class / state diagrams.
-          htmlLabels: false,
-        });
+
       } catch {
         for (const block of mermaid) {
           next.set(block.key, failureIsland(block, t('editor.richText.diagramAt', block), t('editor.richText.diagramUnavailable')));
@@ -132,7 +128,25 @@ export const RichCard = ({
         try {
           // A unique DOM id per render call (mermaid injects a scratch node).
           const id = `nnmmd-${key}`;
-          const { svg } = await mermaidApi.render(id, source);
+          const { svg } = await queueDiagram(async () => {
+            if (cancelled) return { svg: '' };
+        mermaidApi.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          suppressErrorRendering: true,
+          theme: 'base',
+          themeVariables: mermaidTheme(...diagramTheme.split(':') as [string, string]),
+          // Render labels as native SVG `<text>`, NOT as HTML inside
+          // `<foreignObject>` (the SVG→HTML XSS escape hatch the mermaid sink
+          // forbids — see MERMAID_DOMPURIFY_CONFIG). Without this, flowchart /
+          // state labels live in foreignObject and get stripped → blank nodes.
+          // Root-level `htmlLabels` is the canonical v11 setting (it supersedes
+          // the deprecated per-diagram `flowchart.htmlLabels`) and applies across
+          // flowchart / class / state diagrams.
+          htmlLabels: false,
+        });
+            return mermaidApi.render(id, source);
+          });
           const safe = sanitizeMermaidSvg(svg);
           next.set(key, `<div class="nn-mermaid">${safe}</div>`);
         } catch {

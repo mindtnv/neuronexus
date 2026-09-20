@@ -24,6 +24,8 @@ const m = {
     dragHint: 'Drag nodes · scroll to zoom · drag empty space to pan',
   },
   legend: {
+    collapse: 'Collapse cluster list',
+    expand: 'Show cluster list',
     title: 'Clusters',
     empty: 'No decks yet',
     hide: 'Hide cluster',

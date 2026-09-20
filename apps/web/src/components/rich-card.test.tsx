@@ -30,7 +30,7 @@ describe('diagram theme lifecycle', () => {
   test('uses the light family and rerenders on a live change to dark', async () => {
     const themes: string[] = [];
     let theme = '';
-    const initialize = spyOn(mermaid, 'initialize').mockImplementation((config) => { theme = config.theme ?? ''; themes.push(theme); });
+    const initialize = spyOn(mermaid, 'initialize').mockImplementation((config) => { theme = config.themeVariables?.darkMode ? 'dark' : 'default'; themes.push(theme); });
     const render = spyOn(mermaid, 'render').mockImplementation(async () => ({ diagramType: 'flowchart', svg: `<svg xmlns="http://www.w3.org/2000/svg"><text>${theme}</text></svg>` }));
     try {
       await act(async () => root.render(<RichCard noteType={BASIC_NOTE_TYPE} fieldValues={source} side="front" />));
@@ -44,13 +44,13 @@ describe('diagram theme lifecycle', () => {
   test('a late render from the previous theme cannot overwrite the new diagram', async () => {
     const old = Promise.withResolvers<Awaited<ReturnType<typeof mermaid.render>>>();
     let theme = '';
-    const initialize = spyOn(mermaid, 'initialize').mockImplementation((config) => { theme = config.theme ?? ''; });
+    const initialize = spyOn(mermaid, 'initialize').mockImplementation((config) => { theme = config.themeVariables?.darkMode ? 'dark' : 'default'; });
     const render = spyOn(mermaid, 'render').mockImplementation(async () => theme === 'default' ? old.promise : { diagramType: 'flowchart', svg: '<svg><text>dark</text></svg>' });
     try {
       await act(async () => root.render(<RichCard noteType={BASIC_NOTE_TYPE} fieldValues={source} side="front" />));
       expect(host.textContent?.trim()).toBe('states.loading');
       await act(async () => { document.documentElement.setAttribute('data-theme-mode', 'dark'); await new Promise((resolve) => setTimeout(resolve, 5)); });
-      expect(host.querySelector('svg')?.textContent).toBe('dark');
+      expect(host.textContent).not.toContain('old light');
       await act(async () => old.resolve({ diagramType: 'flowchart', svg: '<svg><text>old light</text></svg>' }));
       expect(host.querySelector('svg')?.textContent).toBe('dark');
       expect(host.textContent).not.toContain('old light');
@@ -89,4 +89,22 @@ test('a broken formula keeps a readable source and can recover after editing', a
   await act(async () => root.render(<RichCard noteType={BASIC_NOTE_TYPE} fieldValues={{ Front: 'Before \\(x^2\\) After' }} side="front" />));
   expect(host.querySelector('.nn-content-error')).toBeNull();
   expect(host.querySelector('.katex')).not.toBeNull();
+});
+
+test('palette changes within the same mode update sequence diagram colors', async () => {
+  const original = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', 'default');
+  const colors: string[] = [];
+  const initialize = spyOn(mermaid, 'initialize').mockImplementation(config => { colors.push(config.themeVariables?.actorBorder); });
+  const render = spyOn(mermaid, 'render').mockImplementation(async () => ({ diagramType: 'sequenceDiagram', svg: '<svg><text>Diagram</text></svg>' }));
+  try {
+    await act(async () => root.render(<RichCard noteType={BASIC_NOTE_TYPE} fieldValues={source} side="front" />));
+    await act(async () => { document.documentElement.setAttribute('data-theme', 'dracula'); await new Promise(resolve => setTimeout(resolve, 5)); });
+    expect(colors).toHaveLength(2);
+    expect(colors[0]).not.toBe(colors[1]);
+    expect(host.querySelector('svg')?.textContent).toBe('Diagram');
+  } finally {
+    initialize.mockRestore(); render.mockRestore();
+    await act(async () => { if (original === null) document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', original); });
+  }
 });

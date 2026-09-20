@@ -1,3 +1,4 @@
+import { compareDeckOrder } from '@neuronexus/shared';
 import type { Card, Deck } from './types';
 
 export interface DeckNode {
@@ -18,7 +19,7 @@ export function buildDeckTree(decks: Deck[]): DeckNode[] {
   const build = (parentId: string | null, depth: number): DeckNode[] =>
     (byParent.get(parentId) ?? [])
       .slice()
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort(compareDeckOrder)
       .map((deck) => ({ deck, depth, children: build(deck.id, depth + 1) }));
   return build(null, 0);
 }

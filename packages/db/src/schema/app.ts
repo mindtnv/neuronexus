@@ -1,3 +1,4 @@
+import { DECK_COLORS } from '@neuronexus/shared';
 import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
@@ -57,14 +58,7 @@ export const plantSpeciesEnum = [
 
 // ── enums ───────────────────────────────────────────────────────────────────
 
-export const deckColor = pgEnum('deck_color', [
-  'lime',
-  'amber',
-  'violet',
-  'sky',
-  'rose',
-  'neutral',
-]);
+export const deckColor = pgEnum('deck_color', DECK_COLORS);
 export const plantSpecies = pgEnum('plant_species', plantSpeciesEnum);
 export const cardState = pgEnum('card_state', ['new', 'learning', 'review', 'relearning']);
 
@@ -164,6 +158,7 @@ export const decks = pgTable(
     name: text('name').notNull(),
     color: deckColor('color').notNull().default('lime'),
     icon: text('icon'),
+    position: integer('position').notNull().default(0),
     species: plantSpecies('species').notNull().default('fern'),
     // Optional binding to a named FSRS preset. ON DELETE SET NULL so deleting a
     // preset unbinds decks automatically rather than cascading the deck delete.

@@ -13,6 +13,7 @@ export type IconName =
   | 'edit' | 'link' | 'sync' | 'arrow' | 'trophy' | 'target' | 'mic'
   | 'image' | 'dots' | 'filter' | 'grid' | 'stars' | 'bulb' | 'pin'
   | 'clip' | 'doc' | 'book' | 'send' | 'note' | 'copy' | 'warning'
+  | 'archive' | 'card-type' | 'info' | 'code' | 'globe' | 'star'
   | 'chat' | 'review' | 'decks' | 'cards' | 'library' | 'notebook' | 'chart'
   | 'panel' | 'menu' | 'logout';
 
@@ -35,6 +36,31 @@ export const NNIcon = ({
     strokeLinejoin: 'round' as const,
   };
   const paths: Partial<Record<string, ReactNode>> = {
+    math: <path d="M5 6h14M5 12h14M5 18h14M8 3v6M16 15v6" {...p}/>,
+    flask: <path d="M9 3h6M10 3v6L4 19a1 1 0 0 0 1 2h14a1 1 0 0 0 1-2L14 9V3M7 15h10" {...p}/>,
+    atom: <path d="M3 12a9 4 0 1 0 18 0 9 4 0 1 0-18 0M7 4c-5 3 5 20 10 16S12 1 7 4M17 4c5 3-5 20-10 16S12 1 17 4M12 12h.01" {...p}/>,
+    dna: <path d="M6 3c0 9 12 9 12 18M18 3C18 12 6 12 6 21M7 5h10M9 9h6M9 15h6M7 19h10" {...p}/>,
+    laptop: <path d="M5 4h14v12H5zM2 20h20l-3-4H5z" {...p}/>,
+    cpu: <path d="M7 7h10v10H7zM10 10h4v4h-4zM9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4" {...p}/>,
+    database: <path d="M4 6c0-4 16-4 16 0s-16 4-16 0v12c0 4 16 4 16 0V6M4 12c0 4 16 4 16 0" {...p}/>,
+    terminal: <path d="M3 4h18v16H3zM6 8l4 4-4 4M13 16h5" {...p}/>,
+    cloud: <path d="M7 18a5 5 0 1 1 0-10 6 6 0 0 1 12 1 4.5 4.5 0 0 1-1 9z" {...p}/>,
+    shield: <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6zM8 12l3 3 5-6" {...p}/>,
+    key: <path d="M10 14a6 6 0 1 1 4-4l7 7v4h-4v-3h-3zM7 7h.01" {...p}/>,
+    briefcase: <path d="M3 7h18v14H3zM8 7V3h8v4M3 12l9 3 9-3M12 12v5" {...p}/>,
+    scales: <path d="M12 3v18M6 21h12M4 7h16M6 7l-4 8h8zM18 7l-4 8h8z" {...p}/>,
+    heart: <path d="M12 21 3 12C-2 5 7-1 12 6c5-7 14-1 9 6z" {...p}/>,
+    music: <path d="M9 18V5l12-2v13M9 5v4l12-2M9 18c0 4-7 4-7 0s7-4 7 0M21 16c0 4-7 4-7 0s7-4 7 0" {...p}/>,
+    camera: <path d="M3 7h4l2-3h6l2 3h4v14H3zM8 14a4 4 0 1 0 8 0 4 4 0 1 0-8 0" {...p}/>,
+    compass: <path d="M3 12a9 9 0 1 0 18 0 9 9 0 1 0-18 0M16 8l-3 5-5 3 3-5z" {...p}/>,
+    map: <path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15M15 6v15" {...p}/>,
+    rocket: <path d="M8 16c-2-8 5-13 13-13 0 8-5 15-13 13zM8 8H4l-2 7 6 1M16 16v4l-7 2-1-6M5 19l-2 2M13 8a2 2 0 1 0 4 0 2 2 0 1 0-4 0" {...p}/>,
+    puzzle: <path d="M3 3h6a3 3 0 1 1 6 0h6v6a3 3 0 1 0 0 6v6h-6a3 3 0 1 0-6 0H3v-6a3 3 0 1 1 0-6z" {...p}/>,
+    coffee: <path d="M4 7h12v9a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4zM16 8h3a3 3 0 0 1 0 6h-3M7 2v2M12 2v2M2 23h18" {...p}/>,
+    dumbbell: <path d="M3 8h4v8H3zM17 8h4v8h-4zM7 11h10v2H7M1 10v4M23 10v4" {...p}/>,
+    code: <path d="m8 6-6 6 6 6M16 6l6 6-6 6M14 3l-4 18" {...p}/>,
+    globe: <><circle cx="12" cy="12" r="9" {...p}/><ellipse cx="12" cy="12" rx="4" ry="9" {...p}/><path d="M3 12h18" {...p}/></>,
+    star: <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z" {...p}/>,
     chat: <path d="M7 4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-6l-5 3v-3a3 3 0 0 1-3-3V8a4 4 0 0 1 4-4ZM8 9h8M8 13h5" {...p} />,
     review: <path d="M4 10a8 8 0 1 1 1.4 6.7M4 4v6h6M12 7v5l3 2" {...p} />,
     decks: <><rect x="4" y="9" width="16" height="12" rx="2.5" {...p} /><path d="M6 6h12M8 3h8" {...p} /></>,
@@ -67,6 +93,9 @@ export const NNIcon = ({
         {...p}
       />
     ),
+    archive: <><path d="M4 8h16v12H4zM3 4h18v4H3zM10 12h4" {...p} /></>,
+    'card-type': <><rect x="3" y="6" width="14" height="15" rx="2" {...p} /><path d="M7 3h12a2 2 0 0 1 2 2v12M6 10h8M6 14h5M6 18h3" {...p} /></>,
+    info: <><circle cx="12" cy="12" r="9" {...p} /><path d="M12 11v6M12 7h.01" {...p} /></>,
     stack: <path d="M4 7l8-4 8 4-8 4-8-4zM4 12l8 4 8-4M4 17l8 4 8-4" {...p} />,
     plus: <path d="M12 5v14M5 12h14" {...p} />,
     search: (

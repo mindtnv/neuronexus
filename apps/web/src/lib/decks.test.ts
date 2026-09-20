@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { deckRowTarget, type DeckNode } from './decks';
+import { buildDeckTree, deckRowTarget, type DeckNode } from './decks';
 import type { Deck } from './types';
 
 function makeDeck(id: string, name: string): Deck {
@@ -41,4 +41,12 @@ describe('deckRowTarget', () => {
     const result = deckRowTarget(node);
     expect(decodeURIComponent((result as { query: string }).query)).toBe('deck:"a \\"b\\" c"');
   });
+});
+
+
+test('manual order survives tree construction and legacy ties stay alphabetical', () => {
+  const a = makeDeck('a','Alpha'), b = makeDeck('b','Beta'), c = makeDeck('c','Child');
+  expect(buildDeckTree([b,a]).map(n=>n.deck.id)).toEqual(['a','b']);
+  expect(buildDeckTree([{...a,position:2},{...b,position:1},{...c,parentId:'b',position:3}]).map(n=>n.deck.id)).toEqual(['b','a']);
+  expect(buildDeckTree([{...a,position:2},{...b,position:1},{...c,parentId:'b',position:3}])[0].children[0].deck.id).toBe('c');
 });

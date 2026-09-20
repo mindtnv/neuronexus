@@ -4,7 +4,7 @@
 The deck tree has no way to narrow a long list. Add useful controls while retaining its hierarchy and existing actions.
 
 ## What Changes
-- Search deck names and filter All, Due or Empty using the same aggregate counts displayed in rows.
+- Search deck names; the All, Due and Empty status segments were retired after usability feedback.
 - Preserve ancestor context and reveal matching nested decks without overwriting saved expansion preferences.
 - Add expand/collapse-all and a clear-filter empty state.
 

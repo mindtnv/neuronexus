@@ -3,6 +3,9 @@
 import { normalizeFieldName, validFieldNames, validateTemplates, typedAnswerField, renameFieldValues, renameTemplateFields } from '@neuronexus/shared';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useModalFocus } from '@/lib/use-modal-focus';
+import { raiseToast } from '@/components/toasts';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
 import { NNBtn, NNBadge, NNCard, NNIcon, NNPageSkeleton } from '@/components/ui';
@@ -46,8 +49,8 @@ const inputStyle: React.CSSProperties = {
   width: '100%',
   padding: '9px 12px',
   borderRadius: 10,
-  background: 'var(--surface)',
-  border: '1px solid var(--border)',
+  background: 'color-mix(in srgb, var(--surface-2) 60%, transparent)',
+  border: '1px solid var(--panel-edge)',
   color: 'var(--text)',
   fontFamily: 'var(--font-sans)',
   fontSize: 14,
@@ -67,8 +70,7 @@ const monoTextarea: React.CSSProperties = {
 const labelStyle: React.CSSProperties = {
   fontSize: 11,
   color: 'var(--text-dim)',
-  textTransform: 'uppercase',
-  letterSpacing: 0.8,
+  fontWeight: 500,
   marginBottom: 6,
   display: 'flex',
   alignItems: 'center',
@@ -151,8 +153,8 @@ const NoteTypeList = ({
   );
 
   return (
-    <div style={{ padding: 24, maxWidth: 760, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+<div className="reomi-page-surface reomi-note-types-workspace nn-scroll">
+<header className="reomi-note-types-heading">
         <NNBtn size="sm" variant="ghost" icon="chevl" onClick={onBack}>
           {t('noteTypes.list.back')}
         </NNBtn>
@@ -162,16 +164,17 @@ const NoteTypeList = ({
         <NNBtn size="sm" variant="primary" icon="plus" onClick={onCreate}>
           {t('noteTypes.list.newType')}
         </NNBtn>
-      </div>
+      </header>
+      <p className="reomi-note-types-intro">{t('noteTypes.list.hint')}</p>
 
       {sorted.length === 0 ? (
         <NNCard>
           <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>{t('noteTypes.list.empty')}</div>
         </NNCard>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+<div className="reomi-note-types-list">
           {sorted.map((nt) => (
-            <NNCard key={nt.id}>
+            <NNCard key={nt.id} className="reomi-note-type-row">
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>{nt.name}</div>
                 <NNBadge size="xs" tone={nt.isBuiltin ? 'sky' : 'lime'}>
@@ -188,7 +191,7 @@ const NoteTypeList = ({
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
                 <NNBtn size="sm" variant="soft" icon="edit" onClick={() => onEdit(nt)}>
-                  {nt.isBuiltin ? t('noteTypes.list.clone') : t('noteTypes.list.edit')}
+                  {t('noteTypes.list.edit')}
                 </NNBtn>
                 {!nt.isBuiltin && <NNBtn size="sm" variant="soft" onClick={() => onApply(nt)}>{t('noteTypes.convert.applyToNotes')}</NNBtn>}
                 {!nt.isBuiltin && <NNBtn size="sm" variant="soft" onClick={() => onKind(nt)}>{t('noteTypes.kind.change')}</NNBtn>}
@@ -428,7 +431,7 @@ const TemplatePreview = ({
               fieldValues={sample}
               side="front"
               templateOrd={template.ord}
-              style={{ fontFamily: 'var(--font-serif)', fontSize: 22, lineHeight: 1.3, color: 'var(--text)', wordBreak: 'break-word' }}
+              style={{ fontFamily: 'var(--font-sans)', fontSize: 22, lineHeight: 1.3, color: 'var(--text)', wordBreak: 'break-word' }}
             />
           </div>
           <div style={{ height: 1, background: 'linear-gradient(to right, transparent, var(--border-2), transparent)' }} />
@@ -679,9 +682,9 @@ const NoteTypeForm = ({
       : t('noteTypes.editor.editTitle', { name: editing.name });
 
   return (
-    <div ref={formRoot} style={{ padding: 24, maxWidth: 1100, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
+    <div ref={formRoot} className="reomi-page-surface reomi-note-type-editor nn-scroll">
       <EditorDraftNotice draft={localDraft} stale={Boolean(localDraft.pending && localDraft.pending.value.baseVersion !== editing?.updatedAt)} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
+<header className="reomi-note-type-editor-heading">
         <NNBtn size="sm" variant="ghost" icon="chevl" onClick={onCancel} disabled={saving}>
           {t('noteTypes.editor.back')}
         </NNBtn>
@@ -691,26 +694,15 @@ const NoteTypeForm = ({
         <NNBtn size="sm" variant="primary" icon="check" onClick={() => handleSave()} disabled={saving || localDraft.blocked}>
           {saving
             ? t('noteTypes.actions.saving')
-            : isClone
-              ? t('noteTypes.actions.saveCopy')
-              : t('noteTypes.actions.save')}
+            : t('noteTypes.actions.save')}
         </NNBtn>
         {editing && !isClone && <NNBtn size="sm" disabled={saving || localDraft.blocked} onClick={() => handleSave(true)}>{t('noteTypes.actions.saveCopy')}</NNBtn>}
-      </div>
+      </header>
 
       {offerCopy && editing && <NNCard style={{ marginBottom: 16 }}>
         <p>{t('noteTypes.errors.copyHint')}</p>
       </NNCard>}
 
-      {isClone && (
-        <div style={{
-          marginBottom: 16, padding: '10px 12px',
-          background: 'color-mix(in srgb, var(--sky-400) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--sky-400) 28%, transparent)',
-          borderRadius: 10, color: 'var(--sky-400)', fontSize: 12.5,
-        }}>
-          {t('noteTypes.editor.cloneNotice')}
-        </div>
-      )}
 
       {latest && <NNCard padding={16} style={{ marginBottom: 16 }}>
         <div role="status">{t('noteTypes.impact.latest')}</div>
@@ -726,13 +718,14 @@ const NoteTypeForm = ({
         }}>{t('noteTypes.impact.loadLatest')}</NNBtn>
       </NNCard>}
 
-      <fieldset disabled={saving || localDraft.blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0, display: isMobile ? 'flex' : 'grid', flexDirection: 'column', gridTemplateColumns: isMobile ? undefined : '1fr 380px', gap: 20 }}>
+      <fieldset disabled={saving || localDraft.blocked} className="reomi-note-type-columns">
         {/* Left: editor */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+<div className="reomi-note-type-fields">
           {/* Name */}
           <div>
             <div style={labelStyle}><span>{t('noteTypes.editor.nameLabel')}</span></div>
             <input
+              aria-label={t('noteTypes.editor.nameLabel')}
               value={draft.name}
               onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
               placeholder={t('noteTypes.editor.namePlaceholder')}
@@ -827,7 +820,7 @@ const NoteTypeForm = ({
         </div>
 
         {/* Right: sample values + live preview */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+<aside className="reomi-note-type-preview">
           <div>
             <div style={sectionTitleStyle}>{t('noteTypes.preview.title')}</div>
             <div style={{ ...hintStyle, margin: '6px 0 10px' }}>{t('noteTypes.preview.hint')}</div>
@@ -840,6 +833,7 @@ const NoteTypeForm = ({
                       {name}
                     </span>
                     <input
+                      aria-label={`${t('noteTypes.preview.sampleLabel')}: ${name}`}
                       value={sample[name] ?? name}
                       onChange={(e) => setSample((s) => ({ ...s, [name]: e.target.value }))}
                       style={{ ...inputStyle, flex: 1, padding: '7px 10px', fontSize: 13 }}
@@ -855,7 +849,7 @@ const NoteTypeForm = ({
               <TemplatePreview key={i} template={tpl} draft={draft} sample={effectiveSample} />
             ))}
           </div>
-        </div>
+        </aside>
       </fieldset>
     </div>
   );
@@ -864,9 +858,11 @@ const NoteTypeForm = ({
 // A mode transition is reviewed separately from field/template edits.
 const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () => void }) => {
   const t = useT();
+  const modal = useRef<HTMLDivElement>(null);
+  useModalFocus(modal);
   const { confirm } = useDialog();
   const update = useNN((state) => state.updateNoteType);
-  const [kind, setKind] = useState<RenderKind>(editing.kind === 'typein' ? 'basic' : 'typein');
+  const [kind, setKind] = useState<RenderKind>(editing.kind);
   const [answerFieldId, setAnswerFieldId] = useState(typedAnswerField(editing.fields)?.id ?? '');
   const [version] = useState(editing.updatedAt);
   const [busy, setBusy] = useState(false);
@@ -902,22 +898,23 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
       }
     } finally { lock.current = false; if (alive.current) setBusy(false); }
   };
-  return <div style={{ padding: 24, maxWidth: 760, margin: '0 auto', width: '100%' }}>
-    <NNBtn variant="ghost" size="sm" onClick={onDone} disabled={busy}>{t('actions.cancel')}</NNBtn>
-    <h2>{t('noteTypes.kind.title', { name: editing.name })}</h2>
-    <p>{t('noteTypes.kind.scope')}</p>
+  return createPortal(<div className="reomi-overlay-backdrop" onClick={event => { if (event.target === event.currentTarget && !busy) onDone(); }}>
+    <div ref={modal} role="dialog" aria-modal="true" aria-labelledby="note-type-mode-title" className="reomi-flow-dialog" tabIndex={-1}
+      onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.stopPropagation(); onDone(); } }}>
+    <header><h2 id="note-type-mode-title">{t('noteTypes.kind.title', { name: editing.name })}</h2><NNBtn variant="ghost" icon="x" onClick={onDone} disabled={busy} ariaLabel={t('actions.close')} /></header>
+    <p className="reomi-flow-intro">{t('noteTypes.kind.intro')}</p>
     <fieldset disabled={busy} style={{ border: 0, padding: 0, display: 'grid', gap: 16 }}>
       <label>{t('noteTypes.kind.mode')}<select aria-label={t('noteTypes.kind.mode')} style={inputStyle} value={kind} onChange={(event) => setKind(event.target.value as RenderKind)}>
-        {(['basic', 'custom', 'typein', 'cloze'] as const).filter((value) => value !== editing.kind).map((value) => <option value={value} key={value}>{label(value)}</option>)}
+        {(['basic', 'custom', 'typein', 'cloze'] as const).map((value) => <option value={value} key={value}>{label(value)}</option>)}
       </select></label>
       {kind === 'typein' && <label>{t('noteTypes.answerField')}<select aria-label={t('noteTypes.answerField')} style={inputStyle} value={answerFieldId} onChange={(event) => setAnswerFieldId(event.target.value)}>
         {editing.fields.map((field) => <option value={field.id} key={field.id}>{field.name}</option>)}
       </select></label>}
       <p>{kind === 'cloze' ? t('noteTypes.kind.cloze') : t('noteTypes.kind.scopeHint')}</p>
-      <NNBtn variant="primary" onClick={apply}>{busy ? t('noteTypes.actions.saving') : t('noteTypes.kind.preview')}</NNBtn>
+      <NNBtn variant="primary" disabled={kind === editing.kind} onClick={apply}>{busy ? t('noteTypes.actions.saving') : t('noteTypes.kind.preview')}</NNBtn>
     </fieldset>
     {error && <p role="alert" style={{ color: 'var(--rose-400)', whiteSpace: 'pre-wrap' }}>{error}</p>}
-  </div>;
+  </div></div>, document.body);
 };
 
 // ── Screen orchestrator ──────────────────────────────────────────────────────
@@ -934,7 +931,6 @@ export const NNNoteTypeEditor = () => {
   const ownerId = useNN(state => state.profile?.userId) ?? '';
   const bootstrapped = useNN(state => state.bootstrapped);
   const [deleting, setDeleting] = useState<NoteType | null>(null);
-  const [cloneResult, setCloneResult] = useState<{ source: NoteType; target: NoteType } | null>(null);
 
   const editing = useMemo(
     () => (editId ? noteTypes.find((nt) => nt.id === editId) ?? null : null),
@@ -956,27 +952,21 @@ export const NNNoteTypeEditor = () => {
 
   if (!bootstrapped) return <NNPageSkeleton />;
 
-  if (kindId && editing && !editing.isBuiltin) return <NoteTypeKindForm key={editing.id} editing={editing} onDone={goList} />;
 
   // Form mode: explicit ?new=1 OR ?edit=<id> resolving to a known type.
-  if (isNew || editing) {
+  if (isNew || (editing && !kindId)) {
     return (
       <NoteTypeForm key={`${ownerId}:${editing?.id ?? 'new'}`}
         editing={editing}
-        onDone={(saved) => { if (editing && saved.id !== editing.id) setCloneResult({ source: editing, target: saved }); else setCloneResult(null); goList(); }}
+        onDone={() => { raiseToast({ kind: 'success', title: t('noteTypes.saved') }); goList(); }}
         onCancel={goList}
       />
     );
   }
 
-  if (cloneResult) return <div style={{ padding: 24, maxWidth: 760, margin: '0 auto' }}>
-    <h2>{cloneResult.target.name}</h2><p>{t('noteTypes.convert.afterClone')}</p>
-    <NNBtn variant="primary" onClick={() => router.push(`/cards?noteTypeId=${encodeURIComponent(cloneResult.source.id)}&convertTo=${encodeURIComponent(cloneResult.target.id)}`)}>{t('noteTypes.convert.selectNotes')}</NNBtn>
-    <NNBtn variant="ghost" onClick={() => setCloneResult(null)}>{t('noteTypes.editor.back')}</NNBtn>
-  </div>;
-
   return (
     <>
+    {kindId && editing && !editing.isBuiltin && <NoteTypeKindForm key={editing.id} editing={editing} onDone={goList} />}
     {deleting && <NoteTypeDeletionDialog key={deleting.id} type={deleting} onClose={() => setDeleting(null)}
       onPreserve={() => { setDeleting(null); router.push(`/cards?noteTypeId=${encodeURIComponent(deleting.id)}`); }} />}
     <NoteTypeList

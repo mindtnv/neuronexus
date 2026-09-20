@@ -10,14 +10,14 @@ import { I18nProvider } from '../../lib/i18n';
 import { clearSessionResourceCache } from '../../lib/session-resource';
 import { useNN } from '../../lib/store';
 import { cardFromApi, profileFromApi } from '../../lib/mappers';
-import { clearStudyResult, saveStudyResult, type StudyResult } from '../../lib/study-result';
+import { clearStudyResult, readStudyResult, saveStudyResult, type StudyResult } from '../../lib/study-result';
 
 // Re-register before loading DOM-dependent modules; other suites tear the DOM down.
 ensureTestDom();
 const { createRoot } = await import('react-dom/client');
 const { NNHome } = await import('./home');
 const { NNDecks } = await import('./decks');
-const { NNSessionComplete } = await import('./session-complete');
+const { ReviewSessionDone } = await import('../review-session-done');
 
 const counts = { total: 601, newCount: 601, learningCount: 0, reviewCount: 0, suspendedCount: 0, dueLearning: 0, dueReview: 0, nextLearningAt: null, nextDueAt: null, newRemaining: 20, reviewRemaining: 200, availableNew: 20, availableReview: 0, totalAvailable: 20, limitedNew: 581, limitedReview: 0, serverNow: new Date().toISOString() };
 const overview = { overall: counts, decks: { deck: counts }, direct: { deck: counts } };
@@ -70,6 +70,8 @@ describe('study overview screens', () => {
 
   test('decks use server totals and daily availability', async () => {
     await render(<NNDecks />);
+    expect(container.querySelector('.reomi-decks-toolbar [role="radiogroup"]')).toBeNull();
+    expect(container.querySelector('.reomi-decks-search input')).not.toBeNull();
     expect(container.querySelector('.nn-topbar-subtitle')?.textContent).toBe('601');
     const review = container.querySelector('a[href="/review?deck=deck"]');
     expect(review).not.toBeNull();
@@ -119,26 +121,156 @@ describe('study overview screens', () => {
     expect(loads).toBeGreaterThan(before);
   });
 
-  test('session results distinguish answers from cards, use real counts and keep the deck scope', async () => {
-    useNN.setState({ profile: profileFromApi({ userId: 'result-user', name: 'Tester' }) });
-    saveStudyResult(result);
-    await render(<NNSessionComplete />);
-    expect(container.textContent).toContain('Answers2');
-    expect(container.textContent).toContain('Cards reviewed1');
-    expect(container.textContent).toContain('20 in queue');
-    expect(container.textContent).not.toContain('9:30');
+  test('inline results distinguish answers from cards and show active duration and grades', async () => {
+    await render(<ReviewSessionDone completed={result.answers} xp={result.xpGained} stats={{ cards: result.cards, durationMs: result.durationMs, grades: result.grades, answers: [{ durationMs: 1200, rating: 1 }, { durationMs: 1100, rating: 3 }] }} />);
+    expect(container.textContent).toContain('2Answers');
+    expect(container.textContent).toContain('1Cards reviewed');
+    expect(container.textContent).toContain('0:02');
+    expect(container.querySelectorAll('.reomi-session-chart-legend strong').length).toBe(4);
+    expect(container.querySelector('a[href="/session/complete"]')).toBeNull();
+    const timing = container.querySelectorAll<HTMLButtonElement>('.reomi-duration-bars button');
+    expect(timing).toHaveLength(2);
+    await act(async () => timing[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
+    expect(container.querySelector('.reomi-duration-detail')?.textContent).toContain('Answer 2');
     expect(container.textContent).not.toContain('Fern grew');
-    expect(container.textContent).not.toContain('Re-queue all');
-    const continueButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Continue studying'))!;
-    await act(async () => continueButton.click());
-    expect(navigations.at(-1)).toBe('/review?deck=deck');
   });
 
-  test('a new account never sees another account\'s result', async () => {
+  test('a new account never reads another account\'s stored result', () => {
     saveStudyResult(result);
-    useNN.setState({ profile: profileFromApi({ userId: 'someone-else', name: 'Other' }) });
-    await render(<NNSessionComplete />);
-    expect(container.textContent).toContain('No recent session');
-    expect(container.textContent).not.toContain('Distinct cards');
+    expect(readStudyResult('someone-else')).toBeNull();
   });
+});
+
+describe('organized deck workspace', () => {
+  const deck = { id: 'deck', name: 'Study', color: 'lime' as const, species: 'fern' as const, createdAt: 0 };
+  test('icon and color editor saves both and safe fallback renders unknown legacy icons', async () => {
+    const writes: any[] = [];
+    const fallback = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init?: RequestInit) => {
+      if (init?.method === 'PATCH') { const body = JSON.parse(String(init.body)); writes.push(body); return Response.json({ ...deck, ...body }); }
+      return fallback(url, init);
+    }) as typeof fetch;
+    useNN.setState({ decks: [{ ...deck, icon: 'legacy-emoji' }] });
+    await render(<NNDecks />);
+    expect(container.querySelector('.reomi-deck-row-icon svg path')).not.toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('.reomi-deck-row-icon')!.click());
+    expect(container.querySelectorAll('dialog[open] .reomi-deck-icon-options button')).toHaveLength(48);
+    expect(container.querySelectorAll('dialog[open] .reomi-deck-color-options button')).toHaveLength(30);
+    await act(async () => { container.querySelector<HTMLButtonElement>('dialog[open] button[aria-label="Star"]')!.click(); container.querySelector<HTMLButtonElement>('dialog[open] button[aria-label="Sky"]')!.click(); });
+    await act(async () => container.querySelector<HTMLButtonElement>('dialog[open] button[type="submit"]')!.click());
+    expect(writes).toEqual([{ icon:'star', color:'sky' }]);
+    expect(useNN.getState().decks[0]).toMatchObject({icon:'star',color:'sky'});
+    expect(container.querySelector('dialog[open]')).toBeNull();
+  });
+  test('keyboard menu offers explicit relative moves and excludes source descendants', async () => {
+    useNN.setState({ decks: [deck, { ...deck,id:'child',name:'Child',parentId:'deck' },{...deck,id:'target',name:'Target'}] });
+    const writes: any[] = [];
+    const fallback = globalThis.fetch;
+    globalThis.fetch = (async (url:any,init?:RequestInit) => {
+      if (String(url).endsWith('/deck/move')) { writes.push(JSON.parse(String(init?.body))); return Response.json([{...deck,parentId:'target',position:0},{...deck,id:'child',name:'Child',parentId:'deck'},{...deck,id:'target',name:'Target'}]); }
+      return fallback(url,init);
+    }) as typeof fetch;
+    await render(<NNDecks />);
+    await act(async () => container.querySelector('[data-deck-id="deck"]')!.dispatchEvent(new KeyboardEvent('keydown',{key:'F10',shiftKey:true,bubbles:true})));
+    await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(b=>b.textContent==='Move deck')!.click());
+    const destination = container.querySelector<HTMLSelectElement>('dialog[open] select[aria-label="Destination"]')!;
+    expect(Array.from(destination.options).map(o=>o.value)).toEqual(['','target']);
+    await act(async () => { destination.value='target'; destination.dispatchEvent(new Event('change',{bubbles:true})); });
+    await act(async () => container.querySelector<HTMLButtonElement>('dialog[open] button[type="submit"]')!.click());
+    expect(writes).toEqual([{targetId:'target',placement:'inside'}]);
+    expect(useNN.getState().decks.find(d=>d.id==='deck')?.parentId).toBe('target');
+  });
+  test('desktop drag submits the indicated placement once and preserves subtree scope', async () => {
+    useNN.setState({ decks:[deck,{...deck,id:'target',name:'Target'}] });
+    const fallback = globalThis.fetch, writes:any[]=[];
+    globalThis.fetch = (async (url:any,init?:RequestInit) => {
+      if (String(url).endsWith('/deck/move')) { writes.push(JSON.parse(String(init?.body))); return Response.json([{...deck,position:1},{...deck,id:'target',name:'Target',position:0}]); }
+      return fallback(url,init);
+    }) as typeof fetch;
+    await render(<NNDecks />);
+    const source=container.querySelector<HTMLElement>('[data-deck-id="deck"] .reomi-deck-drag-handle')!;
+    const target=container.querySelector<HTMLElement>('[data-deck-id="target"]')!;
+    target.getBoundingClientRect=()=>({top:0,height:60,bottom:60,left:0,right:600,width:600,x:0,y:0,toJSON(){}});
+    const originalHit=document.elementFromPoint;
+    document.elementFromPoint=()=>target;
+    source.setPointerCapture=()=>{};
+    const event=(type:string,y:number) => new PointerEvent(type,{bubbles:true,cancelable:true,pointerId:1,pointerType:'mouse',button:0,clientX:100,clientY:y});
+    try {
+      await act(async ()=>source.dispatchEvent(event('pointerdown',10)));
+      await act(async ()=>window.dispatchEvent(event('pointermove',59)));
+      expect(target.getAttribute('data-drop')).toBe('after');
+      await act(async ()=>window.dispatchEvent(event('pointerup',59)));
+    } finally { document.elementFromPoint=originalHit; }
+    expect(writes).toEqual([{targetId:'target',placement:'after'}]);
+    expect(Array.from(container.querySelectorAll('[data-deck-id]')).map(n=>n.getAttribute('data-deck-id'))).toEqual(['target','deck']);
+  });
+  test('narrow selection opens details and Back restores the tree; failed forecast is explicit', async () => {
+    const width=window.innerWidth;
+    Object.defineProperty(window,'innerWidth',{value:432,configurable:true});
+    const fallback=globalThis.fetch;
+    globalThis.fetch=(async(url:any,init?:RequestInit)=>String(url).includes('/stats/forecast') ? Response.json({error:'unavailable'},{status:503}) : fallback(url,init)) as typeof fetch;
+    try {
+      await render(<NNDecks />);
+      expect(container.querySelector('.reomi-deck-details')).toBeNull();
+      await act(async()=>container.querySelector<HTMLElement>('[data-deck-id="deck"]')!.click());
+      expect(container.querySelector('.reomi-deck-detail-total')?.textContent).toContain('601');
+      expect(container.querySelector('.reomi-deck-details [role="alert"]')?.textContent).toContain('Could not refresh the forecast');
+      expect(container.querySelector('.reomi-deck-forecast')).toBeNull();
+      await act(async()=>container.querySelector<HTMLButtonElement>('.reomi-deck-back')!.click());
+      expect(container.querySelector('.reomi-deck-details')).toBeNull();
+    } finally { Object.defineProperty(window,'innerWidth',{value:width,configurable:true}); }
+  });
+});
+
+
+test('deck forecast preserves populated UTC buckets revived by the API client', async () => {
+  const fallback=globalThis.fetch;
+  const today=new Date().toISOString().slice(0,10);
+  globalThis.fetch=(async(url:any,init?:RequestInit)=>String(url).includes('/stats/forecast')
+    ? Response.json({days:7,buckets:[{day:today,count:7}],overdueCount:2,total:7}) : fallback(url,init)) as typeof fetch;
+  await render(<NNDecks/>);
+  await act(async()=>container.querySelector<HTMLElement>('[data-deck-id="deck"]')!.click());
+  expect(container.querySelector('.reomi-deck-forecast strong')?.textContent).toBe('7');
+  expect(container.querySelector('.reomi-deck-details')?.textContent).toContain('Overdue before today: 2');
+});
+
+test('failed move leaves the authoritative tree intact and offers retry in the dialog', async () => {
+  const initial=useNN.getState().decks;
+  const fallback=globalThis.fetch;
+  globalThis.fetch=(async(url:any,init?:RequestInit)=>String(url).endsWith('/deck/move') ? Response.json({error:'unavailable'},{status:503}) : fallback(url,init)) as typeof fetch;
+  await render(<NNDecks/>);
+  await act(async()=>container.querySelector<HTMLButtonElement>('.reomi-deck-drag-handle')!.click());
+  await act(async()=>container.querySelector<HTMLButtonElement>('dialog[open] button[type="submit"]')!.click());
+  expect(useNN.getState().decks).toEqual(initial);
+  expect(container.querySelector('dialog[open] [role="alert"]')).not.toBeNull();
+  expect(container.querySelector<HTMLButtonElement>('dialog[open] button[type="submit"]')?.disabled).toBe(false);
+});
+
+test('pointer drag rejects descendants and Escape cancels without a write', async () => {
+  const deck=useNN.getState().decks[0];
+  useNN.setState({decks:[deck,{...deck,id:'child',name:'Child',parentId:deck.id},{...deck,id:'target',name:'Target'}]});
+  const fallback=globalThis.fetch,writes:any[]=[];
+  globalThis.fetch=(async(url:any,init?:RequestInit)=>{if(String(url).includes('/move')) writes.push(init); return fallback(url,init);}) as typeof fetch;
+  await render(<NNDecks/>);
+  const source=container.querySelector<HTMLElement>('[data-deck-id="deck"] .reomi-deck-drag-handle')!;
+  const child=container.querySelector<HTMLElement>('[data-deck-id="child"]')!,target=container.querySelector<HTMLElement>('[data-deck-id="target"]')!;
+  const originalHit=document.elementFromPoint;
+  source.setPointerCapture=()=>{};
+  target.getBoundingClientRect=()=>({top:0,height:60,bottom:60,left:0,right:600,width:600,x:0,y:0,toJSON(){}});
+  const event=(type:string,y:number)=>new PointerEvent(type,{bubbles:true,cancelable:true,pointerId:1,pointerType:'mouse',button:0,clientX:100,clientY:y});
+  try {
+    document.elementFromPoint=()=>child;
+    await act(async()=>source.dispatchEvent(event('pointerdown',0)));
+    await act(async()=>window.dispatchEvent(event('pointermove',30)));
+    expect(child.getAttribute('data-drop')).toBeNull();
+    await act(async()=>window.dispatchEvent(event('pointerup',30)));
+    document.elementFromPoint=()=>target;
+    await act(async()=>source.dispatchEvent(event('pointerdown',0)));
+    await act(async()=>window.dispatchEvent(event('pointermove',30)));
+    expect(target.getAttribute('data-drop')).toBe('inside');
+    await act(async()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})));
+    await act(async()=>window.dispatchEvent(event('pointerup',30)));
+    expect(writes).toEqual([]);
+    expect(container.querySelector('[data-dragging]')).toBeNull();
+  } finally { document.elementFromPoint=originalHit; }
 });

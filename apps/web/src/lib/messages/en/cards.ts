@@ -34,6 +34,7 @@ const m = {
     suspended: 'Suspended',
   },
   sidebar: {
+    resize: 'Resize filters panel',
     filters: 'Filters',
     decks: 'Decks',
     tags: 'Tags',
@@ -42,11 +43,15 @@ const m = {
     noTags: 'No tags',
   },
   empty: {
+    collectionTitle: 'No cards yet',
+    deckHint: 'Add a card to “{name}” or adjust your search.',
+    clearSearch: 'Clear search',
     title: 'No cards found',
     subtitle: 'Try a different search or add new cards',
   },
   loading: 'Loading cards…',
   bulk: {
+    noTags: 'No matching tags yet',
     tooMany: 'Select up to 1000 cards at a time.',
     failed: 'Could not confirm the change. Check the refreshed list before trying again.',
     selected: '{n} selected',
@@ -62,6 +67,9 @@ const m = {
     clear: 'Clear selection',
   },
   actions: {
+    open: 'Actions',
+    forCard: 'Actions: {title}',
+    selectCard: 'Select: {title}',
     forget: 'Forget',
     forgetConfirm: 'Reset {n} cards to new? Their study progress will be cleared.',
     setDue: 'Set due',

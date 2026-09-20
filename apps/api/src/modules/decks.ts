@@ -1,16 +1,10 @@
 import { Elysia, t } from 'elysia';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { db, deckOptionsPreset, decks } from '@neuronexus/db';
+import { compareDeckOrder, DECK_COLORS } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
 
-const deckColorSchema = t.Union([
-  t.Literal('lime'),
-  t.Literal('amber'),
-  t.Literal('violet'),
-  t.Literal('sky'),
-  t.Literal('rose'),
-  t.Literal('neutral'),
-]);
+const deckColorSchema = t.Union(DECK_COLORS.map(color => t.Literal(color)));
 
 export const decksModule = new Elysia({ prefix: '/decks' })
   .use(authPlugin)
@@ -20,27 +14,30 @@ export const decksModule = new Elysia({ prefix: '/decks' })
   }, { auth: true })
   .post(
     '/',
-    async ({ user, body, status }) => {
+    async ({ user, body, status }) => db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${user.id}, 73))`);
       if (body.parentId) {
-        const parent = await db
+        const parent = await tx
           .select({ id: decks.id })
           .from(decks)
           .where(and(eq(decks.id, body.parentId), eq(decks.userId, user.id)))
           .limit(1);
         if (parent.length === 0) return status(400, { error: 'parent_not_found' });
       }
-      const [created] = await db
+      const [last] = await tx.select({ maximum: sql<number>`coalesce(max(${decks.position}), -1)` }).from(decks).where(eq(decks.userId, user.id));
+      const [created] = await tx
         .insert(decks)
         .values({
           userId: user.id,
           name: body.name,
           color: body.color ?? 'lime',
           icon: body.icon,
+          position: Number(last?.maximum ?? -1) + 1,
           parentId: body.parentId,
         })
         .returning();
       return created;
-    },
+    }),
     {
       auth: true,
       body: t.Object({
@@ -54,6 +51,7 @@ export const decksModule = new Elysia({ prefix: '/decks' })
   .patch(
     '/:id',
     async ({ user, params, body, status }) => db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${user.id}, 73))`);
       // Cycle guard: if setting parentId, ensure target isn't a descendant of this deck.
       if (body.parentId) {
         if (body.parentId === params.id) return status(400, { error: 'cycle' });
@@ -108,16 +106,46 @@ export const decksModule = new Elysia({ prefix: '/decks' })
       ),
     },
   )
+  .post('/:id/move', async ({ user, params, body, status }) => db.transaction(async tx => {
+    // Serialize owner hierarchy writes before reading parent links or sibling order.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${user.id}, 73))`);
+    const all = await tx.select().from(decks).where(eq(decks.userId, user.id)).orderBy(asc(decks.id)).for('update');
+    const source = all.find(deck => deck.id === params.id);
+    const target = body.targetId ? all.find(deck => deck.id === body.targetId) : null;
+    if (!source || (body.targetId && !target)) return status(404, { error: 'not_found' });
+    if (!target && body.placement !== 'inside') return status(400, { error: 'invalid_placement' });
+    if (source.id === target?.id) return status(400, { error: 'cycle' });
+    const parentId = !target ? null : body.placement === 'inside' ? target.id : target.parentId;
+    let cursor = parentId;
+    const seen = new Set<string>();
+    while (cursor) {
+      if (cursor === source.id || seen.has(cursor)) return status(400, { error: 'cycle' });
+      seen.add(cursor);
+      cursor = all.find(deck => deck.id === cursor)?.parentId ?? null;
+    }
+    const siblings = all.filter(deck => deck.id !== source.id && deck.parentId === parentId).sort(compareDeckOrder);
+    const index = !target || body.placement === 'inside' ? siblings.length
+      : siblings.findIndex(deck => deck.id === target.id) + (body.placement === 'after' ? 1 : 0);
+    siblings.splice(index, 0, source);
+    for (const [position, deck] of siblings.entries()) {
+      await tx.update(decks).set({ parentId, position }).where(and(eq(decks.id, deck.id), eq(decks.userId, user.id)));
+    }
+    return tx.select().from(decks).where(eq(decks.userId, user.id));
+  }), { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }), body: t.Object({
+    targetId: t.Union([t.String({ format: 'uuid' }), t.Null()]),
+    placement: t.Union([t.Literal('before'), t.Literal('after'), t.Literal('inside')]),
+  }) })
   .delete(
     '/:id',
-    async ({ user, params, status }) => {
+    async ({ user, params, status }) => db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${user.id}, 73))`);
       // Cascade handled by FK ON DELETE CASCADE on parent_id + deck_id (cards/reviews).
-      const [deleted] = await db
+      const [deleted] = await tx
         .delete(decks)
         .where(and(eq(decks.id, params.id), eq(decks.userId, user.id)))
         .returning({ id: decks.id });
       if (!deleted) return status(404, { error: 'not_found' });
       return { ok: true };
-    },
+    }),
     { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
   );

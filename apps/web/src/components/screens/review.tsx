@@ -11,12 +11,13 @@ import { humanInterval } from '@/lib/fsrs';
 import { api, ApiError, ok } from '@/lib/api';
 import { cardFromApi, profileFromApi } from '@/lib/mappers';
 import { RichCard } from '@/components/rich-card';
-import { SimilarCardsPanel } from '@/components/similar-cards';
+import { SimilarCardsList, useSimilarCards } from '@/components/similar-cards';
 import { SourcePeekChip, SourcePeekPanel, useFirstCardSource } from '@/components/source-peek';
+import { Modal } from '@/components/design-system/modal';
+import { ReviewSessionDone } from '@/components/review-session-done';
 import { raiseToast } from '@/components/toasts';
 import { useT, useLocale } from '@/lib/i18n';
 import { useNN } from '@/lib/store';
-import { useUI } from '@/lib/ui-store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { resolveDeckConfigClient } from '@/lib/deck-config';
@@ -92,14 +93,6 @@ export const NNReviewClassic = () => {
   const profile = useNN((s) => s.profile);
   const grade = useNN((s) => s.gradeCard);
   const undoLastReview = useNN((s) => s.undoLastReview);
-  const zenMode = useUI((s) => s.zenMode);
-  const toggleZen = useUI((s) => s.toggleZen);
-  const setZen = useUI((s) => s.setZen);
-
-  // Always exit zen when /review unmounts (route change away). app-shell also
-  // guards this by pathname, but the local cleanup makes it robust to direct
-  // unmounts and keeps re-entry non-zen.
-  useEffect(() => () => setZen(false), [setZen]);
 
   const [session, setSession] = useState(() => readStudyHandoff(profile?.userId, reviewHref, resumeCardId) ?? emptyStudySession());
   const [finished, setFinished] = useState(false);
@@ -109,9 +102,7 @@ export const NNReviewClassic = () => {
   const [summary, setSummary] = useState<StudySummary | null>(null);
   const [serverOffset, setServerOffset] = useState(0);
   const [revealed, setRevealed] = useState(false);
-  // Semantic "similar cards" drawer — only offered AFTER reveal (similar cards
-  // would spoil the answer before the flip).
-  const [similarOpen, setSimilarOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   // Feature #1 — «провал → источник». On a lapse (Again) for a card WITH
   // provenance we HOLD the queue advance and surface the cited passage right in
   // the reviewer (an overlay popover). The grade already committed server-side;
@@ -204,6 +195,8 @@ export const NNReviewClassic = () => {
   }, [bootstrapped, queueAttempt]);
 
   const current = finished ? undefined : pendingPeek ? session.history.at(-1)?.before : queue.find((c) => c.id === session.activeId);
+  const related = useSimilarCards(revealed ? current?.id ?? null : null);
+  useEffect(() => setInfoOpen(false), [current?.id]);
   useEffect(() => {
     if (!current?.noteType || queueLoading || noteTypes === catalogAtLoad.current) return;
     const latest = noteTypes.find((type) => type.id === current.noteType!.id);
@@ -282,7 +275,6 @@ export const NNReviewClassic = () => {
     setSubmitted(false);
     setTypedAnswer('');
     answerTimer.current.reset(!document.hidden);
-    setSimilarOpen(false);
   }, []);
 
   const advanceQueue = useCallback(() => {
@@ -368,37 +360,18 @@ export const NNReviewClassic = () => {
       const inInput = isReviewEditingTarget(e.target);
       if (inInput) return;
       if (document.querySelector('[aria-modal="true"],dialog[open]') ||
-        (!pendingPeek && !similarOpen && document.querySelector('[role="dialog"]'))) return;
+        (!pendingPeek && document.querySelector('[role="dialog"]'))) return;
 
       // Escape: a held lapse-peek closes FIRST and advances (the grade already
-      // committed); then an open similar-cards drawer closes; then zen exits
-      // focus; otherwise exit the reviewer to home.
+      // committed); otherwise exit the reviewer to home.
       if (e.key === 'Escape') {
         if (pendingPeek) {
           e.preventDefault();
           advanceQueue();
           return;
         }
-        if (similarOpen) {
-          e.preventDefault();
-          setSimilarOpen(false);
-          return;
-        }
-        if (zenMode) {
-          e.preventDefault();
-          setZen(false);
-          return;
-        }
         e.preventDefault();
         router.push('/');
-        return;
-      }
-
-      // f / F — toggle zen (focus) mode. Outside inputs only so typing an 'f'
-      // in the type-in field doesn't flip focus mode.
-      if ((e.key === 'f' || e.key === 'F') && !inInput && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        toggleZen();
         return;
       }
 
@@ -419,7 +392,7 @@ export const NNReviewClassic = () => {
       // While a lapse-peek is held, the card is already graded — swallow
       // navigation/flip/grade keys (Esc above is the way out). Edit/undo still
       // worked above; everything below is queue-movement that the peek defers.
-      if (pendingPeek || similarOpen) return;
+      if (pendingPeek) return;
 
       // Edit shortcut — only outside inputs
       if ((e.key === 'e' || e.key === 'E') && !inInput) {
@@ -462,12 +435,7 @@ export const NNReviewClassic = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [revealed, current, handleGrade, handleUndo, router, handleEdit, handleSkip, submitted, handleTypeSubmit, zenMode, toggleZen, setZen, similarOpen, pendingPeek, advanceQueue]);
-
-  // Moving to another card closes the similar drawer (it belongs to the card).
-  useEffect(() => {
-    setSimilarOpen(false);
-  }, [current?.id]);
+  }, [revealed, current, handleGrade, handleUndo, router, handleEdit, handleSkip, submitted, handleTypeSubmit, pendingPeek, advanceQueue]);
 
   const sessionDone = completed > 0 && !pendingPeek && (finished || (!current && queue.length === 0)) && !queueLoading && !queueError;
   const nextLearningAt = queue.length > 0 && !current
@@ -526,7 +494,7 @@ export const NNReviewClassic = () => {
       customStudyHref="/decks" customStudyLabel={t('nav.decks')} />;
   }
 
-  if (sessionDone) return <SessionDone completed={completed} xp={xpGained} onUndo={canUndo ? handleUndo : undefined} busy={busy} />;
+  if (sessionDone) return <ReviewSessionDone completed={completed} xp={xpGained} stats={{ cards: totals.uniqueCards, durationMs: totals.durationMs, grades: gradeCounts, answers: session.history.map(({ review }) => ({ durationMs: review.durationMs, rating: review.rating })) }} onUndo={canUndo ? handleUndo : undefined} busy={busy} />;
 
   if (!current) {
     const reason = sessionMode === 'filtered' ? 'filtered'
@@ -539,16 +507,16 @@ export const NNReviewClassic = () => {
       const next = nextLearningAt;
       const time = next ? new Date(next).toLocaleString(locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
       return <ReviewEmpty role="status" title={t(`review.emptyStates.${reason}.title`)}
-        subtitle={t(`review.emptyStates.${reason}.body`, { time })}
-        cta={t(reason === 'empty' ? 'review.allCaught.cta' : reason === 'paused' ? 'nav.cards' : 'review.refreshQueue')}
+        subtitle={`${t(`review.emptyStates.${reason}.body`, { time })}${reason === 'waiting' ? ` ${t('review.waitingAuto')}` : ''}`}
+        cta={reason === 'waiting' ? undefined : t(reason === 'empty' ? 'review.allCaught.cta' : reason === 'paused' ? 'nav.cards' : 'review.refreshQueue')}
         actionVariant="soft"
         href={reason === 'empty' ? `/editor${deckId ? `?deck=${deckId}` : ''}` : reason === 'paused' ? '/cards?q=is%3Asuspended' : undefined}
-        onAction={reason === 'empty' || reason === 'paused' ? undefined : () => setQueueAttempt((n) => n + 1)}
+        onAction={reason === 'empty' || reason === 'paused' || reason === 'waiting' ? undefined : () => setQueueAttempt((n) => n + 1)}
         customStudyHref={sessionMode === 'filtered' ? '/review/custom-study' : '/decks'}
         customStudyLabel={t(sessionMode === 'filtered' ? 'review.customStudy.manage' : 'nav.decks')}
         actions={<>
           {canUndo && <NNBtn variant="soft" onClick={handleUndo} loading={busy}>{t('editor.review.undo.button')}</NNBtn>}
-          {completed > 0 && <NNBtn variant="primary" disabled={busy} onClick={() => setFinished(true)}>{t('review.finish')}</NNBtn>}
+          {completed > 0 && reason !== 'waiting' && <NNBtn variant="primary" disabled={busy} onClick={() => setFinished(true)}>{t('review.finish')}</NNBtn>}
         </>} />;
     }
     return (
@@ -557,8 +525,8 @@ export const NNReviewClassic = () => {
         subtitle={t('review.allCaught.subtitle')}
         cta={t('review.allCaught.cta')}
         href="/editor"
-        customStudyHref="/review/custom-study"
-        customStudyLabel={t('review.customStudy.title')}
+        customStudyHref="/decks"
+        customStudyLabel={t('nav.decks')}
       />
     );
   }
@@ -602,47 +570,15 @@ export const NNReviewClassic = () => {
   const showAnswerSection = isTypein ? submitted : revealed;
   const showRatings = showAnswerSection;
 
-  const cardInfo = <ReviewCardInfo card={current} deckName={deckPathLabel(decks, current.deckId) || t('review.queueFallback')} />;
+  const cardInfo = <>
+    <ReviewCardInfo card={current} deckName={deckPathLabel(decks, current.deckId) || t('review.queueFallback')} />
+    {revealed && related.items.length > 0 && <section className="reomi-review-related"><h3>{t('review.similar.title')}</h3><SimilarCardsList items={related.items} onOpen={id => router.push(`/cards?focus=${id}`)} /></section>}
+  </>;
 
   return (
-    <div className="reomi-review-layout nn-review-layout" aria-busy={busy || undefined} data-zen={zenMode || undefined}><div className="reomi-review-panels">
-    <div className="reomi-review-workspace" data-zen={zenMode || undefined}>
+    <div className="reomi-review-layout nn-review-layout" aria-busy={busy || undefined}><div className="reomi-review-panels">
+    <div className="reomi-review-workspace">
       <div className="reomi-review-scroll nn-review-scroll nn-scroll">
-      {/* Zen mode: subtle floating exit affordance — the topbar is hidden, so
-          this keeps the exit discoverable. Calm, top-right, never competes. */}
-      {zenMode && (
-        <button
-          type="button"
-          onClick={() => setZen(false)}
-          title={`${t('review.exitFocus')} · Esc`}
-          aria-label={t('review.exitFocus')}
-          style={{
-            position: 'absolute',
-            top: isMobile ? 10 : 18,
-            right: isMobile ? 12 : 24,
-            zIndex: 30,
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '6px 10px',
-            background: 'var(--surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 9,
-            color: 'var(--text-muted)',
-            fontSize: 11.5,
-            fontFamily: 'inherit',
-            cursor: 'pointer',
-            opacity: 0.7,
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
-          onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
-        >
-          <NNIcon name="x" size={12} color="var(--text-muted)" />
-          <span>{t('review.exitFocus')}</span>
-          <NNKbd>Esc</NNKbd>
-        </button>
-      )}
-
       <div className="reomi-review-tools">
         <div className="reomi-review-context">
           <span className="mono" style={{ color: 'var(--text-muted)', fontSize: 12 }}>+{xpGained} XP</span>
@@ -657,39 +593,6 @@ export const NNReviewClassic = () => {
           ))}
         </div>
 
-        <NNBtn className="reomi-review-edit" icon="edit" variant="ghost" disabled={busy || Boolean(pendingPeek)} onClick={handleEdit} ariaLabel={t('review.hints.edit')} />
-
-        {canUndo && (
-          <NNBtn
-            size="sm"
-            variant="ghost"
-            icon="sync"
-            onClick={handleUndo}
-            disabled={busy}
-            title={`${t('editor.review.undo.button')} (⌘Z)`}
-            ariaLabel={t('editor.review.undo.button')}
-          >
-
-          </NNBtn>
-        )}
-        {revealed && (
-          <NNBtn
-            size="sm"
-            variant="ghost"
-            icon="stars"
-            onClick={() => setSimilarOpen((v) => !v)}
-            title={t('review.similar.open')}
-            ariaLabel={t('review.similar.open')}
-          />
-        )}
-        <NNBtn
-          size="sm"
-          variant="ghost"
-          icon={zenMode ? 'x' : 'target'}
-          onClick={() => toggleZen()}
-          title={`${zenMode ? t('review.exitFocus') : t('review.focusMode')} (f)`}
-          ariaLabel={zenMode ? t('review.exitFocus') : t('review.focusMode')}
-        />
       </div>
         <div style={{ width: '100%', maxWidth: 760, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
           <div role="progressbar" aria-label={t('review.progress', { answers: completed, remaining: queue.length })}
@@ -702,68 +605,7 @@ export const NNReviewClassic = () => {
 
       </div>
 
-      {/* Similar-cards drawer — desktop: floating right panel; mobile: bottom
-          sheet. Overlay only (no layout shift), lazily rendered while open.
-          Clicking a similar card jumps to the browser dock (?focus=). */}
-      {similarOpen && current && (
-        <aside
-          role="dialog"
-          aria-label={t('review.similar.title')}
-          style={
-            isMobile
-              ? {
-                  position: 'fixed',
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  maxHeight: '55vh',
-                  zIndex: 60,
-                  background: 'var(--surface)',
-                  borderTop: '1px solid var(--border)',
-                  borderRadius: 'var(--r-xl) var(--r-xl) 0 0',
-                  boxShadow: 'var(--shadow-lg)',
-                  padding: '12px 14px calc(12px + env(safe-area-inset-bottom))',
-                  overflow: 'auto',
-                }
-              : {
-                  position: 'fixed',
-                  right: 16,
-                  top: 76,
-                  bottom: 96,
-                  width: 320,
-                  zIndex: 60,
-                  background: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--r-xl)',
-                  boxShadow: 'var(--shadow-lg)',
-                  padding: '12px 14px',
-                  overflow: 'auto',
-                }
-          }
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <NNIcon name="stars" size={14} color="var(--lime-400)" />
-            <span style={{ fontSize: 13, fontWeight: 600 }}>{t('review.similar.title')}</span>
-            <div style={{ flex: 1 }} />
-            <NNBtn
-              size="sm"
-              variant="ghost"
-              icon="x"
-              ariaLabel={t('review.similar.close')}
-              onClick={() => setSimilarOpen(false)}
-            />
-          </div>
-          <SimilarCardsPanel
-            cardId={current.id}
-            onOpen={(id) => router.push(`/cards?focus=${id}`)}
-          />
-          {/* Source backlinks moved OUT of the similar drawer (Feature #1): the
-              card's provenance now lives in the post-reveal SourcePeekChip + the
-              lapse SourcePeekPanel below, in the review flow itself. */}
-        </aside>
-      )}
 
-      <details className="reomi-review-info-mobile"><summary>{t('review.info.title')}</summary>{cardInfo}</details>
       {/* Card */}
       {sessionMode === 'filtered' && <p style={{ width: '100%', maxWidth: 760, fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px' }}>{t('review.customStudy.scheduleNotice')}</p>}
       {mutationError && <div role="alert" style={{ width: '100%', maxWidth: 760, marginBottom: 12, color: 'var(--rose-400)', fontSize: 13 }}>
@@ -1030,20 +872,13 @@ export const NNReviewClassic = () => {
           {' · '}
           {t('review.meta.repetitions', { reps: fsrsState.reps, lapses: fsrsState.lapses })}
         </span>
-        <div style={{ flex: 1 }} />
-        {completed > 0 && <NNBtn size="sm" variant="ghost" disabled={busy}
-          onClick={() => { setPendingPeek(null); setFinished(true); }}>{t('review.finish')}</NNBtn>}
-        <NNBtn size="sm" variant="ghost" onClick={handleSkip}
-          disabled={busy || Boolean(pendingPeek) || skipStudyCard(session, sessionMode, Date.now() + serverOffset).activeId === session.activeId}>
-          {t('review.hints.skip')}
-        </NNBtn>
-        {!isMobile && (
-          <span className="mono" style={{ opacity: 0.7, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <NNKbd>K</NNKbd> {t('review.hints.skip')} · <NNKbd>E</NNKbd> {t('review.hints.edit')} · <NNKbd>Esc</NNKbd> {t('review.hints.home')}
-          </span>
-        )}
-        <NNBtn size="sm" variant="ghost" icon="edit" disabled={busy || Boolean(pendingPeek)}
-          onClick={handleEdit} ariaLabel={t('review.hints.edit')} title={t('review.hints.edit')} />
+        <div className="reomi-review-utilities">
+          <span className="reomi-review-info-mobile"><NNBtn size="sm" variant="ghost" icon="info" onClick={() => setInfoOpen(true)}>{t('review.info.title')}</NNBtn></span>
+          <NNBtn size="sm" variant="ghost" disabled={busy || Boolean(pendingPeek) || skipStudyCard(session, sessionMode, Date.now() + serverOffset).activeId === session.activeId} onClick={handleSkip}><NNKbd>K</NNKbd>{t('review.hints.skip')}</NNBtn>
+          <NNBtn size="sm" variant="ghost" disabled={busy || Boolean(pendingPeek)} onClick={handleEdit}><NNKbd>E</NNKbd>{t('review.hints.edit')}</NNBtn>
+          {completed > 0 && <NNBtn size="sm" variant="ghost" icon="pause" disabled={busy} onClick={() => { setPendingPeek(null); setFinished(true); }}>{t('review.finish')}</NNBtn>}
+          <NNBtn size="sm" variant="ghost" disabled={busy} onClick={() => router.push('/')}><NNKbd>Esc</NNKbd>{t('review.hints.home')}</NNBtn>
+        </div>
       </div>
 
     </div>
@@ -1086,15 +921,16 @@ export const NNReviewClassic = () => {
               onOpenLibrary={(href) => router.push(href)}
               onDismiss={advanceQueue}
             />
+            {canUndo && <NNBtn size="sm" variant="ghost" icon="sync" disabled={busy} onClick={handleUndo}>{t('editor.review.undo.button')}</NNBtn>}
           </div>
         </div>
       )}
 
-      <div className="reomi-review-actions" style={{ display: pendingPeek || (isTypein && !submitted) ? 'none' : 'flex' }}>
+      <div className="reomi-review-actions" style={{ display: pendingPeek || (isTypein && !submitted && !canUndo) ? 'none' : 'flex' }}>
         <div className="reomi-review-action-content">
           <div className="reomi-review-action-caption">
             <span>{showRatings ? t('review.ratePrompt') : t('review.recallPrompt')}</span>
-            <span className="reomi-review-shortcuts"><NNKbd>J</NNKbd> {t('review.hints.prev')} · <NNKbd>K</NNKbd> {t('review.hints.skip')}</span>
+            {canUndo && <NNBtn size="sm" variant="ghost" icon="sync" onClick={handleUndo} disabled={busy} title={`${t('editor.review.undo.button')} (⌘Z)`}>{t('editor.review.undo.button')}</NNBtn>}
           </div>
 
           {showRatings && previews ? (
@@ -1163,7 +999,9 @@ export const NNReviewClassic = () => {
       </div>
     </div>
     <aside className="reomi-review-inspector nn-scroll" aria-label={t('review.info.title')}>{cardInfo}</aside>
-    </div></div>
+    </div>
+    <Modal open={infoOpen} title={t('review.info.title')} closeLabel={t('actions.close')} onClose={() => setInfoOpen(false)}><div className="reomi-review-info-dialog">{cardInfo}</div></Modal>
+    </div>
   );
 };
 
@@ -1218,14 +1056,15 @@ const ReviewEmpty = ({
   const isMobile = bp === 'mobile';
   return (
     <div
-      className="nn-empty-state"
+      className="reomi-page-surface reomi-review-empty"
       role={role}
       style={{
         gap: 14,
         padding: isMobile ? '0 14px 32px' : '0 32px 48px',
       }}
     >
-      <h1 className="nn-h1" style={{ fontSize: isMobile ? 36 : 48, letterSpacing: -1 }}>{title}</h1>
+      <span className="reomi-session-done-icon" aria-hidden><NNIcon name={role === 'alert' ? 'warning' : 'cards'} size={28} /></span>
+      <h1 className="reomi-empty-heading">{title}</h1>
       <div style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 460, lineHeight: 1.5 }}>{subtitle}</div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8 }}>
         {actions}
@@ -1239,56 +1078,11 @@ const ReviewEmpty = ({
         )}
         {customStudyHref && customStudyLabel && (
           <AppLink href={customStudyHref}>
-            <NNBtn size="lg" variant="soft" icon="filter">
+            <NNBtn size="lg" variant="soft" icon={customStudyHref === '/decks' ? 'decks' : 'filter'}>
               {customStudyLabel}
             </NNBtn>
           </AppLink>
         )}
-      </div>
-    </div>
-  );
-};
-
-const SessionDone = ({ completed, xp, onUndo, busy }: { completed: number; xp: number; onUndo?: () => void; busy?: boolean }) => {
-  const t = useT();
-  const bp = useBreakpoint();
-  const isMobile = bp === 'mobile';
-  return (
-    <div
-      style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 18,
-        padding: isMobile ? '0 14px 32px' : '0 32px 48px',
-        textAlign: 'center',
-      }}
-    >
-      <div style={{ fontFamily: 'var(--font-serif)', fontSize: isMobile ? 40 : 56, color: 'var(--text)', letterSpacing: -1.5 }}>
-        {t('review.sessionComplete.title')}
-      </div>
-      <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>
-        <span className="mono" style={{ color: 'var(--text)' }}>
-          {t('review.sessionComplete.answers', { n: completed })}
-        </span> ·{' '}
-        <span className="mono" style={{ color: 'var(--text)' }}>
-          +{xp} XP
-        </span>
-      </div>
-      <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-        {onUndo && <NNBtn variant="soft" onClick={onUndo} loading={busy}>{t('editor.review.undo.button')}</NNBtn>}
-        <AppLink href="/session/complete">
-          <NNBtn size="lg" variant="primary" icon="check">
-            {t('review.sessionComplete.viewSummary')}
-          </NNBtn>
-        </AppLink>
-        <AppLink href="/">
-          <NNBtn size="lg" variant="outline">
-            {t('review.sessionComplete.backHome')}
-          </NNBtn>
-        </AppLink>
       </div>
     </div>
   );

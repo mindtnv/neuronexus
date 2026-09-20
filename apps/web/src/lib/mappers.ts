@@ -38,6 +38,7 @@ export function deckFromApi(row: any): Deck {
     name: row.name,
     color: row.color,
     icon: row.icon ?? undefined,
+    position: row.position ?? 0,
     species: row.species ?? 'fern',
     createdAt: toEpoch(row.createdAt),
     parentId: row.parentId ?? undefined,
