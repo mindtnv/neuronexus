@@ -172,7 +172,6 @@ export const NNTopbar = ({
   actions?: ReactNode;
 }) => {
   const t = useT();
-  const zenMode = useUI((s) => s.zenMode);
   const toggleSidebar = useUI((s) => s.toggleSidebar);
   const sidebarCollapsed = useUI((s) => s.sidebarCollapsed);
   const displayMode = useDisplayMode();
@@ -183,7 +182,6 @@ export const NNTopbar = ({
   const { wco, left: wcoLeft, right: wcoRight } = useWcoTopInsets();
   // Zen (focus) mode hides the whole chrome — the per-page topbar disappears.
   // Zen is only ever true on /review (guarded in app-shell), so this is safe.
-  if (zenMode) return null;
 
   return (
     <header

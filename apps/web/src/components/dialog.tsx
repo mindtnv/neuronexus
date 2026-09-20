@@ -557,7 +557,7 @@ function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => 
               {cancelLabel}
             </NNBtn>
           )}
-          <NNBtn size="md" variant={confirmVariant} onClick={accept}>
+          <NNBtn size="md" variant={confirmVariant} onClick={accept} disabled={dialog.kind === 'select' && selectValue === undefined}>
             {confirmLabel}
           </NNBtn>
         </div>

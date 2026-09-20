@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { NNBtn, NNSkeleton } from './ui';
 import { useT } from '@/lib/i18n';
 import { apiErrorFromResponse } from '@/lib/api';
+import { copyCodeText } from './chat/code-copy';
 import { useDialog } from './dialog';
 
 const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000').replace(/\/$/, '');
@@ -13,7 +14,7 @@ async function request<T>(path = '', options: RequestInit = {}): Promise<T> {
   if (!response.ok) throw await apiErrorFromResponse(response);
   return response.json() as Promise<T>;
 }
-const fieldStyle: React.CSSProperties = { background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text)', padding: '9px 11px', fontSize: 13, width: '100%' };
+const fieldStyle: React.CSSProperties = { background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text)', padding: '9px 11px', fontSize: 13, width: '100%' };
 
 /** Parent keys this component by session user so secrets never cross accounts. */
 export function McpSettings() {
@@ -22,6 +23,7 @@ export function McpSettings() {
   const [items, setItems] = useState<TokenItem[] | null>(null);
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
+  const mutationLock = useRef(false);
   const [name, setName] = useState('');
   const [scope, setScope] = useState<'read' | 'write'>('read');
   const [days, setDays] = useState(90);
@@ -36,34 +38,37 @@ export function McpSettings() {
     return () => controller.abort();
   }, [revision]);
   const copy = async (value: string, kind: string) => {
-    try { await navigator.clipboard.writeText(value); setCopied(kind); }
+    try { await copyCodeText(value); setCopied(kind); }
     catch { setError(true); }
   };
   const create = async (event: React.FormEvent) => {
-    event.preventDefault(); if (busy || created || !name.trim()) return;
+    event.preventDefault(); if (mutationLock.current || created || !name.trim()) return;
+    mutationLock.current = true;
     setBusy(true); setError(false); setCopied('');
     try {
       const result = await request<{ token: string; item: TokenItem }>('', { method: 'POST', body: JSON.stringify({ name: name.trim(), scope, expiresInDays: days }) });
       setCreated(result); setName(''); refresh();
     } catch { setError(true); }
-    finally { setBusy(false); }
+    finally { mutationLock.current = false; setBusy(false); }
   };
   const revoke = async (item: TokenItem) => {
-    if (!(await confirm({ title: t('settings.mcp.revokeConfirm', { name: item.name }), danger: true }))) return;
+    if (mutationLock.current) return;
+    mutationLock.current = true;
+    if (!(await confirm({ title: t('settings.mcp.revokeConfirm', { name: item.name }), danger: true }))) { mutationLock.current = false; return; }
     setBusy(true); setError(false);
     try {
       await request(`/${item.id}`, { method: 'DELETE' });
       if (created?.item.id === item.id) setCreated(null);
       refresh();
     } catch { setError(true); }
-    finally { setBusy(false); }
+    finally { mutationLock.current = false; setBusy(false); }
   };
   const endpoint = `${apiBase}/mcp`;
   const command = `codex mcp add neuronexus --url ${JSON.stringify(endpoint)} --bearer-token-env-var NEURONEXUS_MCP_TOKEN`;
-  return <section aria-label={t('settings.mcp.title')} style={{ display: 'grid', gap: 16 }}>
+  return <section className="reomi-mcp-settings" aria-label={t('settings.mcp.title')} style={{ display: 'grid', gap: 16 }}>
     <p style={{ margin: 0, fontSize: 13, color: 'var(--text-dim)' }}>{t('settings.mcp.hint')}</p>
     {error && <div role="alert" style={{ color: 'var(--rose-400)', fontSize: 13 }}>{t('settings.mcp.error')} <NNBtn size="sm" onClick={refresh}>{t('settings.mcp.retry')}</NNBtn></div>}
-    <form onSubmit={create} style={{ display: 'grid', gap: 10 }}>
+    <form className="reomi-mcp-create" onSubmit={create} style={{ display: 'grid', gap: 10 }}>
       <label style={{ fontSize: 12 }}>{t('settings.mcp.name')}<input value={name} onChange={e => setName(e.target.value)} maxLength={80} required placeholder="Codex / Claude" style={{ ...fieldStyle, marginTop: 5 }} /></label>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <label style={{ flex: '1 1 200px', fontSize: 12 }}>{t('settings.mcp.permissions')}<select value={scope} onChange={e => setScope(e.target.value as 'read' | 'write')} style={{ ...fieldStyle, marginTop: 5 }}><option value="read">{t('settings.mcp.read')}</option><option value="write">{t('settings.mcp.write')}</option></select></label>
@@ -81,7 +86,7 @@ export function McpSettings() {
       {items?.length === 0 && <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('settings.mcp.empty')}</p>}
       {items?.map(item => {
         const inactive = Boolean(item.revokedAt) || new Date(item.expiresAt) <= new Date();
-        return <div key={item.id} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+        return <div className="reomi-mcp-token" key={item.id} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
           <div style={{ flex: '1 1 220px', minWidth: 0 }}><div style={{ fontSize: 13, overflowWrap: 'anywhere' }}>{item.name} · {t(item.scope === 'read' ? 'settings.mcp.read' : 'settings.mcp.write')}</div><div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>{item.prefix}… · {t('settings.mcp.validUntil')} {new Date(item.expiresAt).toLocaleDateString()} · {t('settings.mcp.lastUsed')} {item.lastUsedAt ? new Date(item.lastUsedAt).toLocaleString() : t('settings.mcp.never')}</div></div>
           {inactive ? <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{t(item.revokedAt ? 'settings.mcp.revoked' : 'settings.mcp.expired')}</span> : <NNBtn size="sm" disabled={busy} onClick={() => void revoke(item)}>{t('settings.mcp.revoke')}</NNBtn>}
         </div>;
@@ -92,7 +97,7 @@ export function McpSettings() {
       <code style={{ overflowWrap: 'anywhere', fontSize: 12 }}>{endpoint}</code>
       <div><NNBtn size="sm" onClick={() => void copy(endpoint, 'url')}>{t(copied === 'url' ? 'settings.mcp.copied' : 'settings.mcp.copyUrl')}</NNBtn></div>
       <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: 0 }}>{t('settings.mcp.codexHelp')}</p>
-      <pre style={{ margin: 0, padding: 12, fontSize: 11, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: 'var(--bg-base)', borderRadius: 8 }}>{command}</pre>
+      <pre style={{ margin: 0, padding: 12, fontSize: 11, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: 'var(--surface-2)', borderRadius: 8 }}>{command}</pre>
       <NNBtn size="sm" onClick={() => void copy(command, 'command')}>{t(copied === 'command' ? 'settings.mcp.copied' : 'settings.mcp.copyCommand')}</NNBtn>
       <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: 0 }}>{t('settings.mcp.otherClients')}</p>
     </div></details>

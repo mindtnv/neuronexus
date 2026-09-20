@@ -429,7 +429,7 @@ export const NotebooksScreen = () => {
           <TextInput value={search} onChange={e => setSearch(e.target.value)} placeholder={t('notebooks.list.search')} aria-label={t('notebooks.list.search')} />
         </span>
         <span className="reomi-result-count">{notebooks.length}</span>
-        <NNBtn variant={archived ? 'soft' : 'ghost'} icon="stack"
+        <NNBtn variant={archived ? 'soft' : 'ghost'} icon="archive"
           aria-pressed={archived} ariaLabel={archived ? t('notebooks.list.showActive') : t('notebooks.list.showArchive')}
           title={archived ? t('notebooks.list.showActive') : t('notebooks.list.showArchive')}
           onClick={() => setArchived(value => !value)} />

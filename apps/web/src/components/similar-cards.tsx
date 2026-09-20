@@ -19,6 +19,7 @@ export interface SimilarItem {
 }
 
 interface SimilarState {
+  cardId?: string | null;
   items: SimilarItem[];
   loading: boolean;
   reason?: 'not_indexed';
@@ -33,25 +34,26 @@ export function useSimilarCards(cardId: string | null): SimilarState {
 
   useEffect(() => {
     if (!cardId) {
-      setState({ items: [], loading: false });
+      setState({ cardId, items: [], loading: false });
       return;
     }
     const cached = cache.get(cardId);
     if (cached) {
-      setState({ ...cached, loading: false });
+      setState({ ...cached, cardId, loading: false });
       return;
     }
     let cancelled = false;
-    setState({ items: [], loading: true });
+    setState({ cardId, items: [], loading: true });
     (async () => {
       try {
         const body = (await ok(
           await (api as any).cards({ id: cardId }).similar.get({ query: {} }),
         )) as { items: SimilarItem[]; reason?: 'not_indexed' };
+        if (!Array.isArray(body.items)) throw new Error('invalid_similar_cards');
         cache.set(cardId, body);
-        if (!cancelled) setState({ ...body, loading: false });
+        if (!cancelled) setState({ ...body, cardId, loading: false });
       } catch {
-        if (!cancelled) setState({ items: [], loading: false });
+        if (!cancelled) setState({ cardId, items: [], loading: false });
       }
     })();
     return () => {
@@ -59,7 +61,7 @@ export function useSimilarCards(cardId: string | null): SimilarState {
     };
   }, [cardId]);
 
-  return state;
+  return state.cardId === cardId ? state : { items: [], loading: Boolean(cardId) };
 }
 
 /**
@@ -76,14 +78,6 @@ export const SimilarCardsPanel = ({
 }) => {
   const t = useT();
   const { items, loading, reason } = useSimilarCards(cardId);
-  const cards = useNN((s) => s.cards);
-  const decks = useNN((s) => s.decks);
-  const deckNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const d of decks) m.set(d.id, d.name);
-    return m;
-  }, [decks]);
-
   if (loading) {
     return (
       <div style={{ fontSize: 12, color: 'var(--text-dim)', padding: '10px 0' }}>
@@ -105,6 +99,18 @@ export const SimilarCardsPanel = ({
       </div>
     );
   }
+
+  return <SimilarCardsList items={items} onOpen={onOpen} />;
+};
+
+export function SimilarCardsList({ items, onOpen }: { items: SimilarItem[]; onOpen: (id: string) => void }) {
+  const cards = useNN((s) => s.cards);
+  const decks = useNN((s) => s.decks);
+  const deckNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of decks) m.set(d.id, d.name);
+    return m;
+  }, [decks]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

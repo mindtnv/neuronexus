@@ -1,14 +1,15 @@
 const m = {
   draft: {
+    emptyHint: "When you leave an editor without saving, your changes will appear here so you can continue later.",
     shortTitle: "Drafts",
     manageInNewTab: "Manage drafts in a new tab",
     extraFields: 'These retained fields are not used by the current type. Copy the text you need into the fields above; nothing is removed automatically.',
     removeField: 'Remove “{name}” from this draft?', removeExtra: 'Remove additional field', tooManyFields: 'A note can have at most 64 fields. Copy the text you need and remove unused additional fields.',
     downloadFailed: 'Could not download the draft. Its text remains in the list and can be copied.',
 
-    libraryTitle: 'Local drafts', libraryHint: 'Drafts for this account in this browser. Copy or download their text here even if the original note has been deleted.',
+    libraryTitle: 'Drafts', libraryHint: 'Drafts for this account in this browser. Copy or download their text here even if the original note has been deleted.',
     empty: 'No local drafts yet.', untitled: 'Untitled', download: 'Download draft', showText: 'View text',
-    openOriginal: 'Open editor', removeConfirm: 'Discard the selected local draft?', refresh: 'Refresh list',
+    openOriginal: 'Continue editing', removeConfirm: 'Discard the selected local draft?', refresh: 'Refresh list',
 
     found: 'A local draft from {date} is available. Restore your changes?',
     stale: 'The saved version has changed. Restoring brings back your text; compare the changes before saving.',

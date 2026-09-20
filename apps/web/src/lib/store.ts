@@ -46,6 +46,7 @@ interface State {
   reset: () => void;
 
   addDeck: (input: Omit<Deck, 'id' | 'createdAt'>) => Promise<Deck>;
+  moveDeck: (id: string, targetId: string | null, placement: import('@neuronexus/shared').DeckPlacement) => Promise<void>;
   updateDeck: (id: string, patch: Partial<Omit<Deck, 'id' | 'createdAt'>>) => Promise<void>;
   deleteDeck: (id: string) => Promise<void>;
 
@@ -617,6 +618,12 @@ export const useNN = create<State>()((set, get) => ({
     set((s) => ({ decks: s.decks.map((d) => (d.id === id ? updated : d)) }));
   },
 
+  async moveDeck(id, targetId, placement) {
+    const ownerId = get().profile?.userId;
+    const rows = await ok(await (api as any).decks({ id }).move.post({ targetId, placement })) as any[];
+    if (get().profile?.userId === ownerId) set({ decks: rows.map(deckFromApi) });
+  },
+
   async deleteDeck(id) {
     await ok(await (api as any).decks({ id }).delete());
     // Drop this deck + any local descendants + any cards under them. The server
@@ -1029,6 +1036,7 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async updateProfile(patch) {
+    const generation = bootstrapGeneration;
     const body: any = {};
     if (patch.name !== undefined) body.name = patch.name;
     if (patch.dailyGoalMinutes !== undefined) body.dailyGoalMinutes = patch.dailyGoalMinutes;
@@ -1037,7 +1045,7 @@ export const useNN = create<State>()((set, get) => ({
     if (patch.plantSpecies !== undefined) body.plantSpecies = patch.plantSpecies;
     if (patch.agentInstructions !== undefined) body.agentInstructions = patch.agentInstructions;
     const next = profileFromApi(await ok(await (api as any).profile.patch(body)));
-    set({ profile: next });
+    if (generation === bootstrapGeneration) set({ profile: next });
   },
 
   async addPreset(input) {

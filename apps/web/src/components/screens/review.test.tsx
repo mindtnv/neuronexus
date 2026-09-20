@@ -270,11 +270,13 @@ describe('review screen lifecycle', () => {
     await act(async () => button('review.showAnswer').click());
     await act(async () => button('review.ratings.again').click());
     expect(container.textContent).toContain('review.emptyStates.waiting.title');
+    expect(container.textContent).toContain('review.waitingAuto');
+    expect(container.textContent).not.toContain('review.refreshQueue');
+    expect(container.textContent).not.toContain('review.finish');
     expect(container.textContent).not.toContain('review.sessionComplete.title');
     expect(container.textContent).not.toContain('review.allCaught.title');
-    await act(async () => button('review.finish').click());
-    expect(container.textContent).toContain('review.sessionComplete.title');
-    expect(JSON.parse(localStorage.getItem('nn:lastSession:test-user')!).cards).toBe(1);
+    expect(button('editor.review.undo.button').disabled).toBe(false);
+    expect(container.querySelector('a[href="/decks"]')).not.toBeNull();
   });
 
   test('a waiting session fetches the due step automatically without grading early', async () => {
@@ -332,7 +334,7 @@ describe('review screen lifecycle', () => {
     await act(async () => button('review.showAnswer').click());
     await act(async () => button('review.ratings.hard').click());
     expect(container.textContent).toContain('review.sessionComplete.title');
-    expect(container.textContent).toContain('+20 XP');
+    expect(container.querySelector('.reomi-session-metrics > div:last-child strong')?.textContent).toBe('+20');
     await act(async () => button('editor.review.undo.button').click());
     expect(container.textContent).toContain('Second question');
     expect(container.textContent).toContain('+15 XP');
@@ -531,4 +533,41 @@ test('a formula failure preserves study controls and does not consume clicks on 
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true })));
     expect(push).toHaveBeenCalled();
   } finally { push.mockRestore(); }
+});
+
+test('related cards load only after reveal and the retired focus shortcut does nothing', async () => {
+  let relatedRequests = 0;
+  globalThis.fetch = (async (url: any) => {
+    if (String(url).includes('/cards/queue')) return Response.json({ due: [], new: [{ ...studyCard, id: '01900000-0000-7000-8000-000000000055' }], mode: 'regular' });
+    if (String(url).includes('/similar')) { relatedRequests++; return Response.json({ items: [{ cardId: 'related', deckId: 'deck', score: .9, snippet: 'Related question' }] }); }
+    return Response.json({ items: [] });
+  }) as typeof fetch;
+  await render();
+  expect(relatedRequests).toBe(0);
+  expect(container.textContent).not.toContain('Related question');
+  await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', bubbles: true })));
+  expect(container.querySelector('[data-zen]')).toBeNull();
+  expect(container.querySelector('[aria-label="review.focusMode"]')).toBeNull();
+  await act(async () => button('review.showAnswer').click());
+  expect(relatedRequests).toBe(1);
+  expect(container.querySelector('.reomi-review-inspector')?.textContent).toContain('Related question');
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+});
+
+test('card details open in a dismissible dialog without changing review state', async () => {
+  let writes = 0;
+  globalThis.fetch = (async (url: any, init?: RequestInit) => {
+    if (init?.method && init.method !== 'GET') writes++;
+    return Response.json(String(url).includes('/cards/queue') ? { due: [], new: [studyCard], mode: 'regular' } : { items: [] });
+  }) as typeof fetch;
+  await render();
+  expect(container.querySelector('details.reomi-review-info-mobile')).toBeNull();
+  await act(async () => button('review.info.title').click());
+  const dialog = container.querySelector('dialog')!;
+  expect(dialog.open).toBe(true);
+  expect(dialog.textContent).toContain('review.info.reviews');
+  await act(async () => dialog.dispatchEvent(new Event('cancel', { bubbles: true, cancelable: true })));
+  expect(dialog.open).toBe(false);
+  expect(container.textContent).toContain('Question');
+  expect(writes).toBe(0);
 });

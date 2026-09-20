@@ -1,7 +1,11 @@
 const m = {
+  descriptions: { general: 'Your profile, daily goal and reminders.', appearance: 'Make your study space feel comfortable.', learning: 'Adjust reviews to your pace and individual decks.', ai: 'Set response preferences and see available capabilities.', connections: 'Connect apps and manage access to your knowledge base.', data: 'Download a copy of your data or manage your account.' },
+  save: { unavailable: 'Could not load settings', auto: 'Changes save automatically', saving: 'Saving…', saved: 'Changes saved', retry: 'Retry saving' },
+  session: { error: 'Could not sign out. Please try again.', title: 'Current session', subtitle: 'Manage sign-in on this device.' },
+
   tabs: {label: 'Settings sections', general: 'General', appearance: 'Appearance', learning: 'Learning', ai: 'Assistant', connections: 'Connections', data: 'Data'},
   mcp: {
-    title: 'MCP & personal tokens', subtitle: 'Connect external agents to your knowledge base.',
+    title: 'App access', subtitle: 'Connect external agents to your knowledge base.',
     hint: 'Each token grants access only to your data. Changes require a preview and your confirmation in the agent client.',
     name: 'Token name', permissions: 'Permissions', read: 'Read only', write: 'Read and manage',
     expires: 'Expires after', days: '{n} days', create: 'Generate token', working: 'Working…',
@@ -43,10 +47,10 @@ const m = {
   },
   // Standing instructions for the agentic chat (C5) — settings → system prompt.
   agent: {
-    title: 'Agent instructions',
+    title: 'Response preferences',
     subtitle: 'Standing preferences for the chat assistant — tone, language, focus.',
     placeholder: 'E.g. “Always answer in German. Keep answers short. Prefer examples over theory.”',
-    hint: 'Applied to every chat turn. Can never override grounding or confirm-before-write.',
+    hint: 'Applies to new assistant responses.',
   },
   // Appearance — theme + language (P3.3).
   appearance: {
@@ -103,13 +107,14 @@ const m = {
   },
   // AI status — read-only feature flags from GET /ai/status (P3.3b). No keys/URLs.
   aiStatus: {
-    title: 'AI status',
+    technical: 'Models and technical details',
+    title: 'Assistant capabilities',
     subtitle: 'Which AI features are enabled on the server.',
     hint: 'Configured via .env — read-only here.',
     on: 'On',
     off: 'Off',
     chat: 'Chat',
-    embedding: 'Embeddings',
+    embedding: 'Semantic search',
     webSearch: 'Web search',
     vision: 'Image input',
     notebooks: 'Notebooks',
@@ -121,7 +126,7 @@ const m = {
   algoHeading: 'Algorithm (FSRS-5)',
   algoIntro: 'The Free Spaced Repetition Scheduler v5 tuned to your data. Anki compatibility is preserved for imports.',
   retention: {
-    title: 'Desired retention',
+    title: 'Recall target',
     subtitle: 'How often you want to remember. Higher = more reviews.',
     relaxed: '70% (relaxed)',
     typical: '90% · typical',
@@ -212,6 +217,8 @@ const m = {
     unavailable: 'Notifications are not supported in this browser or context.',
   },
   deckOptions: {
+    invalid: 'Check the name and enter whole numbers within the allowed ranges.',
+    summary: '{new} new · {reviews} reviews per day',
     title: 'Deck Options',
     subtitle: 'Named presets for FSRS scheduling — bind each preset to one or more decks.',
     noPresets: 'No presets yet. Create one to override the defaults per deck.',

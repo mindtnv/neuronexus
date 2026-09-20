@@ -1,3 +1,4 @@
+import { DECK_COLORS } from '@neuronexus/shared';
 import { z } from 'zod';
 import { and, count, eq, inArray, sql } from 'drizzle-orm';
 import { db, cards, decks, notes, notebooks, notebookNotes, notebookSources, notebookArtifacts, conversations, reviews, sources, sourceReadingState } from '@neuronexus/db';
@@ -9,6 +10,7 @@ import { env } from '../env.ts';
 import { McpToolError, type KnowledgeTool } from './types.ts';
 
 const id = z.uuid();
+const deckColors = z.enum(DECK_COLORS);
 const colors = z.enum(NOTEBOOK_COLORS);
 const title = z.string().trim().min(1).max(NOTEBOOK_TITLE_MAX);
 const ex = (ctx: ToolContext) => ctx.tx ?? db;
@@ -56,8 +58,8 @@ async function deckState(ctx: ToolContext, deckId?: string, parentId?: string | 
 }
 
 export function managementTools(): KnowledgeTool[] {
-  const createDeck = z.strictObject({ name: z.string().trim().min(1).max(100), color: colors.default('lime'), icon: z.string().max(100).optional(), parentId: id.optional() });
-  const editDeck = z.strictObject({ id, name: z.string().trim().min(1).max(100).optional(), color: colors.optional(), icon: z.string().max(100).optional(), parentId: id.nullable().optional() });
+  const createDeck = z.strictObject({ name: z.string().trim().min(1).max(100), color: deckColors.default('lime'), icon: z.string().max(100).optional(), parentId: id.optional() });
+  const editDeck = z.strictObject({ id, name: z.string().trim().min(1).max(100).optional(), color: deckColors.optional(), icon: z.string().max(100).optional(), parentId: id.nullable().optional() });
   const editNotebook = z.strictObject({ id, title: title.optional(), emoji: z.string().max(NOTEBOOK_EMOJI_MAX).nullable().optional(), color: colors.nullable().optional(), description: z.string().max(NOTEBOOK_DESCRIPTION_MAX).nullable().optional(), pinned: z.boolean().optional(), archived: z.boolean().optional() });
   const editNote = z.strictObject({ id, title: z.string().trim().min(1).max(NOTE_TITLE_MAX).optional(), content: z.string().max(NOTE_CONTENT_MAX).optional(), pinned: z.boolean().optional() });
   const attachment = z.strictObject({ notebookId: id, sourceId: id });

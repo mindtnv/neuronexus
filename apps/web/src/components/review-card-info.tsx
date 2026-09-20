@@ -1,10 +1,10 @@
 'use client';
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { stateLabel } from '@neuronexus/shared';
 import { useLocale, useT } from '@/lib/i18n';
 import type { Card } from '@/lib/types';
 
-export function ReviewCardInfo({ card, deckName }: { card: Card; deckName: string }) {
+export function ReviewCardInfo({ card, deckName, actions }: { card: Card; deckName: string; actions?: ReactNode }) {
   const t = useT();
   const { locale } = useLocale();
   const formatter = useMemo(() => new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', year: 'numeric' }), [locale]);
@@ -26,7 +26,7 @@ export function ReviewCardInfo({ card, deckName }: { card: Card; deckName: strin
     ['created', date(card.createdAt)],
     ['updated', date(card.updatedAt)],
   ];
-  return <section className="reomi-card-info"><h2>{t('review.info.title')}</h2><dl>
+  return <section className="reomi-card-info"><header className="reomi-card-info-heading"><h2>{t('review.info.title')}</h2>{actions}</header><dl>
     {rows.map(([label, value]) => <div key={label}><dt>{t(`review.info.${label}`)}</dt><dd>{value}</dd></div>)}
   </dl>{card.tags.length > 0 && <div className="reomi-card-info-tags">{card.tags.map(tag => <span key={tag}>#{tag}</span>)}</div>}</section>;
 }

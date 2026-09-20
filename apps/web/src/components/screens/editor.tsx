@@ -4,7 +4,7 @@ import { useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
 import { EditorDraftLibrary } from '@/components/editor-draft-library';
-import { NNCardForm } from '@/components/card-form';
+import { CardEditor } from '@/components/card-editor';
 import { NNBtn, NNLoadError, NNPageSkeleton } from '@/components/ui';
 import { raiseToast } from '@/components/toasts';
 
@@ -42,15 +42,13 @@ export const NNEditor = () => {
     <NNBtn variant="ghost" onClick={() => router.push(returnTo ?? '/cards')}>{t('actions.cancel')}</NNBtn>
   </div>;
 
-  return <div className="reomi-page-surface reomi-editor-workspace"><NNCardForm
-    compactHeader
-    heading={editing ? t('editor.editCardTitle') : t('editor.newCard')}
+  return <div className="reomi-page-surface reomi-editor-workspace"><CardEditor
     key={cardId ?? `new:${defaultDeckId}:${noteTypeQuery ?? ''}`}
     card={editing}
     defaultDeckId={defaultDeckId}
     defaultNoteTypeId={noteTypeQuery}
-    showFsrsHeader
     autoFocusFront
+    onOpen={id => router.push(`/editor?card=${id}`)}
     saveLabel={returnTo ? t('editor.saveAndReturn') : undefined}
     footerExtra={returnTo
       ? <NNBtn size="sm" variant="ghost" onClick={() => router.push(returnTo)}>{t('actions.cancel')}</NNBtn>

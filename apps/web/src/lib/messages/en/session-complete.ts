@@ -1,4 +1,9 @@
 const m = {
+  charts: {
+    distribution: 'Rating distribution', timing: 'Time per answer', total: 'Total', seconds: 's',
+    average: '{seconds} s per answer on average', order: 'Answers in order', grouped: 'Average time by answer group',
+    answerTime: 'Answer {first} · {seconds} s', groupTime: 'Answers {first}–{last} · {seconds} s on average',
+  },
   scheduledDay: 'Scheduled for {date}',
   nextReview: 'Next scheduled review: {time}.',
   saved: 'Saved to your account',

@@ -1,5 +1,7 @@
 const m = {
   convert: {
+    stepMapping: "1 · Configure",
+    stepReview: "2 · Review",
     newDeck: "Deck for new cards",
     inheritDeck: "Each note’s original deck",
     deckHint: "Retained cards stay in their existing decks.",
@@ -19,7 +21,7 @@ const m = {
     alternatives: "Accepted alternatives of the old answer to remove: {n}. The new answer field uses its own answer.",
 
     closeEditor: "Save changes and close the open card editor before converting selected notes.",
-    title: "Convert notes",
+    title: "Change card type",
     scope: "Notes: {n} · source type: {source}. All cards of each selected note are converted, including unchecked directions.",
     oneType: "Select cards from one source note type.",
     tooLarge: "Choose a smaller batch: up to 200 notes and 2000 cards, with up to 64 fields per note.",
@@ -39,7 +41,7 @@ const m = {
     truncated: "Showing the first 50 fields. Select fewer notes to inspect the remaining fields.",
     deckRequired: "Choose a deck for new cards: this note has no single source deck.",
     back: "Back to mapping",
-    apply: "Convert notes ({n})",
+    apply: "Change card type ({n})",
     collision: "An unmapped value occupies a target field name. Change the mapping or explicitly disable preservation of unmapped fields.",
     duplicateTemplates: "One source card cannot supply history to two target templates. Change the mapping.",
     changed: "Notes, types or reviews changed. Check the current data and preview again.",
@@ -52,7 +54,8 @@ const m = {
     clearScope: "Show all note types",
   },
   kind: {
-    change: "Change mode",
+    intro: "Choose how to answer cards of this type.",
+    change: "Answer mode",
     custom: "Standard · custom template",
     title: "Mode for {name}",
     scope: "This affects all your notes of this type. Fields and templates stay the same; review the questions and history first.",
@@ -82,10 +85,12 @@ const m = {
     replaceDraft: "Replace your draft with the current saved version?",
   },
 
-  pageTitle: 'Note types',
+  saved: 'Card type saved',
+  pageTitle: 'Card types',
   // List
   list: {
-    title: 'Your note types',
+    hint: "Customize fields, templates and how you answer your cards.",
+    title: 'Fields and templates',
     back: 'Back',
     builtin: 'built-in',
     custom: 'custom',
@@ -101,7 +106,7 @@ const m = {
   editor: {
     newTitle: 'New note type',
     editTitle: 'Editing “{name}”',
-    cloneTitle: 'Editing built-in “{name}” (a copy will be saved)',
+    cloneTitle: 'Customize “{name}”',
     nameLabel: 'Name',
     namePlaceholder: 'e.g. Vocabulary',
     cloneNotice:
@@ -158,7 +163,7 @@ const m = {
     warning: 'The type and all listed data, including schedules, will be deleted permanently. You can first convert notes to another type or download your data as JSON.',
     empty: 'This type is unused. Only its definition will be deleted.',
     orphans: '{n} notes have no cards. They are included in the JSON export but cannot be selected through the card browser for conversion.',
-    preserve: 'Convert notes first',
+    preserve: 'Change card type first',
     export: 'Download data as JSON',
     exported: 'The account JSON export was sent for download. Nothing has been deleted yet.',
     apply: 'Delete type and its data',

@@ -420,6 +420,7 @@ const RichField = ({
 };
 
 export interface CardFormDraft {
+  preview?: { templateOrd: number; clozeNumber: number | null };
   cardId?: string;
   noteType?: NoteType;
   fieldValues: FieldValues;
@@ -590,9 +591,7 @@ const CardFormEditor = ({
     [tagsText],
   );
 
-  useEffect(() => {
-    onDraftChange?.({ cardId: editing?.id, noteType: activeNoteType, fieldValues, tags });
-  }, [editing?.id, activeNoteType, fieldValues, tags, onDraftChange]);
+
 
   useEffect(() => {
     if (!editing || !onDirtyChange) return;
@@ -651,6 +650,10 @@ const CardFormEditor = ({
     ?? generation.cards.find((card) => card.templateOrd === editing?.templateOrd && (card.clozeNumber ?? null) === (editing?.clozeNumber ?? null))
     ?? generation.cards[0];
   const selectedPreviewKey = selectedPreview ? keyFor(selectedPreview) : '';
+  useEffect(() => {
+    onDraftChange?.({ cardId: editing?.id, noteType: activeNoteType, fieldValues, tags,
+      preview: selectedPreview ? { templateOrd: selectedPreview.templateOrd, clozeNumber: selectedPreview.clozeNumber } : undefined });
+  }, [editing?.id, activeNoteType, fieldValues, tags, selectedPreview?.templateOrd, selectedPreview?.clozeNumber, onDraftChange]);
   const omittedTemplates = activeNoteType?.templates.filter((template) => !generation.cards.some((card) => card.templateOrd === template.ord)) ?? [];
   useEffect(() => setFlipped(false), [selectedPreviewKey]);
   const preview = useMemo(() => {
@@ -1088,7 +1091,7 @@ const CardFormEditor = ({
             </>}
 
         </NNCard>}
-        {!generation.error && activeNoteType && <div style={{ marginTop: 14 }}>
+        {!generation.error && activeNoteType && (inlinePreview || generation.cards.length !== 1 || omittedTemplates.length > 0) && <div style={{ marginTop: 14 }}>
           <label>{t('editor.previewQuestion', { n: generation.cards.length })}</label>
           {generation.cards.length > 1 && <NNSelect value={selectedPreviewKey} onChange={setPreviewKey} options={generation.cards.map((card) => ({
             value: keyFor(card), label: `${activeNoteType?.templates.find((template) => template.ord === card.templateOrd)?.name ?? String(card.templateOrd + 1)}${card.clozeNumber ? ` · c${card.clozeNumber}` : ''}`,

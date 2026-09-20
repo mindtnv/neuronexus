@@ -49,7 +49,7 @@ export const BOTTOM_TABS = BOTTOM_TAB_IDS.map(
 export function getActiveNavId(pathname: string | null | undefined, items: AppNavItem[]): string {
   // Card-area sub-views (graph, editor) are no longer nav items but live in the
   // Cards domain — highlight 'cards' for them.
-  if (pathname?.startsWith('/graph') || pathname?.startsWith('/editor')) {
+  if (pathname?.startsWith('/graph') || pathname?.startsWith('/editor') || pathname?.startsWith('/note-types')) {
     if (items.some((item) => item.id === 'cards')) return 'cards';
   }
   // The garden has no nav item of its own — it's a progress feature entered

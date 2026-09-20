@@ -45,7 +45,12 @@ export interface StudyForecast { days: number; overdueCount: number; total: numb
 export function useStudyForecast(days: number, refreshKey?: string, deckId?: string) {
   const bootstrapped = useNN((s) => s.bootstrapped);
   const userId = useNN((s) => s.profile?.userId);
-  const fetcher = useCallback(async () => ok(await api.stats.forecast.get({ query: { days: String(days), ...(deckId ? { deckId } : {}) } })), [days, deckId, refreshKey]);
+  const fetcher = useCallback(async () => {
+    const result = await ok(await api.stats.forecast.get({ query: { days: String(days), ...(deckId ? { deckId } : {}) } }));
+    // Eden revives date-looking strings, including YYYY-MM-DD, into Date objects.
+    // Keep the public hook contract as UTC day keys for charts on every screen.
+    return { ...result, buckets: result.buckets.map(bucket => ({ ...bucket, day: new Date(bucket.day).toISOString().slice(0, 10) })) };
+  }, [days, deckId, refreshKey]);
   const state = useSessionResource<StudyForecast>({ key: `study:forecast:${userId ?? 'current'}:${days}:${deckId ?? 'all'}`, enabled: bootstrapped, keepPreviousData: false, fetcher });
   return { ...state, reload: state.refresh };
 }

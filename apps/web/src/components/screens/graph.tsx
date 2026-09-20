@@ -65,6 +65,9 @@ export const NNGraphForce = () => {
   const t = useT();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
+  const [legendExpanded, setLegendExpanded] = useState<boolean | null>(null);
+  const legendOpen = legendExpanded ?? !isMobile;
+  useEffect(() => { setLegendExpanded(null); }, [isMobile]);
   const cards = useNN((s) => s.cards);
   const decks = useNN((s) => s.decks);
 
@@ -678,21 +681,21 @@ export const NNGraphForce = () => {
           )}
         </div>
 
-        {/* Legend (clickable for toggling deck visibility) */}
+        {/* Collapsing this panel never changes the visible clusters. */}
         <div
           style={{
             position: 'absolute',
             bottom: isMobile && selectedNode ? 'calc(70% + 12px)' : 14,
             left: 14,
             zIndex: 5,
-            padding: isMobile ? '8px 10px' : '10px 14px',
+            padding: legendOpen ? '10px 12px' : '6px',
             background: 'var(--surface)',
             border: '1px solid var(--border)',
             borderRadius: 10,
             display: 'flex',
             flexDirection: 'column',
             gap: 6,
-            minWidth: isMobile ? 0 : 180,
+            minWidth: legendOpen && !isMobile ? 200 : 0,
             maxWidth: isMobile ? '70vw' : 220,
             transition: 'bottom 220ms ease',
           }}
@@ -706,17 +709,15 @@ export const NNGraphForce = () => {
               marginBottom: 2,
             }}
           >
-            <span
-              style={{
-                fontSize: 10.5,
-                color: 'var(--text-dim)',
-                textTransform: 'uppercase',
-                letterSpacing: 0.6,
-              }}
-            >
-              {t('graph.legend.title')}
-            </span>
-            {legendDecks.length > 1 && (
+            <button type="button" className="reomi-graph-legend-toggle"
+              aria-expanded={legendOpen} aria-controls="graph-cluster-list"
+              aria-label={t(legendOpen ? 'graph.legend.collapse' : 'graph.legend.expand')}
+              onClick={() => setLegendExpanded(!legendOpen)}>
+              <NNIcon name="stack" size={15} />{t('graph.legend.title')}
+              {hiddenDecks.size > 0 && <span className="mono">{legendDecks.length - hiddenDecks.size}/{legendDecks.length}</span>}
+              <span style={{ display: 'flex', transform: legendOpen ? 'rotate(180deg)' : undefined }}><NNIcon name="chevd" size={14} /></span>
+            </button>
+            {legendOpen && legendDecks.length > 1 && (
               <button
                 onClick={toggleAll}
                 style={{
@@ -734,6 +735,8 @@ export const NNGraphForce = () => {
               </button>
             )}
           </div>
+          <div id="graph-cluster-list" className="reomi-graph-legend-list nn-scroll" hidden={!legendOpen}
+            style={{ maxHeight: isMobile && selectedNode ? Math.max(44, H * .3 - 100) : undefined }}>
           {legendDecks.length === 0 && (
             <div className="nn-empty-state" style={{ paddingTop: 16, paddingBottom: 16 }}>
               <span className="nn-empty-state-icon"><NNIcon name="stack" size={20} color="var(--text-dim)" /></span>
@@ -746,6 +749,7 @@ export const NNGraphForce = () => {
               <button
                 key={d.id}
                 onClick={() => toggleDeck(d.id)}
+                aria-pressed={!hidden}
                 title={hidden ? t('graph.legend.show') : t('graph.legend.hide')}
                 style={{
                   display: 'flex',
@@ -791,6 +795,7 @@ export const NNGraphForce = () => {
               </button>
             );
           })}
+          </div>
         </div>
 
         {/* Zoom / view controls */}

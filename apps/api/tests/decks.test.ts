@@ -144,3 +144,58 @@ describe('decks', () => {
     expect(results.map((r) => r.status).sort()).toEqual([200, 400]);
   });
 });
+
+describe('ordered deck moves', () => {
+  beforeEach(resetTestDb);
+  test('appearance and subtree order survive moving inside, before, after and back to root', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const create = async (name: string) => (await callApp(app, 'POST', '/decks', { cookie, body: { name, icon: 'book', color: 'sky' } })).json<any>();
+    const a = await create('A'), b = await create('B'), c = await create('C');
+    const move = async (id: string, targetId: string | null, placement: string) => callApp(app, 'POST', `/decks/${id}/move`, { cookie, body: { targetId, placement } });
+    expect((await move(c.id, a.id, 'before')).status).toBe(200);
+    let rows = await (await callApp(app, 'GET', '/decks', { cookie })).json<any[]>();
+    expect(rows.sort((a,b) => a.position-b.position).map(d => d.name)).toEqual(['C','A','B']);
+    expect((await move(a.id, c.id, 'inside')).status).toBe(200);
+    expect((await move(c.id, b.id, 'after')).status).toBe(200);
+    rows = await (await callApp(app, 'GET', '/decks', { cookie })).json<any[]>();
+    expect(rows.find(d => d.id === a.id)).toMatchObject({ parentId: c.id, icon: 'book', color: 'sky' });
+    expect(rows.filter(d => !d.parentId).sort((a,b) => a.position-b.position).map(d => d.name)).toEqual(['B','C']);
+    expect((await move(a.id, null, 'inside')).status).toBe(200);
+    rows = await (await callApp(app, 'GET', '/decks', { cookie })).json<any[]>();
+    expect(rows.filter(d => !d.parentId).sort((a,b) => a.position-b.position).map(d => d.name)).toEqual(['B','C','A']);
+  });
+  test('rejects foreign, stale and cyclic targets without partial writes; opposite moves serialize', async () => {
+    const { cookie } = await signUpAndCookie(app, uniqueEmail());
+    const { cookie: other } = await signUpAndCookie(app, uniqueEmail());
+    const create = async (cookie: string, name: string) => (await callApp(app, 'POST', '/decks', { cookie, body: { name } })).json<any>();
+    const a = await create(cookie,'A'), b = await create(cookie,'B'), foreign = await create(other,'Private');
+    const move = (id: string,targetId: string | null,placement = 'inside') => callApp(app,'POST',`/decks/${id}/move`,{cookie,body:{targetId,placement}});
+    const before = await (await callApp(app,'GET','/decks',{cookie})).json();
+    expect((await move(a.id,a.id)).status).toBe(400);
+    expect((await move(a.id,foreign.id)).status).toBe(404);
+    expect((await move(foreign.id,a.id)).status).toBe(404);
+    expect((await move(a.id,crypto.randomUUID())).status).toBe(404);
+    expect((await move(a.id,null,'before')).status).toBe(400);
+    expect(await (await callApp(app,'GET','/decks',{cookie})).json()).toEqual(before);
+    const results = await Promise.all([move(a.id,b.id),move(b.id,a.id)]);
+    expect(results.map(r=>r.status).sort()).toEqual([200,400]);
+    const rows = await (await callApp(app,'GET','/decks',{cookie})).json<any[]>();
+    const parent = rows.find(d=>!d.parentId), child = rows.find(d=>d.parentId);
+    expect((await move(parent.id,child.id)).status).toBe(400);
+  });
+});
+
+test('all thirty deck colors persist through authenticated create and edit', async () => {
+  const { DECK_COLORS }=await import('@neuronexus/shared');
+  const { cookie }=await signUpAndCookie(app,uniqueEmail());
+  const created=await callApp(app,'POST','/decks',{cookie,body:{name:'Color palette',color:'coral',icon:'flask'}});
+  expect(created.status).toBe(200);
+  const d=await created.json<any>();
+  expect(DECK_COLORS).toHaveLength(30);
+  for(const color of DECK_COLORS) {
+    const response=await callApp(app,'PATCH',`/decks/${d.id}`,{cookie,body:{color}});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({color,icon:'flask'});
+  }
+  expect((await callApp(app,'PATCH',`/decks/${d.id}`,{cookie,body:{color:'not-a-color'}})).status).toBe(400);
+});

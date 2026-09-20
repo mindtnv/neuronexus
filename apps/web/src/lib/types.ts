@@ -18,7 +18,7 @@ import type {
   SourceStatus,
 } from '@neuronexus/shared';
 
-export type DeckColor = 'lime' | 'amber' | 'violet' | 'sky' | 'rose' | 'neutral';
+export type DeckColor = import('@neuronexus/shared').DeckColor;
 export type PlantSpecies = 'fern' | 'cactus' | 'succulent' | 'bonsai' | 'sakura' | 'mushroom';
 
 export interface Deck {
@@ -26,6 +26,7 @@ export interface Deck {
   name: string;
   color: DeckColor;
   icon?: string;
+  position?: number;
   species: PlantSpecies;
   createdAt: number;
   /** Parent deck id. Undefined for root-level decks. */

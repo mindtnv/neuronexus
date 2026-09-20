@@ -15,7 +15,7 @@ export const NOTEBOOK_EMOJI_MAX = 16;
 /** Server-capped length of a notebook `title` (matches the create route). */
 export const NOTEBOOK_TITLE_MAX = 200;
 
-/** The notebook color palette — same set the decks use (deck_color enum). A
+/** The notebook color palette; decks have their own expanded catalog. A
  *  PATCH `color` must be one of these (or null to clear). */
 export const NOTEBOOK_COLORS = ['lime', 'amber', 'violet', 'sky', 'rose', 'neutral'] as const;
 export type NotebookColor = (typeof NOTEBOOK_COLORS)[number];

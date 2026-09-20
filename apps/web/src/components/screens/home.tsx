@@ -5,7 +5,7 @@ import { useAppNavigation } from '@/components/navigation';
 import { format, startOfMonth, subDays } from 'date-fns';
 import { PageSurface } from '@/components/design-system/primitives';
 
-import { NNBadge, NNBtn, NNCard, NNIcon, NNPlant, NNSkeleton } from '@/components/ui';
+import { NNBadge, NNBtn, NNCard, NNIcon, NNSkeleton } from '@/components/ui';
 import { useStudyForecast, useStudyOverview } from '@/lib/use-study-overview';
 import { useNN } from '@/lib/store';
 import { api, ok } from '@/lib/api';
@@ -128,7 +128,6 @@ export const NNHome = () => {
   })();
   const todayMinutes = profile ? todayMinutesServer : todayReviewedMinutes;
   const goalPct = Math.min(100, Math.round((todayMinutes / Math.max(1, dailyGoalMinutes)) * 100));
-  const streakFreezes = profile?.streakFreezes ?? 0;
 
   // Retention over last 30 days (rating >= 3 / total) — queried async from db.
   const retentionPct = useMemo(() => {
@@ -137,10 +136,7 @@ export const NNHome = () => {
     return Math.round((good / recentReviews.length) * 100);
   }, [recentReviews]);
 
-  const xpDisplay = useMemo(() => {
-    const xp = profile?.xp ?? 0;
-    return xp >= 1000 ? `${(xp / 1000).toFixed(1)}k` : String(xp);
-  }, [profile]);
+
 
   // Server buckets use UTC study days; zero-fill only a successful response.
   const forecast = useMemo(() => {
@@ -280,60 +276,13 @@ export const NNHome = () => {
             gap: 14,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>
-              {t('home.streakBadge', { n: profile?.level ?? 1 })}
-            </span>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              {streakFreezes > 0 && (
-                <span
-                  title={`${streakFreezes} streak freeze available`}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 3,
-                    padding: '3px 8px',
-                    borderRadius: 999,
-                    fontSize: 11,
-                    fontWeight: 500,
-                    background: 'var(--tone-sky-bg)',
-                    color: 'var(--sky-400)',
-                    border: '1px solid var(--tone-sky-border)',
-                  }}
-                >
-                  🛡 × {streakFreezes}
-                </span>
-              )}
-              <NNBadge tone="amber" size="sm" icon="flame">
-                {t('home.streakDays', { days: profile?.streakDays ?? 0 })}
-              </NNBadge>
-            </div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '4px 0' }}>
-            <button
-              type="button"
-              onClick={() => router.push('/garden')}
-              title={t('home.openGarden')}
-              aria-label={t('home.openGarden')}
-              style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 0 }}
-            >
-              <NNPlant stage={profile?.plantStage ?? 0} size={80} species={profile?.plantSpecies} />
-            </button>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 3 }}>{t('home.dailyGoal')}</div>
-              <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--text)', letterSpacing: -0.5 }}>
-                <span className="mono">{todayMinutes}</span>
-                <span style={{ color: 'var(--text-dim)', fontSize: 14 }}> {t('home.minOfGoal', { n: dailyGoalMinutes })}</span>
-              </div>
-              <div style={{ marginTop: 8, height: 6, borderRadius: 3, background: 'var(--surface-3)', overflow: 'hidden' }}>
-                <div style={{ width: `${goalPct}%`, height: '100%', background: 'var(--lime-500)' }} />
-              </div>
-            </div>
-          </div>
+          <div className="reomi-home-progress-heading"><span>{t('home.dailyGoal')}</span><NNBadge tone="neutral" size="sm" icon="flame">{t('home.streakDays', { days: profile?.streakDays ?? 0 })}</NNBadge></div>
+          <div className="reomi-home-progress-value">{todayMinutes}<span>{t('home.minOfGoal', { n: dailyGoalMinutes })}</span></div>
+          <div className="reomi-home-progress-track" role="progressbar" aria-label={t('home.dailyGoal')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={goalPct}><div style={{ width: `${goalPct}%` }} /></div>
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
               gap: 8,
               padding: '12px 0 4px',
               borderTop: '1px solid var(--border)',
@@ -342,7 +291,6 @@ export const NNHome = () => {
             {[
               { v: counts ? String(counts.total) : '—', l: t('home.stats.cards') },
               { v: retentionPct != null ? `${retentionPct}%` : '—', l: t('home.stats.retention') },
-              { v: xpDisplay, l: t('home.stats.xp') },
             ].map((s) => (
               <div key={s.l}>
                 <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text)' }} className="mono">
@@ -444,7 +392,7 @@ function HomeKnowledge({
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
               gap: isMobile ? 10 : 14,
             }}
           >
@@ -528,7 +476,7 @@ function HomeKnowledge({
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
               gap: isMobile ? 10 : 14,
             }}
           >
@@ -691,7 +639,7 @@ function HomeSkeleton({ isMobile }: { isMobile: boolean }) {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
               gap: 8,
               paddingTop: 12,
               borderTop: '1px solid var(--border)',

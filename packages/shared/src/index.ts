@@ -35,3 +35,6 @@ export * from './note-fields';
 export * from './card-markdown';
 export * from './cloze';
 export * from './note-content';
+
+export * from './deck-order';
+export * from './deck-appearance';

@@ -8,8 +8,6 @@ import { useBreakpoint } from './use-breakpoint';
 // Holds chrome preferences that never touch the API:
 //   - `sidebarCollapsed`: desktop sidebar fully hidden; persisted to
 //     localStorage so the choice survives reloads.
-//   - `zenMode`: /review focus mode; ephemeral (never persisted), auto-exits
-//     when leaving /review (see app-shell.tsx).
 //
 // SSR-safe: the store always initializes to `false`. localStorage is NEVER read
 // at module top-level — the sidebar pref is hydrated in a mount effect
@@ -66,9 +64,6 @@ interface UIState {
   setSidebarCollapsed: (v: boolean) => void;
 
   /** /review focus mode — ephemeral, never persisted. */
-  zenMode: boolean;
-  toggleZen: () => void;
-  setZen: (v: boolean) => void;
 }
 
 export const useUI = create<UIState>((set, get) => ({
@@ -89,9 +84,6 @@ export const useUI = create<UIState>((set, get) => ({
     set({ sidebarCollapsed: v });
   },
 
-  zenMode: false,
-  toggleZen: () => set((s) => ({ zenMode: !s.zenMode })),
-  setZen: (v: boolean) => set({ zenMode: v }),
 }));
 
 // ── Display mode (PWA standalone vs browser tab) ─────────────────────────────
@@ -225,10 +217,9 @@ export function useWcoTopInsets(fullBleed = false): { wco: boolean; left: number
   const bp = useBreakpoint();
   const sidebarCollapsed = useUI((s) => s.sidebarCollapsed);
   const preferredWidth = useUI((s) => s.sidebarWidth);
-  const zenMode = useUI((s) => s.zenMode);
   if (!active || !rect) return { wco: active, left: 0, right: 0 };
   const sidebarWidth =
-    fullBleed || bp === 'mobile' || zenMode || sidebarCollapsed
+    fullBleed || bp === 'mobile' || sidebarCollapsed
       ? 0
       : preferredWidth;
   const { left, right } = wcoTopInsets(rect, viewportWidth, sidebarWidth);

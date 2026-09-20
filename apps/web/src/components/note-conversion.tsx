@@ -11,7 +11,7 @@ import { deckPathLabel } from '@/lib/decks';
 import { useModalFocus } from '@/lib/use-modal-focus';
 import { NNBtn } from './ui';
 
-const selectStyle: React.CSSProperties = { width: '100%', padding: 10, background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8 };
+const selectStyle: React.CSSProperties = { width: '100%', padding: 10, background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 10 };
 export function NoteConversionDialog({ cards, targetTypeId, onClose, onConverted }: {
   cards: Card[]; targetTypeId?: string; onClose: () => void; onConverted: (cards: Card[]) => void;
 }) {
@@ -87,12 +87,12 @@ export function NoteConversionDialog({ cards, targetTypeId, onClose, onConverted
     finally { lock.current = false; if (alive.current) setBusy(false); }
   };
   return createPortal(<div onClick={(event) => { event.stopPropagation(); if (event.target === event.currentTarget && !busy) onClose(); }}
-    style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(0,0,0,.55)', display: 'grid', placeItems: 'center', padding: 12 }}>
+    className="reomi-overlay-backdrop reomi-conversion-backdrop">
     <div ref={root} role="dialog" aria-modal="true" aria-labelledby="note-conversion-title" tabIndex={-1}
       onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape' && !busy) { event.preventDefault(); onClose(); } }}
-      style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 14, padding: 20, width: 'min(760px, 100%)', maxHeight: 'calc(100dvh - 24px)', overflow: 'auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}><h2 id="note-conversion-title">{t('noteTypes.convert.title')}</h2><NNBtn onClick={onClose} disabled={busy} variant="ghost">{t('actions.cancel')}</NNBtn></div>
-      <p>{t('noteTypes.convert.scope', { n: noteIds.length, source: typeLabel(source) })}</p>
+      className="reomi-flow-dialog reomi-conversion-dialog">
+      <header><div><small>{t(preview ? 'noteTypes.convert.stepReview' : 'noteTypes.convert.stepMapping')}</small><h2 id="note-conversion-title">{t('noteTypes.convert.title')}</h2></div><NNBtn onClick={onClose} disabled={busy} variant="ghost" icon="x" ariaLabel={t('actions.cancel')} /></header>
+      <p className="reomi-flow-intro">{t('noteTypes.convert.scope', { n: noteIds.length, source: typeLabel(source) })}</p>
       {!eligible ? <p role="alert">{t(noteIds.length > 200 ? 'noteTypes.convert.tooLarge' : 'noteTypes.convert.oneType')}</p> : !preview ? <fieldset disabled={busy} style={{ border: 0, padding: 0, display: 'grid', gap: 14 }}>
         <label>{t('noteTypes.convert.target')}<select ref={targetSelect} aria-label={t('noteTypes.convert.target')} style={selectStyle} value={targetId} onChange={(event) => setTargetId(event.target.value)}>
           <option value="">{t('noteTypes.convert.choose')}</option>{types.filter((type) => type.id !== source?.id).map((type) => <option key={type.id} value={type.id}>{typeLabel(type)}</option>)}

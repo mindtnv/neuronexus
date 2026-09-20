@@ -14,6 +14,9 @@ import {
 import { NNBtn, NNBadge, NNTag, NNIcon, NNLoadError, NNSkeleton } from '@/components/ui';
 import type { BadgeTone } from '@/components/ui';
 import { TextInput } from '@/components/design-system/primitives';
+import { CardActionsMenu, type CardMenuAction } from '@/components/card-actions-menu';
+import { ResizeHandle } from '@/components/design-system/resize-handle';
+import { CARD_FILTERS, boundedPanelWidth, readCardFiltersWidth } from '@/lib/panel-width';
 import { CardColumnPicker } from '@/components/card-column-picker';
 import { CARD_COLUMNS, defaultCardColumns, readCardColumns, saveCardColumns, cardTableMinWidth, type SortField } from '@/lib/card-columns';
 import { CardsViewSwitcher } from '@/components/cards-view-switcher';
@@ -150,18 +153,45 @@ export const NNCardsBrowser = () => {
   const [serverError, setServerError] = useState<ApiError | null>(null);
 
   // Two decoupled intents (must-fix: stop conflating look / edit-one / bulk):
-  //  • `selected` (checkboxes / Ctrl+Shift-click) → drives ONLY the floating bulk bar.
+  //  • `selected` (checkboxes / Ctrl+Shift-click) → drives the contextual actions.
   //  • `focusedId` (plain row click) → the single card shown in the bottom edit dock.
   const bulkLock = useRef(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkError, setBulkError] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [actionMenu, setActionMenu] = useState<{ x: number; y: number; anchor: HTMLElement } | null>(null);
+  const closeActions = useCallback((restoreFocus: boolean) => {
+    if (restoreFocus && actionMenu?.anchor.isConnected) actionMenu.anchor.focus();
+    setActionMenu(null);
+  }, [actionMenu]);
   const lastClickedRef = useRef<string | null>(null);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [focusError, setFocusError] = useState<ApiError | null>(null);
   const [focusAttempt, setFocusAttempt] = useState(0);
 
 
+
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const [filtersPreferredWidth, setFiltersPreferredWidth] = useState<number>(CARD_FILTERS.default);
+  const [workspaceWidth, setWorkspaceWidth] = useState(1200);
+  useLayoutEffect(() => {
+    setFiltersPreferredWidth(readCardFiltersWidth());
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const measure = () => { if (workspace.clientWidth) setWorkspaceWidth(workspace.clientWidth); };
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(workspace);
+    window.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, []);
+  const filtersMaxWidth = Math.min(CARD_FILTERS.max, Math.max(CARD_FILTERS.min, workspaceWidth - 400));
+  const filtersWidth = boundedPanelWidth(filtersPreferredWidth, CARD_FILTERS.min, filtersMaxWidth, CARD_FILTERS.default);
+  const resizeFilters = (value: number) => {
+    const next = boundedPanelWidth(value, CARD_FILTERS.min, filtersMaxWidth, CARD_FILTERS.default);
+    setFiltersPreferredWidth(next);
+    try { localStorage.setItem(CARD_FILTERS.key, String(next)); } catch {}
+  };
 
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const [filtersVisible, setFiltersVisible] = useState(true);
@@ -529,6 +559,15 @@ export const NNCardsBrowser = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [focusedId]);
 
+  const actionsUnavailable = bulkBusy || searching || !serverActive;
+  useEffect(() => { setActionMenu(null); }, [searching, serverActive, query, noteTypeScope]);
+  const openActions = (anchor: HTMLElement, point?: { x: number; y: number }, cardId?: string) => {
+    if (actionsUnavailable) return;
+    if (cardId && !selected.has(cardId)) setSelected(new Set([cardId]));
+    const rect = anchor.getBoundingClientRect();
+    setActionMenu({ anchor, x: point?.x ?? rect.left, y: point?.y ?? rect.bottom });
+  };
+
   // Capture the selection once; a whole scheduling batch is one server write.
   const performBulk = async (operation: (ids: string[]) => Promise<void>) => {
     if (bulkLock.current || selected.size === 0 || !serverActive || searching) return;
@@ -560,8 +599,12 @@ export const NNCardsBrowser = () => {
       const deckId = await select<string>({ title: t('cards.bulk.movePrompt'), options: decks.map((deck) => ({ value: deck.id, label: deckPathLabel(decks, deck.id) })) });
       if (deckId) await bulkCards('move', ids, { deckId });
     } else if (action === 'addTag' || action === 'removeTag') {
-      const tag = (await prompt({ title: t('cards.bulk.tagPrompt') }))?.trim();
-      if (tag) { await bulkCards(action, ids, { tag }); await getCardTags(); }
+      const available = action === 'addTag' ? await getCardTags()
+        : [...new Set(rows.filter(card => ids.includes(card.id)).flatMap(card => card.tags))];
+      if (!available.length) { await alert({ title: t('cards.bulk.noTags') }); return; }
+      const tag = await select<string>({ title: t(action === 'addTag' ? 'cards.bulk.addTag' : 'cards.bulk.removeTag'),
+        searchable: true, options: available.slice().sort((a,b) => a.localeCompare(b)).map(value => ({ value, label: `#${value}` })) });
+      if (tag !== null) { await bulkCards(action, ids, { tag }); await getCardTags(); }
     } else await bulkCards(action, ids);
   });
 
@@ -587,10 +630,28 @@ export const NNCardsBrowser = () => {
   };
 
   const visibleColumns = CARD_COLUMNS.filter(c => columnIds.includes(c.id));
-  const tableMinWidth = cardTableMinWidth(visibleColumns);
-  const gridTemplate = `36px ${visibleColumns.map((c) => c.width).join(' ')}`;
+  const tableMinWidth = cardTableMinWidth(visibleColumns) + 40;
+  const gridTemplate = `28px 32px ${visibleColumns.map((c) => c.width).join(' ')}`;
+
+  const selectedCards = rows.filter(card => selected.has(card.id));
+  const cardActions: CardMenuAction[] = [
+    ...(selectedCards.length === 1 ? [{ label: t('cards.panel.edit'), icon: 'edit', run: () => { void changeFocused(selectedCards[0].id); } }] : []),
+    { label: t('noteTypes.convert.open'), icon: 'card-type', run: () => {
+      if (focusedId) { void alert({ title: t('noteTypes.convert.closeEditor') }); return; }
+      setConversionCards(selectedCards);
+    } },
+    { label: t('cards.bulk.move'), icon: 'stack', run: () => { void runBulk('move'); } },
+    { label: t('cards.bulk.addTag'), icon: 'tag', run: () => { void runBulk('addTag'); } },
+    { label: t('cards.bulk.removeTag'), icon: 'x', run: () => { void runBulk('removeTag'); } },
+    ...(selectedCards.some(card => !card.suspended) ? [{ label: t('cards.bulk.suspend'), icon: 'pause', run: () => { void runBulk('suspend'); } }] : []),
+    ...(selectedCards.some(card => card.suspended) ? [{ label: t('cards.bulk.unsuspend'), icon: 'play', run: () => { void runBulk('unsuspend'); } }] : []),
+    { label: t('cards.actions.setDue'), icon: 'clock', run: () => { void runSetDue(); } },
+    { label: t('cards.actions.forget'), icon: 'sync', run: () => { void runForget(); } },
+    { label: t('cards.bulk.delete'), icon: 'x', danger: true, run: () => { void runBulk('delete'); } },
+  ].map(action => ({ ...action, disabled: actionsUnavailable }));
 
   const loading = !bootstrapped;
+  const emptyResults = !loading && !searching && serverActive && rows.length === 0 && !serverError && !queryError;
 
   // ── render ──────────────────────────────────────────────────────────────────
 
@@ -616,7 +677,7 @@ export const NNCardsBrowser = () => {
     <NNTopbar title={t('cards.title')} actions={<NNBtn className="reomi-create-icon" variant="soft" icon="plus"
       ariaLabel={t('topbar.newCard')} title={creationDeck ? t('cards.createInDeck', { name: creationDeck.name }) : t('topbar.newCard')}
       onClick={() => void createCard()} />} />
-    <div className="reomi-cards-workspace" data-filters={!isMobile && filtersVisible ? 'open' : 'closed'}>
+    <div ref={workspaceRef} className="reomi-cards-workspace" style={{ '--cards-filters-width': `${filtersWidth}px` } as React.CSSProperties} data-filters={!isMobile && filtersVisible ? 'open' : 'closed'}>
       {/* Query bar */}
       <div className="reomi-cards-toolbar">
         <NNBtn size="md" variant={(isMobile ? sidebarOpen : filtersVisible) ? 'soft' : 'ghost'} icon="filter"
@@ -650,9 +711,10 @@ export const NNCardsBrowser = () => {
         <NNBtn variant="ghost" icon="clock" onClick={() => router.push('/editor?drafts=1')}
           title={t('editor.draft.libraryTitle')} ariaLabel={t('editor.draft.libraryTitle')} />
         <NNBtn
+          className="reomi-note-types-entry"
           size="md"
           variant="ghost"
-          icon="grid"
+          icon="card-type"
           onClick={() => router.push('/note-types')}
           title={t('noteTypes.pageTitle')}
           ariaLabel={t('noteTypes.pageTitle')}
@@ -661,8 +723,9 @@ export const NNCardsBrowser = () => {
 
       {/* Filters belong to the cards workspace, not the global navigation. */}
       {!isMobile && filtersVisible && (
-        <aside className="reomi-cards-filters nn-scroll" aria-label={t('cards.sidebar.filters')}>
-          {sidebar}
+        <aside className="reomi-cards-filters" aria-label={t('cards.sidebar.filters')}>
+          <div className="reomi-cards-filters-scroll nn-scroll">{sidebar}</div>
+          <ResizeHandle edge="right" label={t('cards.sidebar.resize')} width={filtersWidth} min={CARD_FILTERS.min} max={filtersMaxWidth} defaultWidth={CARD_FILTERS.default} onChange={resizeFilters} />
         </aside>
       )}
 
@@ -754,11 +817,11 @@ export const NNCardsBrowser = () => {
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, flexDirection: 'column' }}>
           {/* Table */}
           <div className="reomi-cards-table-scroll" tabIndex={0} aria-label={t('cards.title')} style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
-            <div className="reomi-cards-table" style={{ minWidth: tableMinWidth, width: '100%' }}>
+            <div className="reomi-cards-table" data-empty={emptyResults || undefined} style={{ minWidth: emptyResults ? 0 : tableMinWidth, width: '100%' }}>
             {/* Header */}
             <div className="reomi-cards-table-header"
               style={{
-                display: 'grid',
+                display: emptyResults ? 'none' : 'grid',
                 gridTemplateColumns: gridTemplate,
                 gap: 8,
                 padding: '8px 14px',
@@ -774,6 +837,7 @@ export const NNCardsBrowser = () => {
                 letterSpacing: 0.8,
               }}
             >
+              <span />
               <span />
               {visibleColumns.map((col) => {
                 const active = col.sort && col.sort === sortField;
@@ -826,10 +890,14 @@ export const NNCardsBrowser = () => {
                 {queryError}
               </div>
             ) : rows.length === 0 ? (
-              <div className="nn-empty-state" style={{ paddingTop: 48, paddingBottom: 48 }}>
-                <span className="nn-empty-state-icon"><NNIcon name="stack" size={30} color="var(--text-dim)" /></span>
-                <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>{t('cards.empty.title')}</div>
-                <p className="nn-empty-state-hint">{t('cards.empty.subtitle')}</p>
+              <div className="reomi-cards-empty" role="status">
+                <span className="reomi-cards-empty-icon"><NNIcon name={query.trim() ? 'search' : 'cards'} size={26}/></span>
+                <h2>{t(query.trim() ? 'cards.empty.title' : 'cards.empty.collectionTitle')}</h2>
+                <p>{creationDeck ? t('cards.empty.deckHint', { name: creationDeck.name }) : t('cards.empty.subtitle')}</p>
+                <div className="reomi-cards-empty-actions">
+                  <NNBtn variant="primary" icon="plus" onClick={() => void createCard()}>{t('topbar.newCard')}</NNBtn>
+                  {query.trim() && <NNBtn variant="soft" onClick={() => onQueryChange('')}>{t('cards.empty.clearSearch')}</NNBtn>}
+                </div>
               </div>
             ) : (
               rows.map((card) => {
@@ -853,6 +921,20 @@ export const NNCardsBrowser = () => {
                 return (
                   <div
                     key={card.id}
+                    data-card-row={card.id}
+                    tabIndex={0}
+                    onContextMenu={event => {
+                      event.preventDefault();
+                      openActions(event.currentTarget, { x: event.clientX, y: event.clientY }, card.id);
+                    }}
+                    onKeyDown={event => {
+                      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                        event.preventDefault(); event.stopPropagation();
+                        openActions(event.currentTarget, undefined, card.id);
+                      } else if (event.key === 'Enter' && event.target === event.currentTarget) {
+                        event.preventDefault(); void changeFocused(card.id);
+                      }
+                    }}
                     onClick={(e) => onRowSelect(card.id, e)}
                     onMouseEnter={(e) => {
                       if (!isFocused) (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-2)';
@@ -889,11 +971,19 @@ export const NNCardsBrowser = () => {
                     <span onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center' }}>
                       <input
                         type="checkbox"
+                        aria-label={t('cards.actions.selectCard', { title: truncate(q, 60) })}
+                        disabled={actionsUnavailable}
                         checked={isChecked}
                         onChange={() => toggleCheckbox(card.id)}
                         style={{ cursor: 'pointer' }}
                       />
                     </span>
+                    <button type="button" className="reomi-card-row-actions" aria-haspopup="menu"
+                      aria-label={t('cards.actions.forCard', { title: truncate(q, 60) })}
+                      title={t('cards.actions.open')} disabled={actionsUnavailable}
+                      onClick={event => { event.stopPropagation(); openActions(event.currentTarget, undefined, card.id); }}>
+                      <NNIcon name="dots" size={16} />
+                    </button>
                     {visibleColumns.map((col) => (
                       <span
                         key={col.id}
@@ -961,46 +1051,19 @@ export const NNCardsBrowser = () => {
           }} />}
 
 
-        {/* Floating contextual bulk pill — appears ONLY for checkbox / Ctrl+Shift
-            selection. position:fixed so it never reflows page layout; sits above
-            the dock and (on mobile) above the bottom-tabs + safe area. */}
         {selected.size > 0 && (
-          <div
-            className="nn-chrome"
-            style={{
-              position: 'fixed',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              bottom: isMobile ? 'calc(80px + env(safe-area-inset-bottom, 4px))' : 16,
-              zIndex: 50,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '8px 12px',
-              maxWidth: 'calc(100vw - 24px)',
-              overflowX: 'auto',
-              borderRadius: 999,
-              border: '1px solid var(--border)',
-              background: 'var(--surface-2)',
-              boxShadow: 'var(--shadow-lg)',
-            }}
-          >
+          <div className="reomi-bulk-actions" role="toolbar" aria-label={t('cards.bulk.selected', { n: selected.size })}>
             <NNBadge tone="lime" size="sm">{t('cards.bulk.selected', { n: selected.size })}</NNBadge>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" onClick={async () => {
-              if (focusedId) { await alert({ title: t('noteTypes.convert.closeEditor') }); return; }
-              setConversionCards(rows.filter((card) => selected.has(card.id)));
-            }}>{t('noteTypes.convert.open')}</NNBtn>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="stack" onClick={() => runBulk('move')}>{t('cards.bulk.move')}</NNBtn>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="tag" onClick={() => runBulk('addTag')}>{t('cards.bulk.addTag')}</NNBtn>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="x" onClick={() => runBulk('removeTag')}>{t('cards.bulk.removeTag')}</NNBtn>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="pause" onClick={() => runBulk('suspend')}>{t('cards.bulk.suspend')}</NNBtn>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="play" onClick={() => runBulk('unsuspend')}>{t('cards.bulk.unsuspend')}</NNBtn>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="clock" onClick={() => void runSetDue()}>{t('cards.actions.setDue')}</NNBtn>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="soft" icon="sync" onClick={() => void runForget()}>{t('cards.actions.forget')}</NNBtn>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="danger" icon="x" onClick={() => runBulk('delete')}>{t('cards.bulk.delete')}</NNBtn>
-            <NNBtn disabled={bulkBusy || searching || !serverActive} size="sm" variant="ghost" onClick={() => setSelected(new Set())}>{t('cards.bulk.clear')}</NNBtn>
+            <NNBtn disabled={actionsUnavailable} size="sm" variant="soft" icon="dots" aria-haspopup="menu"
+              onClick={event => openActions(event.currentTarget)}>{t('cards.actions.open')}</NNBtn>
+            <NNBtn disabled={bulkBusy} size="sm" variant="ghost" icon="x" aria-label={t('cards.bulk.clear')}
+              onClick={() => { setActionMenu(null); setSelected(new Set()); }} />
           </div>
         )}
+        {actionMenu && <CardActionsMenu x={actionMenu.x} y={actionMenu.y} mobile={isMobile}
+          label={t('cards.bulk.selected', { n: selected.size })} closeLabel={t('actions.close')}
+          onClose={closeActions} actions={cardActions} />}
+
       </div>
     </div>
     </>

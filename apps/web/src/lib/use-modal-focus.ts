@@ -13,6 +13,8 @@ export function useModalFocus(ref: RefObject<HTMLElement | null>) {
     (root.querySelector<HTMLElement>('input') ?? controls()[0] ?? root).focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Tab') return;
+      const activeDialog = document.activeElement?.closest('[role="dialog"],dialog');
+      if (activeDialog && activeDialog !== root && !root.contains(activeDialog)) return;
       const elements = controls();
       const first = elements[0] ?? root;
       const last = elements.at(-1) ?? root;

@@ -1,0 +1,24 @@
+ALTER TYPE "public"."deck_color" ADD VALUE 'red';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'coral';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'orange';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'tangerine';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'gold';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'yellow';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'olive';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'green';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'emerald';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'mint';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'teal';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'turquoise';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'cyan';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'azure';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'blue';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'indigo';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'purple';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'lavender';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'magenta';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'pink';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'burgundy';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'brown';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'slate';--> statement-breakpoint
+ALTER TYPE "public"."deck_color" ADD VALUE 'graphite';

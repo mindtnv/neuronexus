@@ -397,7 +397,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-topbar[data-wco='1'] :is(.nn-topbar-icon-button, .nn-topbar-search, .nn-topbar-create) { height: 30px; }
 .nn-bottom-tabs { display: none; }
 .nn-route-slot { padding-bottom: 0; }
-.nn-app-shell[data-zen="true"] .nn-route-slot { padding-bottom: 0; }
+
 @media (prefers-reduced-motion: reduce) {
   .nn-review-layout,
   .nn-review-layout *,
@@ -723,23 +723,17 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
    (real <code> tags are dropped by the allowlist). */
 .nn-rendered .nn-code {
   font-family: var(--font-mono);
-  font-size: 0.9em;
+  font-size: 0.94em;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   padding: 0.1em 0.35em;
 }
 
-/* Real inline <code> (markdown `code` now survives the allow-list — `code` is an
-   allowed tag). The size is a FIXED rem, NOT em: the rendered subtree inherits
-   the card's prose font-size (the question is ~28px, the answer ~17px), so an
-   em-based code size ballooned inline code to title-size monospace. rem is
-   relative to the root (16px), so inline code stays compact everywhere. The
-   `pre code` rule below resets bg/border/padding for block code (higher
-   specificity), so this only paints true INLINE code. */
+/* Inline code follows surrounding prose, including reviewer headings. */
 .nn-rendered code {
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
+  font-size: 0.94em;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
