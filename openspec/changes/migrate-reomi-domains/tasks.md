@@ -8,7 +8,7 @@
 
 ## 2. Stage production infrastructure
 
-- [ ] 2.1 Save routing and nonsecret environment rollback state, add new Coolify domains alongside old ones, redeploy unchanged images and verify both old endpoints remain healthy.
+- [x] 2.1 Save routing and nonsecret environment rollback state, add new Coolify domains alongside old ones, redeploy unchanged images and verify both old endpoints remain healthy.
 - [x] 2.2 Read existing S3 CORS, preserve existing rules and allow the new web origin if needed; verify browser upload preflight succeeds.
 
 ## 3. Cut over after DNS propagation
