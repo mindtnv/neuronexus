@@ -1,7 +1,7 @@
 import type { NextConfig } from 'next';
 import withSerwistInit from '@serwist/next';
 
-const nextConfig: NextConfig = {
+export const nextConfig: NextConfig = {
   devIndicators: false,
   ...(process.env.NODE_ENV === 'development' && process.env.DESIGN_HOST
     ? { allowedDevOrigins: [process.env.DESIGN_HOST] }
@@ -10,6 +10,18 @@ const nextConfig: NextConfig = {
   // Produce a minimal runtime bundle at .next/standalone — consumed by the
   // web Dockerfile for a ~120 MB final image.
   output: 'standalone',
+  // Keep old bookmarks working after the DNS/TLS-gated Reomi cutover.
+  // Temporary redirect allows an image rollback without cached 308s.
+  async redirects() {
+    return [
+      {
+        source: '/:path*',
+        has: [{ type: 'host', value: 'neuronexus\\.mihailantonov\\.pro' }],
+        destination: 'https://app.reomi.ru/:path*',
+        permanent: false,
+      },
+    ];
+  },
   // Media resolver (M2 Phase 2, plan C-1): a static reverse-proxy that maps the
   // stored relative token `/m/{uuid}` → the public S3 object `media/{uuid}`.
   // Next proxies server-side so the browser request stays same-origin, which is
