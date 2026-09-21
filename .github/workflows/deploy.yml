@@ -193,7 +193,7 @@ jobs:
           push: true
           provenance: false
           build-args: |
-            NEXT_PUBLIC_API_URL=https://api.neuronexus.mihailantonov.pro
+            NEXT_PUBLIC_API_URL=https://api.reomi.ru
             NEXT_PUBLIC_MEDIA_BASE_URL=https://s3.1dedic.ru/neuronexus
           tags: |
             ghcr.io/${{ github.repository_owner }}/neuronexus-web:${{ github.sha }}

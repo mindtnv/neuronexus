@@ -9,7 +9,7 @@ Open **Settings → MCP & personal tokens** in the environment you want to use. 
 The list shows a non-secret prefix, permissions, expiration and last use. Revoke a token there to stop new requests. Up to 30 unexpired, unrevoked tokens can exist per account. The API permits 20 new tokens per hour per account. Tokens grant access exclusively to their owner's data and cannot create more tokens, export/delete the account, or authorize ordinary REST requests.
 
 - Local URL: `http://localhost:3000/mcp` → the local API's configured database.
-- Deployed URL: `https://api.neuronexus.mihailantonov.pro/mcp` → the deployed API's configured database, after the version containing MCP is deployed.
+- Deployed URL after the [Reomi domain cutover](./reomi-domain-migration.md): `https://api.reomi.ru/mcp` → the deployed API's configured database. `https://api.neuronexus.mihailantonov.pro/mcp` remains a compatibility alias using the same tokens and scopes.
 - The Settings URL is generated from `NEXT_PUBLIC_API_URL`. Local and production credentials are separate. A local token does not authorize production access.
 
 ## Codex
