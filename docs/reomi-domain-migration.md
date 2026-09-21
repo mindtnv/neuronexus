@@ -49,3 +49,11 @@ Accounts, stored cards, notebooks, media and personal tokens are unchanged. Cook
 Restore API `WEB_ORIGIN` and `BETTER_AUTH_URL` to the old web/API values and web runtime `NEXT_PUBLIC_API_URL` to the old API. Point both Coolify apps at the recorded baseline immutable tag and deploy API then web. Verify health and old-origin sign-in again. Keep both domain aliases and the additive S3 rule; they do not require rollback. The temporary redirect disappears with the old image. Revert the repository's build URL/redirect change before the next main deploy so automation does not reapply the cutover.
 
 No database or storage rollback is necessary.
+
+## Staging verification — 2026-09-21
+
+- Both Coolify applications run the baseline SHA with old and new domain aliases; both are `running:healthy`. Old sign-in page returns 200 and old API `/ready` reports `ready`.
+- Production S3 OPTIONS for POST/content-type returns 200 and the matching allowed origin for both old and new web addresses.
+- PR #20 code revision `60366b62bdf4be4273ecfd92c2f969276b392577` passed CI run `35582664461`, including migration-faithful tests, typecheck, builds, strict specs and real-S3 round trips.
+- Both registrar nameservers resolve both new hosts correctly. Public DNS propagation is incomplete and valid certificates are still pending; runtime origins and live browser build remain on the former domain.
+- A task heartbeat named “Завершить переезд Reomi после DNS” (`reomi-dns`) checks every ten minutes to finish the gated cutover and then stop.

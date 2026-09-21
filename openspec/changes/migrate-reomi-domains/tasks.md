@@ -3,7 +3,7 @@
 ## 1. Prepare and verify routing changes
 
 - [x] 1.1 Add a focused redirect behavior test, observe it fail, then implement legacy-host-only redirect preserving paths/query; verify canonical, lookalike and localhost requests are not redirected.
-- [ ] 1.2 Update the production web API build argument and MCP deployment docs; verify strict OpenSpec validation, typecheck, migration-faithful tests, build and real-S3 CI gates.
+- [x] 1.2 Update the production web API build argument and MCP deployment docs; verify strict OpenSpec validation, typecheck, migration-faithful tests, build and real-S3 CI gates.
 - [x] 1.3 Document cutover and rollback with the actual Coolify apps, env names and session/PWA implications; verify the recorded rollback image matches current live deployment.
 
 ## 2. Stage production infrastructure
