@@ -66,7 +66,7 @@ export const NNDecks = () => {
     const next = hasOpenBranch ? new Set(filterNodes.filter(node => node.children.length > 0).map(node => node.deck.id)) : new Set<string>();
     if (filterActive) setFilterCollapsed(next); else saveCollapsed(next);
   };
-  const selected = decks.find(d => d.id === selectedId) ?? (wide ? rows[0]?.deck : undefined);
+  const selected = rows.length > 0 ? decks.find(d => d.id === selectedId) ?? (wide ? rows[0]?.deck : undefined) : undefined;
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const mutate = async (operation: () => Promise<unknown>) => {
@@ -171,7 +171,7 @@ export const NNDecks = () => {
           </div><footer className="reomi-modal-footer"><NNBtn variant="ghost" disabled={busy} onClick={() => setMovingId(null)}>{t('actions.cancel')}</NNBtn><NNBtn type="submit" variant="primary" loading={busy}>{t('decks.move.apply')}</NNBtn></footer>
         </form>
       </Modal>
-      <div className="reomi-decks-toolbar">
+      {decks.length > 0 && <div className="reomi-decks-toolbar">
         <div className="reomi-decks-search"><NNIcon name="search" size={16} />
           <TextInput value={deckSearch} aria-label={t('decks.filters.search')} placeholder={t('decks.filters.search')}
             onChange={event => { setDeckSearch(event.target.value); setFilterCollapsed(new Set()); }} />
@@ -181,19 +181,22 @@ export const NNDecks = () => {
         <NNBtn icon={hasOpenBranch ? 'chevd' : 'chevr'} variant="ghost" disabled={!filterNodes.some(node => node.children.length > 0)}
           ariaLabel={t(hasOpenBranch ? 'decks.filters.collapseAll' : 'decks.filters.expandAll')}
           title={t(hasOpenBranch ? 'decks.filters.collapseAll' : 'decks.filters.expandAll')} onClick={toggleAll} />
-      </div>
+      </div>}
       {study.error && <div role="alert" className="reomi-deck-status">{t('home.countsError')} <NNBtn onClick={study.reload}>{t('review.retry')}</NNBtn></div>}
       <div className="reomi-deck-workspace" data-detail={selected ? 'open' : 'closed'}>
-        <div className="reomi-deck-tree-pane nn-scroll" ref={treeRef}>
-          <div className="reomi-deck-count-legend" aria-label={t('decks.details.composition')}>
+        <div className="reomi-deck-tree-pane nn-scroll" data-empty={rows.length === 0 || undefined} ref={treeRef}>
+          {rows.length > 0 && <div className="reomi-deck-count-legend" aria-label={t('decks.details.composition')}>
             <span><i style={{background:'var(--sky-500)'}}/>{t('cards.states.new')}</span>
             <span><i style={{background:'var(--amber-500)'}}/>{t('cards.states.learning')}</span>
             <span><NNIcon name="review" size={12}/>{t('decks.stats.due')}</span>
-          </div>
-          {filterActive && <p className="reomi-deck-drag-hint">{t('decks.move.filterHint')}</p>}
+          </div>}
+          {filterActive && rows.length > 0 && <p className="reomi-deck-drag-hint">{t('decks.move.filterHint')}</p>}
           {dragging && <div className="reomi-deck-root-drop" style={{ left: (treeRef.current?.getBoundingClientRect().left ?? 0) + 12, top: (treeRef.current?.getBoundingClientRect().bottom ?? 0) - 54, width: (treeRef.current?.getBoundingClientRect().width ?? 0) - 24 }} data-deck-root-drop data-active={drop?.id === null || undefined}>{t('decks.move.toRoot')}</div>}
-          {rows.length === 0 ? <div className="reomi-decks-empty"><NNIcon name="decks" size={28}/><p>{t(decks.length ? 'decks.filters.noResults' : 'decks.emptyTitle')}</p>
-            <NNBtn variant="soft" onClick={decks.length ? clearFilters : () => openCreateAt(null)}>{t(decks.length ? 'decks.filters.clear' : 'decks.newDeck')}</NNBtn></div> :
+          {rows.length === 0 ? <div className="reomi-decks-empty">
+            <span className="reomi-decks-empty-icon" aria-hidden="true"><NNIcon name={decks.length ? 'search' : 'decks'} size={28}/></span>
+            <h2>{t(decks.length ? 'decks.filters.noResults' : 'decks.emptyTitle')}</h2>
+            {!decks.length && <p>{t('decks.emptyHint')}</p>}
+            <NNBtn variant={decks.length ? 'soft' : 'primary'} icon={decks.length ? 'x' : 'plus'} onClick={decks.length ? clearFilters : () => openCreateAt(null)}>{t(decks.length ? 'decks.filters.clear' : 'decks.newDeck')}</NNBtn></div> :
           <div className="reomi-deck-list" role="tree" aria-label={t('nav.decks')} aria-busy={busy}>
             {rows.map((node,index) => {
               const d = node.deck, counts = study.data?.decks[d.id];

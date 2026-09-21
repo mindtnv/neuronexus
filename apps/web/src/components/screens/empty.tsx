@@ -3,7 +3,8 @@
 import React from 'react';
 import { AppLink } from '@/components/navigation';
 import { State } from 'ts-fsrs';
-import { NNBtn, NNIcon, NNPlant } from '@/components/ui';
+import { NNBtn, NNIcon } from '@/components/ui';
+import { PageSurface } from '@/components/design-system/primitives';
 import { useNN } from '@/lib/store';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
@@ -23,66 +24,39 @@ export const NNEmpty = ({ kind = 'first-run' }: { kind?: 'first-run' | 'done' | 
       { key: 'chat', href: '/chat', icon: 'sparkle', tone: 'var(--violet-400)' },
     ];
     return (
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: isMobile ? '24px 14px' : 40 }}>
-        <div style={{ textAlign: 'center', maxWidth: 640, width: '100%' }}>
-          <div style={{ width: isMobile ? 96 : 120, height: isMobile ? 96 : 120, borderRadius: 24, background: 'color-mix(in srgb, var(--lime-400) 6%, transparent)', border: '1px solid color-mix(in srgb, var(--lime-400) 15%, transparent)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
-            <NNPlant stage={1} size={isMobile ? 72 : 90}/>
+      <PageSurface className="reomi-welcome-page">
+        <div className="reomi-welcome">
+          <div className="reomi-welcome-icon" aria-hidden="true">
+            <NNIcon name="garden" size={32}/>
           </div>
-          <h1 className="nn-h1">{t('empty.firstRun.title')}</h1>
-          <div style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 10, lineHeight: 1.6 }}>
+          <h1>{t('empty.firstRun.title')}</h1>
+          <p className="reomi-welcome-description">
             {t('empty.firstRun.subtitle')}
-          </div>
+          </p>
           {/* Three-domain onboarding cards */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
-              gap: isMobile ? 10 : 14,
-              marginTop: isMobile ? 22 : 28,
-              textAlign: 'left',
-            }}
-          >
+          <div className="reomi-welcome-options">
             {onboarding.map((o) => (
               <AppLink
                 key={o.key}
                 href={o.href}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 8,
-                  padding: 18,
-                  borderRadius: 14,
-                  background: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  color: 'inherit',
-                  textDecoration: 'none',
-                  transition: 'border-color 120ms ease, transform 120ms ease',
-                }}
+                className="reomi-welcome-option"
+                style={{ '--welcome-tone': o.tone } as React.CSSProperties}
               >
-                <span
-                  style={{
-                    width: 38,
-                    height: 38,
-                    borderRadius: 10,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    background: `color-mix(in srgb, ${o.tone} 14%, transparent)`,
-                  }}
-                >
+                <span className="reomi-welcome-option-icon" aria-hidden="true">
                   <NNIcon name={o.icon} size={18} color={o.tone} />
                 </span>
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
+                <h2>
                   {t(`empty.firstRun.cards.${o.key}.title`)}
-                </div>
-                <div style={{ fontSize: 12.5, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                </h2>
+                <p>
                   {t(`empty.firstRun.cards.${o.key}.desc`)}
-                </div>
+                </p>
+                <span className="reomi-welcome-option-arrow" aria-hidden="true"><NNIcon name="chevr" size={16}/></span>
               </AppLink>
             ))}
           </div>
         </div>
-      </div>
+      </PageSurface>
     );
   }
   if (kind === 'done') {
