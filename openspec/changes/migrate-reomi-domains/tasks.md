@@ -13,6 +13,6 @@
 
 ## 3. Cut over after DNS propagation
 
-- [ ] 3.1 Verify authoritative/public DNS resolves both new hostnames to the production server and both have valid HTTPS certificates.
-- [ ] 3.2 Align API auth/CORS and web runtime values, release the tested web build and verify both applications become running:healthy.
-- [ ] 3.3 Verify live redirect path/query preservation, readiness, CSP, CORS, auth session endpoint and legacy API compatibility; record the result and any limitation on authenticated browser acceptance.
+- [x] 3.1 Verify authoritative/public DNS resolves both new hostnames to the production server and both have valid HTTPS certificates.
+- [x] 3.2 Align API auth/CORS and web runtime values, release the tested web build and verify both applications become running:healthy.
+- [x] 3.3 Verify live redirect path/query preservation, readiness, CSP, CORS, auth session endpoint and legacy API compatibility; record the result and any limitation on authenticated browser acceptance.

@@ -55,5 +55,13 @@ No database or storage rollback is necessary.
 - Both Coolify applications run the baseline SHA with old and new domain aliases; both are `running:healthy`. Old sign-in page returns 200 and old API `/ready` reports `ready`.
 - Production S3 OPTIONS for POST/content-type returns 200 and the matching allowed origin for both old and new web addresses.
 - PR #20 code revision `60366b62bdf4be4273ecfd92c2f969276b392577` passed CI run `35582664461`, including migration-faithful tests, typecheck, builds, strict specs and real-S3 round trips.
-- Both registrar nameservers resolve both new hosts correctly. Public DNS propagation is incomplete and valid certificates are still pending; runtime origins and live browser build remain on the former domain.
-- A task heartbeat named “Завершить переезд Reomi после DNS” (`reomi-dns`) checks every ten minutes to finish the gated cutover and then stop.
+- Initial staging waited for DNS propagation and certificates before changing active origins; the completed cutover is recorded below.
+- The temporary `reomi-dns` heartbeat was deleted when the operator resumed the final cutover in this task.
+
+## Completed cutover — 2026-09-21 09:38 UTC
+
+- PR #20 merged as `6997fe310fc0654f07521fe6d3f361b4b1991e00`; gated deployment `35583851169` succeeded. Both Coolify apps run that immutable SHA and report `running:healthy`.
+- Cloudflare and Google DNS resolve both domains to `82.202.165.26`. Both domains have valid Let's Encrypt certificates (expiry 2026-12-20), verified without certificate bypass.
+- API production `WEB_ORIGIN`/`BETTER_AUTH_URL` and web runtime/build API URL now use the Reomi addresses.
+- Live checks passed: web/CSP, HTTPS `sw.js` JavaScript, sign-in preflight 204 with exact origin and credentials, session response 200, protected profile 401, unrelated origin rejected by CORS, API readiness `ready`, old API health, old-web 307 preserving path/query, and S3 upload preflight.
+- A fresh browser opened the sign-in form with no console warnings/errors. Existing-account sign-in and an authenticated upload were not performed because no authenticated browser session was available. Users with an already open old build must reload, then sign in on the new origin.
