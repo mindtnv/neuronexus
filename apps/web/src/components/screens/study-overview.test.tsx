@@ -40,7 +40,7 @@ beforeEach(() => {
   root = createRoot(container);
   useNN.setState({ bootstrapped: true, decks: [{ id: 'deck', name: 'Study', color: 'lime', species: 'fern', createdAt: 0 }], cards: [cardFromApi({ id: 'cached', deckId: 'deck', suspended: true })] });
   globalThis.fetch = ((url: any) => Promise.resolve(Response.json(
-    String(url).includes('/study-summary') ? overview : String(url).includes('/library') ? { items: [] }
+    String(url).endsWith('/decks') ? useNN.getState().decks : String(url).includes('/study-summary') ? overview : String(url).includes('/library') ? { items: [] }
     : String(url).includes('/stats/forecast') ? { days: 7, buckets: [], overdueCount: 0, total: 0 }
     : String(url).includes('/status') ? { chatEnabled: false } : [],
   ))) as unknown as typeof fetch;
@@ -91,7 +91,7 @@ describe('study overview screens', () => {
   test('forecast errors do not render a fabricated zero forecast', async () => {
     globalThis.fetch = ((url: any) => Promise.resolve(
       String(url).includes('/stats/forecast') ? Response.json({ error: 'unavailable' }, { status: 503 })
-      : Response.json(String(url).includes('/study-summary') ? overview : []),
+      : Response.json(String(url).endsWith('/decks') ? useNN.getState().decks : String(url).includes('/study-summary') ? overview : []),
     )) as unknown as typeof fetch;
     await render(<NNHome />);
     expect(container.textContent).toContain('Could not refresh the forecast');
@@ -235,10 +235,10 @@ test('deck forecast preserves populated UTC buckets revived by the API client', 
 });
 
 test('failed move leaves the authoritative tree intact and offers retry in the dialog', async () => {
-  const initial=useNN.getState().decks;
   const fallback=globalThis.fetch;
   globalThis.fetch=(async(url:any,init?:RequestInit)=>String(url).endsWith('/deck/move') ? Response.json({error:'unavailable'},{status:503}) : fallback(url,init)) as typeof fetch;
   await render(<NNDecks/>);
+  const initial=useNN.getState().decks;
   await act(async()=>container.querySelector<HTMLButtonElement>('.reomi-deck-drag-handle')!.click());
   await act(async()=>container.querySelector<HTMLButtonElement>('dialog[open] button[type="submit"]')!.click());
   expect(useNN.getState().decks).toEqual(initial);

@@ -1,4 +1,7 @@
 'use client';
+
+import { useWorkspaceState } from '@/components/navigation';
+import { useNavigationScroll } from '@/lib/use-navigation-scroll';
 import { AssistantAskButton } from '../chat/assistant-ask-button';
 
 // NotesPanel («Блокноты 2.0» N1, Р12 «Заметки» tab) — the right-dock notes
@@ -82,7 +85,7 @@ export const NotesPanel = ({
   notebookId: legacyNotebookId,
   studyScope,
   allowCreate = true,
-  initialNoteId,
+  initialNoteId: requestedInitialNoteId,
   onInitialOpen,
   listNotes,
   getNote,
@@ -110,7 +113,11 @@ export const NotesPanel = ({
   const [debouncedQ, setDebouncedQ] = useState('');
 
   // Which note is open (viewer/editor); null = list view.
-  const [openId, setOpenId] = useState<string | null>(null);
+  const navigationScope = studyScope?.kind === 'source' ? `source:${notebookId}` : `notebook:${notebookId}`;
+  const [openId, setOpenId] = useWorkspaceState<string | null>(navigationScope,'noteId',null);
+  const initialNoteId=requestedInitialNoteId??openId;
+  const notePosition=useNavigationScroll(navigationScope,'note',{ready:loaded,queryKey:openId??''});
+  const listPosition=useNavigationScroll(navigationScope,'notes-list',{ready:loaded});
   const openNoteRef = useRef(openId);
   openNoteRef.current = openId;
   const notesOwnerRef = useRef(notebookId);
@@ -203,13 +210,13 @@ export const NotesPanel = ({
         setOpenId(note.id);setEditing(false);onInitialOpen?.();
       }).catch(error => {
         if (openIntent.current !== intent) return;
-        if (error?.status === 404) { raiseToast({kind:'error',title:t('notebooks.notes.notFound')});onInitialOpen?.(); }
+        if (error?.status === 404) { setOpenId(null); raiseToast({kind:'error',title:t('notebooks.notes.notFound')});onInitialOpen?.(); }
         else {consumedInitial.current=null;setLoadError(true);}
       });
       return;
     } else raiseToast({ kind: 'error', title: t('notebooks.notes.notFound') });
     onInitialOpen?.();
-  }, [initialNoteId, loaded, loadError, notes, search, debouncedQ, onInitialOpen, refresh, getNote, notebookId, t]);
+  }, [initialNoteId, loaded, loadError, notes, search, debouncedQ, onInitialOpen, refresh, getNote, notebookId, t, setOpenId]);
 
   // ── Create ────────────────────────────────────────────────────────────────────
   const resetCreate = useCallback(() => {
@@ -380,7 +387,7 @@ export const NotesPanel = ({
           )}
         </div>
 
-        <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
+        <div ref={notePosition.ref} className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
           {editing ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <TextInput
@@ -581,7 +588,7 @@ export const NotesPanel = ({
         )}
       </div>
 
-      <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '8px 8px 12px' }}>
+      <div ref={listPosition.ref} className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '8px 8px 12px' }}>
         {loadError && <p role="alert">{t('assistant.notesLoadFailed')} <NNBtn size="sm" onClick={() => void refresh(debouncedQ)}>{t('review.retry')}</NNBtn></p>}
         {nextOffset !== null && <NNBtn size="sm" loading={loadingMore} onClick={() => void loadMore()}>{t('assistant.more')}</NNBtn>}
         {!loaded ? (

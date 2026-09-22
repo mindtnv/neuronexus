@@ -25,6 +25,11 @@ export function SourceNotesPanel({ sourceId, initialNoteId, unavailable = false 
     if (!sourceId) throw new Error('source_required');
     return notebookNoteFromApi(await ok(await assistantApi.sources({ id: sourceId }).notes.post(input)));
   }, [sourceId]);
+  const getNote = useCallback(async (_scope: string, noteId: string) => {
+    const note = notebookNoteFromApi(await ok(await assistantApi.study.notes({noteId}).get()));
+    if (sourceId && (note.sourceId ?? note.sourceOriginId) !== sourceId) throw Object.assign(new Error('note_unavailable'), {status:404});
+    return note;
+  }, [sourceId]);
   const patchNote = useCallback(async (_scope: string, noteId: string, patch: { title?: string; content?: string; pinned?: boolean }) =>
     notebookNoteFromApi(await ok(await assistantApi.study.notes({ noteId }).patch(patch))), []);
   const deleteNote = useCallback(async (_scope: string, noteId: string) => { await ok(await assistantApi.study.notes({ noteId }).delete()); }, []);
@@ -34,6 +39,6 @@ export function SourceNotesPanel({ sourceId, initialNoteId, unavailable = false 
     return () => window.removeEventListener('nn:knowledge-changed', refresh);
   }, []);
   return <NotesPanel studyScope={sourceId ? { kind: 'source', id: sourceId } : { kind: 'saved' }} allowCreate={Boolean(sourceId)}
-    initialNoteId={initialNoteId} listNotes={listNotes} createNote={createNote} patchNote={patchNote} deleteNote={deleteNote} refreshRef={refreshRef}
+    initialNoteId={initialNoteId} listNotes={listNotes} getNote={getNote} createNote={createNote} patchNote={patchNote} deleteNote={deleteNote} refreshRef={refreshRef}
     onPrefillChat={(prefill, noteId) => { if (noteId) askAssistant({ ref: { kind: 'written_note', id: noteId }, prefill }); }} t={t} />;
 }

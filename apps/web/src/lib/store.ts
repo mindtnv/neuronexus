@@ -175,7 +175,7 @@ interface State {
    */
   getCardTags: () => Promise<string[]>;
 
-  gradeCard: (cardId: string, rating: Rating, durationMs: number, source?: 'regular' | 'filtered', displayedCard?: Card) => Promise<Review & { card: Card }>;
+  gradeCard: (cardId: string, rating: Rating, durationMs: number, source?: 'regular' | 'filtered', displayedCard?: Card, operationId?: string) => Promise<Review & { card: Card }>;
 
   /**
    * Undo the user's most recent grade (POST /reviews/undo). Restores the card +
@@ -945,7 +945,7 @@ export const useNN = create<State>()((set, get) => ({
     return tags;
   },
 
-  async gradeCard(cardId, rating, durationMs, source, displayedCard) {
+  async gradeCard(cardId, rating, durationMs, source, displayedCard, operationId) {
     const generation = bootstrapGeneration;
     const previous = displayedCard ?? get().cards.find((c) => c.id === cardId);
     const body: Record<string, unknown> = { cardId, rating, durationMs };
@@ -955,9 +955,15 @@ export const useNN = create<State>()((set, get) => ({
       body.expectedUpdatedAt = new Date(previous.updatedAt).toISOString();
     }
     const res: any = await ok(
-      await (api as any).reviews.post(body),
+      await (operationId ? (api as any).reviews.operations({operationId}).post(body) : (api as any).reviews.post(body)),
     );
-    const updatedCard = mergeReviewedCard(res.card, previous);
+    // A receipt is immutable, but the live card/profile can have changed since
+    // that commit. Never roll the client mirror back to a replayed response.
+    if(res.replayed) {
+      const [liveCard,liveProfile]=await Promise.all([ok(await (api as any).cards({id:cardId}).get()),ok(await api.profile.get())]);
+      res.card=liveCard;res.profile=liveProfile;
+    }
+    const updatedCard = res.replayed ? cardFromApi(res.card) : mergeReviewedCard(res.card, previous);
     const review = reviewFromApi(res.review);
     if (generation !== bootstrapGeneration) return { ...review, card: updatedCard };
     const nextProfile = res.profile ? profileFromApi(res.profile) : null;
@@ -968,10 +974,14 @@ export const useNN = create<State>()((set, get) => ({
       profile: nextProfile ?? s.profile,
     }));
 
+    if (!res.replayed && typeof window !== 'undefined' && get().profile?.userId) {
+      try { window.localStorage.setItem(`nn:study:changed:${get().profile!.userId}`, review.id); } catch { /* Optional invalidation signal. */ }
+    }
+
     // Fire gamification toasts. The server returns everything we need in the
     // grade response (freezeUsed, dailyGoalJustMet) — we just turn them into
     // user-visible notifications without pulling in an extra subscription layer.
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && !res.replayed) {
       // Defer a tick so React has committed the state update first.
       queueMicrotask(async () => {
         if (generation !== bootstrapGeneration) return;
@@ -1026,7 +1036,9 @@ export const useNN = create<State>()((set, get) => ({
       err.status = error.status;
       throw err;
     }
-    const restoredCard = mergeReviewedCard(data.card, displayedCard ?? get().cards.find((c) => c.id === data.card.id));
+    const prior=displayedCard ?? get().cards.find((c)=>c.id===data.card.id);
+    const restoredCard = prior?.note ? mergeReviewedCard(data.card,prior)
+      : cardFromApi(await ok(await (api as any).cards({id:data.card.id}).get()));
     const result = { cardId: restoredCard.id, card: restoredCard, reviewId: data.reviewId };
     if (generation !== bootstrapGeneration) return result;
     const nextProfile = data.profile ? profileFromApi(data.profile) : null;
@@ -1036,6 +1048,9 @@ export const useNN = create<State>()((set, get) => ({
         : [...s.cards, restoredCard],
       profile: nextProfile ?? s.profile,
     }));
+    if (typeof window !== 'undefined' && get().profile?.userId) {
+      try { window.localStorage.setItem(`nn:study:changed:${get().profile!.userId}`, `undo:${data.reviewId}`); } catch { /* Refocus still revalidates. */ }
+    }
     return result;
   },
 

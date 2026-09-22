@@ -37,6 +37,7 @@ const renderNavItem = ({
   label: string;
 }) => (
   <AppLink
+    intent="section"
     key={item.id}
     href={item.href}
     className="nn-sidebar-nav-item"
@@ -83,6 +84,7 @@ export const NNSidebar = ({
     try {
       await signOut();
     } finally {
+      window.dispatchEvent(new Event('nn:navigation-clear'));
       resetStore();
       router.replace('/auth/sign-in');
     }

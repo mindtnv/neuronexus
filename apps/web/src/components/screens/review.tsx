@@ -6,13 +6,13 @@ import { ResizeHandle } from '@/components/design-system/resize-handle';
 import { REVIEW_INSPECTOR, boundedPanelWidth, readReviewInspectorWidth } from '@/lib/panel-width';
 import { ReviewCardInfo } from '@/components/review-card-info';
 import { deckPathLabel } from '@/lib/decks';
-import { AppLink, useAppNavigation } from '@/components/navigation';
+import { AppLink, useAppNavigation, useNavigationWorkspace } from '@/components/navigation';
 import { useSearchParams } from 'next/navigation';
 import { NNBadge, NNBtn, NNCard, NNIcon, NNKbd, NNSkeleton, NNTag } from '@/components/ui';
-import { fieldPlainText, typedAnswerField, typedAnswerTarget, previewGrades, type StudySummary } from '@neuronexus/shared';
+import { newUuidV7, fieldPlainText, typedAnswerField, typedAnswerTarget, previewGrades, type StudySummary } from '@neuronexus/shared';
 import { humanInterval } from '@/lib/fsrs';
 import { api, ApiError, ok } from '@/lib/api';
-import { cardFromApi, profileFromApi } from '@/lib/mappers';
+import { cardFromApi, profileFromApi, reviewFromApi, mergeReviewedCard } from '@/lib/mappers';
 import { RichCard } from '@/components/rich-card';
 import { SimilarCardsList, useSimilarCards } from '@/components/similar-cards';
 import { SourcePeekChip, SourcePeekPanel, useFirstCardSource } from '@/components/source-peek';
@@ -25,7 +25,8 @@ import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useEmptyRedirect } from '@/lib/use-empty-redirect';
 import { resolveDeckConfigClient } from '@/lib/deck-config';
 import { toApiError } from '@/lib/resource-state';
-import { clearStudyHandoff, createAnswerTimer, emptyStudySession, mergeStudyQueue, readStudyHandoff, recordStudyAnswer, saveStudyHandoff, undoStudyAnswer, skipStudyCard, studyTotals } from '@/lib/review-session';
+import { clearStudyHandoff, createAnswerTimer, createStudyClock, readStudyCheckpoint, writeStudyCheckpoint, type StudyCheckpoint, type PendingStudyGrade, emptyStudySession, mergeStudyQueue, readStudyHandoff, recordStudyAnswer, saveStudyHandoff, undoStudyAnswer, skipStudyCard, studyTotals } from '@/lib/review-session';
+import { reconcileStudyCheckpoint } from '@/lib/study-recovery';
 import { diffAnswer } from '@/lib/review-answer';
 import { clearStudyResult, saveStudyResult } from '@/lib/study-result';
 import { hasBlockingReviewOverlay, isReviewEditingTarget, isReviewInteractiveTarget } from '@/lib/review-interactions';
@@ -68,7 +69,8 @@ const renderKindLabel = (kind: string, t: (k: string) => string): string => {
 export const NNReview = ({ variant: _variant = 'classic' }: { variant?: 'classic' }) => {
   const params = useSearchParams();
   const owner = useNN((s) => s.bootstrapped ? s.profile?.userId ?? 'ready' : 'loading');
-  return <NNReviewClassic key={`${owner}:${params.get('deck') ?? ''}:${params.get('filteredDeckId') ?? ''}`} />;
+  const navigation=useNavigationWorkspace();
+  return <NNReviewClassic key={`${owner}:${navigation?.entry?.id??''}:${params.get('deck') ?? ''}:${params.get('filteredDeckId') ?? ''}`} />;
 };
 
 // ─────────────────────────────────────────────
@@ -87,6 +89,7 @@ export const NNReviewClassic = () => {
   const { locale } = useLocale();
   useEmptyRedirect('first-run');
   const router = useAppNavigation();
+  const navigation=useNavigationWorkspace();
   const searchParams = useSearchParams();
   const filteredDeckId = searchParams.get('filteredDeckId') ?? undefined;
   // deck= param from the decks screen "Review" button (per-deck scoped queue).
@@ -105,32 +108,42 @@ export const NNReviewClassic = () => {
   const grade = useNN((s) => s.gradeCard);
   const undoLastReview = useNN((s) => s.undoLastReview);
 
-  const [session, setSession] = useState(() => readStudyHandoff(profile?.userId, reviewHref, resumeCardId) ?? emptyStudySession());
-  const [finished, setFinished] = useState(false);
+  const [seed]=useState(()=>({current:readStudyCheckpoint(profile?.userId,reviewHref,navigation?.entry?.views.review?.fields.sessionId as string|undefined)}));
+  const [sessionId]=useState(()=>({current:(navigation?.entry?.views.review?.fields.sessionId as string|undefined)??newUuidV7()}));
+  const checkpointReady=useRef(Boolean(seed.current));
+  const needsReconciliation=useRef(Boolean(seed.current));
+  const acceptUpdated=useRef(false);
+  const editingCardId=useRef(seed.current?.view.editingCardId??null);
+  const [pendingOperation,setPendingOperation]=useState<PendingStudyGrade|null>(seed.current?.pending??null);
+  const pendingOperationRef=useRef(pendingOperation);pendingOperationRef.current=pendingOperation;
+  const [session, setSession] = useState(() => seed.current?.session ?? readStudyHandoff(profile?.userId, reviewHref, resumeCardId) ?? emptyStudySession());
+  const [finished, setFinished] = useState(seed.current?.view.finished??false);
   const [queueLoading, setQueueLoading] = useState(true);
   const [queueError, setQueueError] = useState<ApiError | null>(null);
   const [queueAttempt, setQueueAttempt] = useState(0);
   const [summary, setSummary] = useState<StudySummary | null>(null);
-  const [serverOffset, setServerOffset] = useState(0);
-  const [revealed, setRevealed] = useState(false);
-  const [infoOpen, setInfoOpen] = useState(false);
+  const clock=useRef(createStudyClock());
+  const queueRequestActive = useRef(false);
+  const [clockRevision,setClockRevision]=useState(0);
+  const [revealed, setRevealed] = useState(seed.current?.view.revealed??false);
+  const [infoOpen, setInfoOpen] = useState(seed.current?.view.infoOpen??false);
   // Feature #1 — «провал → источник». On a lapse (Again) for a card WITH
   // provenance we HOLD the queue advance and surface the cited passage right in
   // the reviewer (an overlay popover). The grade already committed server-side;
   // only the visual advance waits for «понятно, дальше» / Esc. null = no peek.
-  const [pendingPeek, setPendingPeek] = useState<CardSourceLink | null>(null);
+  const [pendingPeek, setPendingPeek] = useState<CardSourceLink | null>(seed.current?.view.pendingPeek??null);
   const totals = useMemo(() => studyTotals(session.history), [session.history]);
   const completed = totals.answers;
   const xpGained = totals.xp;
   const gradeCounts = totals.grades;
   const queue = session.pending;
-  const answerTimer = useRef(createAnswerTimer());
+  const [answerTimer]=useState(()=>{const current=createAnswerTimer();current.restore(seed.current?.view.elapsedMs??0);return {current};});
   // 'regular' | 'filtered' — populated from the queue envelope's `mode` field
   const [sessionMode, setSessionMode] = useState<'regular' | 'filtered'>('regular');
 
   // Type variant state
-  const [typedAnswer, setTypedAnswer] = useState('');
-  const [submitted, setSubmitted] = useState(false);
+  const [typedAnswer, setTypedAnswer] = useState(seed.current?.view.typedAnswer??'');
+  const [submitted, setSubmitted] = useState(seed.current?.view.submitted??false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
 
@@ -146,7 +159,25 @@ export const NNReviewClassic = () => {
   const cardUnavailable = mutationError?.status === 404 || mutationError?.status === 409;
   const sessionSavedRef = useRef(false);
   const [undoBlocked, setUndoBlocked] = useState(false);
-  const canUndo = session.history.length > 0 && !undoBlocked;
+  const canUndo = session.history.length > 0 && !undoBlocked && !pendingOperation && !queueLoading;
+
+  const recoveryState=useRef<StudyCheckpoint>(null!);
+  recoveryState.current={id:sessionId.current,owner:profile?.userId??'',href:reviewHref,session,
+    view:{revealed,submitted,typedAnswer,elapsedMs:answerTimer.current.elapsed(),finished,infoOpen,pendingPeek,editingCardId:editingCardId.current},pending:pendingOperation};
+  const storageWarned=useRef(false);
+  const persist=useCallback((override?:Partial<StudyCheckpoint>)=>{
+    if(!checkpointReady.current||!profile?.userId||useNN.getState().profile?.userId!==profile.userId)return;
+    answerTimer.current.heartbeat();
+    const value={...recoveryState.current,...override};value.view={...value.view,elapsedMs:override?.view?.elapsedMs??answerTimer.current.elapsed()};recoveryState.current=value;
+    if(!writeStudyCheckpoint(value)&&!storageWarned.current){storageWarned.current=true;raiseToast({kind:'info',title:t('review.recovery.storageUnavailable')});}
+  },[profile?.userId,t]);
+  useEffect(()=>{navigation?.journal?.field('review','sessionId',sessionId.current,navigation.entry?.id);},[navigation?.journal,navigation?.entry?.id]);
+  useEffect(()=>navigation?.capture(()=>persist()),[navigation?.capture,persist]);
+  useEffect(()=>{const timer=setTimeout(()=>persist(),150);return()=>clearTimeout(timer);},[session,revealed,submitted,typedAnswer,finished,infoOpen,pendingPeek,pendingOperation,persist]);
+  useEffect(()=>{const save=()=>persist();window.addEventListener('pagehide',save);let ticks=0;const timer=setInterval(()=>{answerTimer.current.heartbeat();if(++ticks%5===0)persist();},1000);
+    return()=>{clearInterval(timer);window.removeEventListener('pagehide',save);answerTimer.current.heartbeat();answerTimer.current.pause();persist();};},[persist]);
+  const timerCard=useRef(seed.current?.session.activeId??null);
+  const inspectorCard=useRef(seed.current?.session.activeId??null);
 
   const refreshQueue = useCallback(() => {
     setQueueLoading(true);
@@ -157,6 +188,7 @@ export const NNReviewClassic = () => {
   useEffect(() => {
     if (!bootstrapped) return;
     let cancelled = false;
+    queueRequestActive.current = true;
     setQueueLoading(true);
     setQueueError(null);
     (async () => {
@@ -164,7 +196,16 @@ export const NNReviewClassic = () => {
         const query: Record<string, string> = {};
         if (filteredDeckId) query.filteredDeckId = filteredDeckId;
         if (deckId) query.deckId = deckId;
-        const res: any = await ok(await (api as any).cards.queue.get({ query }));
+        const started = performance.now();
+        let res: any = await ok(await (api as any).cards.queue.get({ query }));
+        // A slow empty response may already have crossed its learning deadline.
+        // Recheck once instead of starting a fresh full wait from stale serverNow.
+        const snapshotAt = Date.parse(res?.summary?.serverNow ?? '');
+        const nextDue = Date.parse(res?.summary?.nextLearningAt ?? '');
+        if (!cancelled && !res?.due?.length && !res?.new?.length && Number.isFinite(snapshotAt)
+          && Number.isFinite(nextDue) && nextDue <= snapshotAt + performance.now() - started) {
+          res = await ok(await (api as any).cards.queue.get({ query }));
+        }
         if (mutationError && !cancelled) {
           // A lost response may have committed, or another tab may have graded.
           // Reconcile account totals as well as the queue during recovery.
@@ -178,37 +219,56 @@ export const NNReviewClassic = () => {
         const due = ((res?.due ?? []) as any[]).map(cardFromApi);
         const fresh = ((res?.new ?? []) as any[]).map(cardFromApi);
         const q = [...due, ...fresh];
-        // Capture the mode from the envelope for mode-aware grading (Decision 7).
-        setSessionMode(res?.mode === 'filtered' ? 'filtered' : 'regular');
-        setSummary(res?.summary ?? null);
-        const serverNow = res?.summary?.serverNow ? Date.parse(res.summary.serverNow) : Date.now();
-        setServerOffset(serverNow - Date.now());
-        const handoff = readStudyHandoff(profile?.userId, reviewHref, resumeCardId);
-        const resumeId = resumeCardId ?? handoff?.activeId ?? null;
-        setSession((previous) => {
-          const merged = mergeStudyQueue(previous, q, res?.mode === 'filtered' ? 'filtered' : 'regular', serverNow);
-          return handoff && q.some((card) => card.id === resumeId) && merged.pending.some((card) => card.id === resumeId)
-            ? { ...merged, activeId: resumeId } : merged;
-        });
-        if (handoff) clearStudyHandoff();
-        setRevealed(false);
-        setSubmitted(false);
-        setTypedAnswer('');
-        setMutationError(null);
-        answerTimer.current.reset(!document.hidden);
+        const mode=res?.mode==='filtered'?'filtered':'regular';
+        setSessionMode(mode);setSummary(res?.summary??null);
+        const serverNow=res?.summary?.serverNow?new Date(res.summary.serverNow).getTime():Date.now();
+        clock.current.sync(serverNow);setClockRevision(n=>n+1);
+        const base=recoveryState.current;
+        const editorReturn=readStudyHandoff(profile?.userId,reviewHref,resumeCardId);
+        const fromEditor=Boolean(base.session.activeId&&(editingCardId.current===base.session.activeId||editorReturn?.activeId===base.session.activeId));
+        if(checkpointReady.current && (needsReconciliation.current||base.pending)) {
+          const recovered=await reconcileStudyCheckpoint(base,q,mode,serverNow,{
+            card:async id=>{const queued=q.find(card=>card.id===id);if(queued)return queued;try{return cardFromApi(await ok(await (api as any).cards({id}).get()));}catch(error){if((error as ApiError).status===404)return null;throw error;}},
+            reviews:async ids=>((await ok(await (api as any).reviews.records.get({query:{ids:ids.join(',')}}))) as any).items.map(reviewFromApi),
+            operation:async operation=>{try{const receipt:any=await ok(await (api as any).reviews.operations({operationId:operation.id}).get());
+              return receipt.status==='committed'?{status:'committed',result:{...reviewFromApi(receipt.result.review),card:mergeReviewedCard(receipt.result.card,operation.before)}}:{status:'reverted'};
+            }catch(error){if((error as ApiError).status===404)return {status:'missing'};throw error;}},
+          },acceptUpdated.current||fromEditor);
+          if(cancelled)return;needsReconciliation.current=false;
+          const accepted=recovered.acceptedUpdate;acceptUpdated.current=false;editingCardId.current=null;recovered.view.editingCardId=null;
+          if(editorReturn)clearStudyHandoff();
+          if(recovered.session.activeId===base.session.activeId&&recoveryState.current.session.activeId===base.session.activeId){
+            recovered.view={...recovered.view,typedAnswer:recoveryState.current.view.typedAnswer,...(!accepted?{revealed:recoveryState.current.view.revealed,submitted:recoveryState.current.view.submitted}:{})};
+          }
+          setSession(recovered.session);setRevealed(recovered.view.revealed);setSubmitted(recovered.view.submitted);setTypedAnswer(recovered.view.typedAnswer);
+          setFinished(recovered.view.finished);setInfoOpen(recovered.view.infoOpen);setPendingPeek(recovered.view.pendingPeek);
+          pendingOperationRef.current=recovered.pending;setPendingOperation(recovered.pending);
+          timerCard.current=recovered.session.activeId;answerTimer.current.restore(recovered.view.elapsedMs);
+          setMutationError(recovered.stale?new ApiError('card_changed',{status:recovered.stale==='missing'?404:409}):recovered.pending?new ApiError('grade_unconfirmed',{status:0}):null);
+          persist({session:recovered.session,view:recovered.view,pending:recovered.pending});
+        } else {
+          const handoff=readStudyHandoff(profile?.userId,reviewHref,resumeCardId);
+          const resumeId=resumeCardId??handoff?.activeId??null;
+          const merged=mergeStudyQueue(handoff??base.session,q,mode,serverNow);
+          if(handoff&&q.some(card=>card.id===resumeId))merged.activeId=resumeId;
+          setSession(merged);if(handoff)clearStudyHandoff();
+          setRevealed(false);setSubmitted(false);setTypedAnswer('');setMutationError(null);
+          timerCard.current=merged.activeId;answerTimer.current.reset(false);checkpointReady.current=true;
+          persist({session:merged,view:{...base.view,revealed:false,submitted:false,typedAnswer:'',elapsedMs:0},pending:null});
+        }
       } catch (error) {
-        if (!cancelled) setQueueError(toApiError(error));
+        if (!cancelled) {setQueueError(toApiError(error));if((error as ApiError).status===401){persist();router.replace(`/auth/sign-in?next=${encodeURIComponent(reviewHref)}`);}}
       } finally {
-        if (!cancelled) setQueueLoading(false);
+        if (!cancelled) { queueRequestActive.current = false; setQueueLoading(false); }
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; queueRequestActive.current = false; };
   }, [bootstrapped, queueAttempt]);
 
   const current = finished ? undefined : pendingPeek ? session.history.at(-1)?.before : queue.find((c) => c.id === session.activeId);
   useAssistantPageContext(current ? { kind: 'card', id: current.id } : null);
   const related = useSimilarCards(revealed ? current?.id ?? null : null);
-  useEffect(() => setInfoOpen(false), [current?.id]);
+  useEffect(()=>{if(inspectorCard.current!==current?.id)setInfoOpen(false);inspectorCard.current=current?.id??null;},[current?.id]);
   useEffect(() => {
     if (!current?.noteType || queueLoading || noteTypes === catalogAtLoad.current) return;
     const latest = noteTypes.find((type) => type.id === current.noteType!.id);
@@ -224,22 +284,32 @@ export const NNReviewClassic = () => {
       cardRef.current?.focus({ preventScroll: true });
     }
   }, [current?.id, current?.updatedAt, current?.renderKind, queueLoading]);
-  useEffect(() => { answerTimer.current.reset(Boolean(current) && !document.hidden); }, [current?.id]);
+  useEffect(()=>{if(timerCard.current!==current?.id){timerCard.current=current?.id??null;answerTimer.current.reset(Boolean(current)&&!document.hidden&&!queueLoading);}},[current?.id,queueLoading]);
   useEffect(() => {
     const update = () => {
-      if (document.hidden || !current || busy || pendingPeek) answerTimer.current.pause();
+      if (document.hidden || !current || busy || pendingPeek || queueLoading) answerTimer.current.pause();
       else answerTimer.current.resume();
     };
     update();
     document.addEventListener('visibilitychange', update);
     return () => document.removeEventListener('visibilitychange', update);
-  }, [current?.id, busy, pendingPeek]);
+  }, [current?.id, busy, pendingPeek, queueLoading]);
+  useEffect(()=>{
+    let scheduled:ReturnType<typeof setTimeout>|undefined;
+    const wake=()=>{if(document.hidden){answerTimer.current.heartbeat();answerTimer.current.pause();persist();return;}
+      if(lockRef.current||queueRequestActive.current||scheduled!==undefined)return;
+      answerTimer.current.heartbeat();needsReconciliation.current=true;scheduled=setTimeout(()=>{scheduled=undefined;refreshQueue();},0);};
+    const changed=(event:StorageEvent)=>{if(event.key===`nn:study:changed:${profile?.userId}`)wake();};
+    window.addEventListener('focus',wake);document.addEventListener('visibilitychange',wake);window.addEventListener('storage',changed);
+    return()=>{if(scheduled!==undefined)clearTimeout(scheduled);window.removeEventListener('focus',wake);document.removeEventListener('visibilitychange',wake);window.removeEventListener('storage',changed);};
+  },[refreshQueue,persist]);
   const editHref = current ? `/editor?${new URLSearchParams({ card: current.id, returnTo: `${reviewHref}${reviewHref.includes('?') ? '&' : '?'}resume=${current.id}` })}` : '/editor';
   const handleEdit = useCallback(() => {
     if (!current || lockRef.current || pendingPeek) return;
     if (profile?.userId) saveStudyHandoff(profile.userId, reviewHref, current.id, session);
+    editingCardId.current=current.id;persist({view:{...recoveryState.current.view,editingCardId:current.id}});
     router.push(editHref);
-  }, [current, pendingPeek, profile?.userId, reviewHref, session, router, editHref]);
+  }, [current, pendingPeek, profile?.userId, reviewHref, session, router, editHref, persist]);
   const deck = useMemo(() => (current ? decks.find((d) => d.id === current.deckId) : undefined), [current, decks]);
 
   // Feature #1 — the current card's first cited source (null when hand-authored).
@@ -256,28 +326,33 @@ export const NNReviewClassic = () => {
 
   const previews = useMemo(() => {
     if (!current) return null;
-    const at = new Date(Date.now() + serverOffset);
+    const at = new Date(clock.current.now());
     return { at, cards: previewGrades(current.fsrs, at, {
       requestRetention: currentDeckConfig.desiredRetention,
       learningSteps: currentDeckConfig.learningSteps,
       relearningSteps: currentDeckConfig.relearningSteps,
       maximumInterval: currentDeckConfig.maximumInterval,
     }) };
-  }, [current, currentDeckConfig, serverOffset, revealed]);
+  }, [current, currentDeckConfig, clockRevision, revealed]);
 
 
 
-  // Reset per-card state when card changes
+  // An initial recovered card already owns its answer state.
+  const answerCard=useRef(seed.current?.view.pendingPeek?seed.current.session.history.at(-1)?.before.id:seed.current?.session.activeId);
   useEffect(() => {
+    if(answerCard.current===current?.id)return;answerCard.current=current?.id;
     setTypedAnswer('');
     setSubmitted(false);
     setRevealed(false);
   }, [current?.id]);
 
-  // Autofocus input for the type-in render kind
+  // A restored question must not summon the mobile keyboard.
+  const firstInputCard=useRef<string|null>(null);
   useEffect(() => {
+    if(current?.id&&!firstInputCard.current)firstInputCard.current=current.id;
+    if((seed.current||navigation?.restored)&&firstInputCard.current===current?.id)return;
     if (current?.renderKind === 'typein' && !submitted) {
-      const t = setTimeout(() => inputRef.current?.focus(), 0);
+      const t = setTimeout(() => inputRef.current?.focus({preventScroll:true}), 0);
       return () => clearTimeout(t);
     }
   }, [current?.id, current?.renderKind, submitted]);
@@ -296,16 +371,21 @@ export const NNReviewClassic = () => {
   }, [session.activeId, sessionMode, refreshQueue, resetAnswer]);
 
   const handleGrade = useCallback(async (rating: Rating) => {
-    if (!current || lockRef.current || !revealed || pendingPeek || cardUnavailable) return;
+    if (!current || lockRef.current || queueLoading || !revealed || pendingPeek || (cardUnavailable&&!pendingOperationRef.current)) return;
+    if(pendingOperationRef.current&&pendingOperationRef.current.rating!==rating)return;
     if (current.renderKind === 'typein' && !submitted) return;
     lockRef.current = true;
     answerTimer.current.pause();
     setBusy(true);
     setMutationError(null);
     try {
-      const saved = await grade(current.id, rating, answerTimer.current.elapsed(), sessionMode, current);
+      const operation=pendingOperationRef.current??{id:newUuidV7(),cardId:current.id,rating,durationMs:answerTimer.current.elapsed(),mode:sessionMode,before:current};
+      pendingOperationRef.current=operation;setPendingOperation(operation);checkpointReady.current=true;persist({pending:operation});
+      const saved = await grade(operation.cardId, operation.rating, operation.durationMs, operation.mode, operation.before, operation.id);
       if (!mountedRef.current) return;
-      const next = recordStudyAnswer(session, current, saved.card, saved, sessionMode, Date.now() + serverOffset);
+      pendingOperationRef.current=null;setPendingOperation(null);
+      const next = recordStudyAnswer(session, operation.before, saved.card, saved, sessionMode, clock.current.now());
+      persist({session:next,pending:null,view:{...recoveryState.current.view,revealed:false,submitted:false,typedAnswer:'',elapsedMs:0,pendingPeek:null}});
       setSession(next);
       setUndoBlocked(false);
       if (rating === 1 && firstSource?.sourceId) {
@@ -315,12 +395,16 @@ export const NNReviewClassic = () => {
         if (!next.activeId && sessionMode === 'regular') refreshQueue();
       }
     } catch (err) {
-      if (mountedRef.current) setMutationError(toApiError(err));
+      if (mountedRef.current) {
+        const error=toApiError(err);setMutationError(error);needsReconciliation.current=true;
+        if([400,404,409].includes(error.status)){pendingOperationRef.current=null;setPendingOperation(null);persist({pending:null});}
+        if(error.status===401){persist();router.replace(`/auth/sign-in?next=${encodeURIComponent(reviewHref)}`);}
+      }
     } finally {
       lockRef.current = false;
       if (mountedRef.current) setBusy(false);
     }
-  }, [current, grade, session, sessionMode, serverOffset, submitted, revealed, pendingPeek, cardUnavailable, firstSource, refreshQueue, resetAnswer]);
+  }, [current, grade, session, sessionMode, clockRevision, submitted, revealed, pendingPeek, cardUnavailable, firstSource, refreshQueue, resetAnswer, queueLoading, persist, router]);
 
   const handleUndo = useCallback(async () => {
     const last = session.history.at(-1);
@@ -350,12 +434,12 @@ export const NNReviewClassic = () => {
   }, [session.history, canUndo, queueLoading, undoLastReview, resetAnswer, t]);
 
   const handleSkip = useCallback(() => {
-    if (lockRef.current || pendingPeek || !current) return;
-    const next = skipStudyCard(session, sessionMode, Date.now() + serverOffset);
+    if (lockRef.current || pendingPeek || pendingOperationRef.current || !current) return;
+    const next = skipStudyCard(session, sessionMode, clock.current.now());
     if (next.activeId === session.activeId) return;
     setSession(next);
     resetAnswer();
-  }, [current, pendingPeek, session, sessionMode, serverOffset, resetAnswer]);
+  }, [current, pendingPeek, session, sessionMode, clockRevision, resetAnswer]);
 
   const handleTypeSubmit = useCallback(() => {
     if (!current || current.renderKind !== 'typein' || submitted || lockRef.current) return;
@@ -458,20 +542,18 @@ export const NNReviewClassic = () => {
     const dueAt = Date.parse(nextLearningAt);
     let fired = false;
     const resume = () => {
-      if (!fired && !document.hidden && Date.now() + serverOffset >= dueAt) {
+      if (!fired && !document.hidden && clock.current.now() >= dueAt) {
         fired = true;
         refreshQueue();
       }
     };
-    const timer = setTimeout(resume, Math.min(2_147_483_647, Math.max(250, dueAt - Date.now() - serverOffset + 50)));
-    document.addEventListener('visibilitychange', resume);
-    window.addEventListener('focus', resume);
+    const timer = setTimeout(resume, Math.min(2_147_483_647, Math.max(250, dueAt - clock.current.now() + 50)));
+
     return () => {
       clearTimeout(timer);
-      document.removeEventListener('visibilitychange', resume);
-      window.removeEventListener('focus', resume);
+
     };
-  }, [current, finished, busy, pendingPeek, queueLoading, queueError, nextLearningAt, serverOffset, refreshQueue]);
+  }, [current, finished, busy, pendingPeek, queueLoading, queueError, nextLearningAt, clockRevision, refreshQueue]);
 
   // Only successful server answers enter this snapshot. Undo invalidates a
   // previously saved result; a later completion writes the revised totals.
@@ -621,7 +703,9 @@ export const NNReviewClassic = () => {
       {sessionMode === 'filtered' && <p style={{ width: '100%', maxWidth: 760, fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px' }}>{t('review.customStudy.scheduleNotice')}</p>}
       {mutationError && <div role="alert" style={{ width: '100%', maxWidth: 760, marginBottom: 12, color: 'var(--rose-400)', fontSize: 13 }}>
         {t(cardUnavailable ? 'review.cardChanged' : 'review.gradeFailed')}
-        {cardUnavailable && <NNBtn size="sm" variant="soft" onClick={() => setQueueAttempt((n) => n + 1)}>{t('review.refreshQueue')}</NNBtn>}
+        {pendingOperation && <NNBtn size="sm" variant="soft" disabled={busy||queueLoading} onClick={()=>void handleGrade(pendingOperation.rating)}>{t('review.recovery.retryGrade')}</NNBtn>}
+        {cardUnavailable&&!pendingOperation&&typedAnswer&&<NNBtn size="sm" variant="ghost" onClick={()=>{setSession(previous=>({...previous,activeId:null,pending:previous.pending.filter(card=>card.id!==current.id)}));resetAnswer();setMutationError(null);needsReconciliation.current=false;refreshQueue();}}>{t('review.recovery.skipUnavailable')}</NNBtn>}
+        {cardUnavailable && <NNBtn size="sm" variant="soft" onClick={() => {acceptUpdated.current=true;needsReconciliation.current=true;setQueueAttempt((n) => n + 1);}}>{t('review.refreshQueue')}</NNBtn>}
       </div>}
       {busy && <div role="status" style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{t('review.saving')}</div>}
       <div
@@ -693,8 +777,7 @@ export const NNReviewClassic = () => {
               spellCheck={false}
               enterKeyHint="done"
               maxLength={2000}
-              autoFocus
-              disabled={submitted}
+              disabled={submitted||Boolean(pendingOperation)}
               value={typedAnswer}
               onChange={(e) => setTypedAnswer(e.target.value)}
               onKeyDown={(e) => {
@@ -885,9 +968,9 @@ export const NNReviewClassic = () => {
         </span>
         <div className="reomi-review-utilities">
           <span className="reomi-review-info-mobile"><NNBtn size="sm" variant="ghost" icon="info" onClick={() => setInfoOpen(true)}>{t('review.info.title')}</NNBtn></span>
-          <NNBtn size="sm" variant="ghost" disabled={busy || Boolean(pendingPeek) || skipStudyCard(session, sessionMode, Date.now() + serverOffset).activeId === session.activeId} onClick={handleSkip}><NNKbd>K</NNKbd>{t('review.hints.skip')}</NNBtn>
+          <NNBtn size="sm" variant="ghost" disabled={busy || Boolean(pendingOperation) || Boolean(pendingPeek) || skipStudyCard(session, sessionMode, clock.current.now()).activeId === session.activeId} onClick={handleSkip}><NNKbd>K</NNKbd>{t('review.hints.skip')}</NNBtn>
           <NNBtn size="sm" variant="ghost" disabled={busy || Boolean(pendingPeek)} onClick={handleEdit}><NNKbd>E</NNKbd>{t('review.hints.edit')}</NNBtn>
-          {completed > 0 && <NNBtn size="sm" variant="ghost" icon="pause" disabled={busy} onClick={() => { setPendingPeek(null); setFinished(true); }}>{t('review.finish')}</NNBtn>}
+          {completed > 0 && <NNBtn size="sm" variant="ghost" icon="pause" disabled={busy||Boolean(pendingOperation)} onClick={() => { setPendingPeek(null); setFinished(true); }}>{t('review.finish')}</NNBtn>}
           <NNBtn size="sm" variant="ghost" disabled={busy} onClick={() => router.push('/')}><NNKbd>Esc</NNKbd>{t('review.hints.home')}</NNBtn>
         </div>
       </div>
@@ -958,7 +1041,7 @@ export const NNReviewClassic = () => {
                 return (
                   <button
                     key={r.k}
-                    type="button" disabled={busy || cardUnavailable}
+                    type="button" disabled={busy || queueLoading || cardUnavailable || Boolean(pendingOperation&&pendingOperation.rating!==r.k)}
                     className="reomi-rating"
                     onClick={() => handleGrade(r.k)}
                     title={`${t(r.labelKey)} — ${t(`${r.labelKey}Hint`)} · ${r.k}`}

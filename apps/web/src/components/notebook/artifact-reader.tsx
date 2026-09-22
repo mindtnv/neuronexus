@@ -28,6 +28,7 @@
 // Esc closes. The component is presentational — the parent (StudioPanel) owns the
 // store calls + polling and threads them in as callbacks.
 
+import { useNavigationScroll } from '@/lib/use-navigation-scroll';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { SourceCitation } from '@neuronexus/shared';
 import { NNBtn, NNIcon, NNSkeleton } from '@/components/ui';
@@ -69,6 +70,8 @@ const TYPE_TONE: Record<NotebookArtifactType, string> = {
 };
 
 export interface ArtifactReaderProps {
+  loadError?: boolean;
+  onRetry?: () => void;
   notebookId: string;
   /** The open artifact (full variant with contentMd/contentJson), or null while
    *  the first load resolves. */
@@ -101,6 +104,8 @@ export interface ArtifactReaderProps {
 }
 
 export const ArtifactReader = ({
+  loadError,
+  onRetry,
   notebookId,
   artifact,
   loading,
@@ -139,6 +144,7 @@ export const ArtifactReader = ({
         aria-hidden
       />
       <div className="nn-artifact-reader" role="dialog" aria-modal="true">
+        {loadError && <div role="alert" className="nn-navigation-notice"><span>{t('assistant.contextFailed')}</span><NNBtn size="sm" onClick={onRetry}>{t('review.retry')}</NNBtn></div>}
         {artifact?.ownerKind === 'source' && <p style={{ margin: 0, padding: '8px 16px', fontSize: 12, color: 'var(--text-dim)' }}>
           {artifact.sourceOriginTitle}{!artifact.sourceId ? ` · ${t('assistant.sourceUnavailable')}` : ''}
         </p>}
@@ -199,6 +205,8 @@ const DocumentBody = ({
   onClose: () => void;
   t: Tfn;
 }) => {
+  const navigationScope=artifact?.ownerKind==='source'?`source:${artifact.sourceId??artifact.sourceOriginId??''}`:`notebook:${artifact?.notebookId??''}`;
+  const position=useNavigationScroll(navigationScope,'artifact',{ready:Boolean(artifact)&&!loading,queryKey:artifact?.id});
   const contentMd = artifact?.contentMd ?? '';
   // A job still running streams partial raw text into content_md — show it live
   // (md: caret-tailed prose; quiz: a placeholder, the raw JSON isn't readable).
@@ -301,7 +309,7 @@ const DocumentBody = ({
       </div>
 
       {/* Scrollable readable column */}
-      <div className="nn-scroll nn-artifact-reader-scroll">
+      <div ref={position.ref} className="nn-scroll nn-artifact-reader-scroll">
         <div className="nn-artifact-reader-col">
           {(loading && !artifact) || !artifact ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

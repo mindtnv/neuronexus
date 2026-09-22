@@ -26,7 +26,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useAppNavigation } from '@/components/navigation';
+import { useNavigationScroll } from '@/lib/use-navigation-scroll';
+import { useAppNavigation, useNavigationWorkspace, useWorkspaceState } from '@/components/navigation';
 import {
   MAX_SOURCE_BYTES_DEFAULT,
   isSourceTextReadable,
@@ -157,6 +158,9 @@ const SourceCover = ({
 export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const t = useT();
   const router = useAppNavigation();
+  const navigationWorkspace=useNavigationWorkspace();
+  const navigationEntry=navigationWorkspace?.entry?.id;
+  const navigationScope=`notebook:${notebookId}`;
   const searchParams = useSearchParams();
   const bp = useBreakpoint();
   const isDesktop = bp === 'desktop';
@@ -224,11 +228,11 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   // ── Right dock (Р12): tabs (Обзор/Заметки/Студия) + collapse ───────────────────
   const dockKey = `nn:nb:dock:${notebookId}`;
   const dockTabKey = `nn:nb:docktab:${notebookId}`;
-  const [dockTab, setDockTab] = useState<DockTab>('overview');
-  const [dockCollapsed, setDockCollapsed] = useState(false);
+  const [dockTab, setDockTab] = useWorkspaceState<DockTab>(navigationScope, 'dockTab', 'overview');
+  const [dockCollapsed, setDockCollapsed] = useWorkspaceState(navigationScope, 'dockCollapsed', false);
   // Tablet (720–1100): the dock is a right-side sheet over the sources│chat layout
   // (Р12), toggled from a header button (with a badge-dot when notes are present).
-  const [dockSheetOpen, setDockSheetOpen] = useState(false);
+  const [dockSheetOpen, setDockSheetOpen] = useWorkspaceState(navigationScope, 'dockSheetOpen', false);
   // Imperative refresh of the notes panel (after «save answer from chat»).
   const notesRefreshRef = useRef<(() => void) | null>(null);
 
@@ -241,7 +245,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         /* best-effort */
       }
     },
-    [dockTabKey],
+    [dockTabKey,setDockTab],
   );
 
   // Hydrate route-local dock state for every notebook. The component can stay
@@ -252,9 +256,10 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     if (dockHydratedNotebookRef.current === notebookId) return;
     dockHydratedNotebookRef.current = notebookId;
     try {
-      setDockCollapsed(localStorage.getItem(dockKey) === 'collapsed');
+      const saved=navigationWorkspace?.entry?.views[navigationScope]?.fields;
+      if(saved?.dockCollapsed===undefined)setDockCollapsed(localStorage.getItem(dockKey) === 'collapsed');
       const storedTab = localStorage.getItem(dockTabKey);
-      setDockTab(
+      if(!saved?.dockTab)setDockTab(
         storedTab === 'overview' || storedTab === 'notes' || storedTab === 'studio'
           ? storedTab
           : 'overview',
@@ -263,7 +268,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       setDockCollapsed(false);
       setDockTab('overview');
     }
-    setDockSheetOpen(false);
+    if(!navigationWorkspace?.entry?.views[navigationScope]?.fields.dockSheetOpen)setDockSheetOpen(false);
   }, [dockKey, dockTabKey, notebookId]);
 
   const toggleDock = useCallback(() => {
@@ -333,13 +338,13 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   const readerReturnFocus = useRef<HTMLElement | null>(null);
   const closeSourceReader = useCallback(() => {
-    setViewer(null);
+    router.returnTo(`/notebooks/${notebookId}`);
     const target = readerReturnFocus.current; readerReturnFocus.current = null;
-    requestAnimationFrame(() => { if (target?.isConnected) target.focus(); });
-  }, []);
+    requestAnimationFrame(() => { if (target?.isConnected) target.focus({preventScroll:true}); });
+  }, [router,notebookId]);
 
   // Mobile tab.
-  const [tab, setTab] = useState<WorkspaceTab>('chat');
+  const [tab, setTab] = useWorkspaceState<WorkspaceTab>(navigationScope, 'tab', 'chat');
 
   // Add-source form state (M1 flow).
   const [addOpen, setAddOpen] = useState(false);
@@ -586,12 +591,17 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const openViewer = useCallback(
     (v: { sourceId: string; chunkId?: string; pos?: number; page?: number }) => {
       if (!readerReturnFocus.current && document.activeElement instanceof HTMLElement) readerReturnFocus.current = document.activeElement;
-      setViewer(v);
-      // On tablet, the dock sheet would stack over the viewer — close it.
-      setDockSheetOpen(false);
+      const next=new URLSearchParams(searchParams.toString());
+      for(const key of ['source','chunk','pos','page'])next.delete(key);
+      next.set('source',v.sourceId);
+      if(v.chunkId)next.set('chunk',v.chunkId);
+      if(v.pos!=null)next.set('pos',String(v.pos));
+      if(v.page!=null)next.set('page',String(v.page));
+      router.push(`/notebooks/${notebookId}?${next}`,{scroll:false,track:false});
+      // Keep the previous sheet state for return; the reader hides its presentation.
 
     },
-    [isDesktop],
+    [isDesktop,router,searchParams,notebookId,setDockSheetOpen],
   );
 
   // ── Resolve a `[src:]` chunk to its source, then open the citation viewer ──────
@@ -644,20 +654,14 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     [sources, getSourceChunks, openViewer],
   );
 
-  // Consume ?source=&chunk=&pos=&page= once sources have loaded → citation viewer.
-  const consumedSourceParamRef = useRef<string | null>(null);
+  // The notebook reader is a real history entry, while the notebook stays mounted.
   useEffect(() => {
-    if (!sourcesLoaded || !sourceParam) return;
-    const token = `${sourceParam}:${chunkParam ?? ''}:${posParam ?? ''}:${pageParam ?? ''}`;
-    if (consumedSourceParamRef.current === token) return;
-    consumedSourceParamRef.current = token;
-    openViewer({
-      sourceId: sourceParam,
-      chunkId: chunkParam ?? undefined,
-      pos: posParam != null ? Number(posParam) : undefined,
-      page: pageParam != null ? Number(pageParam) : undefined,
-    });
-  }, [sourcesLoaded, sourceParam, chunkParam, posParam, pageParam, openViewer]);
+    if (!sourceParam) {setViewer(null);return;}
+    if (!sourcesLoaded) return;
+    setViewer({sourceId:sourceParam,chunkId:chunkParam??undefined,
+      pos:posParam!=null&&Number.isFinite(Number(posParam))?Number(posParam):undefined,
+      page:pageParam!=null&&Number.isFinite(Number(pageParam))?Number(pageParam):undefined});
+  },[sourcesLoaded,sourceParam,chunkParam,posParam,pageParam,navigationEntry]);
 
   // Consume ?thread= once (notebook chat thread selection).
   const consumedThreadParamRef = useRef<string | null>(null);
@@ -833,6 +837,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     </div>
   ) : (
     <SourcesPanel
+      navigationScope={navigationScope}
       sources={sources}
       loaded={sourcesLoaded}
       scope={scope}
@@ -1039,7 +1044,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   // selection, dock drafts and scroll positions survive opening and returning.
   const citationViewer = viewer && typeof document !== 'undefined' ? createPortal(
     <div className="reomi-notebook-source-reader" role="region" aria-label={t('assistant.readSource')}>
-      <SourceStudyWorkspace key={`${viewer.sourceId}:${viewer.chunkId ?? ''}:${viewer.page ?? ''}:${viewer.pos ?? ''}`}
+      <SourceStudyWorkspace key={`${navigationEntry}:${viewer.sourceId}:${viewer.chunkId ?? ''}:${viewer.page ?? ''}:${viewer.pos ?? ''}`}
         sourceId={viewer.sourceId} initialLocation={viewer}
         origin={{ title: notebook?.title ?? t('nav.notebooks'), onReturn: closeSourceReader }} />
     </div>, document.body,
@@ -1195,7 +1200,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           </div>
         </div>
         {/* Dock sheet (right side) — slides over the chat column. */}
-        {dockSheetOpen && (
+        {dockSheetOpen && !viewer && (
           <>
             <div
               className="nn-dialog-backdrop"
@@ -1366,6 +1371,7 @@ const DockExpandRail = ({ label, onExpand }: { label: string; onExpand: () => vo
 // ── Left: sources panel ──────────────────────────────────────────────────────
 
 interface SourcesPanelProps {
+  navigationScope: string;
   sources: Source[];
   loaded: boolean;
   scope: Set<string>;
@@ -1390,6 +1396,7 @@ interface SourcesPanelProps {
 }
 
 const SourcesPanel = ({
+  navigationScope,
   sources,
   loaded,
   scope,
@@ -1408,7 +1415,9 @@ const SourcesPanel = ({
   listSourceCards,
   onOpenCard,
   t,
-}: SourcesPanelProps) => (
+}: SourcesPanelProps) => {
+  const position=useNavigationScroll(navigationScope,'sources',{ready:loaded});
+  return (
   <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
     {/* Rail header — «Источники» + mono count + add. */}
     <div
@@ -1439,7 +1448,7 @@ const SourcesPanel = ({
       />
     </div>
 
-    <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 12px 8px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div ref={position.ref} className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 12px 8px', display: 'flex', flexDirection: 'column', gap: 6 }}>
       {/* «Подключить из библиотеки» — dashed connect button. */}
       <button type="button" className="nn-nb-connect" onClick={onAttachFromLibrary}>
         <NNIcon name="book" size={15} color="var(--lime-400)" />
@@ -1534,6 +1543,7 @@ const SourcesPanel = ({
     )}
   </div>
 );
+};
 
 // ── NBCheck — the lime-filled «in chat» scope checkbox (visually hidden native
 //    input for a11y + a painted box, matching the design's NBCheck). ──────────
@@ -1649,7 +1659,7 @@ const WorkspaceSourceRow = ({
   }, [cardsOpen, cards, cardsLoading, listSourceCards, source.id]);
 
   return (
-    <div className="nn-source-row">
+    <div className="nn-source-row" data-navigation-anchor={source.id}>
       {/* Main row: mini-cover + title/subline (→ read in library) + lime check */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button

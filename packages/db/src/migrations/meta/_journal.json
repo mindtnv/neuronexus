@@ -253,6 +253,13 @@
       "when": 1790019349786,
       "tag": "0035_legacy_card_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1790109793910,
+      "tag": "0036_special_dreaming_celestial",
+      "breakpoints": true
     }
   ]
 }

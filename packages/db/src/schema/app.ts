@@ -387,6 +387,21 @@ export const reviews = pgTable(
   ],
 );
 
+// Durable receipts for the versioned grading route. A removed review leaves a
+// tombstone so a retry cannot recreate an undone/deleted grade.
+export const reviewOperations = pgTable('review_operations', {
+  id: uuid('id').primaryKey().default(sql`uuidv7()`),
+  userId: text('user_id').notNull().references(() => user.id, {onDelete:'cascade'}),
+  operationId: uuid('operation_id').notNull(),
+  argumentsHash: text('arguments_hash').notNull(),
+  reviewId: uuid('review_id').references(() => reviews.id, {onDelete:'set null'}),
+  result: jsonb('result').$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp('created_at', {withTimezone:true}).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('review_operations_owner_operation_idx').on(table.userId,table.operationId),
+  index('review_operations_review_idx').on(table.reviewId),
+]);
+
 // ── media ───────────────────────────────────────────────────────────────────
 // Tracks uploaded media objects (images) stored in S3-compatible storage.
 // `id` is the UUID used as both the DB primary key and the S3 key

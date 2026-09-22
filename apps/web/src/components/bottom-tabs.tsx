@@ -37,6 +37,7 @@ export const BottomTabs = () => {
         const active = activeTab === tab.id;
         return (
           <AppLink
+            intent="section"
             key={tab.id}
             href={tab.href}
             style={{

@@ -1,5 +1,7 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useWorkspaceState, useNavigationWorkspace } from './navigation';
+import { useNavigationScroll } from '@/lib/use-navigation-scroll';
 import { NNBtn } from './ui';
 import { SegmentedControl } from './design-system/primitives';
 import { NNCardForm, type CardFormDraft, type NNCardFormProps } from './card-form';
@@ -12,7 +14,13 @@ import { AssistantAskButton } from './chat/assistant-ask-button';
 /** One editor body for the standalone workspace and resizable cards panel. */
 export function CardEditor({ card, onOpen, ...formProps }: NNCardFormProps & { onOpen?: (id: string) => void }) {
   const t = useT();
-  const [mode, setMode] = useState<'view' | 'edit'>('edit');
+  const navigation=useNavigationWorkspace();
+  const navigationScope=`card:${card?.id??'new'}`;
+  const [mode,setMode]=useWorkspaceState<'view'|'edit'>(navigationScope,'mode','edit');
+  const root=useRef<HTMLDivElement>(null);
+  const previewPosition=useNavigationScroll(navigationScope,'preview',{ready:mode==='view'});
+  const formPosition=useNavigationScroll(navigationScope,'form',{ready:mode==='edit'});
+  useLayoutEffect(()=>{formPosition.ref(root.current?.querySelector<HTMLElement>('.reomi-card-form-scroll')??null);},[card?.id,formPosition.ref]);
   const [clozeRevealed, setClozeRevealed] = useState(false);
   const [draft, setDraft] = useState<CardFormDraft | null>(null);
   const currentDraft = draft?.cardId === card?.id ? draft : null;
@@ -22,13 +30,12 @@ export function CardEditor({ card, onOpen, ...formProps }: NNCardFormProps & { o
   const isCloze = previewNoteType?.kind === 'cloze';
   const templateOrd = currentDraft?.preview?.templateOrd ?? card?.templateOrd ?? 0;
   const clozeNumber = currentDraft?.preview?.clozeNumber ?? card?.clozeNumber ?? 0;
-  useEffect(() => { setMode('edit'); }, [card?.id]);
   useEffect(() => setClozeRevealed(false), [card?.id, templateOrd, clozeNumber, previewNoteType?.id]);
-  return <div className="reomi-card-editor">
+  return <div ref={root} className="reomi-card-editor">
     <div className="reomi-card-detail-tabs"><SegmentedControl label={t('cards.panel.mode')} value={mode} onChange={setMode} options={[
       {value: 'view', label: t('cards.panel.view')}, {value: 'edit', label: t('cards.panel.edit')},
     ]} />{card && <AssistantAskButton object={{ kind: 'card', id: card.id }} />}</div>
-    <div className="reomi-card-detail-preview nn-scroll" hidden={mode !== 'view'}>
+    <div ref={previewPosition.ref} className="reomi-card-detail-preview nn-scroll" hidden={mode !== 'view'}>
       {isCloze ? <section>
         <div className="reomi-cloze-preview-header">
           <h3>{t('cards.panel.clozeCard')}</h3>
@@ -48,7 +55,7 @@ export function CardEditor({ card, onOpen, ...formProps }: NNCardFormProps & { o
       {card && <SourceLinksPanel cardId={card.id} />}
     </div>
     <div className="reomi-card-detail-form" hidden={mode !== 'edit'}>
-      <NNCardForm {...formProps} key={card?.id ?? 'new'} card={card} layout="panel" inlinePreview={false} actionsPlacement="footer" compactHeader showFsrsHeader={false} onDraftChange={setDraft} />
+      <NNCardForm {...formProps} autoFocusFront={formProps.autoFocusFront??!navigation?.restored} key={card?.id ?? 'new'} card={card} layout="panel" inlinePreview={false} actionsPlacement="footer" compactHeader showFsrsHeader={false} onDraftChange={setDraft} />
     </div>
   </div>;
 }

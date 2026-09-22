@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { State } from '@neuronexus/shared';
 import { cardFromApi, reviewFromApi } from './mappers';
-import { emptyStudySession, mergeStudyQueue, recordStudyAnswer, undoStudyAnswer, skipStudyCard, studyTotals, createAnswerTimer, saveStudyHandoff, readStudyHandoff, clearStudyHandoff } from './review-session';
+import { emptyStudySession, mergeStudyQueue, recordStudyAnswer, undoStudyAnswer, skipStudyCard, studyTotals, createAnswerTimer, createStudyClock, saveStudyHandoff, readStudyHandoff, clearStudyHandoff } from './review-session';
 
 const now = Date.parse('2026-09-19T10:00:00Z');
 const card = (id: string) => cardFromApi({ id, deckId: 'deck', state: 'new', due: new Date(now).toISOString() });
@@ -93,4 +93,16 @@ describe('study session ledger', () => {
     clock += 3_600_000;
     expect(timer.elapsed()).toBe(600_000);
   });
+});
+
+test('answer time restores its accumulated work but excludes an unobserved sleep gap',()=>{
+  let monotonic=0;const timer=createAnswerTimer(()=>monotonic);
+  timer.restore(1200);timer.resume();monotonic=1000;timer.heartbeat();expect(timer.elapsed()).toBe(2200);
+  monotonic+=3600000;timer.heartbeat();expect(timer.elapsed()).toBe(2200);
+  timer.pause();monotonic+=10000;timer.resume();monotonic+=300;expect(timer.elapsed()).toBe(2500);
+});
+test('study due time follows a synchronized monotonic clock until a fresh server reading',()=>{
+  let monotonic=50;const clock=createStudyClock(()=>monotonic);
+  clock.sync(now);monotonic+=1500;expect(clock.now()).toBe(now+1500);
+  clock.sync(now+3600000);expect(clock.now()).toBe(now+3600000);
 });

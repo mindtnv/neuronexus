@@ -111,7 +111,7 @@ export function CommandPalette({ defaultQuery = '', onClose }: { defaultQuery?: 
   const selectedIndex = items.findIndex(item => item.id === selectedId);
   const pending = search.pending || search.query !== normalized;
   const hasError = notebookError || search.errors.length > 0;
-  const open = (item: Item) => { onClose?.(); router.push(item.href); };
+  const open = (item: Item) => { onClose?.(); router.push(item.href, {intent:item.id.startsWith('nav-') ? 'section' : 'object'}); };
 
   useEffect(() => { list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }); }, [selectedId]);
 

@@ -6,6 +6,7 @@ import { ResizeHandle } from './design-system/resize-handle';
 import { CARD_PANEL, boundedPanelWidth, readCardPanelWidth } from '@/lib/panel-width';
 import { useT } from '@/lib/i18n';
 import type { Card } from '@/lib/types';
+import { NavigationReturn } from './navigation';
 
 export function CardDetailPanel({ card, deckName, index, total, onMove, onClose, onOpen, onDeleted, onDirtyChange }: {
   card: Card; deckName: string; index: number; total: number;
@@ -36,13 +37,14 @@ export function CardDetailPanel({ card, deckName, index, total, onMove, onClose,
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    heading.current?.focus();
-    return () => { if (previous?.isConnected) previous.focus(); };
+    heading.current?.focus({preventScroll:true});
+    return () => { if (previous?.isConnected) previous.focus({preventScroll:true}); };
   }, []);
   return <section ref={panel} className="reomi-card-detail" aria-labelledby="card-detail-title" style={{ '--card-detail-width': `${width}px` } as CSSProperties}>
     {availableWidth > 900 && <ResizeHandle edge="left" width={width} min={CARD_PANEL.min} max={maxWidth} defaultWidth={CARD_PANEL.default}
       label={t('cards.panel.resizeWidth')} onChange={resize} />}
     <header className="reomi-card-detail-header">
+      <NavigationReturn />
       <div><h2 id="card-detail-title" ref={heading} tabIndex={-1}>{t('cards.panel.title')}</h2><span>{deckName}</span></div>
       <span className="reomi-card-detail-position">{index >= 0 ? `${index + 1} / ${total}` : ''}</span>
       <NNBtn size="sm" icon="chevl" ariaLabel={t('cards.panel.prev')} disabled={index <= 0} onClick={() => onMove(-1)} />

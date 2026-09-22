@@ -4,7 +4,10 @@ import { THEME_CSS, THEME_INIT_SCRIPT } from "@/lib/theme";
 import { Bootstrap } from "@/lib/bootstrap";
 import { I18nProvider } from "@/lib/i18n";
 import { DialogProvider } from "@/components/dialog";
-import { AppNavigationProvider } from "@/components/navigation";
+import { AppNavigationSessionProvider } from "@/components/navigation";
+import { Suspense } from 'react';
+import { NNPageSkeleton } from '@/components/ui';
+import { NAVIGATION_HISTORY_INIT_SCRIPT } from '@/lib/navigation-history';
 import "./globals.css";
 import "@/components/design-system/components.css";
 
@@ -33,16 +36,17 @@ export default function RootLayout({
 
     >
       <head>
+        <script dangerouslySetInnerHTML={{ __html: NAVIGATION_HISTORY_INIT_SCRIPT }} />
         <style data-reomi-palettes>{THEME_CSS}</style>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body>
         <I18nProvider>
           <DialogProvider>
-            <AppNavigationProvider>
+            <Suspense fallback={<NNPageSkeleton />}><AppNavigationSessionProvider>
               <Bootstrap />
               {children}
-            </AppNavigationProvider>
+            </AppNavigationSessionProvider></Suspense>
           </DialogProvider>
         </I18nProvider>
       </body>

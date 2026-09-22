@@ -20,7 +20,7 @@ import { Modal } from '../design-system/modal';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useAppNavigation } from '@/components/navigation';
+import { useAppNavigation, useNavigationWorkspace, useWorkspaceState } from '@/components/navigation';
 import { NNBtn, NNIcon, NNLoadError, NNSkeleton } from '@/components/ui';
 import { api, ok, type ApiError } from '@/lib/api';
 import { toApiError } from '@/lib/resource-state';
@@ -67,6 +67,10 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
   const t = useT();
   const router = useAppNavigation();
   const searchParams = useSearchParams();
+  const navigationWorkspace = useNavigationWorkspace();
+  const navigationEntry = navigationWorkspace?.entry?.id;
+  const navigationScope = `source:${sourceId}`;
+  const remembered = navigationWorkspace?.entry?.views[navigationScope];
   const { confirm } = useDialog();
 
   const getSource = useNN((s) => s.getSource);
@@ -85,7 +89,7 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
 
   // PDF | Text reader mode. PDF sources default to 'pdf' (persisted per source);
   // non-PDF sources are always 'text'.
-  const [readerMode, setReaderMode] = useState<'pdf' | 'text'>('text');
+  const [readerMode, setReaderMode] = useWorkspaceState<'pdf' | 'text'>(navigationScope, 'mode', 'text');
   const pdfReaderRef = useRef<PdfReaderHandle>(null);
   const textReaderRef = useRef<TextChunkReaderHandle>(null);
 
@@ -93,14 +97,14 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
   const [chatEnabled, setChatEnabled] = useState(false);
 
   // ── TOC state ─────────────────────────────────────────────────────────────────
-  const [tocOpen, setTocOpen] = useState(false);
+  const [tocOpen, setTocOpen] = useWorkspaceState(navigationScope, 'tocOpen', false);
   const [tocEntries, setTocEntries] = useState<TocEntry[] | null>(null);
 
 
   // ── Cards drawer (L4 §8.4 — «N карточек» badge → list of source's cards) ──────────
-  const [cardsDrawerOpen, setCardsDrawerOpen] = useState(false);
-  const [notesOpen, setNotesOpen] = useState(false);
-  const [studyTab, setStudyTab] = useState<'notes' | 'annotations' | 'artifacts'>('notes');
+  const [cardsDrawerOpen, setCardsDrawerOpen] = useWorkspaceState(navigationScope,'cardsDrawerOpen',false);
+  const [notesOpen, setNotesOpen] = useWorkspaceState(navigationScope, 'notesOpen', false);
+  const [studyTab, setStudyTab] = useWorkspaceState<'notes' | 'annotations' | 'artifacts'>(navigationScope, 'studyTab', 'notes');
   useEffect(() => {
     if (!notesOpen) return;
     // A native dialog makes the rest of the page inert, including the floating
@@ -110,11 +114,12 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
     return () => window.removeEventListener('nn:assistant:ask', handoff);
   }, [notesOpen]);
 
+  const restoringHistory = navigationWorkspace?.restored && Boolean(remembered);
   // Deep-link params (?page=&chunk=&pos=&mark=) — consume-and-clear once.
-  const pageParam = origin ? (initialLocation?.page != null ? String(initialLocation.page) : null) : searchParams.get('page');
-  const chunkParam = origin ? initialLocation?.chunkId ?? null : searchParams.get('chunk');
-  const posParam = origin ? (initialLocation?.pos != null ? String(initialLocation.pos) : null) : searchParams.get('pos');
-  const markParam = origin ? initialLocation?.markId ?? null : searchParams.get('mark');
+  const pageParam = restoringHistory ? null : origin ? (initialLocation?.page != null ? String(initialLocation.page) : null) : searchParams.get('page');
+  const chunkParam = restoringHistory ? null : origin ? initialLocation?.chunkId ?? null : searchParams.get('chunk');
+  const posParam = restoringHistory ? null : origin ? (initialLocation?.pos != null ? String(initialLocation.pos) : null) : searchParams.get('pos');
+  const markParam = restoringHistory ? null : origin ? initialLocation?.markId ?? null : searchParams.get('mark');
   const pendingPageRef = useRef<number | undefined>(undefined);
   const pendingMarkRef = useRef<string | undefined>(undefined);
   const pendingChunkRef = useRef<{ chunkId?: string; pos?: number } | null>(null);
@@ -133,7 +138,7 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
     setDetail(null);
     setTocOpen(false);
     setTocEntries(null);
-    setCardsDrawerOpen(false);
+    if(remembered?.fields.cardsDrawerOpen===undefined)setCardsDrawerOpen(false);
     pendingPageRef.current = undefined;
     pendingMarkRef.current = undefined;
     pendingChunkRef.current = null;
@@ -155,7 +160,7 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
           } catch {
             stored = null;
           }
-          mode = stored === 'text' ? 'text' : 'pdf';
+          mode = remembered?.fields.mode === 'text' || remembered?.fields.mode === 'pdf' ? remembered.fields.mode : stored === 'text' ? 'text' : 'pdf';
         }
 
         // Resolve the initial scroll target — deep link wins, then the persisted
@@ -171,8 +176,16 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
         } else if (chunkParam || (posNum != null && Number.isFinite(posNum))) {
           if (src.kind === 'pdf') mode = 'text';
           pendingChunkRef.current = { chunkId: chunkParam ?? undefined, pos: posNum };
+        } else if (remembered?.scrolls[mode === 'pdf' ? 'pdf' : 'text']) {
+          // The reader's navigation adapter restores the exact history anchor.
+          // Do not also start the legacy progress jump.
+        } else if (mode === 'pdf' && typeof remembered?.fields.page === 'number') {
+          pendingPageRef.current = remembered.fields.page;
+        } else if (mode === 'text' && typeof remembered?.fields.chunkPos === 'number') {
+          pendingChunkRef.current = {pos:remembered.fields.chunkPos};
         } else {
-          // No deep link — restore the saved reading position.
+          // No history anchor — use server reading position.
+
           const rs = det?.readingState ?? null;
           if (src.kind === 'pdf') {
             if (rs?.page != null && rs.page >= 1) {
@@ -226,7 +239,7 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceId, getSource, getLibraryItem, loadRevision]);
+  }, [sourceId, getSource, getLibraryItem, loadRevision, navigationEntry]);
 
   // chatEnabled (degrade — hide AI formulate).
   useEffect(() => {
@@ -249,7 +262,7 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
         /* best-effort */
       }
     },
-    [sourceId],
+    [sourceId, setReaderMode],
   );
 
   const progressWriter = useMemo(() => createReadingProgressWriter(sourceId, useNN.getState().profile?.userId,
@@ -261,16 +274,18 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
     (page: number, numPages: number) => {
       const percent = numPages > 0 ? Math.min(1, Math.max(0, page / numPages)) : undefined;
       writeProgress({ page, percent });
+      navigationWorkspace?.journal?.field(navigationScope,'page',page,navigationEntry);
     },
-    [writeProgress],
+    [writeProgress, navigationWorkspace?.journal, navigationScope, navigationEntry],
   );
 
   const onTextPositionChange = useCallback(
     (pos: number, total: number) => {
       const percent = total > 0 ? Math.min(1, Math.max(0, (pos + 1) / total)) : undefined;
       writeProgress({ chunkPos: pos, percent });
+      navigationWorkspace?.journal?.field(navigationScope,'chunkPos',pos,navigationEntry);
     },
-    [writeProgress],
+    [writeProgress, navigationWorkspace?.journal, navigationScope, navigationEntry],
   );
 
   // ── L3 — lazy PDF cover + pageCount/author backfill (NULL DB fields only) ──────
@@ -401,7 +416,7 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
   useEffect(() => {
     if (!loaded || !source) return;
     try {
-      if (localStorage.getItem(TOC_KEY(sourceId)) === '1') {
+      if (remembered?.fields.tocOpen === true || (remembered?.fields.tocOpen === undefined && localStorage.getItem(TOC_KEY(sourceId)) === '1')) {
         setTocOpen(true);
         void ensureToc();
       }
@@ -508,6 +523,8 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
 
   const isPdfReady = source?.kind === 'pdf' && readerMode === 'pdf' && canReadSource(source, 'pdf');
   const tocAvailable = (tocEntries?.length ?? 0) > 0;
+  const parentRoute = navigationWorkspace?.journal?.parent()?.href.split(/[/?#]/)[1];
+  const returnLabel = parentRoute && ['library','cards','decks','notebooks','review'].includes(parentRoute) ? t('navigation.returnTo',{place:t(`nav.${parentRoute}`)}) : undefined;
 
   return (
     <div className="reomi-library-reader">
@@ -518,8 +535,8 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
         cardCount={detail?.cardCount ?? 0}
         onOpenCards={() => setCardsDrawerOpen(true)}
         onNotes={() => setNotesOpen(true)}
-        onBack={origin?.onReturn ?? (() => router.push('/library'))}
-        backLabel={origin?.title}
+        onBack={origin?.onReturn ?? (() => router.returnTo('/library'))}
+        backLabel={origin?.title ?? returnLabel}
         onDetails={() => router.push(`/library?focus=${sourceId}`)}
         t={t}
       />

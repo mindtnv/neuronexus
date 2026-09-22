@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useAppNavigation } from '@/components/navigation';
+import { useAppNavigation, useNavigationWorkspace, useWorkspaceState, NavigationReturn } from '@/components/navigation';
 import { format } from 'date-fns';
 import {
   buildCardPredicate,
@@ -99,6 +99,9 @@ function truncate(s: string, n = 90): string {
   return clean.length > n ? `${clean.slice(0, n - 1)}…` : clean;
 }
 
+import { useNavigationScroll, NavigationRestoreNotice } from '@/lib/use-navigation-scroll';
+import { restoreCollectionPages } from '@/lib/navigation-restore';
+
 export const NNCardsBrowser = () => {
   const t = useT();
   const { confirm, prompt, select, alert } = useDialog();
@@ -111,6 +114,8 @@ export const NNCardsBrowser = () => {
 
   const router = useAppNavigation();
   const searchParams = useSearchParams();
+  const navigationWorkspace = useNavigationWorkspace();
+  const navigationEntry = navigationWorkspace?.entry?.id;
 
   const cards = useNN((s) => s.cards);
   const decks = useNN((s) => s.decks);
@@ -128,10 +133,10 @@ export const NNCardsBrowser = () => {
   const conversionTarget = searchParams.get('convertTo') ?? undefined;
   const [conversionCards, setConversionCards] = useState<Card[] | null>(null);
   const urlQ = searchParams.get('q') ?? '';
-  const [query, setQuery] = useState(urlQ);
+  const [query, setQuery] = useWorkspaceState('cards', 'query', urlQ);
 
-  const [sortField, setSortField] = useState<SortField>('created');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [sortField, setSortField] = useWorkspaceState<SortField>('cards', 'sortField', 'created');
+  const [sortDir, setSortDir] = useWorkspaceState<SortDir>('cards', 'sortDir', 'desc');
 
   // Hybrid completeness signal (must-fix #4): server results for the current `q`.
   const [serverResults, setServerResults] = useState<Card[] | null>(null);
@@ -165,7 +170,8 @@ export const NNCardsBrowser = () => {
     setActionMenu(null);
   }, [actionMenu]);
   const lastClickedRef = useRef<string | null>(null);
-  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [focusedId, setFocusedId] = useWorkspaceState<string | null>('cards', 'focusedId', null);
+  const [resolvedFocus,setResolvedFocus]=useState<{id:string;entryId?:string}|null>(null);
   const [focusError, setFocusError] = useState<ApiError | null>(null);
   const [focusAttempt, setFocusAttempt] = useState(0);
 
@@ -194,7 +200,7 @@ export const NNCardsBrowser = () => {
   };
 
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
-  const [filtersVisible, setFiltersVisible] = useState(true);
+  const [filtersVisible, setFiltersVisible] = useWorkspaceState('cards', 'filtersVisible', true);
 
   const urlWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -218,10 +224,18 @@ export const NNCardsBrowser = () => {
     void getCardTags().catch(() => {});
   }, [getCardTags]);
 
+  const previousUrl = useRef({ entry: navigationEntry, q: urlQ });
   // Keep local query in sync when the URL changes externally (deck drill-in,
-  // back/forward). Only adopt the URL value when it actually differs.
-  useEffect(() => {
-    if (queryRef.current === urlQ) return;
+  // back/forward). Clear transient selection before the new entry paints.
+  useLayoutEffect(() => {
+    const previous = previousUrl.current;
+    previousUrl.current = {entry:navigationEntry,q:urlQ};
+    if (previous.entry !== navigationEntry) {
+      invalidatePendingSearches(); setSelected(new Set()); setActionMenu(null); setServerKey(null);
+      queryRef.current = query;
+      return;
+    }
+    if (previous.q === urlQ || queryRef.current === urlQ) return;
     invalidatePendingSearches();
     setServerError(null);
     setSearching(true);
@@ -229,34 +243,45 @@ export const NNCardsBrowser = () => {
     setQuery(urlQ);
     setSelected(new Set());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlQ]);
+  }, [urlQ, navigationEntry]);
 
   // Deep links must resolve beyond the bootstrap page, with a visible error.
 
   const focusParam = searchParams.get('focus');
+  const focusTarget = focusParam ?? focusedId;
   useEffect(() => {
-    if (!focusParam || !bootstrapped) return;
+    if (!focusTarget || !bootstrapped) return;
+    // Consuming ?focus keeps the mounted editor and its draft. The target was
+    // just validated in this entry; a second loading cycle would unmount it.
+    if (!focusParam && resolvedFocus?.id === focusTarget && resolvedFocus.entryId === navigationEntry) return;
     let active = true;
-    setFocusError(null);
+    setFocusError(null);setResolvedFocus(null);
     void (async () => {
       try {
-        const cached = useNN.getState().cards.find((card) => card.id === focusParam);
-        const card = cached ?? cardFromApi(await ok(await api.cards({ id: focusParam }).get()));
+        const card = cardFromApi(await ok(await api.cards({ id: focusTarget }).get()));
+        if(card.id!==focusTarget)throw new Error('Unexpected card response');
         if (!active) return;
-        if (!cached) useNN.setState((state) => ({ cards: [...state.cards.filter((c) => c.id !== card.id), card] }));
+        useNN.setState((state) => ({ cards: [...state.cards.filter((c) => c.id !== card.id), card] }));
         if (focusedId !== card.id && !(await router.confirmLeave())) return;
         if (!active) return;
-        setFocusedId(card.id);
+        setFocusedId(card.id);setResolvedFocus({id:card.id,entryId:navigationEntry});
+        if (!focusParam) return;
         const params = new URLSearchParams(Array.from(searchParams.entries()));
         params.delete('focus');
         const qs = params.toString();
-        router.replace(qs ? `/cards?${qs}` : '/cards', { track: false });
+        router.replace(qs ? `/cards?${qs}` : '/cards', { track: false, viewOnly:true });
       } catch (error) {
-        if (active) setFocusError(toApiError(error));
+        if (active) {
+          const failure=toApiError(error);setFocusError(failure);
+          if(failure.status===404||failure.status===403){
+            setFocusedId(null);setResolvedFocus(null);
+            if(focusParam){const params=new URLSearchParams(searchParams.toString());params.delete('focus');router.replace(`/cards${params.size?`?${params}`:''}`,{track:false,viewOnly:true});}
+          }
+        }
       }
     })();
     return () => { active = false; };
-  }, [focusParam, bootstrapped, focusAttempt]);
+  }, [focusTarget, focusParam, bootstrapped, focusAttempt, navigationEntry]);
 
   // Resolve a deck NAME (or path) to its id + descendants for the predicate.
   const resolveDeckIds = useCallback(
@@ -354,6 +379,18 @@ export const NNCardsBrowser = () => {
     [searchCards, sortStr, noteTypeScope],
   );
 
+  const restoreRows = useCallback(async (anchor: import('@/lib/navigation-context').ScrollAnchor, signal: AbortSignal) => {
+    if (!serverActive || serverResults === null) return 'missing' as const;
+    const generation = searchGeneration.current;
+    const result = await restoreCollectionPages({throughId:anchor.endId,initial:{items:serverResults,nextCursor:serverCursor},
+      anchors:[anchor.id,...(anchor.nearby??[])].filter((id):id is string=>Boolean(id)),signal,
+      fetchPage:cursor=>searchCards(query,{sort:sortStr,cursor,noteTypeId:noteTypeScope})});
+    if (!signal.aborted && generation === searchGeneration.current) {setServerResults(result.items);setServerCursor(result.nextCursor);}
+    return result.reason;
+  },[serverActive,serverResults,serverCursor,searchCards,query,sortStr,noteTypeScope]);
+  const tablePosition = useNavigationScroll('cards','table',{ready:serverActive&&!searching,queryKey:currentSearchKey,restoreRows});
+  const filterPosition = useNavigationScroll('cards','filters',{ready:bootstrapped});
+
   const latestSearch = useRef(runServerSearch);
   latestSearch.current = runServerSearch;
 
@@ -419,7 +456,7 @@ export const NNCardsBrowser = () => {
         if (q) params.set('q', q);
         else params.delete('q');
         const qs = params.toString();
-        router.replace(qs ? `/cards?${qs}` : '/cards', { track: false });
+        router.replace(qs ? `/cards?${qs}` : '/cards', { track: false, viewOnly:true });
       }, 250);
     },
     [router, searchParams],
@@ -443,7 +480,7 @@ export const NNCardsBrowser = () => {
     if (query) params.set('q', query);
     else params.delete('q');
     const qs = params.toString();
-    router.replace(qs ? `/cards?${qs}` : '/cards', { track: false });
+    router.replace(qs ? `/cards?${qs}` : '/cards', { track: false, viewOnly:true });
     if (!queryError) void runServerSearch(query);
   };
 
@@ -523,8 +560,8 @@ export const NNCardsBrowser = () => {
   // The focused card drives the card detail panel (resolved from the live mirror
   // so saves/edits reflect without a manual refetch).
   const focusedCard = useMemo(
-    () => (focusedId ? cards.find((c) => c.id === focusedId) ?? null : null),
-    [focusedId, cards],
+    () => (focusedId&&resolvedFocus?.id===focusedId&&resolvedFocus.entryId===navigationEntry ? cards.find((c) => c.id === focusedId) ?? null : null),
+    [focusedId, cards, resolvedFocus, navigationEntry],
   );
 
   // prev/next walk the CURRENT filtered+sorted result list, moving the dock focus.
@@ -707,6 +744,13 @@ export const NNCardsBrowser = () => {
             style={{ paddingLeft: 34 }}
           />
         </div>
+        {!focusedCard && <NavigationReturn/>}
+        <NNBtn size="sm" variant="ghost" ariaLabel={t('navigation.reset')} onClick={async()=>{
+          if (!(await router.confirmLeave())) return;
+          navigationWorkspace?.resetView('cards'); setSelected(new Set());
+          queryRef.current=''; if(urlWriteTimer.current)clearTimeout(urlWriteTimer.current);
+          router.replace('/cards',{track:false,viewOnly:true});
+        }}>{t('navigation.reset')}</NNBtn>
         <CardColumnPicker selected={columnIds} onChange={changeColumns} onReset={() => changeColumns(defaultCardColumns(isMobile))} />
         <NNBtn variant="ghost" icon="clock" onClick={() => router.push('/editor?drafts=1')}
           title={t('editor.draft.libraryTitle')} ariaLabel={t('editor.draft.libraryTitle')} />
@@ -724,7 +768,7 @@ export const NNCardsBrowser = () => {
       {/* Filters belong to the cards workspace, not the global navigation. */}
       {!isMobile && filtersVisible && (
         <aside className="reomi-cards-filters" aria-label={t('cards.sidebar.filters')}>
-          <div className="reomi-cards-filters-scroll nn-scroll">{sidebar}</div>
+          <div ref={filterPosition.ref} className="reomi-cards-filters-scroll nn-scroll">{sidebar}</div>
           <ResizeHandle edge="right" label={t('cards.sidebar.resize')} width={filtersWidth} min={CARD_FILTERS.min} max={filtersMaxWidth} defaultWidth={CARD_FILTERS.default} onChange={resizeFilters} />
         </aside>
       )}
@@ -768,7 +812,7 @@ export const NNCardsBrowser = () => {
         }} />}
         {(noteTypeScope || conversionTarget) && <div role="status" style={{ padding: 12, fontSize: 13, borderBottom: '1px solid var(--border)' }}>
           {t(noteTypeScope ? conversionTarget ? 'noteTypes.convert.selectionHint' : 'noteTypes.convert.sourceHint' : 'noteTypes.convert.targetHint', { source: noteTypes.find((type) => type.id === noteTypeScope)?.name ?? '', target: noteTypes.find((type) => type.id === conversionTarget)?.name ?? '' })}
-          <NNBtn size="sm" variant="ghost" onClick={() => { const params = new URLSearchParams(searchParams.toString()); params.delete('noteTypeId'); params.delete('convertTo'); router.replace(`/cards?${params.toString()}`, { track: false }); }}>{t('noteTypes.convert.clearScope')}</NNBtn>
+          <NNBtn size="sm" variant="ghost" onClick={() => { const params = new URLSearchParams(searchParams.toString()); params.delete('noteTypeId'); params.delete('convertTo'); router.replace(`/cards?${params.toString()}`, { track: false, viewOnly:true }); }}>{t('noteTypes.convert.clearScope')}</NNBtn>
         </div>}
         {/* Status line: result count / provisional / error */}
         <div className="reomi-cards-status"
@@ -809,6 +853,7 @@ export const NNCardsBrowser = () => {
         {bulkError && <div role="alert" style={{ padding: 12, fontSize: 13, color: 'var(--rose-400)' }}>
           {t(selected.size > 1000 ? 'cards.bulk.tooMany' : 'cards.bulk.failed')}
         </div>}
+        <NavigationRestoreNotice failure={tablePosition.failure} retry={tablePosition.retry}/>
         {focusError && <NNLoadError title={t('editor.errors.loadFailed')} description={t(focusError.status === 404 ? 'editor.errors.notFound' : 'review.loadFailedBody')}
           retryLabel={t('review.retry')} onRetry={() => setFocusAttempt((n) => n + 1)} requestId={focusError.requestId} />}
 
@@ -816,7 +861,7 @@ export const NNCardsBrowser = () => {
             dock nor the floating bulk pill reformats or clips it. */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, flexDirection: 'column' }}>
           {/* Table */}
-          <div className="reomi-cards-table-scroll" tabIndex={0} aria-label={t('cards.title')} style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
+          <div ref={tablePosition.ref} className="reomi-cards-table-scroll" tabIndex={0} aria-label={t('cards.title')} style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
             <div className="reomi-cards-table" data-empty={emptyResults || undefined} style={{ minWidth: emptyResults ? 0 : tableMinWidth, width: '100%' }}>
             {/* Header */}
             <div className="reomi-cards-table-header"
@@ -922,6 +967,7 @@ export const NNCardsBrowser = () => {
                   <div
                     key={card.id}
                     data-card-row={card.id}
+                    data-navigation-anchor={card.id}
                     tabIndex={0}
                     onContextMenu={event => {
                       event.preventDefault();

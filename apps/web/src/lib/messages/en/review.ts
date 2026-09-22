@@ -1,4 +1,9 @@
 const m = {
+  recovery: {
+    storageUnavailable: 'Study continues, but this session cannot currently be restored after reload. Your saved answers remain on the server.',
+    retryGrade: 'Retry saving this answer',
+    skipUnavailable: 'Skip unavailable card',
+  },
   waitingAuto: "The card will appear automatically when it is due.",
   cardLabel: 'Study card',
   retry: 'Try again',

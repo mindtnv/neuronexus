@@ -111,10 +111,7 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     return () => clearTimeout(timer);
   }, [fingerprint, serializedValue]);
 
-  useNavigationGuard(async href => {
-    // Query/filter synchronization within Browse does not leave the dock.
-    // Actual card/close actions call confirmLeave() explicitly.
-    if (href && window.location.pathname === '/cards' && new URL(href, window.location.href).pathname === '/cards') return true;
+  useNavigationGuard(async () => {
     if (!owned()) return true;
     if (live.current.busy) return false;
     if (!dirty() || offered.current) return true;
