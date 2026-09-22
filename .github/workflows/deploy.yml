@@ -214,7 +214,7 @@ jobs:
           auth=(-H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" -H "Content-Type: application/json")
           # Drain the old writer before the new image applies migrations.
           # In particular, provenance backfills cannot race an older API.
-          curl -fsS "${auth[@]}" "$COOLIFY_URL/applications/$API_APP_UUID/stop" > /dev/null
+          curl -fsS "${auth[@]}" -X POST "$COOLIFY_URL/applications/$API_APP_UUID/stop?docker_cleanup=false" > /dev/null
           stopped=""
           for i in $(seq 1 30); do
             stopped=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/applications/$API_APP_UUID" \

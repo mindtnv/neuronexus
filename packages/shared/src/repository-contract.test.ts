@@ -66,6 +66,7 @@ describe('repository contracts', () => {
     expect(stop).toBeGreaterThan(-1);
     expect(deploy).toBeGreaterThan(stop);
     expect(workflow).toContain('old API did not stop');
+    expect(workflow).toContain('-X POST "$COOLIFY_URL/applications/$API_APP_UUID/stop?docker_cleanup=false"');
   });
 
 });
