@@ -9,19 +9,14 @@
 
 import React, { useCallback } from 'react';
 import type { SourceMarkColor } from '@neuronexus/shared';
+import { MARK_COLOR_CSS } from './mark-colors';
 import { SOURCE_MARK_COLORS } from '@neuronexus/shared';
 import type { SourceMark } from '@/lib/types';
 import { NNIcon } from '@/components/ui';
 
 type T = (key: string, params?: Record<string, string | number>) => string;
 
-const MARK_COLOR_HEX: Record<SourceMarkColor, string> = {
-  lime:   'var(--lime-500)',
-  amber:  'var(--amber-400)',
-  rose:   'var(--rose-400)',
-  sky:    'var(--sky-400)',
-  violet: 'var(--violet-400)',
-};
+const MARK_COLOR_HEX = MARK_COLOR_CSS;
 
 export interface MarksPanelProps {
   open: boolean;

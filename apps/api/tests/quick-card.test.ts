@@ -134,6 +134,24 @@ describe('POST /sources/:id/quick-card — provenance', () => {
     __resetAiClientForTests();
   });
 
+  test('first source-backed card needs no notebook and enters the new deck study queue', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const [source] = await db.insert(sourcesTable).values({ userId, kind: 'pdf', title: 'First book', status: 'ready' }).returning();
+    await db.insert(sourceChunksTable).values({ userId, sourceId: source!.id, position: 0, page: 7, text: 'A Pod groups containers.' });
+    const deckId = await freshDeck(cookie);
+    const saved = await quickCard(cookie, source!.id, { deckId, front: 'What does a Pod group?', back: 'Containers.', page: 7, quote: 'A Pod groups containers.' });
+    expect(saved.status).toBe(200);
+    const { cardIds } = await saved.json<{ cardIds: string[] }>();
+    const queue = await callApp(app, 'GET', `/cards/queue?deckId=${deckId}`, { cookie });
+    expect(queue.status).toBe(200);
+    const queued = await queue.json<{ new: { id: string }[] }>();
+    expect(queued.new.map(card => card.id)).toContain(cardIds[0]!);
+    const links = await callApp(app, 'GET', `/cards/${cardIds[0]}/sources`, { cookie });
+    expect(links.status).toBe(200);
+    expect(await links.text()).toContain(source!.id);
+    expect(await db.select({ id: notebooksTable.id }).from(notebooksTable).where(eq(notebooksTable.userId, userId))).toEqual([]);
+  });
+
   test('page-matched chunks → one edge per chunk (full chain), conv/msg NULL', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const notebookId = await freshNotebook(userId, 'Bio');
@@ -180,7 +198,12 @@ describe('POST /sources/:id/quick-card — provenance', () => {
       // Manual reading provenance — no chat conversation/message.
       expect(e.conversationId).toBeNull();
       expect(e.messageId).toBeNull();
+      expect(e.sourceSnapshot).toMatchObject({ kind: 'chunk', sourceId, sourceTitle: 'Cell Biology' });
     }
+    await db.delete(sourcesTable).where(eq(sourcesTable.id, sourceId));
+    const retained = await edgesFor(userId);
+    expect(retained.map(edge => edge.sourceSnapshot)).toEqual(edges.map(edge => edge.sourceSnapshot));
+    expect(retained.every(edge => edge.sourceId === null && edge.sourceChunkId === null)).toBe(true);
   });
 
   test('page-matched chunks capped at CARD_SOURCE_LINK_CAP', async () => {

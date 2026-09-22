@@ -1,3 +1,4 @@
+import { isSourceTextReadable, sourceTextReadableWhere } from '../modules/source-readability';
 // «Блокноты 2.0» studio (N2, §4) — generated study artifacts + the notebook
 // overview. An artifact ROW IS A JOB (the simplified sources-ingest pattern, Р2):
 // `status` drives a SINGLE non-streaming `complete()` generation
@@ -18,6 +19,7 @@
 // are intersected with the SAMPLED chunk ids — a hallucinated / un-sampled token
 // is stripped (`applyArtifactCitations`).
 
+import { registerArtifactRequest } from './artifact-cancellation';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
   db,
@@ -43,7 +45,7 @@ import {
   safeError,
   workerLogger,
 } from '../logger.ts';
-import { artifactWorkerState } from '../runtime-state.ts';
+import { artifactWorkerState, isRuntimeShuttingDown } from '../runtime-state.ts';
 import type { Logger } from 'pino';
 import {
   AiDisabledError,
@@ -105,6 +107,7 @@ export async function buildArtifactContext(
   userId: string,
   sourceIds: string[],
   limit = env.ai.ARTIFACT_CONTEXT_CHUNKS,
+  allowParsedSources = false,
 ): Promise<ArtifactContext> {
   if (sourceIds.length === 0) return { chunks: [], allowedChunkIds: new Set() };
 
@@ -114,7 +117,7 @@ export async function buildArtifactContext(
     .select({ id: sources.id, title: sources.title })
     .from(sources)
     .where(
-      and(eq(sources.userId, userId), inArray(sources.id, sourceIds), eq(sources.status, 'ready')),
+      and(eq(sources.userId, userId), inArray(sources.id, sourceIds), allowParsedSources ? sourceTextReadableWhere() : eq(sources.status, 'ready')),
     );
   const titleById = new Map(readyRows.map((r) => [r.id, r.title]));
   // Stable order: the snapshot's order, filtered to the survivors.
@@ -462,19 +465,16 @@ class ArtifactTimeout extends Error {
  * infinite-promise fake still rejects with ArtifactTimeout). Also passes a real
  * AbortSignal so the production fetch is actually torn down.
  */
-async function completeBounded(messages: ChatMessage[], timeoutMs: number): Promise<string> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new ArtifactTimeout()), timeoutMs);
-  });
-  try {
-    return await Promise.race([
-      complete(messages, { signal: AbortSignal.timeout(timeoutMs) }),
-      timeout,
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+async function completeBounded(messages: ChatMessage[], timeoutMs: number, parent?: AbortSignal): Promise<string> {
+  const controller=new AbortController();let timedOut=false;
+  const cancel=()=>controller.abort();
+  let listener!:()=>void;
+  const stopped=new Promise<never>((_,reject)=>{listener=()=>reject(timedOut?new ArtifactTimeout():new ArtifactCancelled());controller.signal.addEventListener('abort',listener,{once:true});});
+  parent?.addEventListener('abort',cancel,{once:true});if(parent?.aborted)cancel();
+  const timer=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);
+  try {return await Promise.race([complete(messages,{signal:controller.signal}),stopped]);}
+  catch(error){if(controller.signal.aborted)throw timedOut?new ArtifactTimeout():new ArtifactCancelled();throw error;}
+  finally {clearTimeout(timer);parent?.removeEventListener('abort',cancel);controller.signal.removeEventListener('abort',listener);}
 }
 
 /** A sentinel error: the artifact row vanished/changed mid-stream (cancel-on-delete). */
@@ -501,6 +501,7 @@ async function streamBounded(
   artifactId: string,
   messages: ChatMessage[],
   timeoutMs: number,
+  parent?: AbortSignal,
 ): Promise<string> {
   const controller = new AbortController();
   let timedOut = false;
@@ -509,6 +510,11 @@ async function streamBounded(
     controller.abort();
   }, timeoutMs);
 
+  const cancel=()=>controller.abort();
+  let listener!:()=>void;
+  const stopped=new Promise<never>((_,reject)=>{listener=()=>reject(timedOut?new ArtifactTimeout():new ArtifactCancelled());controller.signal.addEventListener('abort',listener,{once:true});});
+  parent?.addEventListener('abort',cancel,{once:true});if(parent?.aborted)cancel();
+  const iterator=chatStream(messages,{signal:controller.signal})[Symbol.asyncIterator]();
   let acc = '';
   // Start the throttle clock at worker entry so the FIRST chunk also waits one
   // interval before its flush (avoids a write per token on a fast stream).
@@ -528,8 +534,10 @@ async function streamBounded(
   };
 
   try {
-    for await (const delta of chatStream(messages, { signal: controller.signal })) {
-      acc += delta;
+    for (;;) {
+      const next=await Promise.race([iterator.next(),stopped]);
+      if(next.done)break;
+      acc += next.value;
       const now = Date.now();
       if (now - lastFlush >= env.ai.ARTIFACT_PROGRESS_FLUSH_MS) {
         lastFlush = now;
@@ -538,9 +546,11 @@ async function streamBounded(
     }
   } catch (err) {
     if (timedOut) throw new ArtifactTimeout();
+    if (controller.signal.aborted) throw new ArtifactCancelled();
     throw err;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer);parent?.removeEventListener('abort',cancel);controller.signal.removeEventListener('abort',listener);
+    const closing=iterator.return?.();if(closing)void closing.catch(()=>{});
   }
   return acc;
 }
@@ -563,7 +573,23 @@ async function casArtifact(
   artifactId: string,
   expected: readonly string[],
   set: Record<string, unknown>,
+  owner?: Pick<typeof notebookArtifacts.$inferSelect, 'userId' | 'ownerKind' | 'sourceId' | 'sourceOriginId'>,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  if (signal?.aborted) return false;
+  if (set.status === 'ready' && owner?.ownerKind === 'source') {
+    return db.transaction(async tx => {
+      const [source] = owner.sourceId ? await tx.select({ id: sources.id, status: sources.status, errorCode: sources.errorCode }).from(sources)
+        .where(and(eq(sources.userId, owner.userId), eq(sources.id, owner.sourceId))).for('update').limit(1) : [];
+      if (signal?.aborted) return false;
+      const available = source && isSourceTextReadable(source.status, source.errorCode) && source.id === owner.sourceOriginId;
+      const rows = await tx.update(notebookArtifacts).set(available ? { ...set, updatedAt: new Date() }
+        : { status: 'error', errorCode: 'source_unavailable', contentMd: null, contentJson: null, updatedAt: new Date() })
+        .where(and(eq(notebookArtifacts.userId, owner.userId), eq(notebookArtifacts.id, artifactId),
+          inArray(notebookArtifacts.status, expected as string[]))).returning({ id: notebookArtifacts.id });
+      return Boolean(available && rows.length);
+    });
+  }
   const rows = await db
     .update(notebookArtifacts)
     .set({ ...set, updatedAt: new Date() })
@@ -583,11 +609,11 @@ async function casArtifact(
  * Both are bounded by `ARTIFACT_TIMEOUT_MS`. Throws `ArtifactCancelled` (stream
  * path only) when the row vanished mid-flight; other throws classify to a code.
  */
-async function runGeneration(artifactId: string, messages: ChatMessage[]): Promise<string> {
+async function runGeneration(artifactId: string, messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
   if (isChatStreamEnabled()) {
-    return streamBounded(artifactId, messages, env.ai.ARTIFACT_TIMEOUT_MS);
+    return streamBounded(artifactId, messages, env.ai.ARTIFACT_TIMEOUT_MS, signal);
   }
-  return completeBounded(messages, env.ai.ARTIFACT_TIMEOUT_MS);
+  return completeBounded(messages, env.ai.ARTIFACT_TIMEOUT_MS, signal);
 }
 
 // ── Worker (Р2/Р4/Р5) ──────────────────────────────────────────────────────────
@@ -606,10 +632,12 @@ async function runGeneration(artifactId: string, messages: ChatMessage[]): Promi
  */
 export async function generateArtifact(
   artifactId: string,
-  opts: { questionCount?: number; log?: Logger } = {},
+  opts: { questionCount?: number; log?: Logger; controller?: AbortController } = {},
 ): Promise<void> {
   const log = opts.log ?? rootLogger;
+  const controller=opts.controller ?? new AbortController();let release=()=>{};
   try {
+    if (controller.signal.aborted) return;
     // CAS pending → generating. Returns the claimed row so we have type +
     // user_id + source_ids without a second SELECT.
     const [claimed] = await db
@@ -619,9 +647,12 @@ export async function generateArtifact(
       .returning();
     if (!claimed) return; // not claimable (already generating / deleted / done)
 
+    release=registerArtifactRequest(artifactId,controller);
+    if (controller.signal.aborted) return;
     const type = claimed.type as NotebookArtifactType;
 
-    const ctx = await buildArtifactContext(claimed.userId, claimed.sourceIds);
+    const ctx = await buildArtifactContext(claimed.userId, claimed.sourceIds, undefined, claimed.ownerKind === 'source');
+    if (controller.signal.aborted) return;
     if (ctx.chunks.length === 0) {
       await failArtifact(artifactId, 'no_sources');
       return;
@@ -632,7 +663,7 @@ export async function generateArtifact(
       const questionCount = clampQuestionCount(opts.questionCount);
       let raw: string;
       try {
-        raw = await runGeneration(artifactId, buildQuizMessages(ctx.chunks, questionCount));
+        raw = await runGeneration(artifactId, buildQuizMessages(ctx.chunks, questionCount), controller.signal);
       } catch (err) {
         // A concurrent delete/regenerate aborted the stream — exit, do NOT write
         // (the row is gone or already re-claimed; a 0-row CAS would no-op anyway).
@@ -657,7 +688,7 @@ export async function generateArtifact(
         contentMd: null,
         errorCode: null,
         model: env.ai.CHAT_MODEL,
-      });
+      }, claimed, controller.signal);
       if (saved) artifactWorkerState.recover();
       return;
     }
@@ -667,6 +698,7 @@ export async function generateArtifact(
       raw = await runGeneration(
         artifactId,
         buildArtifactMessages(type as Exclude<NotebookArtifactType, 'quiz'>, ctx.chunks),
+        controller.signal,
       );
     } catch (err) {
       if (err instanceof ArtifactCancelled) return;
@@ -692,27 +724,32 @@ export async function generateArtifact(
       contentMd,
       errorCode: null,
       model: env.ai.CHAT_MODEL,
-    });
+    }, claimed, controller.signal);
     if (saved) artifactWorkerState.recover();
   } catch (err) {
+    // Interrupted rows are reconciled on the next compatible startup; avoid
+    // issuing a late error write while shutdown may already be closing the DB.
+    if (controller.signal.aborted) return;
     // Truly-unexpected (a DB error) — best-effort mark error, never rethrow.
     log.error({ err: safeError(err), artifactId }, 'ai.artifact.unexpected');
     await failArtifact(artifactId, 'generation_failed').catch(() => {});
-  }
+  } finally {release();}
 }
 
-const activeArtifactJobs = new Set<Promise<void>>();
+const activeArtifactJobs = new Map<Promise<void>, AbortController>();
 
 /** Fire-and-forget artifact start with bounded request correlation and drain tracking. */
 export function scheduleArtifactGeneration(
   artifactId: string,
   opts: { questionCount?: number; requestLog?: Logger } = {},
 ): void {
+  if (isRuntimeShuttingDown()) return;
+  const controller = new AbortController();
   const log = workerLogger('artifact', logCorrelation(opts.requestLog ?? rootLogger));
   artifactWorkerState.enqueue();
   artifactWorkerState.start();
   let job!: Promise<void>;
-  job = generateArtifact(artifactId, { questionCount: opts.questionCount, log })
+  job = generateArtifact(artifactId, { questionCount: opts.questionCount, log, controller })
     .catch((err) => {
       artifactWorkerState.recordFailure('artifact_unexpected');
       log.error({ err: safeError(err), artifactId }, 'ai.artifact.kick_failed');
@@ -721,15 +758,16 @@ export function scheduleArtifactGeneration(
       artifactWorkerState.complete();
       activeArtifactJobs.delete(job);
     });
-  activeArtifactJobs.add(job);
+  activeArtifactJobs.set(job, controller);
 }
 
 export async function drainArtifactGeneration({ timeoutMs }: { timeoutMs: number }): Promise<void> {
   if (activeArtifactJobs.size === 0) return;
-  const settle = Promise.allSettled([...activeArtifactJobs]).then(() => undefined);
+  const settle = Promise.allSettled([...activeArtifactJobs.keys()]).then(() => undefined);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<void>((resolve) => {
     timer = setTimeout(() => {
+      for (const controller of activeArtifactJobs.values()) controller.abort();
       rootLogger.warn(
         { active: artifactWorkerState.snapshot().active },
         'ai.artifact.drain_timeout',

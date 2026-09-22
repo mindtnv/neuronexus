@@ -1,3 +1,8 @@
+import { evidenceExcerpt, legacyChunkEvidence, legacySourceEvidence } from '../ai/legacy-evidence';
+import { harvestOriginHash } from '../ai/harvest-cards';
+import { ASSISTANT_CONTEXT_LIMITS } from '@neuronexus/shared';
+import { captureManualTextSelection, captureManualPdfSelection } from './source-card-selection';
+import { writePerCardProvenance } from '../ai/card-evidence';
 // NotebookLM sources — CRUD + ingest routes (M1, T3 + T7). Every query is
 // `user.id`-FIRST-conjunct scoped; a foreign/missing id is a 404 (no leak about
 // which case). Mirrors the rest of apps/api (Elysia module, drizzle, the media
@@ -22,6 +27,9 @@
 // embedding; these routes only enqueue.
 
 import { Elysia, t } from 'elysia';
+import { submitStudyQuizAttempt, listStudyQuizAttempts } from './study-quiz';
+import { StudyError, createStudyNote, getStudyNote, listStudyNotes, patchStudyNote, deleteStudyNote } from './study-notes';
+import { listStudyArtifacts, createStudyArtifact, getStudyArtifact, deleteStudyArtifact, regenerateStudyArtifact } from './study-artifacts';
 import { and, asc, count, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   cardSources,
@@ -34,7 +42,6 @@ import {
   notebookNotes,
   notebooks,
   notebookSources,
-  quizAttempts,
   sourceAnnotations,
   sourceChunks,
   sourceMarks,
@@ -69,7 +76,6 @@ import {
   type NotebookArtifactType,
   type NotebookNoteKind,
   type PageAnnotations,
-  type QuizContent,
   type SourceMarkKind,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
@@ -83,10 +89,7 @@ import type { Logger } from 'pino';
 import { getObjectBytes } from '../storage.ts';
 import { isChatEnabled } from '../ai/openai-client.ts';
 import {
-  ARTIFACT_TYPE_TITLE,
-  scheduleArtifactGeneration,
   generateNotebookOverview,
-  scoreQuizAttempt,
 } from '../ai/artifacts.ts';
 import { suggestCard } from '../ai/suggest-card.ts';
 import { harvestCards, HARVEST_CARDS_MAX, type HarvestPassage } from '../ai/harvest-cards.ts';
@@ -270,13 +273,7 @@ async function currentOverviewFingerprint(
   );
 }
 
-/** One-line note excerpt: collapse whitespace, cap to NOTE_EXCERPT_MAX chars. */
-function noteExcerpt(content: string): string {
-  return excerptFront(content, NOTE_EXCERPT_MAX);
-}
-
 // ── «Блокноты 2.0» studio (N2) helpers ────────────────────────────────────────
-const ARTIFACT_TYPE_SET = new Set<string>(NOTEBOOK_ARTIFACT_TYPES);
 
 /**
  * The notebook's READY source ids (the join — sources are user-level), optionally
@@ -304,41 +301,6 @@ async function resolveReadyScope(
   if (requested === undefined) return readyIds;
   const want = new Set(requested);
   return readyIds.filter((id) => want.has(id));
-}
-
-/**
- * Human title for a new artifact, with dup-numbering («FAQ (2)») when a same-type
- * title already exists in the notebook. Counts EXISTING artifacts of that type
- * for this notebook (user-scoped) — N+1 of the same type ⇒ « (N+1)».
- */
-async function nextArtifactTitle(
-  userId: string,
-  notebookId: string,
-  type: NotebookArtifactType,
-): Promise<string> {
-  const base = ARTIFACT_TYPE_TITLE[type];
-  const [{ n }] = await db
-    .select({ n: count() })
-    .from(notebookArtifacts)
-    .where(
-      and(
-        eq(notebookArtifacts.userId, userId),
-        eq(notebookArtifacts.notebookId, notebookId),
-        eq(notebookArtifacts.type, type),
-      ),
-    );
-  const existing = Number(n);
-  return existing === 0 ? base : `${base} (${existing + 1})`;
-}
-
-/** Fire-and-forget kick of the artifact generator (logs but never rejects).
- *  `questionCount` is forwarded for quiz generation (ignored by markdown types). */
-function kickArtifact(
-  artifactId: string,
-  questionCount?: number,
-  requestLog: Logger = rootLogger,
-): void {
-  scheduleArtifactGeneration(artifactId, { questionCount, requestLog });
 }
 
 /**
@@ -830,37 +792,8 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // Cap LIBRARY_PAGE (no cursor in V1 — the per-notebook note cap bounds it).
   .get(
     '/:id/notes',
-    async ({ user, params, query, status }) => {
-      const [nb] = await db
-        .select({ id: notebooks.id })
-        .from(notebooks)
-        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
-        .limit(1);
-      if (!nb) return status(404, { error: 'not_found' });
-
-      const q = query.q?.trim();
-      // Escape LIKE/ILIKE metacharacters so a literal '%' / '_' / '\' in the
-      // query matches itself instead of acting as a wildcard (a bare '_' must
-      // NOT match everything). The default ILIKE escape char is backslash.
-      const like = q && q.length > 0 ? `%${q.replace(/[\\%_]/g, '\\$&')}%` : undefined;
-      const search = like
-        ? or(ilike(notebookNotes.title, like), ilike(notebookNotes.content, like))
-        : undefined;
-
-      const rows = await db
-        .select()
-        .from(notebookNotes)
-        .where(
-          and(
-            eq(notebookNotes.userId, user.id),
-            eq(notebookNotes.notebookId, params.id),
-            ...(search ? [search] : []),
-          ),
-        )
-        .orderBy(desc(notebookNotes.pinned), desc(notebookNotes.updatedAt))
-        .limit(env.ai.LIBRARY_PAGE);
-
-      const items = rows.map((r) => ({ ...r, excerpt: noteExcerpt(r.content) }));
+    async ({ user, params, query }) => {
+      const { items } = await listStudyNotes(user.id, { kind:'notebook', id:params.id }, { q:query.q, limit:env.ai.LIBRARY_PAGE });
       return { items };
     },
     {
@@ -878,79 +811,7 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // `invalid_note`. Bumps notebooks.updated_at (Р15).
   .post(
     '/:id/notes',
-    async ({ user, params, body, status }) => {
-      const [nb] = await db
-        .select({ id: notebooks.id })
-        .from(notebooks)
-        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
-        .limit(1);
-      if (!nb) return status(404, { error: 'not_found' });
-
-      const title = body.title.trim();
-      if (title.length < 1 || title.length > NOTE_TITLE_MAX) {
-        return status(400, { error: 'invalid_note' });
-      }
-      if (body.content.length > NOTE_CONTENT_MAX) {
-        return status(400, { error: 'invalid_note' });
-      }
-      const kind = body.kind ?? 'manual';
-      if (!NOTE_KIND_SET.has(kind as NotebookNoteKind)) {
-        return status(400, { error: 'invalid_note' });
-      }
-      // Opaque citations snapshot — structure not deeply validated (Р7), just
-      // byte-capped to bound the row size.
-      if (body.citations !== undefined && body.citations !== null) {
-        if (JSON.stringify(body.citations).length > NOTE_CITATIONS_MAX_BYTES) {
-          return status(400, { error: 'invalid_note' });
-        }
-      }
-
-      // messageId validation: the message must be the user's AND belong to a
-      // conversation bound to THIS notebook (spoof-resistant — Р7 invariant).
-      if (body.messageId !== undefined && body.messageId !== null) {
-        const [msg] = await db
-          .select({ id: messages.id })
-          .from(messages)
-          .innerJoin(conversations, eq(conversations.id, messages.conversationId))
-          .where(
-            and(
-              eq(messages.id, body.messageId),
-              eq(messages.userId, user.id),
-              eq(conversations.notebookId, params.id),
-            ),
-          )
-          .limit(1);
-        if (!msg) return status(400, { error: 'invalid_message' });
-      }
-
-      // Best-effort per-notebook cap (Р16; two parallel POSTs may overshoot by 1,
-      // accepted — no advisory lock).
-      const [{ n }] = await db
-        .select({ n: count() })
-        .from(notebookNotes)
-        .where(
-          and(eq(notebookNotes.userId, user.id), eq(notebookNotes.notebookId, params.id)),
-        );
-      if (n >= MAX_NOTES_PER_NOTEBOOK) return status(409, { error: 'too_many_notes' });
-
-      const row = await db.transaction(async (tx) => {
-        const [created] = await tx
-          .insert(notebookNotes)
-          .values({
-            userId: user.id,
-            notebookId: params.id,
-            title,
-            content: body.content,
-            kind,
-            citations: (body.citations as Citation[] | undefined) ?? null,
-            messageId: body.messageId ?? null,
-          })
-          .returning();
-        await bumpNotebookUpdatedAt(tx, user.id, params.id);
-        return created!;
-      });
-      return row;
-    },
+    ({ user, params, body }) => createStudyNote(user.id, { kind: 'notebook', id: params.id }, body),
     {
       auth: true,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),
@@ -964,66 +825,18 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       }),
     },
   )
+  .get(
+    '/:id/notes/:noteId',
+    ({user,params}) => getStudyNote(user.id,params.noteId,{kind:'notebook',id:params.id}),
+    {auth:true,params:t.Object({id:t.String({format:'uuid'}),noteId:t.String({format:'uuid'})})},
+  )
   // Patch a note: title?/content?/pinned?. Empty body → 400 `nothing_to_update`.
   // updatedAt bumps ONLY on title/content (Р15, like the notebook PATCH). Any
   // content mutation bumps notebooks.updated_at. user-scoped 404 (foreign
   // notebook OR foreign note → 404, zero rows touched).
   .patch(
     '/:id/notes/:noteId',
-    async ({ user, params, body, status }) => {
-      const [nb] = await db
-        .select({ id: notebooks.id })
-        .from(notebooks)
-        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
-        .limit(1);
-      if (!nb) return status(404, { error: 'not_found' });
-
-      const set: Record<string, unknown> = {};
-      let contentChanged = false;
-      if (body.title !== undefined) {
-        const title = body.title.trim();
-        if (title.length < 1 || title.length > NOTE_TITLE_MAX) {
-          return status(400, { error: 'invalid_note' });
-        }
-        set.title = title;
-        contentChanged = true;
-      }
-      if (body.content !== undefined) {
-        if (body.content.length > NOTE_CONTENT_MAX) {
-          return status(400, { error: 'invalid_note' });
-        }
-        set.content = body.content;
-        contentChanged = true;
-      }
-      if (body.pinned !== undefined) set.pinned = body.pinned;
-      if (Object.keys(set).length === 0) {
-        return status(400, { error: 'nothing_to_update' });
-      }
-      // Same monotonic form as the notebook PATCH — note rows are DEFAULT-now()
-      // stamped too, so a host clock behind Postgres would un-order the list.
-      if (contentChanged) {
-        set.updatedAt = sql`GREATEST(now(), ${notebookNotes.updatedAt} + interval '1 millisecond')`;
-      }
-
-      const row = await db.transaction(async (tx) => {
-        const [updated] = await tx
-          .update(notebookNotes)
-          .set(set)
-          .where(
-            and(
-              eq(notebookNotes.id, params.noteId),
-              eq(notebookNotes.notebookId, params.id),
-              eq(notebookNotes.userId, user.id),
-            ),
-          )
-          .returning();
-        if (!updated) return null;
-        await bumpNotebookUpdatedAt(tx, user.id, params.id);
-        return updated;
-      });
-      if (!row) return status(404, { error: 'not_found' });
-      return row;
-    },
+    ({ user, params, body }) => patchStudyNote(user.id, params.noteId, body, {kind:'notebook',id:params.id}),
     {
       auth: true,
       params: t.Object({
@@ -1040,32 +853,7 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // Delete a note. user-scoped 404. Bumps notebooks.updated_at (Р15).
   .delete(
     '/:id/notes/:noteId',
-    async ({ user, params, status }) => {
-      const [nb] = await db
-        .select({ id: notebooks.id })
-        .from(notebooks)
-        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
-        .limit(1);
-      if (!nb) return status(404, { error: 'not_found' });
-
-      const ok = await db.transaction(async (tx) => {
-        const [row] = await tx
-          .delete(notebookNotes)
-          .where(
-            and(
-              eq(notebookNotes.id, params.noteId),
-              eq(notebookNotes.notebookId, params.id),
-              eq(notebookNotes.userId, user.id),
-            ),
-          )
-          .returning({ id: notebookNotes.id });
-        if (!row) return false;
-        await bumpNotebookUpdatedAt(tx, user.id, params.id);
-        return true;
-      });
-      if (!ok) return status(404, { error: 'not_found' });
-      return { ok: true };
-    },
+    ({ user, params }) => deleteStudyNote(user.id, params.noteId, {kind:'notebook',id:params.id}),
     {
       auth: true,
       params: t.Object({
@@ -1074,293 +862,34 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
       }),
     },
   )
-  // ── studio: generated artifacts (Р2/Р3, N2 §3) ────────────────────────────────
-  // An artifact ROW IS A JOB (pending→generating→ready|error). All routes are
-  // user-scoped (the notebook ownership SELECT is the first guard; foreign → 404).
-
-  // List a notebook's artifacts — LIGHT (no content_md/content_json). Newest-first.
+  // Shared source/notebook artifact services; legacy routes retain their shapes.
   .get(
     '/:id/artifacts',
-    async ({ user, params, status }) => {
-      const [nb] = await db
-        .select({ id: notebooks.id })
-        .from(notebooks)
-        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
-        .limit(1);
-      if (!nb) return status(404, { error: 'not_found' });
-
-      const rows = await db
-        .select({
-          id: notebookArtifacts.id,
-          type: notebookArtifacts.type,
-          status: notebookArtifacts.status,
-          title: notebookArtifacts.title,
-          sourceIds: notebookArtifacts.sourceIds,
-          errorCode: notebookArtifacts.errorCode,
-          model: notebookArtifacts.model,
-          // Live-progress char counter for a job still running (A/B): the length
-          // of the partial raw text the streaming worker has flushed so far. 0 for
-          // terminal rows (content_md is the FINAL doc there — not a progress hint).
-          progressChars: sql<number>`CASE WHEN ${notebookArtifacts.status} IN ('pending','generating') THEN COALESCE(length(${notebookArtifacts.contentMd}), 0) ELSE 0 END`,
-          createdAt: notebookArtifacts.createdAt,
-          updatedAt: notebookArtifacts.updatedAt,
-        })
-        .from(notebookArtifacts)
-        .where(
-          and(eq(notebookArtifacts.userId, user.id), eq(notebookArtifacts.notebookId, params.id)),
-        )
-        .orderBy(desc(notebookArtifacts.createdAt));
-      return { items: rows };
-    },
-    { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) },
+    async ({user,params}) => { const {items}=await listStudyArtifacts(user.id,{kind:'notebook',id:params.id}); return {items}; },
+    {auth:true,params:t.Object({id:t.String({format:'uuid'})})},
   )
-  // Create an artifact job. ORDER OF CHECKS IS FIXED (§3): ownership-404 →
-  // 400 invalid_type → 400 no_sources → 409 too_many_artifacts →
-  // 409 generation_in_progress (EXISTS + INSERT in one tx). `quiz` is a valid
-  // type now (N3) — its `questionCount?` rides the kick; markdown types ignore it.
-  // The `source_ids` snapshot = the resolved ready scope. Bumps notebook.updated_at.
   .post(
     '/:id/artifacts',
-    async (context) => {
-      const { user, params, body, status } = context;
-      const log = requestLogFromContext(context);
-      // 1) ownership.
-      const [nb] = await db
-        .select({ id: notebooks.id })
-        .from(notebooks)
-        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
-        .limit(1);
-      if (!nb) return status(404, { error: 'not_found' });
-
-      // 2) invalid_type — unknown type.
-      if (!ARTIFACT_TYPE_SET.has(body.type)) {
-        return status(400, { error: 'invalid_type' });
-      }
-      const type = body.type as NotebookArtifactType;
-
-      // 3) no_sources — resolved ready scope (intersect; absent ⇒ all ready).
-      const scope = await resolveReadyScope(user.id, params.id, body.sourceIds);
-      if (scope.length === 0) return status(400, { error: 'no_sources' });
-
-      // 4) too_many_artifacts — per-notebook cap.
-      const [{ n }] = await db
-        .select({ n: count() })
-        .from(notebookArtifacts)
-        .where(
-          and(eq(notebookArtifacts.userId, user.id), eq(notebookArtifacts.notebookId, params.id)),
-        );
-      if (Number(n) >= env.ai.MAX_ARTIFACTS_PER_NOTEBOOK) {
-        return status(409, { error: 'too_many_artifacts' });
-      }
-
-      // 5) generation_in_progress — EXISTS(pending|generating) + INSERT in ONE tx
-      // (one generation per notebook, Р16; the partial active-index serializes the
-      // EXISTS probe against a concurrent POST).
-      const title = await nextArtifactTitle(user.id, params.id, type);
-      const created = await db.transaction(async (tx) => {
-        // Serialize concurrent POSTs for THIS notebook (the non-unique partial
-        // active-index can't enforce one-job-at-a-time on its own — two parallel
-        // EXISTS probes would both see "no active" and both INSERT). A per-notebook
-        // advisory xact lock makes the EXISTS+INSERT atomic; it releases on commit.
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${params.id}))`);
-        const active = await tx
-          .select({ id: notebookArtifacts.id })
-          .from(notebookArtifacts)
-          .where(
-            and(
-              eq(notebookArtifacts.notebookId, params.id),
-              inArray(notebookArtifacts.status, ['pending', 'generating']),
-            ),
-          )
-          .limit(1);
-        if (active.length > 0) return null;
-        const [row] = await tx
-          .insert(notebookArtifacts)
-          .values({
-            userId: user.id,
-            notebookId: params.id,
-            type,
-            status: 'pending',
-            title,
-            sourceIds: scope,
-          })
-          .returning();
-        await bumpNotebookUpdatedAt(tx, user.id, params.id);
-        return row!;
-      });
-      if (!created) return status(409, { error: 'generation_in_progress' });
-
-      // 6) async kick (not awaited; .catch-logged). questionCount rides for quiz.
-      kickArtifact(created.id, type === 'quiz' ? body.questionCount : undefined, log);
-      return created;
-    },
-    {
-      auth: true,
-      params: t.Object({ id: t.String({ format: 'uuid' }) }),
-      body: t.Object({
-        type: t.String({ maxLength: 32 }),
-        sourceIds: t.Optional(t.Array(t.String({ format: 'uuid' }), { maxItems: 100 })),
-        // questionCount rides for quiz generation (default QUIZ_QUESTIONS_DEFAULT,
-        // capped QUIZ_QUESTIONS_MAX server-side); accepted + ignored by markdown types.
-        questionCount: t.Optional(t.Integer({ minimum: 1, maximum: QUIZ_QUESTIONS_MAX })),
-      }),
-    },
+    context => createStudyArtifact(context.user.id,{kind:'notebook',id:context.params.id},context.body,requestLogFromContext(context)),
+    {auth:true,params:t.Object({id:t.String({format:'uuid'})}),body:t.Object({
+      type:t.String({maxLength:32}),sourceIds:t.Optional(t.Array(t.String({format:'uuid'}),{maxItems:100})),
+      questionCount:t.Optional(t.Integer({minimum:1,maximum:QUIZ_QUESTIONS_MAX})),
+    })},
   )
-  // Full artifact (content_md|content_json + status + error). user-scoped 404.
   .get(
     '/:id/artifacts/:artifactId',
-    async (context) => {
-      const { user, params, status } = context;
-      const [row] = await db
-        .select()
-        .from(notebookArtifacts)
-        .where(
-          and(
-            eq(notebookArtifacts.id, params.artifactId),
-            eq(notebookArtifacts.notebookId, params.id),
-            eq(notebookArtifacts.userId, user.id),
-          ),
-        )
-        .limit(1);
-      if (!row) return status(404, { error: 'not_found' });
-      return row;
-    },
-    {
-      auth: true,
-      params: t.Object({
-        id: t.String({ format: 'uuid' }),
-        artifactId: t.String({ format: 'uuid' }),
-      }),
-    },
+    ({user,params}) => getStudyArtifact(user.id,params.artifactId,{kind:'notebook',id:params.id}),
+    {auth:true,params:t.Object({id:t.String({format:'uuid'}),artifactId:t.String({format:'uuid'})})},
   )
-  // Delete an artifact (ANY status). A `generating` row can be deleted: the worker
-  // CAS generating→ready then finds 0 rows and discards its result (no orphan).
-  // user-scoped 404. Bumps notebook.updated_at.
   .delete(
     '/:id/artifacts/:artifactId',
-    async ({ user, params, status }) => {
-      const [nb] = await db
-        .select({ id: notebooks.id })
-        .from(notebooks)
-        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
-        .limit(1);
-      if (!nb) return status(404, { error: 'not_found' });
-
-      const ok = await db.transaction(async (tx) => {
-        const [row] = await tx
-          .delete(notebookArtifacts)
-          .where(
-            and(
-              eq(notebookArtifacts.id, params.artifactId),
-              eq(notebookArtifacts.notebookId, params.id),
-              eq(notebookArtifacts.userId, user.id),
-            ),
-          )
-          .returning({ id: notebookArtifacts.id });
-        if (!row) return false;
-        await bumpNotebookUpdatedAt(tx, user.id, params.id);
-        return true;
-      });
-      if (!ok) return status(404, { error: 'not_found' });
-      return { ok: true };
-    },
-    {
-      auth: true,
-      params: t.Object({
-        id: t.String({ format: 'uuid' }),
-        artifactId: t.String({ format: 'uuid' }),
-      }),
-    },
+    ({user,params}) => deleteStudyArtifact(user.id,params.artifactId,{kind:'notebook',id:params.id}),
+    {auth:true,params:t.Object({id:t.String({format:'uuid'}),artifactId:t.String({format:'uuid'})})},
   )
-  // Regenerate: CAS ready|error → pending (KEEPING the same source_ids snapshot) +
-  // kick. A generating/pending artifact → 409 not_terminal. user-scoped 404.
-  // Bumps notebook.updated_at (Р15).
   .post(
     '/:id/artifacts/:artifactId/regenerate',
-    async (context) => {
-      const { user, params, status } = context;
-      const log = requestLogFromContext(context);
-      const [nb] = await db
-        .select({ id: notebooks.id })
-        .from(notebooks)
-        .where(and(eq(notebooks.id, params.id), eq(notebooks.userId, user.id)))
-        .limit(1);
-      if (!nb) return status(404, { error: 'not_found' });
-
-      // Distinguish "missing/foreign" (404) from "not terminal" (409): read first.
-      const [existing] = await db
-        .select({ id: notebookArtifacts.id, status: notebookArtifacts.status })
-        .from(notebookArtifacts)
-        .where(
-          and(
-            eq(notebookArtifacts.id, params.artifactId),
-            eq(notebookArtifacts.notebookId, params.id),
-            eq(notebookArtifacts.userId, user.id),
-          ),
-        )
-        .limit(1);
-      if (!existing) return status(404, { error: 'not_found' });
-      // The TARGET artifact itself is mid-flight ⇒ not_terminal (§3). A DIFFERENT
-      // live artifact of the notebook is caught inside the tx as
-      // generation_in_progress.
-      if (existing.status === 'pending' || existing.status === 'generating') {
-        return status(409, { error: 'not_terminal' });
-      }
-
-      // One generation per notebook (Р16): a DIFFERENT artifact mid-flight blocks.
-      // Same per-notebook advisory xact lock as POST — serializes a regenerate
-      // racing a create (or another regenerate) for this notebook.
-      const out = await db.transaction(async (tx) => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${params.id}))`);
-        const active = await tx
-          .select({ id: notebookArtifacts.id })
-          .from(notebookArtifacts)
-          .where(
-            and(
-              eq(notebookArtifacts.notebookId, params.id),
-              // A DIFFERENT artifact mid-flight (exclude the regenerate target).
-              sql`${notebookArtifacts.id} <> ${params.artifactId}`,
-              inArray(notebookArtifacts.status, ['pending', 'generating']),
-            ),
-          )
-          .limit(1);
-        if (active.length > 0) return { error: 'generation_in_progress' as const };
-
-        const rows = await tx
-          .update(notebookArtifacts)
-          .set({
-            status: 'pending',
-            errorCode: null,
-            // Monotonic on the Postgres clock (same skew bumpNotebookUpdatedAt
-            // guards against): GREATEST(now(), prev + 1ms) never lands behind a
-            // DB-DEFAULT-stamped neighbour when host/VM clocks drift.
-            updatedAt: sql`GREATEST(now(), ${notebookArtifacts.updatedAt} + interval '1 millisecond')`,
-          })
-          .where(
-            and(
-              eq(notebookArtifacts.id, params.artifactId),
-              eq(notebookArtifacts.userId, user.id),
-              inArray(notebookArtifacts.status, ['ready', 'error']),
-            ),
-          )
-          .returning();
-        if (rows.length === 0) return { error: 'not_terminal' as const };
-        await bumpNotebookUpdatedAt(tx, user.id, params.id);
-        return { row: rows[0]! };
-      });
-      if ('error' in out) {
-        return status(409, { error: out.error });
-      }
-      kickArtifact(out.row.id, undefined, log);
-      return out.row;
-    },
-    {
-      auth: true,
-      params: t.Object({
-        id: t.String({ format: 'uuid' }),
-        artifactId: t.String({ format: 'uuid' }),
-      }),
-    },
+    context => regenerateStudyArtifact(context.user.id,context.params.artifactId,{kind:'notebook',id:context.params.id},requestLogFromContext(context)),
+    {auth:true,params:t.Object({id:t.String({format:'uuid'}),artifactId:t.String({format:'uuid'})})},
   )
   // ── overview (Р6, N2 §3) ──────────────────────────────────────────────────────
   // SYNC generation of the notebook briefing + suggested questions. Order: 404
@@ -1404,65 +933,7 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // questions count as incorrect. Persists the normalized snapshot + correct/total.
   .post(
     '/:id/artifacts/:artifactId/attempts',
-    async ({ user, params, body, status }) => {
-      // ownership + the quiz artifact (user-scoped 404 on a foreign/missing one).
-      const [artifact] = await db
-        .select({
-          id: notebookArtifacts.id,
-          type: notebookArtifacts.type,
-          status: notebookArtifacts.status,
-          contentJson: notebookArtifacts.contentJson,
-        })
-        .from(notebookArtifacts)
-        .where(
-          and(
-            eq(notebookArtifacts.id, params.artifactId),
-            eq(notebookArtifacts.notebookId, params.id),
-            eq(notebookArtifacts.userId, user.id),
-          ),
-        )
-        .limit(1);
-      if (!artifact) return status(404, { error: 'not_found' });
-
-      // Must be a READY quiz with parsed questions.
-      const quiz = artifact.contentJson as QuizContent | null;
-      if (
-        artifact.type !== 'quiz' ||
-        artifact.status !== 'ready' ||
-        !quiz ||
-        !Array.isArray(quiz.questions) ||
-        quiz.questions.length === 0
-      ) {
-        return status(400, { error: 'invalid_attempt' });
-      }
-
-      // Extract the submitted answers (last write wins on a dup questionId).
-      const submitted = new Map<string, number | boolean | { selfCorrect: boolean }>();
-      for (const a of body.answers) {
-        submitted.set(a.questionId, a.answer as number | boolean | { selfCorrect: boolean });
-      }
-
-      const scored = scoreQuizAttempt(quiz.questions, submitted);
-      if (!scored.ok) return status(400, { error: 'invalid_attempt' });
-
-      const [row] = await db
-        .insert(quizAttempts)
-        .values({
-          userId: user.id,
-          artifactId: params.artifactId,
-          answers: scored.answers,
-          correct: scored.correct,
-          total: scored.total,
-        })
-        .returning({
-          id: quizAttempts.id,
-          correct: quizAttempts.correct,
-          total: quizAttempts.total,
-          answers: quizAttempts.answers,
-          createdAt: quizAttempts.createdAt,
-        });
-      return row!;
-    },
+    ({ user, params, body }) => submitStudyQuizAttempt(user.id, params.artifactId, body.answers, params.id),
     {
       auth: true,
       params: t.Object({
@@ -1491,39 +962,7 @@ export const notebooksModule = new Elysia({ prefix: '/notebooks' })
   // 404 on a foreign/missing artifact (the artifact ownership chain guards it).
   .get(
     '/:id/artifacts/:artifactId/attempts',
-    async ({ user, params, status }) => {
-      const [artifact] = await db
-        .select({ id: notebookArtifacts.id })
-        .from(notebookArtifacts)
-        .where(
-          and(
-            eq(notebookArtifacts.id, params.artifactId),
-            eq(notebookArtifacts.notebookId, params.id),
-            eq(notebookArtifacts.userId, user.id),
-          ),
-        )
-        .limit(1);
-      if (!artifact) return status(404, { error: 'not_found' });
-
-      const items = await db
-        .select({
-          id: quizAttempts.id,
-          correct: quizAttempts.correct,
-          total: quizAttempts.total,
-          answers: quizAttempts.answers,
-          createdAt: quizAttempts.createdAt,
-        })
-        .from(quizAttempts)
-        .where(
-          and(
-            eq(quizAttempts.userId, user.id),
-            eq(quizAttempts.artifactId, params.artifactId),
-          ),
-        )
-        .orderBy(desc(quizAttempts.createdAt))
-        .limit(10);
-      return { items };
-    },
+    ({ user, params }) => listStudyQuizAttempts(user.id, params.artifactId, params.id),
     {
       auth: true,
       params: t.Object({
@@ -2248,6 +1687,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
     async (context) => {
       const { user, params, body, status } = context;
       const log = requestLogFromContext(context);
+      if (body.textSelection !== undefined && (body.page !== undefined || body.rects !== undefined || body.pdfSelection !== undefined)) return status(400, { error: 'invalid_text_selection' });
       const [source] = await db
         .select({ id: sources.id })
         .from(sources)
@@ -2307,6 +1747,10 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
 
       const now = new Date();
       const result = await db.transaction(async (tx) => {
+        const selectionEvidence = body.textSelection !== undefined
+          ? await captureManualTextSelection(tx, user.id, params.id, body.textSelection)
+          : body.pdfSelection !== undefined ? await captureManualPdfSelection(tx, user.id, params.id, body.pdfSelection) : undefined;
+        if (body.pdfSelection !== undefined && selectionEvidence?.[0]?.page !== body.page) throw new StudyError(400, 'invalid_pdf_selection');
         const created = await insertNoteAndCards(tx, {
           userId: user.id,
           deckId: body.deckId,
@@ -2318,7 +1762,8 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
           now,
         });
         const cardIds = created.cards.map((c) => c.id);
-        await writeQuickCardProvenance(tx, {
+        if (selectionEvidence) await writePerCardProvenance(tx, { userId: user.id, cards: [{ cardIds, evidence: selectionEvidence }] });
+        else await writeQuickCardProvenance(tx, {
           userId: user.id,
           cardIds,
           chunkIds: chunkRows.map((c) => c.id),
@@ -2367,11 +1812,13 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
         front: t.String({ minLength: 1, maxLength: 65536 }),
         back: t.String({ maxLength: 65536 }),
         page: t.Optional(t.Integer({ minimum: 1, maximum: 10000 })),
-        quote: t.Optional(t.String({ maxLength: MARK_QUOTE_MAX + 1 })),
+        quote: t.Optional(t.String({ maxLength: ASSISTANT_CONTEXT_LIMITS.excerptChars })),
         // Selection rects → a kind:'card' marker anchored in the reader (S1).
         // Geometry validated in-handler; keep permissive so a bad shape returns
         // our `invalid_mark` 400, not Elysia's generic error. Marker is written
         // only when BOTH rects and page are present.
+        textSelection: t.Optional(t.Unknown()),
+        pdfSelection: t.Optional(t.Unknown()),
         rects: t.Optional(t.Unknown()),
       }),
     },
@@ -2415,7 +1862,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
       auth: true,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),
       body: t.Object({
-        quote: t.String({ minLength: 1, maxLength: MARK_QUOTE_MAX + 1 }),
+        quote: t.String({ minLength: 1, maxLength: ASSISTANT_CONTEXT_LIMITS.excerptChars }),
         page: t.Optional(t.Integer({ minimum: 1, maximum: 10000 })),
         locale: t.Optional(t.Union([t.Literal('en'), t.Literal('ru')])),
       }),
@@ -2438,7 +1885,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
       if (!isChatEnabled()) return status(503, { error: 'ai_disabled' });
 
       const [source] = await db
-        .select({ title: sources.title })
+        .select({ title: sources.title, updatedAt: sources.updatedAt })
         .from(sources)
         .where(and(eq(sources.id, params.id), eq(sources.userId, user.id)))
         .limit(1);
@@ -2493,7 +1940,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
       // (mark id or ink page) so apply can stamp `harvested_at` on exactly the
       // included sources. mark refs are "m<id>"; ink refs are "i<page>".
       type Origin = { kind: 'mark'; markId: string } | { kind: 'ink'; page: number };
-      const refToOrigin = new Map<string, { origin: Origin; page: number | null; quote: string }>();
+      const refToOrigin = new Map<string, { origin: Origin; page: number | null; quote: string; originHash: string }>();
       const passages: HarvestPassage[] = [];
       for (const m of markRows) {
         const ref = `m${m.id}`;
@@ -2501,7 +1948,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
           m.kind === 'note' && m.note?.trim()
             ? `${m.quote} — ${m.note.trim()}`
             : m.quote;
-        refToOrigin.set(ref, { origin: { kind: 'mark', markId: m.id }, page: m.page, quote: m.quote });
+        refToOrigin.set(ref, { origin: { kind: 'mark', markId: m.id }, page: m.page, quote: m.quote, originHash: harvestOriginHash(m) });
         passages.push({ ref, page: m.page, text });
       }
       for (const a of inkRows) {
@@ -2509,7 +1956,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
         // Multiple annotation rows can never share a page (unique (source,page)),
         // so the ink ref is unique per source.
         const text = (a.markedText ?? '').trim();
-        refToOrigin.set(ref, { origin: { kind: 'ink', page: a.page }, page: a.page, quote: text });
+        refToOrigin.set(ref, { origin: { kind: 'ink', page: a.page }, page: a.page, quote: text, originHash: harvestOriginHash({ kind: 'ink', page: a.page, quote: a.markedText ?? '' }) });
         passages.push({ ref, page: a.page, text });
       }
 
@@ -2530,7 +1977,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
         const meta = refToOrigin.get(c.originRef);
         if (!meta) return [];
         return [
-          { origin: meta.origin, page: meta.page, front: c.front, back: c.back, quote: meta.quote },
+          { origin: meta.origin, page: meta.page, front: c.front, back: c.back, quote: meta.quote, evidence: { sourceVersion: source.updatedAt.toISOString(), originHash: meta.originHash } },
         ];
       });
       return { candidates };
@@ -2580,6 +2027,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
       const resolvedEntries: {
         resolved: Extract<Awaited<ReturnType<typeof resolveNoteCreate>>, { ok: true }>;
         page?: number;
+        evidence?: { sourceVersion: string; originHash: string };
         origin: { kind: 'mark'; markId: string } | { kind: 'ink'; page: number };
       }[] = [];
       for (const c of body.cards) {
@@ -2590,12 +2038,16 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
         });
         if (!resolved.ok) return status(400, { error: resolved.error });
         if (resolved.generated.length === 0) return status(400, { error: 'empty_card' });
-        resolvedEntries.push({ resolved, page: c.page, origin: c.origin });
+        resolvedEntries.push({ resolved, page: c.page, origin: c.origin, evidence: c.evidence });
       }
 
       const now = new Date();
       const result = await db.transaction(async (tx) => {
+        const [liveSource] = await tx.select().from(sources)
+          .where(and(eq(sources.userId, user.id), eq(sources.id, params.id), sql`${sources.status} <> 'deleting'`)).for('share').limit(1);
+        if (!liveSource) throw new StudyError(404, 'not_found');
         const cardIds: string[] = [];
+        const claimedOrigins = new Map<string, { page: number; quote: string; hash: string }>();
 
         // Distinct origins of the INCLUDED candidates.
         const reqMarkIds = new Set<string>();
@@ -2625,8 +2077,11 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
                 isNull(sourceMarks.harvestedAt),
               ),
             )
-            .returning({ id: sourceMarks.id });
-          for (const r of rows) claimedMarkIds.add(r.id);
+            .returning();
+          for (const r of rows) {
+            claimedMarkIds.add(r.id);
+            claimedOrigins.set(`mark:${r.id}`, { page: r.page, quote: r.quote, hash: harvestOriginHash(r) });
+          }
         }
         const claimedInkPages = new Set<number>();
         if (reqInkPages.size > 0) {
@@ -2641,8 +2096,11 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
                 isNull(sourceAnnotations.harvestedAt),
               ),
             )
-            .returning({ page: sourceAnnotations.page });
-          for (const r of rows) claimedInkPages.add(r.page);
+            .returning();
+          for (const r of rows) {
+            claimedInkPages.add(r.page);
+            claimedOrigins.set(`ink:${r.page}`, { page: r.page, quote: (r.markedText ?? '').trim(), hash: harvestOriginHash({ kind: 'ink', page: r.page, quote: r.markedText ?? '' }) });
+          }
         }
 
         for (const entry of resolvedEntries) {
@@ -2653,6 +2111,10 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
               ? claimedMarkIds.has(entry.origin.markId)
               : claimedInkPages.has(entry.origin.page);
           if (!claimed) continue;
+          const origin = claimedOrigins.get(entry.origin.kind === 'mark' ? `mark:${entry.origin.markId}` : `ink:${entry.origin.page}`)!;
+          if (entry.evidence && (entry.evidence.sourceVersion !== liveSource.updatedAt.toISOString() || entry.evidence.originHash !== origin.hash)) {
+            throw new StudyError(409, 'harvest_evidence_stale');
+          }
 
           const created = await insertNoteAndCards(tx, {
             userId: user.id,
@@ -2670,7 +2132,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
           // candidate carries a page. No page / no page-match ⇒ ONE fallback
           // edge per card (NULL chunk). notebookId NULL — reading-born.
           const chunkRows =
-            entry.page !== undefined
+            !entry.evidence && entry.page !== undefined
               ? await tx
                   .select({ id: sourceChunks.id })
                   .from(sourceChunks)
@@ -2684,7 +2146,11 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
                   .orderBy(asc(sourceChunks.position))
                   .limit(env.ai.CARD_SOURCE_LINK_CAP)
               : [];
-          await writeQuickCardProvenance(tx, {
+          if (entry.evidence) await writePerCardProvenance(tx, { userId: user.id, cards: [{ cardIds: entryCardIds, evidence: [{
+            version: 1, kind: 'user_quote', sourceId: params.id, sourceTitle: evidenceExcerpt(liveSource.title, 200),
+            sourceVersion: liveSource.updatedAt.toISOString(), page: origin.page, quote: evidenceExcerpt(origin.quote, ASSISTANT_CONTEXT_LIMITS.excerptChars),
+          }] }] });
+          else await writeQuickCardProvenance(tx, {
             userId: user.id,
             cardIds: entryCardIds,
             chunkIds: chunkRows.map((r) => r.id),
@@ -2716,6 +2182,7 @@ export const sourcesModule = new Elysia({ prefix: '/sources' })
             front: t.String({ minLength: 1, maxLength: 65536 }),
             back: t.String({ maxLength: 65536 }),
             page: t.Optional(t.Integer({ minimum: 1, maximum: 10000 })),
+            evidence: t.Optional(t.Object({ sourceVersion: t.String({ maxLength: 40 }), originHash: t.String({ pattern: '^[a-f0-9]{64}$' }) })),
             origin: t.Union([
               t.Object({ kind: t.Literal('mark'), markId: t.String({ format: 'uuid' }) }),
               t.Object({ kind: t.Literal('ink'), page: t.Integer({ minimum: 1, maximum: 10000 }) }),
@@ -2750,6 +2217,11 @@ async function writeQuickCardProvenance(
 ): Promise<void> {
   const { userId, cardIds, chunkIds, sourceId, notebookId } = args;
   if (cardIds.length === 0) return;
+  const [source] = await tx.select().from(sources).where(and(eq(sources.userId, userId), eq(sources.id, sourceId))).for('share').limit(1);
+  if (!source) throw new StudyError(404, 'not_found');
+  const chunks = chunkIds.length ? await tx.select().from(sourceChunks)
+    .where(and(eq(sourceChunks.userId, userId), eq(sourceChunks.sourceId, sourceId), inArray(sourceChunks.id, chunkIds))).for('share') : [];
+  if (chunks.length !== new Set(chunkIds).size) throw new StudyError(409, 'source_unavailable');
 
   if (chunkIds.length > 0) {
     const values = cardIds.flatMap((cardId) =>
@@ -2758,6 +2230,7 @@ async function writeQuickCardProvenance(
         cardId,
         sourceChunkId: chunkId,
         sourceId,
+        sourceSnapshot: legacyChunkEvidence(source, chunks.find(chunk => chunk.id === chunkId)!),
         notebookId,
         conversationId: null,
         messageId: null,
@@ -2798,6 +2271,7 @@ async function writeQuickCardProvenance(
       cardId,
       sourceChunkId: null,
       sourceId,
+      sourceSnapshot: legacySourceEvidence(source),
       notebookId,
       conversationId: null,
       messageId: null,

@@ -3,8 +3,8 @@
 // CONTRACT (read from the implementation, NOT invented):
 //   * POST /chat/conversations { notebookId } — owned ⇒ the row binds notebookId;
 //     a foreign/missing notebookId ⇒ 404 pre-insert (ai.ts POST /conversations).
-//   * GET  /chat/conversations — default (no query) lists ONLY global threads
-//     (`notebook_id IS NULL`); `?notebookId=<owned>` lists ONLY that notebook's
+//   * GET  /chat/conversations — default lists every owned thread;
+//     `?scope=global` retains legacy global-only listing; `?notebookId=<owned>` lists that notebook's
 //     threads; a foreign notebookId 404s (never leaks foreign threads).
 //   * A NOTEBOOK turn (conversation bound to a notebook) runs the narrow
 //     source-grounded registry: `search_source` retrieves over the notebook's
@@ -287,7 +287,7 @@ describe('notebook chat — conversation binding + list filter', () => {
     expect(missing.status).toBe(404);
   });
 
-  test('GET /chat/conversations: default excludes notebook threads; ?notebookId returns only that notebook; foreign 404', async () => {
+  test('GET /chat/conversations: unified default, legacy global filter, notebook filter and foreign 404', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const nbA = await freshNotebook(userId, 'A');
     const nbB = await freshNotebook(userId, 'B');
@@ -297,15 +297,17 @@ describe('notebook chat — conversation binding + list filter', () => {
     const convA = await (await createConversation(cookie, { notebookId: nbA })).json<{ id: string }>();
     const convB = await (await createConversation(cookie, { notebookId: nbB })).json<{ id: string }>();
 
-    // Default rail: ONLY the global thread (notebook_id IS NULL).
+    // Unified rail includes notebook history without copying conversations.
     const def = await callApp(app, 'GET', '/chat/conversations', { cookie });
     expect(def.status).toBe(200);
     const defItems = (await def.json<{ items: { id: string; notebookId: string | null }[] }>()).items;
     const defIds = defItems.map((c) => c.id);
     expect(defIds).toContain(globalConv.id);
-    expect(defIds).not.toContain(convA.id);
-    expect(defIds).not.toContain(convB.id);
-    expect(defItems.every((c) => c.notebookId === null)).toBe(true);
+    expect(defIds).toContain(convA.id);
+    expect(defIds).toContain(convB.id);
+    expect(defIds).toHaveLength(3);
+    const legacy = await callApp(app, 'GET', '/chat/conversations?scope=global', { cookie });
+    expect((await legacy.json<{ items: { id: string }[] }>()).items.map(c => c.id)).toEqual([globalConv.id]);
 
     // ?notebookId=A: ONLY A's thread.
     const aRes = await callApp(app, 'GET', `/chat/conversations?notebookId=${nbA}`, { cookie });
@@ -673,13 +675,13 @@ describe('notebook chat — registry shape', () => {
     __setWebSearchProviderForTests(null);
   });
 
-  test('search_cards is NOT in the notebook registry → unknown-tool error, never executed', async () => {
+  test('search_cards is discoverable but strict source-only context rejects its execution', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const notebookId = await freshNotebook(userId, 'NB');
     await seedReadySource(userId, notebookId, 'Src', [{ text: 'some content' }]);
 
     // The embed spy proves search_cards never ran (its execute embeds FIRST). The
-    // model erroneously calls search_cards — it must come back as unknown-tool.
+    // model calls search_cards without an attached card/deck — scope rejects it.
     let embedCalls = 0;
     const embed = (texts: string[]): Promise<number[][]> => {
       embedCalls += 1;
@@ -698,13 +700,13 @@ describe('notebook chat — registry shape', () => {
 
     const result = frames.find((f) => f.event === 'tool_result');
     expect((result!.data as { ok: boolean }).ok).toBe(false);
-    expect((result!.data as { summary: string }).summary).toContain('unknown tool');
+    expect((result!.data as { summary: string }).summary).toContain('outside_context');
     // search_cards.execute (which would embed) never ran.
     expect(embedCalls).toBe(0);
     expect(frames.some((f) => f.event === 'done')).toBe(true);
   });
 
-  test('web_search is present in the notebook registry ONLY when web search is enabled', async () => {
+  test('enabled web_search stays discoverable but strict notebook grounding prevents outside evidence', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const notebookId = await freshNotebook(userId, 'NB');
     await seedReadySource(userId, notebookId, 'Src', [{ text: 'content' }]);
@@ -727,11 +729,12 @@ describe('notebook chat — registry shape', () => {
     const convId = (await (await createConversation(cookie, { notebookId })).json<{ id: string }>()).id;
     const frames = await readSse(await streamReq(cookie, convId, 'search the web for X'));
 
-    // web_search executed successfully (it IS in the notebook registry when enabled).
+    // The tool is discoverable, but strict grounding does not permit outside evidence.
     expect(executedTools(frames)).toContain('web_search');
     const result = frames.find((f) => f.event === 'tool_result');
-    expect((result!.data as { ok: boolean }).ok).toBe(true);
-    expect((result!.data as { summary: string }).summary).toContain('a web snippet');
+    expect((result!.data as { ok: boolean }).ok).toBe(false);
+    expect((result!.data as { summary: string }).summary).toContain('outside_context');
+    expect((result!.data as { summary: string }).summary).not.toContain('a web snippet');
   });
 
   test('web_search is NOT offered when web search is disabled → unknown-tool error', async () => {
@@ -789,8 +792,8 @@ describe('notebook chat — system prompt variants', () => {
     expect(prompt).toContain('search_source');
     expect(prompt).toContain('Quantum Notes'); // the notebook title
     expect(prompt).toContain('Lecture One'); // the source title in the sources section
-    // It is NOT the global card variant.
-    expect(prompt).not.toContain('search_cards');
+    // The shared catalog remains available; the notebook grounding instructions stay.
+    expect(prompt).toContain('search_cards');
     expect(prompt).not.toContain('[card:<cardId>]');
   });
 
@@ -811,7 +814,7 @@ describe('notebook chat — system prompt variants', () => {
     expect(prompt).toContain('[card:<cardId>]');
     // No notebook/source grounding section.
     expect(prompt).not.toContain('[src:<sourceChunkId>]');
-    expect(prompt).not.toContain('search_source');
+    expect(prompt).toContain('search_source');
   });
 });
 

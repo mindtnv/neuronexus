@@ -233,9 +233,9 @@ export const webSearchEnabled =
 // Forced off under test; a fake reader flips it on via
 // `__setPageReaderForTests` (page-reader.ts).
 export const fetchPageEnabled = !aiEnvDisabled && env.ai.CHAT_FETCH_PAGE !== 'false';
-// Gates the NotebookLM sources feature (ingest/index side). For M1 this EQUALS
-// `embeddingEnabled` (sources must be embedded to be useful); the M2 chat-
-// grounding side will additionally require `chatEnabled`. No keys ⇒ the
-// /notebooks screen shows a setup-notice and ingest parse-and-parks (no crash).
+// Historical notebook indexing capability, retained for API compatibility.
+// It follows embedding readiness; ingest can still parse-and-park without it.
+// Manual notebook organization and full source reading must not use this flag
+// as a screen-wide gate. Individual AI features expose their own availability.
 // Forced off under test like the others (embeddingEnabled already is).
 export const notebooksEnabled = embeddingEnabled;

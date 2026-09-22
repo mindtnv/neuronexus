@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 // «Урожай выделений → карточки» (feature #2). Given the passages the user MARKED
 // in a source (text highlights, place-anchored notes, and ink-underlined text)
 // that have NOT yet been harvested, produce SEVERAL atomic flashcards via the
@@ -167,4 +168,10 @@ export async function harvestCards(
     opts.log?.debug({ err }, 'ai.harvest_cards.failed');
     return null;
   }
+}
+
+
+/** Relevant markup state bound to a generated candidate; excludes harvest stamps. */
+export function harvestOriginHash(row: { kind: string; page: number; quote: string; note?: string | null }): string {
+  return createHash('sha256').update(JSON.stringify([row.kind, row.page, row.quote, row.note ?? null])).digest('hex');
 }

@@ -22,6 +22,7 @@ const TABLES = [
   // conversations/cards/user. RESTART IDENTITY CASCADE tolerates order, but
   // explicit ordering keeps intent clear.
   'messages',
+  'conversation_contexts',
   'conversations',
   'kb_chunk',
   // Library / NotebookLM substrate (sources are user-level now; notebooks

@@ -1,4 +1,5 @@
 const m = {
+  orphanNote: 'This note has no remaining cards. Its original text is preserved.',
   draft: {
     emptyHint: "When you leave an editor without saving, your changes will appear here so you can continue later.",
     shortTitle: "Drafts",

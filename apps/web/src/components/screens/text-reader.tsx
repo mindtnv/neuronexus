@@ -23,6 +23,8 @@ import React, {
 } from 'react';
 import { NNBtn, NNIcon, NNSkeleton } from '@/components/ui';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
+import { ApiError } from '@/lib/api';
+import { SourceTextStudy } from '../source-text-study';
 import type { SourceChunkRow } from '@/lib/types';
 
 type Tr = (key: string, params?: Record<string, string | number>) => string;
@@ -44,6 +46,8 @@ export interface TextChunkReaderHandle {
 
 interface TextChunkReaderProps {
   sourceId: string;
+  sourceName?: string;
+  chatEnabled?: boolean;
   /** Loads a page of chunks (store.getSourceChunks). */
   getSourceChunks: (
     id: string,
@@ -106,7 +110,7 @@ const ReaderChunk = ({ chunk, t }: { chunk: SourceChunkRow; t: Tr }) => {
           )}
         </div>
       )}
-      <SafeHtml
+      <div data-source-text-body><SafeHtml
         html={html}
         style={{
           fontFamily: 'var(--font-sans)',
@@ -115,13 +119,13 @@ const ReaderChunk = ({ chunk, t }: { chunk: SourceChunkRow; t: Tr }) => {
           color: 'var(--text)',
           wordBreak: 'break-word',
         }}
-      />
+      /></div>
     </div>
   );
 };
 
 export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReaderProps>(
-  ({ sourceId, getSourceChunks, onPositionChange, t }, ref) => {
+  ({ sourceId, sourceName, chatEnabled, getSourceChunks, onPositionChange, t }, ref) => {
     const hostRef = useRef<HTMLDivElement>(null);
     const sentinelRef = useRef<HTMLDivElement>(null);
 
@@ -130,30 +134,42 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
     const [nextFrom, setNextFrom] = useState<number | null>(0);
     const [loading, setLoading] = useState(false);
     const [tombstone, setTombstone] = useState(false);
-    const pendingScrollRef = useRef<{ chunkId?: string; pos?: number } | null>(null);
+    const [loadError, setLoadError] = useState<{ from: number; append: boolean; requestId?: string } | null>(null);
+    const loadGeneration = useRef(0);
+    const activeSource = useRef(sourceId);
+    const inFlight = useRef(false);
+    const loadedPages = useRef(new Set<number>());
+    const pendingScrollRef = useRef<{ sourceId: string; chunkId?: string; pos?: number } | null>(null);
 
     const loadChunks = useCallback(
       async (from: number, append: boolean) => {
+        if (sourceId !== activeSource.current || inFlight.current || loadedPages.current.has(from)) return;
+        const generation = loadGeneration.current;
+        inFlight.current = true;
         setLoading(true);
         try {
           const page = await getSourceChunks(sourceId, from, READER_PAGE);
+          if (generation !== loadGeneration.current || activeSource.current !== sourceId) return;
+          loadedPages.current.add(from);
+          setLoadError(null);
           setTotal(page.total);
           setNextFrom(page.nextFrom);
-          setChunks((prev) => (append ? [...prev, ...page.items] : page.items));
+          setChunks(prev => [...new Map((append ? [...prev, ...page.items] : page.items).map(chunk => [chunk.id,chunk])).values()]);
           if (!append && from === 0 && page.total === 0 && page.items.length === 0) {
             // Empty source — not a tombstone (a parsed-but-empty source is valid);
             // the empty UI handles it.
           }
-        } catch {
-          if (!append) {
+        } catch (error) {
+          if (generation !== loadGeneration.current || activeSource.current !== sourceId) return;
+          if (error instanceof ApiError && error.status === 404) {
             // A 404 (source deleted) → tombstone.
             setTombstone(true);
             setChunks([]);
             setTotal(0);
             setNextFrom(null);
-          }
+          } else setLoadError({ from, append, requestId: error instanceof ApiError ? error.requestId : undefined });
         } finally {
-          setLoading(false);
+          if (generation === loadGeneration.current) { inFlight.current = false; setLoading(false); }
         }
       },
       [getSourceChunks, sourceId],
@@ -161,17 +177,23 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
 
     // Reset + load when the source changes.
     useEffect(() => {
+      loadGeneration.current++;
+      activeSource.current = sourceId;
+      inFlight.current = false;
+      loadedPages.current.clear();
       setChunks([]);
       setTotal(0);
       setNextFrom(0);
       setTombstone(false);
+      setLoadError(null);
       void loadChunks(0, false);
+      return () => { loadGeneration.current++; inFlight.current = false; };
     }, [sourceId, loadChunks]);
 
     // Auto-load next page when the sentinel scrolls into view.
     useEffect(() => {
       const el = sentinelRef.current;
-      if (!el || nextFrom == null || loading) return;
+      if (!el || nextFrom == null || loading || loadError) return;
       const io = new IntersectionObserver(
         (entries) => {
           if (entries[0]?.isIntersecting) void loadChunks(nextFrom, true);
@@ -180,11 +202,11 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
       );
       io.observe(el);
       return () => io.disconnect();
-    }, [nextFrom, loading, loadChunks]);
+    }, [nextFrom, loading, loadChunks, loadError]);
 
     const scrollToChunk = useCallback((chunkId?: string, pos?: number) => {
-      pendingScrollRef.current = { chunkId, pos };
-    }, []);
+      pendingScrollRef.current = { sourceId, chunkId, pos };
+    }, [sourceId]);
 
     useImperativeHandle(ref, () => ({ scrollToChunk }), [scrollToChunk]);
 
@@ -192,8 +214,10 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
     // range), then scrollIntoView + lime highlight fade.
     useEffect(() => {
       const target = pendingScrollRef.current;
-      if (!target) return;
+      if (!target || loadError) return;
+      if (target.sourceId !== sourceId) { pendingScrollRef.current = null; return; }
       if (
+        !target.chunkId &&
         target.pos != null &&
         nextFrom != null &&
         !loading &&
@@ -206,7 +230,7 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
       if (!host) return;
       let node: HTMLElement | null = null;
       if (target.chunkId) node = host.querySelector(`[data-chunk-id="${CSS.escape(target.chunkId)}"]`);
-      if (!node && target.pos != null) node = host.querySelector(`[data-chunk-pos="${target.pos}"]`);
+      if (!node && !target.chunkId && target.pos != null) node = host.querySelector(`[data-chunk-pos="${target.pos}"]`);
       if (!node) {
         if (nextFrom != null && !loading) void loadChunks(nextFrom, true);
         else pendingScrollRef.current = null;
@@ -216,7 +240,7 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
       node.scrollIntoView({ behavior: 'smooth', block: 'center' });
       node.classList.add('nn-chunk-flash');
       window.setTimeout(() => node?.classList.remove('nn-chunk-flash'), 2200);
-    }, [chunks, loading, nextFrom, loadChunks]);
+    }, [chunks, loading, nextFrom, loadChunks, sourceId, loadError]);
 
     // L2 — report the topmost visible chunk position for server progress.
     useEffect(() => {
@@ -255,6 +279,11 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
         className="nn-scroll"
         style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 40px' }}
       >
+        {loadError && <div role="alert" style={{ padding: 12 }}>
+          <p>{t('assistant.textLoadFailed')}{loadError.requestId ? ` · ${loadError.requestId}` : ''}</p>
+          <NNBtn size="sm" disabled={loading} onClick={() => void loadChunks(loadError.from,loadError.append)}>{t('review.retry')}</NNBtn>
+        </div>}
+        <SourceTextStudy key={sourceId} sourceId={sourceId} sourceName={sourceName} chatEnabled={chatEnabled} host={hostRef} chunks={chunks} onJump={id => scrollToChunk(id)} />
         <div style={{ maxWidth: 680, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
           {chunks.length === 0 && loading ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -262,7 +291,7 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
               <NNSkeleton style={{ height: 72 }} />
               <NNSkeleton style={{ height: 72 }} />
             </div>
-          ) : chunks.length === 0 ? (
+          ) : chunks.length === 0 && !loadError ? (
             <p style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>
               {t('notebooks.reader.noText')}
             </p>
@@ -271,7 +300,7 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
               {chunks.map((chunk) => (
                 <ReaderChunk key={chunk.id} chunk={chunk} t={t} />
               ))}
-              {nextFrom != null && (
+              {nextFrom != null && !loadError && (
                 <>
                   <div ref={sentinelRef} style={{ height: 1 }} />
                   <NNBtn

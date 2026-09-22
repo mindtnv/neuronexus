@@ -10,6 +10,7 @@ import { NNAppPage } from '@/components/app-page';
 import { NNIcon, NNBtn } from '@/components/ui';
 import { CardActionsMenu, type CardMenuAction } from '@/components/card-actions-menu';
 import { DeckAppearance, deckIconName, deckColorValue } from '@/components/deck-appearance';
+import { useAssistantPageContext } from '@/components/chat/assistant-provider';
 import { DeckDetails, deckCardsHref } from '@/components/deck-details';
 import { useDeckDrag } from '@/lib/use-deck-drag';
 import { useNN } from '@/lib/store';
@@ -30,6 +31,8 @@ export const NNDecks = () => {
   const isMobile = bp === 'mobile';
   const wide = bp === 'desktop';
   const router = useAppNavigation();
+  const params = useSearchParams();
+  const bootstrapped = useNN(s => s.bootstrapped);
   const decks = useNN(s => s.decks);
   const presets = useNN(s => s.presets);
   const addDeck = useNN(s => s.addDeck);
@@ -67,6 +70,7 @@ export const NNDecks = () => {
     if (filterActive) setFilterCollapsed(next); else saveCollapsed(next);
   };
   const selected = rows.length > 0 ? decks.find(d => d.id === selectedId) ?? (wide ? rows[0]?.deck : undefined) : undefined;
+  useAssistantPageContext(selected ? { kind: 'deck', id: selected.id } : null);
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const mutate = async (operation: () => Promise<unknown>) => {
@@ -90,7 +94,28 @@ export const NNDecks = () => {
     setNewParentId(parentId); setNewName(''); setNewColor(parent?.color ?? 'lime'); setNewIcon(parent?.icon ? deckIconName(parent.icon) : 'decks'); setFormError(''); setCreating(true);
   };
   const openAppearance = (deck: Deck) => { setAppearanceId(deck.id); setNewColor(deck.color); setNewIcon(deckIconName(deck.icon)); setFormError(''); };
-  const createRequested = useSearchParams()?.get('create') === '1';
+  const createRequested = params?.get('create') === '1';
+  const focusRequested = params?.get('focus');
+  const consumedFocus = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusRequested) { consumedFocus.current = null; return; }
+    if (!bootstrapped || consumedFocus.current === focusRequested) return;
+    consumedFocus.current = focusRequested;
+    const deck = decks.find(d => d.id === focusRequested);
+    if (deck) {
+      setSelectedId(deck.id); setDeckSearch('');
+      const ancestors = new Set<string>();
+      let parent: string | null | undefined = deck.parentId;
+      while (parent && !ancestors.has(parent)) { ancestors.add(parent); parent = decks.find(d => d.id === parent)?.parentId ?? null; }
+      setCollapsed(previous => {
+        const next = new Set([...previous].filter(id => !ancestors.has(id)));
+        try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...next])); } catch {}
+        return next;
+      });
+    } else raiseToast({ kind: 'error', title: t('common.toasts.error') });
+    const next = new URLSearchParams(params?.toString()); next.delete('focus');
+    router.replace(`/decks${next.size ? `?${next}` : ''}`, { scroll: false, track: false });
+  }, [focusRequested, bootstrapped, decks, params, router, t]);
   useEffect(() => { if (createRequested) { openCreateAt(null); router.replace('/decks'); } }, [createRequested]);
   const saveForm = async () => {
     if (creating && !newName.trim()) return;
@@ -185,11 +210,6 @@ export const NNDecks = () => {
       {study.error && <div role="alert" className="reomi-deck-status">{t('home.countsError')} <NNBtn onClick={study.reload}>{t('review.retry')}</NNBtn></div>}
       <div className="reomi-deck-workspace" data-detail={selected ? 'open' : 'closed'}>
         <div className="reomi-deck-tree-pane nn-scroll" data-empty={rows.length === 0 || undefined} ref={treeRef}>
-          {rows.length > 0 && <div className="reomi-deck-count-legend" aria-label={t('decks.details.composition')}>
-            <span><i style={{background:'var(--sky-500)'}}/>{t('cards.states.new')}</span>
-            <span><i style={{background:'var(--amber-500)'}}/>{t('cards.states.learning')}</span>
-            <span><NNIcon name="review" size={12}/>{t('decks.stats.due')}</span>
-          </div>}
           {filterActive && rows.length > 0 && <p className="reomi-deck-drag-hint">{t('decks.move.filterHint')}</p>}
           {dragging && <div className="reomi-deck-root-drop" style={{ left: (treeRef.current?.getBoundingClientRect().left ?? 0) + 12, top: (treeRef.current?.getBoundingClientRect().bottom ?? 0) - 54, width: (treeRef.current?.getBoundingClientRect().width ?? 0) - 24 }} data-deck-root-drop data-active={drop?.id === null || undefined}>{t('decks.move.toRoot')}</div>}
           {rows.length === 0 ? <div className="reomi-decks-empty">

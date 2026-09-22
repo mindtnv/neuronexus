@@ -5,12 +5,14 @@
 // create/presign/finalize/delete/attach logic — it lives here so neither side
 // copy-pastes ~200 lines. Every query is `user.id`-FIRST-conjunct scoped.
 
+import { cancelArtifactRequests } from '../ai/artifact-cancellation';
 import { and, count, eq, inArray, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import {
   db,
   kbChunk,
   notebookSources,
+  notebookArtifacts,
   sourceChunks,
   sources,
   type Db,
@@ -315,31 +317,23 @@ export async function finalizeUploadSource(
  * the source is foreign/missing (caller maps to 404).
  */
 export async function deleteSourceCompletely(userId: string, sourceId: string): Promise<boolean> {
-  const [source] = await db
-    .select({ id: sources.id, storageKey: sources.storageKey })
-    .from(sources)
-    .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
-    .limit(1);
+  const source = await db.transaction(async tx => {
+    // All source-study mutations lock the source first, then its work. This
+    // serializes deletion with admission and a worker's final commit.
+    const [owned] = await tx.select({ id: sources.id, storageKey: sources.storageKey }).from(sources)
+      .where(and(eq(sources.userId, userId), eq(sources.id, sourceId))).for('update').limit(1);
+    if (!owned) return null;
+    await tx.update(sources).set({ status: 'deleting', updatedAt: new Date() })
+      .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)));
+    const interrupted = await tx.update(notebookArtifacts).set({ status: 'error', errorCode: 'source_unavailable', contentMd: null, contentJson: null, updatedAt: new Date() })
+      .where(and(eq(notebookArtifacts.userId, userId), eq(notebookArtifacts.ownerKind, 'source'),
+        eq(notebookArtifacts.sourceOriginId, sourceId), inArray(notebookArtifacts.status, ['pending', 'generating']))).returning({ id: notebookArtifacts.id });
+    await tx.delete(kbChunk).where(and(eq(kbChunk.userId, userId), eq(kbChunk.sourceType, 'document'), eq(kbChunk.sourceId, sourceId)));
+    await tx.delete(sources).where(and(eq(sources.userId, userId), eq(sources.id, sourceId)));
+    return { ...owned, interruptedIds: interrupted.map(row => row.id) };
+  });
   if (!source) return false;
-
-  await db
-    .update(sources)
-    .set({ status: 'deleting', updatedAt: new Date() })
-    .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)));
-
-  // kb_chunk has NO FK on source_id (plain uuid) → explicit cleanup, user-scoped
-  // + document-only so a card chunk is never touched.
-  await db
-    .delete(kbChunk)
-    .where(
-      and(
-        eq(kbChunk.userId, userId),
-        eq(kbChunk.sourceType, 'document'),
-        eq(kbChunk.sourceId, sourceId),
-      ),
-    );
-
-  await db.delete(sources).where(and(eq(sources.id, sourceId), eq(sources.userId, userId)));
+  cancelArtifactRequests(source.interruptedIds);
   if (source.storageKey) await deleteObject(source.storageKey).catch(() => {});
   return true;
 }

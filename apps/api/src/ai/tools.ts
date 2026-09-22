@@ -11,6 +11,11 @@
 // (the `text` field, capped) + a streamed `tool_result` event.
 
 import { buildKnowledgeTools } from './knowledge-tools.ts';
+import { withAssistantReadScope } from './assistant-tool-scope';
+import { captureCardEvidence, captureReadEvidence, captureQuotedEvidence, type QuotedEvidenceInput, type ReadEvidenceChunk, writePerCardProvenance } from './card-evidence';
+import type { CardEvidenceSnapshot, ChunkCardEvidenceSnapshot } from '@neuronexus/shared';
+import { readContextObject } from './assistant-object-read';
+import { readTextMarkedPassages } from './text-marked-passages';
 import type { Logger } from 'pino';
 import { and, asc, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
@@ -35,8 +40,9 @@ import {
   type ConfirmImpact,
   type FieldValues,
   type SourceCitation,
+  type AssistantContextSnapshot,
 } from '@neuronexus/shared';
-import { embed } from './openai-client.ts';
+import { embed, isEmbeddingEnabled } from './openai-client.ts';
 import { retrieve } from './retrieve.ts';
 import { retrieveDocuments } from './retrieve-documents.ts';
 import { resolveCitations } from './citations.ts';
@@ -90,6 +96,10 @@ export interface ToolContext {
   userId: string;
   log: Logger;
   confirmationHash?: string;
+  cardEvidence?: CardEvidenceSnapshot[][];
+  conversationId?: string;
+  messageId?: string;
+  assistantContext?: AssistantContextSnapshot;
   /** Optional caller-supplied transaction (confirm-resume atomicity). */
   tx?: Tx;
   /** Persisted by the server at dry-run time, never taken from tool args. */
@@ -116,19 +126,36 @@ export interface ToolContext {
    * server can auto-link a created card to the passages it was grounded on
    * (M3 provenance). Present only in notebook mode.
    */
-  grounding?: { chunkIds: string[] };
+  grounding?: { chunkIds: string[]; evidence?: ChunkCardEvidenceSnapshot[] };
 }
 
 /** Push DISTINCT source-chunk ids into the turn's grounding accumulator (M3),
  *  preserving accumulation order and capping at GROUNDING_CAP. No-op when the
  *  accumulator is absent (non-notebook turn). */
-function pushGrounding(ctx: ToolContext, ids: string[]): void {
+export async function pushGrounding(ctx: ToolContext, observed: ReadEvidenceChunk[]): Promise<void> {
   const acc = ctx.grounding;
   if (!acc) return;
-  for (const id of ids) {
-    if (acc.chunkIds.length >= GROUNDING_CAP) break;
-    if (!acc.chunkIds.includes(id)) acc.chunkIds.push(id);
+  const allowed = observed.filter(chunk => acc.chunkIds.includes(chunk.id) || acc.chunkIds.length < GROUNDING_CAP).slice(0,GROUNDING_CAP);
+  const snapshots = await captureReadEvidence(ctx.userId,allowed);
+  const byId = new Map((acc.evidence ?? []).map(item => [item.chunkId,item]));
+  for (const snapshot of snapshots) {
+    if (!acc.chunkIds.includes(snapshot.chunkId)) {
+      if (acc.chunkIds.length >= GROUNDING_CAP) continue;
+      acc.chunkIds.push(snapshot.chunkId);
+    }
+    byId.set(snapshot.chunkId,snapshot);
   }
+  acc.evidence = [...byId.values()];
+}
+
+async function sourceScopeForTool(ctx: ToolContext, requestedId?: string): Promise<{ notebookId?: string; sourceIds: string[] }> {
+  const current = ctx.assistantContext;
+  if (current?.policy === 'strict') return { notebookId: ctx.notebook?.notebookId, sourceIds: current.sourceIds };
+  if (!current && ctx.notebook) return ctx.notebook;
+  if (requestedId) return { sourceIds: isUuidArg(requestedId) ? [requestedId] : [] };
+  if (current) return { sourceIds: current.sourceIds };
+  const owned = await db.select({ id: sources.id }).from(sources).where(eq(sources.userId, ctx.userId));
+  return { sourceIds: owned.map(s => s.id) };
 }
 
 /**
@@ -555,12 +582,8 @@ const studyStatsTool: Tool = {
     }
 
     try {
-      // For a deck scope, always resolve the full subtree from the tool's explicit
-      // deckId arg — independent of ctx.deckIds (the turn-level scope is for
-      // search_cards only). This is the AC1.2-correct path: whether the agent call
-      // is triggered by a turn-scoped request or a free-form "how am I doing on my
-      // German deck?" the tool resolves its own subtree. Foreign/un-owned deckId
-      // produces [deckId] with no owned rows → empty scope (NOT a global fallback).
+      // Resolve the requested subtree, then intersect the persisted strict
+      // selection. A move during a suspended turn cannot widen its context.
       let deckIds: string[] | undefined;
       if (scope === 'deck') {
         const userDecks = await db
@@ -568,6 +591,9 @@ const studyStatsTool: Tool = {
           .from(decks)
           .where(eq(decks.userId, ctx.userId));
         deckIds = [deckId, ...descendantIds(deckId, userDecks)];
+        if (ctx.assistantContext?.policy === 'strict') {
+          deckIds = deckIds.filter(id => ctx.assistantContext!.deckIds.includes(id));
+        }
       }
 
       const stats = await studyStats({ userId: ctx.userId, scope, deckIds, days });
@@ -651,10 +677,8 @@ const dueForecastTool: Tool = {
     const deckIdArg = typeof args.deckId === 'string' ? args.deckId.trim() : '';
 
     try {
-      // Resolve the full subtree from the tool's explicit deckId arg — same
-      // AC1.2 pattern as study_stats (independent of the turn-level ctx.deckIds,
-      // which is for search_cards retrieval only). A foreign/un-owned deckId
-      // yields [deckId] with no owned rows → empty scope, never a global fallback.
+      // The live subtree may have gained decks since this turn was admitted.
+      // Strict turns retain their stored selection, including on resume.
       let deckIds: string[] | undefined;
       if (deckIdArg) {
         const userDecks = await db
@@ -662,6 +686,10 @@ const dueForecastTool: Tool = {
           .from(decks)
           .where(eq(decks.userId, ctx.userId));
         deckIds = [deckIdArg, ...descendantIds(deckIdArg, userDecks)];
+      }
+      if (ctx.assistantContext?.policy === 'strict') {
+        const allowed = ctx.assistantContext.deckIds;
+        deckIds = deckIds ? deckIds.filter(id => allowed.includes(id)) : allowed;
       }
 
       const f = await dueForecast({ userId: ctx.userId, deckIds, days });
@@ -870,6 +898,7 @@ const browseCards: Tool = {
           .where(eq(decks.userId, ctx.userId));
         deckScope = [deckId, ...descendantIds(deckId, userDecks)];
       }
+      if (ctx.deckIds !== undefined) deckScope = deckScope ? deckScope.filter(id => ctx.deckIds!.includes(id)) : ctx.deckIds;
 
       const { rows } = await searchCardsQuery({
         userId: ctx.userId,
@@ -1019,7 +1048,7 @@ function renderSourceChunk(c: {
 
 /** Build a SourceCitation for the client (kind:'source', snippet capped). */
 function toSourceCitation(
-  notebookId: string,
+  notebookId: string | undefined,
   c: {
     sourceChunkId: string;
     sourceId: string;
@@ -1033,7 +1062,7 @@ function toSourceCitation(
     kind: 'source',
     sourceId: c.sourceId,
     sourceChunkId: c.sourceChunkId,
-    notebookId,
+    ...(notebookId ? { notebookId } : {}),
     position: c.position,
     page: c.page,
     sourceTitle: c.sourceTitle,
@@ -1050,7 +1079,7 @@ const searchSource: Tool = {
   name: 'search_source',
   kind: 'read',
   description:
-    "Semantic search over the passages of the notebook's sources (the documents " +
+    "Semantic search over the selected source passages (the documents " +
     'the user loaded). Use this whenever the user asks about the MEANING or ' +
     'content of the sources. Returns matching passages, each tagged with a ' +
     '[src:<id>] token you MUST cite inline next to claims drawn from it. If it ' +
@@ -1073,8 +1102,7 @@ const searchSource: Tool = {
     required: ['query'],
   },
   async execute(ctx, rawArgs): Promise<ToolResult> {
-    const nb = ctx.notebook;
-    if (!nb) return { ok: false, error: 'search_source: not in a notebook' };
+    const nb = await sourceScopeForTool(ctx);
     const args = (rawArgs ?? {}) as SearchSourceArgs;
     const query = typeof args.query === 'string' ? args.query.trim() : '';
     if (!query) return { ok: false, error: 'search_source: missing "query" argument' };
@@ -1086,11 +1114,12 @@ const searchSource: Tool = {
     if (nb.sourceIds.length === 0) {
       return {
         ok: true,
-        text: 'This notebook has no ready sources checked into the chat yet.',
+        text: 'This conversation has no ready sources selected. Add a material or use list_library to find one.',
         citations: [],
       };
     }
 
+    if (!isEmbeddingEnabled()) return { ok: false, error: 'embeddings_unavailable: read parsed text with read_source or read_source_chunks' };
     try {
       const [queryEmbedding] = await embed([query]);
       const hits =
@@ -1112,7 +1141,7 @@ const searchSource: Tool = {
         };
       }
 
-      pushGrounding(ctx, hits.map((h) => h.sourceChunkId));
+      await pushGrounding(ctx, hits.map(h => ({ id: h.sourceChunkId, text: h.text, position: h.position, page: h.page })));
       const body = hits.map((h) => renderSourceChunk(h)).join('\n\n');
       const citations = hits.map((h) => toSourceCitation(nb.notebookId, h));
       return { ok: true, text: capText(body), citations };
@@ -1141,8 +1170,8 @@ const readSource: Tool = {
   name: 'read_source',
   kind: 'read',
   description:
-    'Read one of the notebook sources SEQUENTIALLY, a few passages at a time. ' +
-    'Pass `sourceId` (one of the notebook\'s sources) and an optional `position` ' +
+    'Read an owned source SEQUENTIALLY, a few passages at a time. ' +
+    'Pass `sourceId` (within the selected context in strict mode) and an optional `position` ' +
     '(0-based, default 0). The result header reports the range and how to ' +
     'continue (call again with the next `position`). Each passage is tagged with ' +
     'a [src:<id>] token to cite. Use this to read a document in order; use ' +
@@ -1160,11 +1189,10 @@ const readSource: Tool = {
     required: ['sourceId'],
   },
   async execute(ctx, rawArgs): Promise<ToolResult> {
-    const nb = ctx.notebook;
-    if (!nb) return { ok: false, error: 'read_source: not in a notebook' };
     const args = (rawArgs ?? {}) as ReadSourceArgs;
     const sourceId = typeof args.sourceId === 'string' ? args.sourceId.trim() : '';
-    if (!sourceId) return { ok: false, error: 'read_source: missing "sourceId" argument' };
+    if (!sourceId || !isUuidArg(sourceId)) return { ok: false, error: 'read_source: valid sourceId required' };
+    const nb = await sourceScopeForTool(ctx, sourceId);
 
     // The sourceId must be one of the notebook's checked-in sources — else a
     // self-correcting error that lists the valid ids + titles (mirrors the
@@ -1235,7 +1263,7 @@ const readSource: Tool = {
           ? `«${title}» — passages ${position}–${lastPos} of ${total}; continue with position=${next}`
           : `«${title}» — passages ${position}–${lastPos} of ${total}; end of source`;
 
-      pushGrounding(ctx, rows.map((r) => r.id));
+      await pushGrounding(ctx, rows);
       const body = rows
         .map((r) => {
           const page = r.page != null ? ` (p.${r.page})` : '';
@@ -1280,7 +1308,7 @@ async function sourceChunkCount(userId: string, sourceId: string): Promise<numbe
   return row ? Number(row.n) : 0;
 }
 
-// ── list_marked_passages (read, NOTEBOOK mode) ───────────────────────────────
+// ── list_marked_passages (read, contextual sources) ───────────────────────────────
 //
 // Read the user's reader markup — three sources MERGED per (source, page) in page
 // order (M5): (1) INK marked_text (`source_annotations.marked_text`, extracted on
@@ -1292,14 +1320,15 @@ async function sourceChunkCount(userId: string, sourceId: string): Promise<numbe
 // highlighted"). Grounding: each MARKED page's `source_chunks` are matched ONCE
 // per page (exact page match, user-scoped) so [src:] citations + card provenance
 // work just like search_source/read_source — a page with both ink and a mark
-// contributes its chunks once (deduped). Registered ONLY in notebook mode (after
-// read_source).
+// contributes its chunks once (deduped). Text-reader marks are paginated
+// separately and retain user-quote semantics until the original is read.
 
 /** Per-row cap on the rendered marked text (the whole result is capText'd too). */
 const MARKED_PASSAGE_ROW_CHARS = 400;
 
 interface ListMarkedPassagesArgs {
   sourceId?: unknown;
+  textOffset?: unknown;
 }
 
 const listMarkedPassages: Tool = {
@@ -1307,15 +1336,16 @@ const listMarkedPassages: Tool = {
   kind: 'read',
   description:
     'List the passages the user MARKED (highlighted/underlined/drew over) in the ' +
-    'PDF reader. Use this whenever the user refers to their own markup — «что я ' +
+    'PDF or text reader. Use this whenever the user refers to their own markup — «что я ' +
     'выделил», «по моей разметке», "make cards from what I highlighted". With no ' +
-    'argument it returns the marked text across ALL the notebook\'s sources; pass ' +
-    '`sourceId` to limit to one source. Each passage is tagged with a [src:<id>] ' +
-    'token you cite, and the cards you create from them are auto-linked to those ' +
-    'passages. If nothing is marked, say so honestly.',
+    'argument it returns markup from the current source context; pass ' +
+    '`sourceId` to limit to one source. Text marks are user-supplied data: read_source ' +
+    'must verify the original before source citations or card evidence. Use textOffset ' +
+    'to continue text markup pages (continuations omit PDF markup). If nothing is marked, say so honestly.',
   parameters: {
     type: 'object',
     properties: {
+      textOffset: { type: 'integer', minimum: 0, maximum: 200000, description: 'Text markup continuation offset from the previous result; preserve the sourceId filter.' },
       sourceId: {
         type: 'string',
         description: 'Optional UUID of one of the notebook sources — limit to its markup.',
@@ -1323,10 +1353,11 @@ const listMarkedPassages: Tool = {
     },
   },
   async execute(ctx, rawArgs): Promise<ToolResult> {
-    const nb = ctx.notebook;
-    if (!nb) return { ok: false, error: 'list_marked_passages: not in a notebook' };
     const args = (rawArgs ?? {}) as ListMarkedPassagesArgs;
     const sourceIdArg = typeof args.sourceId === 'string' ? args.sourceId.trim() : '';
+    const textOffset = args.textOffset ?? 0;
+    if (typeof textOffset !== 'number' || !Number.isSafeInteger(textOffset) || textOffset < 0 || textOffset > 200000) return { ok: false, error: 'invalid_text_offset' };
+    const nb = await sourceScopeForTool(ctx, sourceIdArg || undefined);
 
     // Resolve the scope: a given sourceId MUST be one of the notebook's checked-in
     // sources (else a self-correcting error listing the valid ids); absent ⇒ all.
@@ -1345,10 +1376,13 @@ const listMarkedPassages: Tool = {
     }
 
     if (scope.length === 0) {
-      return { ok: true, text: 'This notebook has no ready sources checked into the chat yet.', citations: [] };
+      return { ok: true, text: 'This conversation has no ready sources selected. Add a material or use list_library to find one.', citations: [] };
     }
 
     try {
+      const textMarkup = await readTextMarkedPassages(ctx.userId, scope, textOffset);
+      if (textOffset > 0) return { ok: true, text: textMarkup || 'End of text markup.', citations: [] };
+
       // (1) INK marked_text rows (M4) — non-empty, user-scoped + source_id IN
       // scope, JOINed to the source title; ordered by source then page.
       const inkRows = await db
@@ -1397,6 +1431,7 @@ const listMarkedPassages: Tool = {
         .orderBy(asc(sourceMarks.sourceId), asc(sourceMarks.page), asc(sourceMarks.createdAt));
 
       if (inkRows.length === 0 && markRows.length === 0) {
+        if (textMarkup) return { ok: true, text: textMarkup, citations: [] };
         return { ok: true, text: 'No marked passages yet — the user has not highlighted anything in the reader.', citations: [] };
       }
 
@@ -1459,7 +1494,7 @@ const listMarkedPassages: Tool = {
       // its text but contributes no citation (unchanged mechanics).
       const lines: string[] = [];
       const citations: SourceCitation[] = [];
-      const groundChunkIds: string[] = [];
+      const groundReadChunks: ReadEvidenceChunk[] = [];
       for (const sourceId of sourceOrder) {
         const pages = pagesBySource.get(sourceId)!.slice().sort((a, b) => a - b);
         const title = titleBySource.get(sourceId)!;
@@ -1482,7 +1517,7 @@ const listMarkedPassages: Tool = {
             )
             .orderBy(asc(sourceChunks.position));
           for (const c of chunks) {
-            groundChunkIds.push(c.id);
+            groundReadChunks.push({ ...c, page });
             citations.push(
               toSourceCitation(nb.notebookId, {
                 sourceChunkId: c.id,
@@ -1497,8 +1532,8 @@ const listMarkedPassages: Tool = {
         }
       }
 
-      pushGrounding(ctx, groundChunkIds);
-      return { ok: true, text: capText(lines.join('\n')), citations };
+      await pushGrounding(ctx, groundReadChunks);
+      return { ok: true, text: capText([textMarkup, ...lines].filter(Boolean).join('\n')), citations };
     } catch (err) {
       ctx.log.warn({ err }, 'ai.tool.list_marked_passages.failed');
       return { ok: false, error: err instanceof Error ? err.message : 'list_marked_passages_failed' };
@@ -1753,6 +1788,8 @@ const saveNote: Tool = {
 // builtin "Basic" (guaranteed to exist via ensureBuiltins) when omitted.
 
 interface CreateCardArgs {
+  evidenceQuotes?: unknown;
+  evidenceChunkIds?: unknown;
   deckId?: unknown;
   noteTypeId?: unknown;
   fieldValues?: unknown;
@@ -1765,6 +1802,8 @@ export const CREATE_CARD_BATCH_MAX = 20;
 
 /** One parsed card of a create_card call (single or batch entry). */
 interface CreateCardEntry {
+  evidenceQuotes: QuotedEvidenceInput[];
+  evidenceChunkIds: string[];
   fieldValues: Record<string, string>;
   tags: string[];
 }
@@ -1808,7 +1847,14 @@ function parseCreateCardArgs(
   }
   const noteTypeRef =
     typeof args.noteTypeId === 'string' && args.noteTypeId.trim() ? args.noteTypeId.trim() : null;
+  const quotes = (raw: unknown): QuotedEvidenceInput[] | null => {
+    if (raw === undefined) return [];
+    if (!Array.isArray(raw) || raw.length > env.ai.CARD_SOURCE_LINK_CAP || raw.some(item => !item || typeof item.sourceId !== 'string' || !isUuidArg(item.sourceId) || typeof item.quote !== 'string' || !item.quote.trim() || item.quote.length > 4000)) return null;
+    return [...new Map(raw.map(item => [`${item.sourceId}:${item.quote}`,{sourceId:item.sourceId,quote:item.quote}])).values()];
+  };
   const sharedTags = parseTags(args.tags);
+  const evidenceIds = (raw: unknown): string[] | null => raw === undefined ? []
+    : Array.isArray(raw) && raw.length <= env.ai.CARD_SOURCE_LINK_CAP && raw.every(id => typeof id === 'string' && isUuidArg(id)) ? [...new Set(raw)] as string[] : null;
 
   if (args.cards !== undefined) {
     if (!Array.isArray(args.cards) || args.cards.length === 0) {
@@ -1822,18 +1868,24 @@ function parseCreateCardArgs(
     }
     const entries: CreateCardEntry[] = [];
     for (let i = 0; i < args.cards.length; i++) {
-      const item = args.cards[i] as { fieldValues?: unknown; tags?: unknown } | null;
+      const item = args.cards[i] as { fieldValues?: unknown; tags?: unknown; evidenceChunkIds?: unknown; evidenceQuotes?: unknown } | null;
       const parsed = parseFieldValues(item?.fieldValues, `cards[${i}]: `);
       if (!parsed.ok) return parsed;
       const itemTags = parseTags(item?.tags);
-      entries.push({ fieldValues: parsed.fieldValues, tags: itemTags.length > 0 ? itemTags : sharedTags });
+      const evidenceChunkIds = evidenceIds(item?.evidenceChunkIds);
+      const evidenceQuotes = quotes(item?.evidenceQuotes);
+      if (!evidenceChunkIds || !evidenceQuotes || evidenceChunkIds.length + evidenceQuotes.length > env.ai.CARD_SOURCE_LINK_CAP) return { ok: false, error: 'invalid_evidence' };
+      entries.push({ evidenceQuotes, evidenceChunkIds, fieldValues: parsed.fieldValues, tags: itemTags.length > 0 ? itemTags : sharedTags });
     }
     return { ok: true, deckId, noteTypeRef, entries };
   }
 
   const single = parseFieldValues(args.fieldValues, '');
   if (!single.ok) return single;
-  return { ok: true, deckId, noteTypeRef, entries: [{ fieldValues: single.fieldValues, tags: sharedTags }] };
+  const evidenceChunkIds = evidenceIds(args.evidenceChunkIds);
+  const evidenceQuotes = quotes(args.evidenceQuotes);
+  if (!evidenceChunkIds || !evidenceQuotes || evidenceChunkIds.length + evidenceQuotes.length > env.ai.CARD_SOURCE_LINK_CAP) return { ok: false, error: 'invalid_evidence' };
+  return { ok: true, deckId, noteTypeRef, entries: [{ evidenceQuotes, evidenceChunkIds, fieldValues: single.fieldValues, tags: sharedTags }] };
 }
 
 /** Compact `Name (fields: A, B)` listing of the caller's available note types. */
@@ -1923,6 +1975,8 @@ function normalizeFieldKeys(
 
 /** One fully-resolved card of a create_card call, ready to insert. */
 interface ResolvedCreateEntry {
+  evidenceQuotes: QuotedEvidenceInput[];
+  evidenceChunkIds: string[];
   fieldValues: Record<string, string>;
   tags: string[];
   resolved: Extract<Awaited<ReturnType<typeof resolveNoteCreate>>, { ok: true }>;
@@ -1975,7 +2029,7 @@ async function resolveCreateCardInputs(
         error: `create_card: ${at}the field values produced no cards (fill the question fields used by the templates of "${noteType.name}")`,
       };
     }
-    entries.push({ fieldValues: normalized.fieldValues, tags: entry.tags, resolved });
+    entries.push({ evidenceQuotes: entry.evidenceQuotes, evidenceChunkIds: entry.evidenceChunkIds, fieldValues: normalized.fieldValues, tags: entry.tags, resolved });
   }
   return { ok: true, deckId: parsed.deckId, noteTypeId: noteType.id, entries };
 }
@@ -1992,10 +2046,12 @@ const createCard: Tool = {
     'cards OMIT `noteTypeId` — it defaults to the builtin "Basic" type, whose ' +
     'fields are "Front" and "Back". `noteTypeId` also accepts a note-type NAME ' +
     '(e.g. "Cloze"). This is a WRITE: it pauses for the user to confirm before ' +
-    'anything is created.',
+    'anything is created. When grounded in sources, set evidenceChunkIds separately for each card using only passages read this turn. For an exact quote supplied in the current context without a stable chunk, use evidenceQuotes with its sourceId and unchanged quote; this is labelled as user-supplied, not verified source text. Omit when no source evidence supports that card.',
   parameters: {
     type: 'object',
     properties: {
+      evidenceQuotes: { type: 'array', maxItems: env.ai.CARD_SOURCE_LINK_CAP, items: { type: 'object', properties: { sourceId: {type:'string'}, quote:{type:'string',maxLength:4000} }, required:['sourceId','quote'] } },
+      evidenceChunkIds: { type: 'array', items: { type: 'string' }, maxItems: env.ai.CARD_SOURCE_LINK_CAP },
       deckId: { type: 'string', description: 'UUID of the deck to create the card(s) in.' },
       noteTypeId: {
         type: 'string',
@@ -2016,6 +2072,8 @@ const createCard: Tool = {
           type: 'object',
           properties: {
             fieldValues: { type: 'object', additionalProperties: { type: 'string' } },
+            evidenceQuotes: { type: 'array', maxItems: env.ai.CARD_SOURCE_LINK_CAP, items: { type: 'object', properties: { sourceId: {type:'string'}, quote:{type:'string',maxLength:4000} }, required:['sourceId','quote'] } },
+            evidenceChunkIds: { type: 'array', items: { type: 'string' }, maxItems: env.ai.CARD_SOURCE_LINK_CAP },
             tags: { type: 'array', items: { type: 'string' } },
           },
           required: ['fieldValues'],
@@ -2031,11 +2089,15 @@ const createCard: Tool = {
   },
   async validate(ctx, rawArgs): Promise<{ ok: true } | { ok: false; error: string }> {
     const inputs = await resolveCreateCardInputs(ctx.userId, rawArgs);
-    return inputs.ok ? { ok: true } : inputs;
+    if (!inputs.ok) return inputs;
+    try { for (const entry of inputs.entries) { await captureCardEvidence(ctx.userId, entry.evidenceChunkIds, ctx.grounding?.chunkIds ?? [], ctx.grounding?.evidence); await captureQuotedEvidence(ctx.userId, entry.evidenceQuotes, ctx.assistantContext?.refs ?? []); } }
+    catch { return { ok: false, error: 'invalid_evidence: select only passages read this turn' }; }
+    return { ok: true };
   },
   async dryRun(_ctx, rawArgs): Promise<ToolImpact> {
     const inputs = await resolveCreateCardInputs(_ctx.userId, rawArgs);
     if (!inputs.ok) return {};
+    const cardEvidence = await Promise.all(inputs.entries.map(async entry => [...await captureCardEvidence(_ctx.userId, entry.evidenceChunkIds, _ctx.grounding?.chunkIds ?? [], _ctx.grounding?.evidence), ...await captureQuotedEvidence(_ctx.userId, entry.evidenceQuotes, _ctx.assistantContext?.refs ?? [])]));
     const willCreateCards = inputs.entries.reduce((n, e) => n + e.resolved.generated.length, 0);
     const cappedFields = (e: ResolvedCreateEntry) =>
       Object.entries(e.fieldValues).map(([field, value]) => ({
@@ -2044,17 +2106,22 @@ const createCard: Tool = {
       }));
     if (inputs.entries.length === 1) {
       // C8 — the confirm card previews exactly what will be written.
-      return { willCreateCards, proposedFields: cappedFields(inputs.entries[0]!) };
+      return { cardEvidence, willCreateCards, proposedFields: cappedFields(inputs.entries[0]!) };
     }
     // Batch — one preview section per card, in batch order.
     return {
       willCreateCards,
+      cardEvidence,
       proposedCards: inputs.entries.map((e) => ({ fields: cappedFields(e) })),
     };
   },
   async execute(ctx, rawArgs): Promise<ToolResult> {
     const inputs = await resolveCreateCardInputs(ctx.userId, rawArgs);
     if (!inputs.ok) return { ok: false, error: inputs.error };
+
+    if (inputs.entries.some(entry => entry.evidenceChunkIds.length || entry.evidenceQuotes.length) && !ctx.cardEvidence) return { ok: false, error: 'evidence_preview_required' };
+    if (ctx.cardEvidence && (ctx.cardEvidence.length !== inputs.entries.length || inputs.entries.some((entry,index) =>
+      JSON.stringify(entry.evidenceChunkIds) !== JSON.stringify(ctx.cardEvidence![index]!.filter(item => item.kind !== 'user_quote').map(item => item.chunkId)) || JSON.stringify(entry.evidenceQuotes) !== JSON.stringify(ctx.cardEvidence![index]!.filter(item => item.kind === 'user_quote').map(item => ({ sourceId:item.sourceId,quote:item.quote })))))) return { ok: false, error: 'evidence_preview_mismatch' };
 
     // ONE transaction for the whole batch — a failing entry rolls back all.
     const run = async (tx: Tx) => {
@@ -2071,6 +2138,9 @@ const createCard: Tool = {
         });
         out.push({ noteId: created.note.id, cardIds: created.cards.map((c) => c.id) });
       }
+      if (ctx.cardEvidence) await writePerCardProvenance(tx, { userId: ctx.userId,
+        cards: out.map((created,index) => ({ cardIds: created.cardIds, evidence: ctx.cardEvidence![index]! })),
+        notebookId: ctx.notebook?.notebookId, conversationId: ctx.conversationId, messageId: ctx.messageId });
       return out;
     };
     // Run in the caller's transaction (resume atomicity) or our own.
@@ -2487,15 +2557,10 @@ export function buildToolRegistry(
   const webOn = opts.webSearchEnabled ?? isWebSearchEnabled();
   const fetchOn = opts.fetchPageEnabled ?? isFetchPageEnabled();
 
-  // NOTEBOOK mode (M2/M4/N3): a DELIBERATELY narrow registry — grounded reading
-  // over the notebook's sources (`search_source` by meaning, `read_source`
-  // sequentially, `list_marked_passages` over the user's PDF-reader markup) +
-  // the user's NOTES (`list_notes`/`read_note` read, `save_note` write) + the
-  // create-card workflow (`list_decks` then `create_card`/`save_note`).
-  // `web_search` is offered only when enabled (and the prompt gates it to explicit
-  // user requests). No card-search/browse/progress/fetch_page/edit/SRS here in V1
-  // — notebook chat is about the sources + notes, not the whole collection.
-  if (opts.notebook) {
+  // The process-private MCP adapter requests these legacy subsets while building
+  // its services. Normal chat always receives the shared catalog below; its
+  // server-resolved context controls reads independently of presentation.
+  if (opts.notebook && opts.knowledge === false) {
     const registry: Tool[] = [
       searchSource,
       readSource,
@@ -2525,8 +2590,18 @@ export function buildToolRegistry(
   if (webOn) registry.push(webSearch);
   if (fetchOn) registry.push(fetchPage);
   registry.push(createCard, editCard, suspend, setDue, forget);
-  if (opts.knowledge !== false) registry.push(...buildKnowledgeTools());
-  return registry;
+  if (opts.knowledge === false) return registry;
+  registry.push(searchSource, readSource, listMarkedPassages, readContextObject, ...buildKnowledgeTools());
+  const unified = registry.map(tool => tool.name === 'search_library' ? {
+    ...tool, execute: (ctx: ToolContext, raw: unknown) => {
+      if (ctx.assistantContext?.policy === 'strict' || (!ctx.assistantContext && ctx.notebook)) {
+        const args = (raw ?? {}) as { q?: string; limit?: number };
+        return searchSource.execute(ctx, { query: args.q, k: args.limit });
+      }
+      return tool.execute(ctx, raw);
+    },
+  } : tool);
+  return [...new Map(unified.map(tool => [tool.name, tool])).values()].map(withAssistantReadScope);
 }
 
 /**

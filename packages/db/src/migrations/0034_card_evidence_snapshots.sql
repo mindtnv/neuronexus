@@ -1,0 +1,1 @@
+ALTER TABLE "card_sources" ADD COLUMN "source_snapshot" jsonb;

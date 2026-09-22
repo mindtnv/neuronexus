@@ -2,7 +2,7 @@
 //
 // Eden Treaty (lib/api.ts) is request/response only — it CANNOT consume a
 // streaming `text/event-stream` response. So the one streaming endpoint
-// (`POST /chat/conversations/:id/stream`) is reached here via a hand-written
+// (`POST /chat/context-v1/conversations/:id/stream`) is reached here via a hand-written
 // `fetch` + `ReadableStreamDefaultReader`, parsing SSE frames by hand. Everything
 // else (list/open/create/delete conversations, GET /cards/:id) stays on Eden.
 //
@@ -28,6 +28,7 @@ const baseURL =
     : 'http://localhost:3000';
 
 export interface ChatStreamHandlers {
+  onContext?: (context: import('@neuronexus/shared').AssistantContextSnapshot) => void;
   /** A token delta arrived — append it to the live assistant message. */
   onToken?: (delta: string) => void;
   /** The resolved citation set for this turn arrived. */
@@ -116,6 +117,9 @@ function dispatch(event: ChatStreamEvent, handlers: ChatStreamHandlers, response
       // transport that answers it lands in Phase B; harmless to dispatch now.
       handlers.onAwaitConfirmation?.({ toolCall: event.toolCall, impact: event.impact });
       break;
+    case 'context':
+      handlers.onContext?.(event.context);
+      break;
     case 'title':
       handlers.onTitle?.(event.title);
       break;
@@ -164,7 +168,9 @@ async function consumeSseResponse(
   // Pre-flush failures (chat disabled → 503, foreign thread → 404, auth → 401)
   // come back as a normal JSON body, not a stream. Surface them as an error.
   if (!res.ok || !res.body) {
-    const error = await apiErrorFromResponse(res, `chat_failed_${res.status}`);
+    const original = await apiErrorFromResponse(res, `chat_failed_${res.status}`);
+    const error = original.status === 404 && original.safeMessage === 'NotFound'
+      ? new ApiError('context_unsupported', { status: 404, requestId: original.requestId }) : original;
     handlers.onError?.(error.message, error);
     return;
   }
@@ -224,6 +230,9 @@ async function consumeSseResponse(
  * so the generic-error copy never flashes on a deliberate stop.
  */
 export interface ChatTurnOpts {
+  policySelection?: import('@neuronexus/shared').AssistantContextPolicy;
+  context?: import('@neuronexus/shared').AssistantContextInput;
+  expectedContextRevision?: number;
   model?: string;
   deckId?: string;
   /** Deep-research mode toggle (research prompt + raised caps server-side). */
@@ -255,6 +264,9 @@ export async function streamChat(
 ): Promise<void> {
   const body: ChatStreamRequest = {
     content,
+    policySelection: opts?.policySelection,
+    context: opts?.context,
+    expectedContextRevision: opts?.expectedContextRevision,
     model: opts?.model,
     deckId: opts?.deckId,
     research: opts?.research,
@@ -264,7 +276,7 @@ export async function streamChat(
   };
   let res: Response;
   try {
-    res = await fetch(`${baseURL}/chat/conversations/${conversationId}/stream`, {
+    res = await fetch(`${baseURL}/chat/context-v1/conversations/${conversationId}/stream`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -289,7 +301,7 @@ export async function streamChat(
  * `streamChat` closes its stream (with NO `done`) when the agent loop hits a
  * write/SRS tool; the loop is paused server-side, the transcript-up-to-the
  * pending `tool_calls` row already committed. This POSTs the human decision to
- * `POST /chat/conversations/:id/resume` and consumes the CONTINUED SSE response
+ * `POST /chat/context-v1/conversations/:id/resume` and consumes the CONTINUED SSE response
  * with the SAME parse loop + handler set — the resumed turn keeps rendering
  * reasoning/token/tool_result/citation into the same assistant message until
  * `done` (Apply executes the mutation first; Reject records a "rejected" tool
@@ -307,7 +319,7 @@ export async function resumeChat(
 ): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(`${baseURL}/chat/conversations/${conversationId}/resume`, {
+    res = await fetch(`${baseURL}/chat/context-v1/conversations/${conversationId}/resume`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -335,13 +347,13 @@ export async function resumeChat(
  */
 export async function regenerateChat(
   conversationId: string,
-  opts: { model?: string; deckId?: string; research?: boolean; content?: string; sourceIds?: string[] },
+  opts: { model?: string; deckId?: string; research?: boolean; policySelection?: import('@neuronexus/shared').AssistantContextPolicy; content?: string; sourceIds?: string[]; context?: import('@neuronexus/shared').AssistantContextInput; expectedContextRevision?: number },
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(`${baseURL}/chat/conversations/${conversationId}/regenerate`, {
+    res = await fetch(`${baseURL}/chat/context-v1/conversations/${conversationId}/regenerate`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -353,7 +365,10 @@ export async function regenerateChat(
         deckId: opts.deckId,
         research: opts.research,
         content: opts.content,
+        policySelection: opts.policySelection,
         sourceIds: opts.sourceIds,
+        context: opts.context,
+        expectedContextRevision: opts.expectedContextRevision,
       }),
       signal,
     });

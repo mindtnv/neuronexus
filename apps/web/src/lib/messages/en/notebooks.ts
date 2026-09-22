@@ -33,7 +33,7 @@ const notebooks = {
     rename: 'Rename notebook',
     renameTitle: 'Rename notebook',
     delete: 'Delete notebook',
-    deleteConfirm: 'Delete this notebook? Its notes and links go away, but its sources stay in the library.',
+    deleteConfirm: 'Delete this notebook and its notebook-owned notes, study documents, quizzes and quiz attempts? Conversations, sources, source-owned study work and cards are preserved.',
     sourceCount: '{count} sources',
     tooMany: 'You\'ve reached the notebook limit.',
     search: 'Search notebooks…',
@@ -78,6 +78,7 @@ const notebooks = {
 
   // «Notebooks 2.0» (N1) — the notes panel in the right dock.
   notes: {
+    notFound: 'This note is unavailable or deleted.',
     tab: 'Notes',
     heading: 'Notes',
     dockExpand: 'Expand notes',
@@ -140,6 +141,7 @@ const notebooks = {
 
   // «Notebooks 2.0» (N2) — the Studio tab (generated artifacts).
   studio: {
+    notFound: 'This study artifact is unavailable or deleted.',
     tab: 'Studio',
     heading: 'Studio',
     generateHeading: 'Generate',
@@ -174,7 +176,7 @@ const notebooks = {
     // Row actions + viewer.
     regenerate: 'Regenerate',
     delete: 'Delete',
-    deleteConfirm: 'Delete this document?',
+    deleteConfirm: 'Delete this study document or quiz and its attempts? This cannot be undone.',
     back: 'Back',
     copy: 'Copy',
     copied: 'Copied',
@@ -202,6 +204,7 @@ const notebooks = {
     error_generation_failed: 'Generation failed.',
     error_invalid_quiz: 'The generated quiz was malformed.',
     error_no_sources: 'No ready sources to generate from.',
+    error_source_unavailable: 'The source is no longer available. Existing study work is preserved.',
     error_interrupted: 'Generation was interrupted — regenerate it.',
   },
 
@@ -392,7 +395,7 @@ const notebooks = {
   // Card → source backlinks (M3) — the "Sources" panel on a card.
   backlinks: {
     title: 'Sources',
-    open: 'Open in the notebook',
+    open: 'Open source',
     tombstone: 'Source removed',
     untitled: 'Source',
     page: 'p. {n}',
@@ -401,6 +404,7 @@ const notebooks = {
   // Feature #2 — «Harvest markup → cards»: collect all un-harvested markup of a
   // source into cards in one AI pass, then an accept/exclude/edit wizard.
   harvest: {
+    stale: 'The source or markup changed. Your edits are still here. Reopen this wizard to generate fresh candidates before saving.',
     button: 'Harvest cards from markup',
     loading: 'Reading the markup…',
     nothing: 'Nothing to harvest — highlight some text or mark pages first.',
@@ -434,6 +438,21 @@ const notebooks = {
 
   // M5 — selection marks (highlights + notes) in the PDF reader.
   marks: {
+    annotationNotes: 'Margin notes',
+    annotationNotesHint: 'Comments on highlighted passages. Select a page to return to the text.',
+    noAnnotationNotes: 'Select text in the book and add a note.',
+    studyNotes: 'My notes',
+
+    color_orange: 'Orange',
+    color_teal: 'Teal',
+    color_blue: 'Blue',
+    color_pink: 'Pink',
+    color_gray: 'Gray',
+    selectionTitle: 'Selected passage',
+    selectionAskPrompt: 'Explain the selected passage.',
+    highlightColors: 'Highlight color',
+    copyFailed: 'Could not copy the text.',
+    selectionTooLong: 'This selection is too long for this action. Select a shorter passage.',
     panelTitle: 'Markup',
     panelEmpty: 'Select text in the PDF to highlight it or add a note.',
     panelInkPage: 'p. {n} — drawing',

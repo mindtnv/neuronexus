@@ -142,6 +142,13 @@ const m = {
   },
   // Agentic tool calls (search_cards / web_search) surfaced as cards in the stream
   tool: {
+    list_source_artifacts: 'List source study work',
+    get_source_artifact: 'Read source study document',
+    list_source_quiz_attempts: 'Read source quiz attempts',
+
+    list_source_notes: 'List source notes',
+    get_source_note: 'Read source note',
+    save_source_note: 'Save source note',
     get_capabilities: 'Check AI capabilities',
     list_cards: 'List cards',
     list_tags: 'List tags',
@@ -157,6 +164,9 @@ const m = {
     search_library: 'Search library',
     get_library_item: 'Read material details',
     read_source_chunks: 'Read material',
+    read_source: 'Read source',
+    search_source: 'Search sources',
+    list_marked_passages: 'Read marked passages',
     get_source_cards: 'Read source cards',
     get_source_marks: 'Read highlights and bookmarks',
     get_source_annotations: 'Read PDF annotations',
@@ -187,6 +197,7 @@ const m = {
     create_url_source: 'Add library web page',
     list_notes: 'List notes',
     read_note: 'Read note',
+    read_context_object: 'Read referenced object',
 
     deckCount: 'Decks: {count}',
     resultDetails: 'Show full result',
@@ -253,6 +264,10 @@ const m = {
   // Confirm-before-write controls (Phase B) — a write/SRS tool pauses the turn
   // and asks for explicit human approval, rendered inside the pending tool card.
   confirm: {
+    retainedResources: 'Preserved',
+    notebookRetainedWork: 'Library sources, source-owned notes and completed study work, cards and conversations are preserved.',
+    userQuoteEvidence: 'User-supplied quote; exact source text is not verified.',
+    noCardEvidence: 'No source passage is attached to this card.',
     resourceDeleteWarning: 'The listed data will be deleted. Check the affected resources before confirming.',
     pendingTitle: 'Awaiting your confirmation',
     apply: 'Apply',

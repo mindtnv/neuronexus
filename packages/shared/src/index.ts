@@ -17,6 +17,7 @@ export * from './notebook-source.ts';
 export * from './notebook.ts';
 export * from './annotations.ts';
 export * from './chat-models.ts';
+export * from './assistant-context.ts';
 export * from './rag-prompt.ts';
 export * from './uuid.ts';
 
@@ -38,3 +39,7 @@ export * from './note-content';
 
 export * from './deck-order';
 export * from './deck-appearance';
+export * from './source-text-selection';
+export * from './card-evidence';
+
+export * from './source-readability';

@@ -13,7 +13,7 @@
 // deckId. FSRS is initialised per generated card via `newFsrsCard`.
 
 import { Elysia, t, status as reply } from 'elysia';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull, or } from 'drizzle-orm';
 import { cards, db, decks, noteTypes, notes, type Db } from '@neuronexus/db';
 import {
   generateCards,
@@ -443,6 +443,16 @@ export const notesModule = new Elysia({ prefix: '/notes' })
     },
   )
   .patch('/:id', editNote, noteEditOptions)
+  .get('/:id', async ({ user, params, status }) => {
+    const [row] = await db.select({ note: notes, noteType: noteTypes }).from(notes)
+      .innerJoin(noteTypes, and(eq(noteTypes.id, notes.noteTypeId), or(eq(noteTypes.userId, user.id), and(isNull(noteTypes.userId), eq(noteTypes.isBuiltin, true)))))
+      .where(and(eq(notes.userId, user.id), eq(notes.id, params.id))).limit(1);
+    if (!row) return status(404, { error: 'not_found' });
+    const generated = await db.select({ id: cards.id, deckId: cards.deckId, templateOrd: cards.templateOrd, clozeNumber: cards.clozeNumber }).from(cards)
+      .where(and(eq(cards.userId, user.id), eq(cards.noteId, params.id))).orderBy(asc(cards.templateOrd), asc(cards.clozeNumber), asc(cards.id)).limit(2001);
+    if (generated.length > 2000) return status(400, { error: 'note_too_large' });
+    return { ...row, cards: generated };
+  }, { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) })
   .post('/:id/preview', (context) => editNote({ ...context, body: { ...context.body, preview: true } }), noteEditOptions)
   .delete(
     '/:id',

@@ -1,4 +1,9 @@
 'use client';
+import { AssistantAskButton } from '../chat/assistant-ask-button';
+import { SourceStudioPanel } from '../notebook/source-studio-panel';
+import { SourceAnnotationNotes } from '../pdf-reader/source-annotation-notes';
+import { SourceNotesPanel } from '../notebook/source-notes-panel';
+import { Modal } from '../design-system/modal';
 
 // LibraryReader (L2) — the full-screen reader at `/library/[id]`. The complete
 // M4/M5 reading-first workflow (PDF + ink + highlights + notes + quick-card +
@@ -7,8 +12,7 @@
 //   • a table of contents (PDF outline / distinct text headings)
 //   • server-side reading progress (PUT /library/items/:id/reading-state, 5 s
 //     debounce) with a one-time migration of the nn:pdf:pos localStorage cache
-//   • the «Спросить» handoff into a notebook's grounded chat (Р7) instead of a
-//     local chat surface
+//   • Ask opens the shared contextual assistant without creating a notebook
 //   • deep links ?page=&chunk=&pos=&mark=
 //
 // pdf.js loading is UNTOUCHED — PdfReader still dynamically imports the vendored
@@ -36,17 +40,13 @@ import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { PdfReader, type PdfOutlineEntry, type PdfReaderHandle } from '@/components/pdf-reader/pdf-reader';
 import { TextChunkReader, type TextChunkReaderHandle } from '@/components/screens/text-reader';
-import {
-  formatHandoffPrefill,
-  planHandoff,
-  prefillKey,
-  type HandoffNotebook,
-} from '@/lib/library-handoff';
+import { askAssistant } from '../chat/assistant-provider';
+import { ASSISTANT_CONTEXT_LIMITS } from '@neuronexus/shared';
 import { buildMarkupMarkdown, downloadMarkdown } from '@/lib/markup-export';
+import { createReadingProgressWriter } from '@/lib/reading-progress';
 
 type Tr = (key: string, params?: Record<string, string | number>) => string;
 
-const READING_STATE_DEBOUNCE_MS = 5000;
 const TOC_KEY = (id: string) => `nn:lib:toc:${id}`;
 const POS_KEY = (id: string) => `nn:pdf:pos:${id}`;
 
@@ -58,7 +58,12 @@ interface TocEntry {
   pos?: number;
 }
 
-export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
+export interface SourceStudyWorkspaceProps {
+  sourceId: string;
+  initialLocation?: { page?: number; chunkId?: string; pos?: number; markId?: string };
+  origin?: { title: string; onReturn(): void };
+}
+export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: SourceStudyWorkspaceProps) => {
   const t = useT();
   const router = useAppNavigation();
   const searchParams = useSearchParams();
@@ -68,9 +73,6 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
   const getLibraryItem = useNN((s) => s.getLibraryItem);
   const getSourceChunks = useNN((s) => s.getSourceChunks);
   const putReadingState = useNN((s) => s.putReadingState);
-  const listNotebooks = useNN((s) => s.listNotebooks);
-  const createNotebook = useNN((s) => s.createNotebook);
-  const attachSources = useNN((s) => s.attachSources);
   const patchLibraryItem = useNN((s) => s.patchLibraryItem);
   const uploadMedia = useNN((s) => s.uploadMedia);
   const listSourceCards = useNN((s) => s.listSourceCards);
@@ -94,17 +96,25 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
   const [tocOpen, setTocOpen] = useState(false);
   const [tocEntries, setTocEntries] = useState<TocEntry[] | null>(null);
 
-  // ── «Спросить» handoff state ────────────────────────────────────────────────────
-  const [handoffQuote, setHandoffQuote] = useState<string | null>(null);
 
   // ── Cards drawer (L4 §8.4 — «N карточек» badge → list of source's cards) ──────────
   const [cardsDrawerOpen, setCardsDrawerOpen] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [studyTab, setStudyTab] = useState<'notes' | 'annotations' | 'artifacts'>('notes');
+  useEffect(() => {
+    if (!notesOpen) return;
+    // A native dialog makes the rest of the page inert, including the floating
+    // assistant. Hand off to it without discarding the mounted study panel.
+    const handoff = () => setNotesOpen(false);
+    window.addEventListener('nn:assistant:ask', handoff);
+    return () => window.removeEventListener('nn:assistant:ask', handoff);
+  }, [notesOpen]);
 
   // Deep-link params (?page=&chunk=&pos=&mark=) — consume-and-clear once.
-  const pageParam = searchParams.get('page');
-  const chunkParam = searchParams.get('chunk');
-  const posParam = searchParams.get('pos');
-  const markParam = searchParams.get('mark');
+  const pageParam = origin ? (initialLocation?.page != null ? String(initialLocation.page) : null) : searchParams.get('page');
+  const chunkParam = origin ? initialLocation?.chunkId ?? null : searchParams.get('chunk');
+  const posParam = origin ? (initialLocation?.pos != null ? String(initialLocation.pos) : null) : searchParams.get('pos');
+  const markParam = origin ? initialLocation?.markId ?? null : searchParams.get('mark');
   const pendingPageRef = useRef<number | undefined>(undefined);
   const pendingMarkRef = useRef<string | undefined>(undefined);
   const pendingChunkRef = useRef<{ chunkId?: string; pos?: number } | null>(null);
@@ -123,7 +133,6 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
     setDetail(null);
     setTocOpen(false);
     setTocEntries(null);
-    setHandoffQuote(null);
     setCardsDrawerOpen(false);
     pendingPageRef.current = undefined;
     pendingMarkRef.current = undefined;
@@ -200,7 +209,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
           }
         }
         // Clear the deep-link params from the URL (eat-and-clear).
-        if (pageParam || chunkParam || posParam || markParam) {
+        if (!origin && (pageParam || chunkParam || posParam || markParam)) {
           router.replace(`/library/${sourceId}`, { scroll: false, track: false });
         }
       } catch (error) {
@@ -243,26 +252,10 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
     [sourceId],
   );
 
-  // Debounced server progress writer (5 s).
-  const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const writeProgress = useCallback(
-    (state: { page?: number; chunkPos?: number; percent?: number }) => {
-      if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
-      progressTimerRef.current = setTimeout(() => {
-        void putReadingState(sourceId, state).catch(() => {});
-      }, READING_STATE_DEBOUNCE_MS);
-    },
-    [putReadingState, sourceId],
-  );
-  // Cancel any pending progress write when the source changes (in-place route
-  // swap) OR on unmount — `[sourceId]` so a stale write never lands on the next
-  // source. (`[]` only fired on unmount, leaking the timer across a route swap.)
-  useEffect(
-    () => () => {
-      if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
-    },
-    [sourceId],
-  );
+  const progressWriter = useMemo(() => createReadingProgressWriter(sourceId, useNN.getState().profile?.userId,
+    () => useNN.getState().profile?.userId, putReadingState), [sourceId, putReadingState]);
+  const writeProgress = progressWriter.write;
+  useEffect(() => () => progressWriter.flush(), [progressWriter]);
 
   const onPdfPageChange = useCallback(
     (page: number, numPages: number) => {
@@ -452,40 +445,6 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
     textReaderRef.current?.scrollToChunk(p.chunkId, p.pos);
   }, [readerMode, loaded]);
 
-  // ── «Спросить» handoff (Р7) ──────────────────────────────────────────────────────
-  const runHandoff = useCallback(
-    async (notebooks: HandoffNotebook[], quote: string) => {
-      const plan = planHandoff(notebooks);
-      const go = (notebookId: string) => {
-        try {
-          sessionStorage.setItem(
-            prefillKey(notebookId),
-            formatHandoffPrefill(quote, source?.title ?? null),
-          );
-        } catch {
-          /* best-effort */
-        }
-        router.push(`/notebooks/${notebookId}`);
-      };
-      if (plan.kind === 'single') {
-        go(plan.notebookId);
-      } else if (plan.kind === 'pick') {
-        // The picker UI is rendered from handoffQuote — surface it.
-        setHandoffQuote(quote);
-      } else {
-        // No notebook — create one named after the source, attach, then go.
-        try {
-          const nb = await createNotebook(source?.title ?? t('library.reader.handoffNewNotebook'));
-          await attachSources(nb.id, [sourceId]);
-          go(nb.id);
-        } catch {
-          raiseToast({ kind: 'error', title: t('library.reader.handoffFailed') });
-        }
-      }
-    },
-    [router, source, sourceId, createNotebook, attachSources, t],
-  );
-
   // ── L4 §8.4 — «Экспорт в Markdown» ────────────────────────────────────────────
   // Pure assembly (marks + ink markedText come from the reader) → blob download.
   const onExportMarkup = useCallback(
@@ -509,21 +468,15 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
     [source, detail, t],
   );
 
-  const onAskChat = useCallback(
-    (quote: string) => {
-      // Strip a leading "> " block marker the reader prepends — we re-format.
-      const clean = quote.replace(/^>\s?/gm, '').trim();
-      const nbs = (detail?.notebooks ?? []) as HandoffNotebook[];
-      if (nbs.length === 1) {
-        void runHandoff(nbs, clean);
-      } else if (nbs.length === 0) {
-        void runHandoff(nbs, clean);
-      } else {
-        setHandoffQuote(clean);
-      }
-    },
-    [detail, runHandoff],
-  );
+  const onAskChat = useCallback((quote: string, page: number) => {
+    const clean = quote.trim();
+    if (clean.length > ASSISTANT_CONTEXT_LIMITS.excerptChars) {
+      raiseToast({ kind: 'error', titleKey: 'assistant.contextLimit' });
+      return;
+    }
+    askAssistant({ ref: clean ? { kind: 'source_passage', id: sourceId, locator: { quote: clean, page } }
+      : { kind: 'source', id: sourceId }, ...(clean ? { prefill: t('notebooks.marks.selectionAskPrompt') } : {}) });
+  }, [sourceId, t]);
 
   // ── Render ────────────────────────────────────────────────────────────────────
   if (loaded && !source) {
@@ -564,7 +517,9 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
         coverUrl={detail?.coverUrl ?? null}
         cardCount={detail?.cardCount ?? 0}
         onOpenCards={() => setCardsDrawerOpen(true)}
-        onBack={() => router.push('/library')}
+        onNotes={() => setNotesOpen(true)}
+        onBack={origin?.onReturn ?? (() => router.push('/library'))}
+        backLabel={origin?.title}
         onDetails={() => router.push(`/library?focus=${sourceId}`)}
         t={t}
       />
@@ -589,6 +544,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
               ref={pdfReaderRef}
               sourceId={source.id}
               sourceName={source.title}
+              sourceVersion={new Date(source.updatedAt).toISOString()}
               initialPage={pendingPageRef.current}
               initialMarkId={pendingMarkRef.current}
               onMode={setReaderModePersisted}
@@ -607,6 +563,7 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
               source={source}
               getSourceChunks={getSourceChunks}
               textReaderRef={textReaderRef}
+              chatEnabled={chatEnabled}
               onPositionChange={onTextPositionChange}
               tocOpen={tocOpen}
               onToggleToc={onToggleToc}
@@ -617,27 +574,19 @@ export const LibraryReader = ({ sourceId }: { sourceId: string }) => {
         </div>
       </div>
 
-      {/* «Спросить» notebook picker (>1 notebook). */}
-      {handoffQuote != null && (
-        <HandoffPicker
-          quote={handoffQuote}
-          notebooks={(detail?.notebooks ?? []) as HandoffNotebook[]}
-          listNotebooks={listNotebooks}
-          onPick={(notebookId) => {
-            try {
-              sessionStorage.setItem(prefillKey(notebookId), formatHandoffPrefill(handoffQuote, source?.title ?? null));
-            } catch {
-              /* best-effort */
-            }
-            setHandoffQuote(null);
-            router.push(`/notebooks/${notebookId}`);
-          }}
-          onClose={() => setHandoffQuote(null)}
-          t={t}
-        />
-      )}
-
       {/* Cards drawer (L4 §8.4) — the «N карточек» badge in the header. */}
+      <Modal open={notesOpen} title={t('assistant.savedStudy')} closeLabel={t('actions.close')} onClose={() => setNotesOpen(false)}>
+        <div style={{ display: 'flex', gap: 8, padding: 8 }}>
+          <NNBtn size="sm" active={studyTab === 'notes'} onClick={() => setStudyTab('notes')}>{t('notebooks.marks.studyNotes')}</NNBtn>
+          <NNBtn size="sm" active={studyTab === 'annotations'} onClick={() => setStudyTab('annotations')}>{t('notebooks.marks.annotationNotes')}</NNBtn>
+          <NNBtn size="sm" active={studyTab === 'artifacts'} onClick={() => setStudyTab('artifacts')}>{t('notebooks.studio.listHeading')}</NNBtn>
+        </div>
+        <div style={{ height: '65dvh', minHeight: 240 }}>
+          <div hidden={studyTab !== 'notes'} style={{ height: '100%' }}><SourceNotesPanel key={sourceId} sourceId={sourceId} /></div>
+          {studyTab === 'annotations' && <div className="nn-scroll" style={{ height: '100%', overflow: 'auto' }}><SourceAnnotationNotes key={sourceId} sourceId={sourceId} onOpen={mark => { setNotesOpen(false); pdfReaderRef.current?.scrollToPage(mark.page, true); }}/></div>}
+          <div hidden={studyTab !== 'artifacts'} style={{ height: '100%' }}><SourceStudioPanel key={sourceId} sourceId={sourceId} chatEnabled={chatEnabled} /></div>
+        </div>
+      </Modal>
       {cardsDrawerOpen && (
         <CardsDrawer
           sourceId={sourceId}
@@ -659,7 +608,9 @@ const ReaderHeader = ({
   coverUrl,
   cardCount,
   onOpenCards,
+  onNotes,
   onBack,
+  backLabel,
   onDetails,
   t,
 }: {
@@ -668,7 +619,9 @@ const ReaderHeader = ({
   coverUrl: string | null;
   cardCount: number;
   onOpenCards: () => void;
+  onNotes: () => void;
   onBack: () => void;
+  backLabel?: string;
   onDetails: () => void;
   t: Tr;
 }) => {
@@ -681,8 +634,8 @@ const ReaderHeader = ({
 paddingLeft: 16 + wcoLeft, paddingRight: 16 + wcoRight,
     }}
   >
-    <NNBtn variant="ghost" size="sm" icon="chevl" onClick={onBack}>
-      {t('library.reader.back')}
+    <NNBtn variant="ghost" size="sm" icon="chevl" onClick={onBack} ariaLabel={backLabel ?? t('library.reader.back')}>
+      {backLabel ?? t('library.reader.back')}
     </NNBtn>
     {coverUrl && (
       // eslint-disable-next-line @next/next/no-img-element
@@ -753,6 +706,8 @@ paddingLeft: 16 + wcoLeft, paddingRight: 16 + wcoRight,
         {t('library.reader.cardsBadge', { n: cardCount })}
       </button>
     )}
+    {source && <AssistantAskButton object={{ kind: 'source', id: source.id }} compact />}
+    {source && <NNBtn variant="ghost" size="sm" icon="note" ariaLabel={t('notebooks.notes.heading')} title={t('notebooks.notes.heading')} onClick={onNotes} />}
     <ThemeToggle />
     <NNBtn variant="ghost" size="sm" icon="dots" ariaLabel={t('library.reader.details')} title={t('library.reader.details')} onClick={onDetails} />
   </div>
@@ -766,6 +721,7 @@ const TextReaderShell = ({
   getSourceChunks,
   textReaderRef,
   onPositionChange,
+  chatEnabled,
   tocOpen,
   onToggleToc,
   onMode,
@@ -778,6 +734,7 @@ const TextReaderShell = ({
     limit?: number,
   ) => Promise<{ items: SourceChunkRow[]; total: number; nextFrom: number | null }>;
   textReaderRef: React.RefObject<TextChunkReaderHandle | null>;
+  chatEnabled: boolean;
   onPositionChange: (pos: number, total: number) => void;
   tocOpen: boolean;
   onToggleToc: () => void;
@@ -816,6 +773,8 @@ const TextReaderShell = ({
       <TextChunkReader
         ref={textReaderRef}
         sourceId={source.id}
+        sourceName={source.title}
+        chatEnabled={chatEnabled}
         getSourceChunks={getSourceChunks}
         onPositionChange={onPositionChange}
         t={t}
@@ -913,87 +872,6 @@ const TocPanel = ({
     </div>
   </div>
 );
-
-// ── «Спросить» handoff picker (>1 notebook) ───────────────────────────────────
-
-const HandoffPicker = ({
-  quote,
-  notebooks,
-  listNotebooks,
-  onPick,
-  onClose,
-  t,
-}: {
-  quote: string;
-  notebooks: HandoffNotebook[];
-  listNotebooks: () => Promise<{ id: string; title: string }[]>;
-  onPick: (notebookId: string) => void;
-  onClose: () => void;
-  t: Tr;
-}) => {
-  // Prefer the source's own attached notebooks; fall back to ALL notebooks if
-  // the detail hadn't loaded (defensive — picker still works).
-  const [rows, setRows] = useState<HandoffNotebook[] | null>(notebooks.length > 0 ? notebooks : null);
-  useEffect(() => {
-    if (rows !== null) return;
-    void (async () => {
-      try {
-        setRows(await listNotebooks());
-      } catch {
-        setRows([]);
-      }
-    })();
-  }, [rows, listNotebooks]);
-
-  return (
-    <>
-      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--scrim)' }} />
-      <div style={{ position: 'fixed', inset: 0, zIndex: 91, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, pointerEvents: 'none' }}>
-        <div
-          style={{
-            width: 380,
-            maxWidth: '100%',
-            maxHeight: '70vh',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-            pointerEvents: 'auto',
-            background: 'var(--surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--r-lg)',
-            padding: 16,
-            boxShadow: 'var(--shadow-lg)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0, flex: 1, fontFamily: 'var(--font-sans)' }}>
-              {t('library.reader.handoffPick')}
-            </h3>
-            <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.reader.tocClose')} onClick={onClose} />
-          </div>
-          <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: 0, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-            «{quote}»
-          </p>
-          {rows === null ? (
-            <NNSkeleton style={{ height: 80 }} />
-          ) : rows.length === 0 ? (
-            <p style={{ fontSize: 12.5, color: 'var(--text-dim)', margin: 0 }}>{t('library.reader.handoffEmpty')}</p>
-          ) : (
-            <div className="nn-scroll" style={{ display: 'flex', flexDirection: 'column', gap: 3, overflowY: 'auto' }}>
-              {rows.map((nb) => (
-                <button key={nb.id} type="button" onClick={() => onPick(nb.id)} className="nn-lib-nb-link">
-                  <NNIcon name="doc" size={13} color="var(--text-muted)" />
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>{nb.title}</span>
-                  <NNIcon name="chevr" size={11} color="var(--text-dim)" />
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </>
-  );
-};
 
 // ── Cards drawer (L4 §8.4 — «N карточек» list from GET /sources/:id/cards) ─────
 
@@ -1105,3 +983,5 @@ const CardsDrawer = ({
     </>
   );
 };
+
+export const LibraryReader = SourceStudyWorkspace;

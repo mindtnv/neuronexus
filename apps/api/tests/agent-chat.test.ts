@@ -13,6 +13,7 @@
 // Same in-process / injection harness as chat.test.ts (NODE_ENV=test forces the
 // real AI flags off; the injected fakes flip `isChatEnabled()` on).
 
+import { newUuidV7 } from '@neuronexus/shared';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { db, messages as messagesTable } from '@neuronexus/db';
 import { asc, eq } from 'drizzle-orm';
@@ -488,7 +489,7 @@ describe('agentic chat — per-deck retrieval scope (S7 / AC3.7)', () => {
   });
 
   test('foreign deckId → empty scope: no cards returned (NOT a global fallback)', async () => {
-    const foreignDeck = '00000000-0000-0000-0000-0000000000ff';
+    const foreignDeck = newUuidV7();
     let card: { id: string; renderText: string };
     const embed = (texts: string[]): Promise<number[][]> =>
       Promise.resolve(texts.map((t) => (t === 'find it' ? vectorFor(card.renderText) : vectorFor(t))));

@@ -378,3 +378,28 @@ describe('notebook notes — scoping invariant', () => {
     expect(aCount).toBe(1);
   });
 });
+
+test('shared note listing preserves the notebook page limit and legacy excerpt format',async()=>{
+  await resetTestDb();
+  const {env}=await import('../src/env');const {NOTE_EXCERPT_MAX}=await import('@neuronexus/shared');
+  const {cookie,userId}=await signUpAndCookie(app,uniqueEmail());
+  const notebook=await createNotebook(cookie);
+  await db.insert(notebookNotes).values(Array.from({length:env.ai.LIBRARY_PAGE+1},(_,index)=>({
+    userId,notebookId:notebook.id,title:`Note ${index}`,content:index===0?'x'.repeat(NOTE_EXCERPT_MAX+20):'Short note',pinned:index===0,
+  })));
+  const response=await callApp(app,'GET',`/notebooks/${notebook.id}/notes`,{cookie});
+  expect(response.status).toBe(200);const result=await response.json<{items:NoteRow[];nextOffset?:number}>();
+  expect(result.items).toHaveLength(env.ai.LIBRARY_PAGE);expect(result.nextOffset).toBeUndefined();
+  expect(result.items[0]!.excerpt).toBe(`${'x'.repeat(NOTE_EXCERPT_MAX)}…`);
+});
+
+test('direct note reading requires both the owned notebook and its owned note',async()=>{
+  await resetTestDb();
+  const a=await signUpAndCookie(app,uniqueEmail()),b=await signUpAndCookie(app,uniqueEmail());
+  const notebook=await createNotebook(a.cookie),other=await createNotebook(a.cookie);
+  const [note]=await db.insert(notebookNotes).values({userId:a.userId,notebookId:notebook.id,title:'2026-09-21',content:'Exact note content'}).returning();
+  const read=await callApp(app,'GET',`/notebooks/${notebook.id}/notes/${note!.id}`,{cookie:a.cookie});
+  expect(read.status).toBe(200);expect((await read.json<any>()).content).toBe('Exact note content');
+  expect((await callApp(app,'GET',`/notebooks/${other.id}/notes/${note!.id}`,{cookie:a.cookie})).status).toBe(404);
+  expect((await callApp(app,'GET',`/notebooks/${notebook.id}/notes/${note!.id}`,{cookie:b.cookie})).status).toBe(404);
+});

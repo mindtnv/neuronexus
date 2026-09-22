@@ -94,6 +94,7 @@ export interface MessageVM {
   model?: string;
   /** Composer @-mentions on a user message (C7) — rendered as chips under the bubble. */
   mentions?: MessageMention[];
+  context?: import('@neuronexus/shared').AssistantContextSnapshot;
   /** Composer attachments on a user message — image previews + file chips. */
   attachments?: MessageAttachment[];
 }
@@ -110,6 +111,7 @@ export interface PersistedMessageRow {
   usage?: MessageUsage | null;
   model?: string | null;
   mentions?: MessageMention[] | null;
+  context?: import('@neuronexus/shared').AssistantContextSnapshot | null;
   attachments?: MessageAttachment[] | null;
 }
 
@@ -132,6 +134,9 @@ export const TOOL_LABEL_KEY: Record<string, string> = {
   search_library: 'chat.tool.search_library',
   get_library_item: 'chat.tool.get_library_item',
   read_source_chunks: 'chat.tool.read_source_chunks',
+  read_source: 'chat.tool.read_source',
+  search_source: 'chat.tool.search_source',
+  list_marked_passages: 'chat.tool.list_marked_passages',
   get_source_cards: 'chat.tool.get_source_cards',
   get_source_marks: 'chat.tool.get_source_marks',
   get_source_annotations: 'chat.tool.get_source_annotations',
@@ -162,6 +167,12 @@ export const TOOL_LABEL_KEY: Record<string, string> = {
   create_url_source: 'chat.tool.create_url_source',
   list_notes: 'chat.tool.list_notes',
   read_note: 'chat.tool.read_note',
+  read_context_object: 'chat.tool.read_context_object',
+  list_source_notes: 'chat.tool.list_source_notes',
+  get_source_note: 'chat.tool.get_source_note',
+  list_source_artifacts: 'chat.tool.list_source_artifacts',
+  get_source_artifact: 'chat.tool.get_source_artifact',
+  list_source_quiz_attempts: 'chat.tool.list_source_quiz_attempts',
 
   search_cards: 'chat.tool.search_cards',
   web_search: 'chat.tool.web_search',
@@ -180,6 +191,7 @@ export const TOOL_LABEL_KEY: Record<string, string> = {
   forget: 'chat.tool.forget',
   // Notebook write tool (Р14 / N3) — saves a note into the notebook.
   save_note: 'chat.tool.save_note',
+  save_source_note: 'chat.tool.save_source_note',
 };
 
 // Tool names that have a `chat.tool.<name>_n` plural key for contiguous-run header
@@ -211,6 +223,9 @@ export const TOOL_ICON_KEY: Record<string, IconName> = {
   search_library: 'search',
   get_library_item: 'doc',
   read_source_chunks: 'doc',
+  read_source: 'doc',
+  search_source: 'search',
+  list_marked_passages: 'edit',
   get_source_cards: 'cards',
   get_source_marks: 'edit',
   get_source_annotations: 'edit',
@@ -241,6 +256,12 @@ export const TOOL_ICON_KEY: Record<string, IconName> = {
   create_url_source: 'link',
   list_notes: 'note',
   read_note: 'note',
+  read_context_object: 'doc',
+  list_source_notes: 'doc',
+  get_source_note: 'doc',
+  list_source_artifacts: 'doc',
+  get_source_artifact: 'doc',
+  list_source_quiz_attempts: 'doc',
 
   get_card: 'brain',
   card_progress: 'brain',
@@ -257,6 +278,7 @@ export const TOOL_ICON_KEY: Record<string, IconName> = {
   set_due: 'clock',
   forget: 'sync',
   save_note: 'doc',
+  save_source_note: 'doc',
 };
 
 /** Resolve a tool's icon, falling back to `bolt` for unknown tool names. */
@@ -326,6 +348,7 @@ export const WRITE_SRS_TOOL_NAMES = new Set([
   'set_due',
   'forget',
   'save_note',
+  'save_source_note',
 ]);
 
 // ── Persisted-row → view-model reconstruction (reload) ───────────────────────
@@ -424,6 +447,7 @@ export function reconstructMessages(rows: PersistedMessageRow[]): MessageVM[] {
       usage: row.usage ?? undefined,
       model: row.model ?? undefined,
       mentions: row.mentions ?? undefined,
+      context: row.context ?? undefined,
       attachments: row.attachments ?? undefined,
     });
     turnVM = null;

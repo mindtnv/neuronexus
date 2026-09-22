@@ -21,7 +21,8 @@ import { NNSelect, type NNSelectOption } from '@/components/nn-select';
 import { quickCard, suggestCard } from '@/lib/pdf-annotations';
 import { raiseToast } from '@/components/toasts';
 import type { Deck, QuickCardResult } from '@/lib/types';
-import type { MarkRect } from '@neuronexus/shared';
+import type { MarkRect, SourceTextSelection } from '@neuronexus/shared';
+import { InlineDeckCreate } from '../inline-deck-create';
 
 const DECK_KEY = 'nn:nb:quickdeck';
 
@@ -32,8 +33,10 @@ export interface QuickCardDialogProps {
   onClose: () => void;
   sourceId: string;
   sourceName: string;
+  sourceVersion?: string;
   page?: number;
   quote?: string;
+  textSelection?: SourceTextSelection;
   prefillFront?: string;
   prefillBack?: string;
   /** W4: marquee/selection rects so the server can plant a card marker. */
@@ -50,8 +53,10 @@ export function QuickCardDialog({
   onClose,
   sourceId,
   sourceName,
+  sourceVersion,
   page,
   quote,
+  textSelection,
   prefillFront,
   prefillBack,
   rects,
@@ -141,6 +146,8 @@ export function QuickCardDialog({
         back: back.trim(),
         page,
         quote,
+        textSelection,
+        ...(sourceVersion && page ? { pdfSelection: { version: 1, sourceVersion, page, quote: quote ?? '' } } : {}),
         rects,
       });
       const firstCardId = result.cardIds[0] ?? '';
@@ -152,7 +159,7 @@ export function QuickCardDialog({
     } finally {
       setSubmitting(false);
     }
-  }, [sourceId, deckId, front, back, page, quote, rects, submitting, onCreated, onClose]);
+  }, [sourceId, sourceVersion, deckId, front, back, page, quote, textSelection, rects, submitting, onCreated, onClose]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
     if ((e.key === 'Enter' && (e.metaKey || e.ctrlKey))) {
@@ -270,6 +277,7 @@ export function QuickCardDialog({
               options={deckOptions}
               placeholder={t('notebooks.quickcard.deckPlaceholder')}
             />
+            <InlineDeckCreate onCreated={handleDeckChange} disabled={submitting} />
           </div>
 
           {/* Front */}

@@ -9,8 +9,8 @@
 // preset grid + a color palette.
 //
 //  • Opening a notebook navigates to `/notebooks/[id]` (the 3-panel workspace).
-//  • `/ai/status.notebooksEnabled === false` → a setup notice (degrade, never
-//    crash). The list itself works without AI; the gate mirrors M1.
+//  • Notebook organization and entry to readable sources are independent of AI
+//    availability. Individual AI features retain their own capability gates.
 //
 // The source-side exports (AddSourceForm / sourceIcon / statusTone / SourceRow /
 // mimeFor / NONTERMINAL / AddKind) are CONSUMED by notebook-workspace.tsx and
@@ -28,7 +28,6 @@ import {
 } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNBadge, NNInlineRefresh, NNLoadError, NNSkeleton } from '@/components/ui';
 import { TextInput, PageSurface } from '@/components/design-system/primitives';
-import { api, ok } from '@/lib/api';
 import { useNN } from '@/lib/store';
 import type { Notebook, NotebookCoverSource, Source } from '@/lib/types';
 import { useIsMobile } from '@/lib/use-breakpoint';
@@ -39,10 +38,6 @@ import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { useSessionResource } from '@/lib/session-resource';
 import { useAppNavigation } from '@/components/navigation';
-
-type AiStatus = {
-  notebooksEnabled: boolean;
-};
 
 type Tfn = (key: string, params?: Record<string, string | number>) => string;
 
@@ -206,19 +201,6 @@ export const NotebooksScreen = () => {
   const [search, setSearch] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
 
-  // ── AI status (degrade, never crash) ────────────────────────────────────────
-  const fetchStatus = useCallback(
-    async () => (await ok(await (api as any).ai.status.get())) as AiStatus,
-    [],
-  );
-  const statusResource = useSessionResource({
-    key: 'notebooks:ai-status',
-    fetcher: fetchStatus,
-    keepPreviousData: true,
-  });
-  const status = statusResource.data;
-  const statusLoaded = status !== null;
-
   // ── Notebook list (re-fetched per archive toggle) ─────────────────────────────
   const fetchNotebooks = useCallback(
     () => listNotebooks({ archived }),
@@ -227,7 +209,6 @@ export const NotebooksScreen = () => {
   const notebooksResource = useSessionResource({
     key: `notebooks:list:${archived ? 'archived' : 'active'}`,
     scope: 'notebooks:list',
-    enabled: status?.notebooksEnabled === true,
     fetcher: fetchNotebooks,
     keepPreviousData: true,
   });
@@ -364,50 +345,6 @@ export const NotebooksScreen = () => {
     },
     [confirm, t, deleteNotebook],
   );
-
-  // ── Render: setup notice when notebooks are unconfigured ──────────────────────
-  if (statusResource.status === 'error' && !status) {
-    return (
-      <div style={{ padding: isMobile ? 16 : 32, maxWidth: 640, margin: '0 auto' }}>
-        <NNLoadError
-          title={t('toasts.error')}
-          description={statusResource.error?.safeMessage}
-          retryLabel={t('notebooks.overview.retry')}
-          requestId={statusResource.error?.requestId}
-          onRetry={statusResource.refresh}
-        />
-      </div>
-    );
-  }
-
-  if (statusLoaded && status && !status.notebooksEnabled) {
-    return (
-      <div style={{ padding: isMobile ? 16 : 32, maxWidth: 640, margin: '0 auto' }}>
-        <NNCard padding={24} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <NNIcon name="doc" size={20} color="var(--violet-400)" />
-            <h2
-              style={{
-                fontSize: 18,
-                fontWeight: 700,
-                fontFamily: 'var(--font-sans)',
-                color: 'var(--text)',
-                margin: 0,
-              }}
-            >
-              {t('notebooks.setup.title')}
-            </h2>
-          </div>
-          <p style={{ fontSize: 14, lineHeight: 1.5, color: 'var(--text-muted)', margin: 0 }}>
-            {t('notebooks.setup.body')}
-          </p>
-          <p style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text-dim)', margin: 0 }}>
-            {t('notebooks.setup.docsHint')}
-          </p>
-        </NNCard>
-      </div>
-    );
-  }
 
   // ── Render: notebook grid list ────────────────────────────────────────────────
   // «Продолжить» = the first notebook of the (server-sorted pinned/recency) list.

@@ -8,13 +8,15 @@
 //
 //  • Data is screen-local (like /notebooks) — thin store pass-throughs, no
 //    bootstrap mirror. Non-terminal ingest statuses poll via useSourceStatus.
-//  • No covers yet (L1) — a deterministic kind-placeholder (initials + colour +
-//    kind icon) stands in (plan §6.2 / task).
+//  • PDF covers are prepared sequentially while browsing; placeholders remain
+//    available during preparation or if rendering fails.
 //  • A 409 duplicate_source on upload opens "Already in your library: open?";
 //    409 library_full raises a toast.
 //
 // Inline styles + CSS vars + ui.tsx primitives only (no Tailwind).
 
+import { LibraryIngestIndicator } from '@/components/library-ingest-indicator';
+import { useLibraryPdfCovers } from '@/lib/library-pdf-cover';
 import React, { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { IngestErrorCode, SourceKind, SourceMime, SourceStatus } from '@neuronexus/shared';
@@ -41,7 +43,7 @@ import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { isNonTerminal, useSourceStatus } from '@/lib/use-source-status';
 import { useSessionResource } from '@/lib/session-resource';
-import { useAppNavigation } from '@/components/navigation';
+import { AppLink, useAppNavigation } from '@/components/navigation';
 
 type Tr = (key: string, params?: Record<string, string | number>) => string;
 type ViewMode = 'grid' | 'list';
@@ -265,30 +267,33 @@ export const LibraryScreen = () => {
     });
   }, [shelfResource.mutate]);
 
+  useLibraryPdfCovers(items, updated => {
+    setItems(previous => previous.map(item => item.id === updated.id ? { ...item, ...updated } : item));
+    setShelf(previous => previous.map(item => item.id === updated.id ? { ...item, ...updated } : item));
+  });
+
   // ── Poll non-terminal ingests (shared hook) ────────────────────────────────────
-  const applyFresh = useCallback((fresh: { id: string; status: LibraryItem['status'] }[]) => {
-    // The poll uses GET /sources/:id which returns the M1 source shape; merge only
-    // the volatile ingest fields back into the richer library row.
+  const applyFresh = useCallback((fresh: LibraryItem[]) => {
+    // Poll the complete library row so progress, covers and metadata arrive together.
     const byId = new Map(fresh.map((s) => [s.id, s]));
     setItems((prev) =>
       prev.map((it) => {
         const f = byId.get(it.id);
-        return f ? { ...it, status: f.status } : it;
+        return f ? { ...it, ...f } : it;
       }),
     );
     setShelf((prev) =>
       prev.map((it) => {
         const f = byId.get(it.id);
-        return f ? { ...it, status: f.status } : it;
+        return f ? { ...it, ...f } : it;
       }),
     );
-  }, []);
+  }, [setItems, setShelf]);
   useSourceStatus({
     items,
     fetchOne: async (id) => {
       try {
-        const src = await getSource(id);
-        return { id: src.id, status: src.status };
+        return await getLibraryItem(id);
       } catch {
         return null;
       }
@@ -695,6 +700,7 @@ const LibraryHeader = ({
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
       <SegmentedControl label={t('library.header.searchPlaceholder')} value={searchMode}
         onChange={setSearchMode} options={[{ value: 'title', label: t('library.search.byTitle') }, { value: 'content', label: t('library.search.byContent') }]} />
+      <AppLink className="reomi-button" data-variant="ghost" href="/library/study">{t('assistant.savedStudy')}</AppLink>
       <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
         <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
           <NNIcon name="search" size={15} color="var(--text-dim)" />
@@ -894,6 +900,7 @@ const CoverPlaceholder = ({ item, size, aspect }: { item: LibraryItem | { id: st
   // generated placeholder (state flips `failed` so the img is replaced).
   const [failed, setFailed] = useState(false);
   const coverUrl = 'coverUrl' in item ? item.coverUrl : null;
+  useEffect(() => setFailed(false), [coverUrl]);
   const showImage = Boolean(coverUrl) && !failed;
   return (
     <div
@@ -947,7 +954,8 @@ const LibraryCard = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onOpen
     <button type="button" onClick={onOpen} className="nn-lib-card">
       <div style={{ position: 'relative' }}>
         <CoverPlaceholder item={item} aspect />
-        {notReady && (
+        {['pending', 'parsing', 'indexing'].includes(item.status) && <LibraryIngestIndicator item={item} t={t} />}
+        {notReady && !['pending', 'parsing', 'indexing'].includes(item.status) && (
           <span className="reomi-library-status" title={statusLabel}>
             <NNBadge tone={statusTone(item.status)} size="xs">{statusLabel}</NNBadge>
           </span>

@@ -249,6 +249,8 @@ export function isSourceCitation(c: Citation): c is SourceCitation {
  * order. Server-side auto-provenance (M3) links created cards to these chunks.
  */
 export interface MessageGrounding {
+  version?: 1;
+  evidence?: import('./card-evidence').ChunkCardEvidenceSnapshot[];
   chunkIds: string[];
 }
 
@@ -258,7 +260,10 @@ export interface MessageGrounding {
 
 /** Request body for POST /chat/conversations/:id/stream */
 export interface ChatStreamRequest {
+  policySelection?: import('./assistant-context').AssistantContextPolicy;
   content: string;
+  context?: import('./assistant-context').AssistantContextInput;
+  expectedContextRevision?: number;
   /** Optional model id; validated server-side against the CHAT_MODELS allow-list. */
   model?: string;
   /** Optional per-turn deck scope (AC3.7) — constrains card retrieval to a deck (subtree). */
@@ -343,6 +348,7 @@ export interface ConfirmImpact {
     title?: string;
     fields: { field: string; before?: string; after?: string }[];
     affected?: { kind: string; count: number }[];
+    retained?: { kind: string; count: number }[];
     destructive?: boolean;
   };
 
@@ -358,6 +364,7 @@ export interface ConfirmImpact {
   /** edit_card: proposed `suspended` value when part of the args. */
   suspendedChange?: boolean;
   /** create_card: proposed field values (capped ~300 chars each). */
+  cardEvidence?: import('./card-evidence').CardEvidenceSnapshot[][];
   proposedFields?: { field: string; value: string }[];
   /**
    * create_card batch (`cards: [...]`): per-card proposed field values, one entry
@@ -439,6 +446,7 @@ export interface ToolCallRecord {
 
 /** Discriminated union of SSE frames emitted by the chat stream endpoint. */
 export type ChatStreamEvent =
+  | { type: 'context'; context: import('./assistant-context').AssistantContextSnapshot }
   | { type: 'token'; delta: string }
   | { type: 'citation'; citations: Citation[] }
   | { type: 'done'; messageId: string }

@@ -18,7 +18,13 @@ import {
   vector,
 } from 'drizzle-orm/pg-core';
 import type {
+  SourceTextSelection,
+  AssistantContextPolicy,
+  AssistantContextSnapshot,
+  AssistantObjectKind,
+  AssistantObjectSnapshot,
   CardTemplate,
+  CardEvidenceSnapshot,
   Citation,
   FieldValues,
   MarkRect,
@@ -517,13 +523,12 @@ export const conversations = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     title: text('title'),
-    // NotebookLM workspace binding (M2): a notebook-bound thread chats grounded
-    // on THAT notebook's sources. NULL = ordinary global chat thread. CASCADE:
-    // deleting a notebook removes its threads (messages cascade via the
-    // conversation FK; card_sources.conversation_id/message_id go SET NULL via
-    // their own FKs — created cards always SURVIVE). The scope is derived from
-    // THIS column server-side, never from a request body.
-    notebookId: uuid('notebook_id').references(() => notebooks.id, { onDelete: 'cascade' }),
+    // Legacy notebook binding remains readable; durable typed context below
+    // survives deletion of its target. Deleting a notebook never deletes chat.
+    notebookId: uuid('notebook_id').references(() => notebooks.id, { onDelete: 'set null' }),
+    contextPolicy: text('context_policy').notNull().$type<AssistantContextPolicy>().default('focus'),
+    contextVersion: integer('context_version').notNull().default(0),
+    contextRevision: integer('context_revision').notNull().default(0),
     // Pinned threads sort above the date groups. Pin toggles do NOT bump
     // `updatedAt` (recency must reflect actual conversation activity).
     pinned: boolean('pinned').notNull().default(false),
@@ -540,8 +545,29 @@ export const conversations = pgTable(
     index('conversations_user_updated_idx').on(t.userId, t.updatedAt.desc()),
     // Notebook thread listing: GET /chat/conversations?notebookId=… (M2).
     index('conversations_user_notebook_idx').on(t.userId, t.notebookId),
+    index('conversations_user_pinned_updated_id_idx').on(t.userId, t.pinned.desc(), t.updatedAt.desc(), t.id.desc()),
+    check('conversations_context_policy_check', sql`${t.contextPolicy} IN ('focus', 'strict')`),
+    check('conversations_context_revision_check', sql`${t.contextRevision} >= 0 AND ${t.contextVersion} IN (0, 1)`),
   ],
 );
+
+// Polymorphic targets deliberately have no FK: the original context remains
+// identifiable after deletion. The resolver checks current owner access.
+export const conversationContexts = pgTable('conversation_contexts', {
+  id: uuid('id').primaryKey().default(sql`uuidv7()`),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  conversationId: uuid('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull().$type<AssistantObjectKind>(),
+  objectId: uuid('object_id').notNull(),
+  refKey: text('ref_key').notNull(),
+  snapshot: jsonb('snapshot').notNull().$type<AssistantObjectSnapshot>(),
+  position: integer('position').notNull(),
+}, t => [
+  uniqueIndex('conversation_contexts_ref_uq').on(t.conversationId, t.refKey),
+  index('conversation_contexts_user_object_idx').on(t.userId, t.kind, t.objectId, t.conversationId),
+  index('conversation_contexts_order_idx').on(t.conversationId, t.position),
+  check('conversation_contexts_position_check', sql`${t.position} >= 0 AND ${t.position} < 16`),
+]);
 
 // ── messages ────────────────────────────────────────────────────────────────────
 // One turn in a conversation. `citations` carries the resolved source cards for
@@ -588,6 +614,8 @@ export const messages = pgTable(
     // `content` stays clean — the <mentioned_cards> block is appended to the
     // model-facing content at history-build time.
     mentions: jsonb('mentions').$type<MessageMention[]>(),
+    // Exact per-turn references/policy, independent of later route/pin changes.
+    context: jsonb('context').$type<AssistantContextSnapshot>(),
     // Composer file attachments (user rows only): image refs (`/m/<uuid>` token,
     // server-resolved from the user-scoped media row) and inline text files.
     // Model-facing parts/blocks are built at history time; content stays clean.
@@ -656,9 +684,11 @@ export const notebookNotes = pgTable(
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
-    notebookId: uuid('notebook_id')
-      .notNull()
-      .references(() => notebooks.id, { onDelete: 'cascade' }),
+    ownerKind: text('owner_kind').notNull().default('notebook').$type<'notebook' | 'source'>(),
+    notebookId: uuid('notebook_id').references(() => notebooks.id, { onDelete: 'cascade' }),
+    sourceId: uuid('source_id').references(() => sources.id, { onDelete: 'set null' }),
+    sourceOriginId: uuid('source_origin_id'),
+    sourceOriginTitle: text('source_origin_title'),
     title: text('title').notNull(), // ≤NOTE_TITLE_MAX (API)
     content: text('content').notNull(), // markdown, ≤NOTE_CONTENT_MAX (API)
     kind: text('kind').notNull().default('manual'), // 'manual' | 'answer'
@@ -672,6 +702,15 @@ export const notebookNotes = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check('notebook_notes_owner_check', sql`(
+      (${t.ownerKind} = 'notebook' AND ${t.notebookId} IS NOT NULL AND ${t.sourceId} IS NULL AND ${t.sourceOriginId} IS NULL AND ${t.sourceOriginTitle} IS NULL)
+      OR (${t.ownerKind} = 'source' AND ${t.notebookId} IS NULL AND ${t.sourceOriginId} IS NOT NULL
+        AND ${t.sourceOriginTitle} IS NOT NULL AND length(${t.sourceOriginTitle}) BETWEEN 1 AND 200
+        AND (${t.sourceId} IS NULL OR ${t.sourceId} = ${t.sourceOriginId}))
+    )`),
+    index('notebook_notes_source_origin_idx').on(t.userId, t.sourceOriginId, t.updatedAt.desc()),
+    index('notebook_notes_retained_idx').on(t.userId, t.updatedAt.desc(), t.id)
+      .where(sql`${t.ownerKind} = 'source' AND ${t.sourceId} IS NULL`),
     // Per-notebook listing: pinned-first, recency-second.
     index('notebook_notes_nb_pinned_updated_idx').on(
       t.notebookId,
@@ -698,9 +737,11 @@ export const notebookArtifacts = pgTable(
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
-    notebookId: uuid('notebook_id')
-      .notNull()
-      .references(() => notebooks.id, { onDelete: 'cascade' }),
+    ownerKind: text('owner_kind').notNull().default('notebook').$type<'notebook' | 'source'>(),
+    notebookId: uuid('notebook_id').references(() => notebooks.id, { onDelete: 'cascade' }),
+    sourceId: uuid('source_id').references(() => sources.id, { onDelete: 'set null' }),
+    sourceOriginId: uuid('source_origin_id'),
+    sourceOriginTitle: text('source_origin_title'),
     type: text('type').notNull(), // NOTEBOOK_ARTIFACT_TYPES
     status: text('status').notNull().default('pending'), // ARTIFACT_STATUSES
     title: text('title').notNull(),
@@ -713,6 +754,16 @@ export const notebookArtifacts = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check('notebook_artifacts_owner_check', sql`(
+      (${t.ownerKind} = 'notebook' AND ${t.notebookId} IS NOT NULL AND ${t.sourceId} IS NULL AND ${t.sourceOriginId} IS NULL AND ${t.sourceOriginTitle} IS NULL)
+      OR (${t.ownerKind} = 'source' AND ${t.notebookId} IS NULL AND ${t.sourceOriginId} IS NOT NULL
+        AND ${t.sourceOriginTitle} IS NOT NULL AND length(${t.sourceOriginTitle}) BETWEEN 1 AND 200
+        AND (${t.sourceId} IS NULL OR ${t.sourceId} = ${t.sourceOriginId}))
+    )`),
+    index('notebook_artifacts_source_origin_idx').on(t.userId, t.sourceOriginId, t.updatedAt.desc()),
+    index('notebook_artifacts_retained_idx').on(t.userId, t.updatedAt.desc(), t.id)
+      .where(sql`${t.ownerKind} = 'source' AND ${t.sourceId} IS NULL`),
+    index('notebook_artifacts_active_source_idx').on(t.userId, t.sourceOriginId).where(sql`${t.ownerKind} = 'source' AND ${t.status} IN ('pending','generating')`),
     index('notebook_artifacts_nb_created_idx').on(t.notebookId, t.createdAt.desc()),
     index('notebook_artifacts_user_idx').on(t.userId),
     // One generation per notebook at a time (Р16): the CAS concurrency check
@@ -897,6 +948,7 @@ export const cardSources = pgTable(
       onDelete: 'set null',
     }),
     messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
+    sourceSnapshot: jsonb('source_snapshot').$type<CardEvidenceSnapshot>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -950,6 +1002,28 @@ export const sourceAnnotations = pgTable(
     index('source_annotations_user_idx').on(t.userId),
   ],
 );
+
+// Text-source marks retain ordered render-text locators across chunk replacement.
+// Chunk IDs intentionally have no FK: reingestion marks anchors unavailable,
+// while the user's quote and note remain until source/mark deletion.
+export const sourceTextMarks = pgTable('source_text_marks', {
+  id: uuid('id').primaryKey().default(sql`uuidv7()`),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  sourceId: uuid('source_id').notNull().references(() => sources.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull().$type<'highlight' | 'note'>(),
+  color: text('color').notNull().default('yellow'),
+  selection: jsonb('selection').notNull().$type<SourceTextSelection>(),
+  note: text('note'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  index('source_text_marks_owner_source_idx').on(t.userId, t.sourceId, t.createdAt, t.id),
+  check('source_text_marks_kind_check', sql`${t.kind} IN ('highlight','note')`),
+  check('source_text_marks_color_check', sql`${t.color} IN ('yellow','green','blue','pink','violet')`),
+  check('source_text_marks_note_check', sql`${t.note} IS NULL OR length(${t.note}) <= 2000`),
+  check('source_text_marks_selection_check', sql`jsonb_typeof(${t.selection}) = 'object' AND ${t.selection}->>'version' = '1'
+    AND length(${t.selection}->>'quote') BETWEEN 1 AND 4000 AND octet_length(${t.selection}::text) <= 24000`),
+]);
 
 // ── source_marks ─────────────────────────────────────────────────────────────
 // Reading-workflow TEXT markup (M5): one row per text-selection highlight/note

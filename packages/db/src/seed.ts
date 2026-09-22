@@ -249,6 +249,7 @@ async function insertNote(
         deckId,
         noteId: noteRow.id,
         templateOrd: gen.templateOrd,
+        clozeNumber: gen.clozeNumber,
         renderText: gen.renderText,
         renderFrontText: gen.renderFrontText,
         renderBackText: gen.renderBackText,

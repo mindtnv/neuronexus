@@ -122,6 +122,7 @@ describe('model selector — /ai/status', () => {
     const keys = Object.keys(body).sort();
     expect(keys).toEqual(
       [
+        'assistant',
         'chatEnabled',
         'chatModel',
         'degraded',

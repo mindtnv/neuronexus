@@ -218,6 +218,41 @@
       "when": 1789919992113,
       "tag": "0030_colorful_ego",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1789986249598,
+      "tag": "0031_assistant_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1789999011998,
+      "tag": "0032_source_study_ownership",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1790001391277,
+      "tag": "0033_source_text_marks",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1790002011838,
+      "tag": "0034_card_evidence_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1790019349786,
+      "tag": "0035_legacy_card_evidence",
+      "breakpoints": true
     }
   ]
 }

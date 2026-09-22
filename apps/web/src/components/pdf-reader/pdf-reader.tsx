@@ -1,5 +1,8 @@
 'use client';
 
+import { NNIcon } from '@/components/ui';
+import { PdfPageVisibility } from '@/lib/pdf-page-visibility';
+
 // M4 — native PDF reader. Renders the ORIGINAL PDF client-side with pdf.js
 // (dynamically imported — never SSR'd), continuous vertical pages, Intersection
 // Observer virtualization (±2 pages, aspect-ratio placeholders), fit-width
@@ -42,6 +45,7 @@ import {
 import type { SourceMark } from '@/lib/types';
 import { useLocale } from '@/lib/i18n';
 import { InkLayer } from './ink-layer';
+import { MARK_COLOR_CSS } from './mark-colors';
 import { MarksPanel } from './marks-panel';
 import { QuickCardDialog } from './quick-card';
 import { HarvestWizard } from './harvest-wizard';
@@ -87,6 +91,7 @@ export interface PdfReaderHandle {
 interface PdfReaderProps {
   sourceId: string;
   sourceName: string;
+  sourceVersion?: string;
   /** Initial page to scroll to (1-based) — from a citation / ?page= deep link. */
   initialPage?: number;
   /** If defined, scroll + highlight this mark on mount (from ?mark= deep link). */
@@ -95,7 +100,7 @@ interface PdfReaderProps {
   /** Switch the reader panel back to the text-chunk view. */
   onMode: (m: 'pdf' | 'text') => void;
   /** Called by «Спросить» to prefill the chat composer with a quote block. */
-  onAskChat?: (quote: string) => void;
+  onAskChat?: (quote: string, page: number) => void;
   chatEnabled?: boolean;
   /** L2 — fires on page change (current page + total) so the library reader can
    *  persist server-side reading progress (debounced by the parent). */
@@ -133,7 +138,7 @@ const SAVE_DEBOUNCE_MS = 800;
 const POS_KEY = (id: string) => `nn:pdf:pos:${id}`;
 
 export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
-  ({ sourceId, sourceName, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false, onPageChange, tocOpen, tocAvailable, onToggleToc, onDocInfo, onExportMarkup }, ref) => {
+  ({ sourceId, sourceName, sourceVersion, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false, onPageChange, tocOpen, tocAvailable, onToggleToc, onDocInfo, onExportMarkup }, ref) => {
     const router = useAppNavigation();
     const { locale } = useLocale();
     const containerRef = useRef<HTMLDivElement>(null);
@@ -161,6 +166,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     const [saveState, setSaveState] = useState<SaveState>('idle');
     // M5 — marks state.
     const [marks, setMarks] = useState<SourceMark[]>([]);
+    const activeSource = useRef(sourceId); activeSource.current = sourceId;
     const [marksPanelOpen, setMarksPanelOpen] = useState(false);
     // Feature #2 — harvest wizard open flag.
     const [harvestOpen, setHarvestOpen] = useState(false);
@@ -168,11 +174,11 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     // from an existing mark («В карточку» in the Разметка panel), or from the
     // W3 smart-card marquee tool. rects are for the card marker (W4).
     const [quickCardState, setQuickCardState] = useState<
-      { page?: number; quote: string; prefillBack?: string; rects?: MarkRect[] } | null
+      { page?: number; quote: string; sourceVersion?: string; prefillBack?: string; rects?: MarkRect[] } | null
     >(null);
     // W3 — smart-card marquee drag state (null when not dragging).
     const [marquee, setMarquee] = useState<{
-      page: number;
+      page: number; pointerId: number;
       x0: number; y0: number; // CSS px within the page div, start corner
       x1: number; y1: number; // CSS px within the page div, current corner
     } | null>(null);
@@ -193,12 +199,16 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
           /* best-effort */
         }
       })();
-      return () => { cancelled = true; };
+      const refresh = (event: Event) => {
+        if ((event as CustomEvent<string>).detail !== sourceId) return;
+        fetchMarks(sourceId).then(items => { if (!cancelled) setMarks(items); }).catch(() => {});
+      };
+      window.addEventListener('nn:pdf-marks-changed', refresh);
+      return () => { cancelled = true; window.removeEventListener('nn:pdf-marks-changed', refresh); };
     }, [sourceId]);
 
     // ── M5 — Mark CRUD helpers ────────────────────────────────────────────────────
     const handleHighlight = useCallback(async (info: SelectionInfo, color: SourceMarkColor) => {
-      try {
         const mark = await createMark(sourceId, {
           page: info.page,
           kind: 'highlight',
@@ -206,14 +216,10 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
           rects: info.rects,
           color,
         });
-        setMarks((prev) => [...prev, mark]);
-      } catch {
-        /* ignore */
-      }
+        if (activeSource.current === sourceId) setMarks((prev) => [...prev, mark]);
     }, [sourceId]);
 
     const handleNote = useCallback(async (info: SelectionInfo, noteText: string) => {
-      try {
         const mark = await createMark(sourceId, {
           page: info.page,
           kind: 'note',
@@ -222,10 +228,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
           color: 'lime',
           note: noteText,
         });
-        setMarks((prev) => [...prev, mark]);
-      } catch {
-        /* ignore */
-      }
+        if (activeSource.current === sourceId) setMarks((prev) => [...prev, mark]);
     }, [sourceId]);
 
     const handleMarkDelete = useCallback(async (markId: string) => {
@@ -274,14 +277,14 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     }, []);
 
     const handleAsk = useCallback((info: SelectionInfo) => {
-      onAskChat?.(`> ${info.text}`);
+      onAskChat?.(info.text, info.page);
     }, [onAskChat]);
 
     // M5 — «В карточку» from an existing mark: open the QuickCardDialog with the
     // mark's quote prefilled into the Back and its page for provenance.
     const handleMarkToCard = useCallback((mark: SourceMark) => {
-      setQuickCardState({ page: mark.page, quote: mark.quote, prefillBack: mark.quote });
-    }, []);
+      setQuickCardState({ sourceVersion, page: mark.page, quote: mark.quote, prefillBack: mark.quote });
+    }, [sourceVersion]);
 
     // L4 §8.4 — gather marks + ink markedText (re-read the persisted annotations
     // so we get the geometric markedText, not just the stroke page numbers) and
@@ -297,6 +300,23 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
       }
       onExportMarkup({ marks, ink });
     }, [onExportMarkup, sourceId, marks]);
+
+    const ensureTextContent = useCallback(async (n: number): Promise<PdfTextItem[] | null> => {
+      const cached = textCacheRef.current.get(n);
+      if (cached) return cached;
+      const doc = docRef.current;
+      if (!doc) return null;
+      try {
+        const page = await doc.getPage(n);
+        const tc = await page.getTextContent();
+        const items = tc.items.filter((it: any) => typeof it.str === 'string') as PdfTextItem[];
+        if (docRef.current !== doc) return null;
+        textCacheRef.current.set(n, items);
+        return items;
+      } catch {
+        return null;
+      }
+    }, []);
 
     // W3 — smart-card marquee: on release, extract text under the rect, AI-suggest
     // a card, and open QuickCardDialog with both fields pre-filled.
@@ -319,7 +339,9 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
 
       // Extract text items under the marquee from the text cache.
       let extractedText = '';
-      const items = textCacheRef.current.get(page) ?? [];
+      const sourceAtStart = activeSource.current;
+      const items = await ensureTextContent(page) ?? [];
+      if (activeSource.current !== sourceAtStart) return;
       if (items.length > 0) {
         const pdfPageW = w;
         const pdfPageH = h;
@@ -345,12 +367,12 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
       const quote = extractedText;
       // Open dialog — AI will suggest on demand via «✨ Сформулировать».
       // If AI suggestion fails or there's no quote, user edits manually.
-      setQuickCardState({ page, quote, rects: [rect] });
+      setQuickCardState({ sourceVersion, page, quote, rects: [rect] });
       // Kick off AI suggestion proactively (result piped back via prefillFront/Back
       // when the dialog opens — but the dialog has its own «Сформулировать» button
       // so we just open blank and let user trigger it).
       // (No auto-suggest here — keeps it simple and avoids double calls.)
-    }, [pageDims, scale]);
+    }, [pageDims, scale, sourceVersion, ensureTextContent]);
 
     // W4 — open the cards browser focused on a card marker's linked card.
     const handleOpenCard = useCallback((cardId: string) => {
@@ -580,40 +602,21 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
       if (loadState !== 'ready' || numPages === 0) return;
       const root = containerRef.current;
       if (!root) return;
-      const io = new IntersectionObserver(
-        (entries) => {
-          setVisible((prev) => {
-            const next = new Set(prev);
-            let top: { page: number; ratio: number } | null = null;
-            for (const e of entries) {
-              const n = Number((e.target as HTMLElement).dataset.page);
-              if (!n) continue;
-              if (e.isIntersecting) {
-                next.add(n);
-                if (!top || e.intersectionRatio > top.ratio) top = { page: n, ratio: e.intersectionRatio };
-              }
-            }
-            // Inflate by ±2 around any visible page.
-            const inflated = new Set<number>();
-            for (const p of next) {
-              for (let d = -2; d <= 2; d++) {
-                const q = p + d;
-                if (q >= 1 && q <= numPages) inflated.add(q);
-              }
-            }
-            // Drop pages now far away to free canvases.
-            for (const e of entries) {
-              const n = Number((e.target as HTMLElement).dataset.page);
-              if (!e.isIntersecting && !inflated.has(n)) inflated.delete(n);
-            }
-            if (top) setCurrentPage(top.page);
-            return inflated;
-          });
-        },
-        { root, rootMargin: '600px 0px', threshold: [0, 0.25, 0.5, 1] },
-      );
-      for (const el of pageElsRef.current.values()) io.observe(el);
-      return () => io.disconnect();
+      const pages = new PdfPageVisibility(numPages);
+      const nearby = new IntersectionObserver(entries => {
+        setVisible(pages.updateNearby(entries.map(entry => ({
+          page: Number((entry.target as HTMLElement).dataset.page), visible: entry.isIntersecting,
+        }))));
+      }, { root, rootMargin: '600px 0px', threshold: 0 });
+      const viewport = new IntersectionObserver(entries => {
+        const page = pages.updateViewport(entries.map(entry => ({
+          page: Number((entry.target as HTMLElement).dataset.page),
+          area: entry.isIntersecting ? entry.intersectionRect.width * entry.intersectionRect.height : 0,
+        })));
+        if (page !== undefined) setCurrentPage(page);
+      }, { root, threshold: Array.from({ length: 11 }, (_, index) => index / 10) });
+      for (const element of pageElsRef.current.values()) { nearby.observe(element); viewport.observe(element); }
+      return () => { nearby.disconnect(); viewport.disconnect(); };
     }, [loadState, numPages]);
 
     // ── Render a page canvas when it becomes visible / scale changes ──────────────
@@ -943,22 +946,6 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
       [sourceId, pageDims],
     );
 
-    const ensureTextContent = useCallback(async (n: number): Promise<PdfTextItem[] | null> => {
-      const cached = textCacheRef.current.get(n);
-      if (cached) return cached;
-      const doc = docRef.current;
-      if (!doc) return null;
-      try {
-        const page = await doc.getPage(n);
-        const tc = await page.getTextContent();
-        const items = tc.items.filter((it: any) => typeof it.str === 'string') as PdfTextItem[];
-        textCacheRef.current.set(n, items);
-        return items;
-      } catch {
-        return null;
-      }
-    }, []);
-
     const commitStrokes = useCallback(
       (n: number, next: InkStroke[]) => {
         if (next.length > ANNOTATION_MAX_STROKES) next = next.slice(0, ANNOTATION_MAX_STROKES);
@@ -1035,13 +1022,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     // SOLID per-color fills — the alpha lives on the per-mark compositing GROUP
     // (opacity 0.38 + multiply), so rects overlapping inside one mark paint the
     // same flat color instead of double-tinting into dark slivers.
-    const MARK_SOLID: Record<string, string> = {
-      lime:   'var(--lime-500)',
-      amber:  'var(--amber-400)',
-      rose:   'var(--rose-400)',
-      sky:    'var(--sky-400)',
-      violet: 'var(--violet-400)',
-    };
+    const MARK_SOLID = MARK_COLOR_CSS;
 
     // ── Render ─────────────────────────────────────────────────────────────────────
     if (loadState === 'error') {
@@ -1138,12 +1119,14 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
                   // W3 — smart-card marquee pointer handlers (per-page).
                   const isSmartCard = tools.tool === 'smart-card';
                   const onPagePointerDown = isSmartCard ? (e: React.PointerEvent<HTMLDivElement>) => {
-                    if (e.pointerType === 'touch' && !tools.fingerDraw) return;
+                    if (!e.isPrimary || e.button !== 0 || (e.pointerType === 'touch' && !tools.fingerDraw)) return;
+                    e.preventDefault();
                     const rect = e.currentTarget.getBoundingClientRect();
                     const x = e.clientX - rect.left;
                     const y = e.clientY - rect.top;
                     e.currentTarget.setPointerCapture(e.pointerId);
-                    setMarquee({ page: n, x0: x, y0: y, x1: x, y1: y });
+                    marqueeRef.current = { page: n, pointerId: e.pointerId, x0: x, y0: y, x1: x, y1: y };
+                    setMarquee(marqueeRef.current);
                   } : tools.tool === 'hand' ? (e: React.PointerEvent<HTMLDivElement>) => {
                     // Hand mode: while a drag is live, stretch the page's
                     // endOfContent sentinel over the page (`.selecting`) so the
@@ -1162,14 +1145,16 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
                     window.addEventListener('pointercancel', clear);
                   } : undefined;
                   const onPagePointerMove = isSmartCard ? (e: React.PointerEvent<HTMLDivElement>) => {
-                    if (!marqueeRef.current || marqueeRef.current.page !== n) return;
+                    if (!marqueeRef.current || marqueeRef.current.page !== n || marqueeRef.current.pointerId !== e.pointerId) return;
                     const rect = e.currentTarget.getBoundingClientRect();
                     setMarquee((prev) => prev ? { ...prev, x1: e.clientX - rect.left, y1: e.clientY - rect.top } : null);
                   } : undefined;
                   const onPagePointerUp = isSmartCard ? (e: React.PointerEvent<HTMLDivElement>) => {
                     const m = marqueeRef.current;
+                    if (!m || m.page !== n || m.pointerId !== e.pointerId) return;
+                    marqueeRef.current = null;
                     setMarquee(null);
-                    if (!m || m.page !== n) return;
+                    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
                     const rect = e.currentTarget.getBoundingClientRect();
                     const x1 = e.clientX - rect.left;
                     const y1 = e.clientY - rect.top;
@@ -1190,30 +1175,30 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
                         width: w,
                         height: h,
                         cursor: isSmartCard ? 'crosshair' : undefined,
+                        touchAction: isSmartCard && tools.fingerDraw ? 'none' : undefined,
                       }}
                       onPointerDown={onPagePointerDown}
                       onPointerMove={onPagePointerMove}
                       onPointerUp={onPagePointerUp}
+                      onPointerCancel={() => { marqueeRef.current = null; setMarquee(null); }}
+                      onLostPointerCapture={() => { marqueeRef.current = null; setMarquee(null); }}
                     >
                       {/* z0: canvas slot */}
                       <div data-canvas-slot style={{ position: 'absolute', inset: 0 }} />
                       {/* z1: highlight rects layer (below text layer) */}
                       {isVisible && pageMarks.length > 0 && (
                         <div style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}>
+                          <div style={{ position: 'absolute', inset: 0, opacity: 0.38, mixBlendMode: 'multiply' }}>
                           {pageMarks.map((m) => (
-                            // ONE compositing group per mark: the children carry
-                            // SOLID colors and the group applies opacity+multiply
-                            // ONCE — overlapping rects inside a mark (bold vs
-                            // regular spans yield intersecting boxes) no longer
-                            // double-tint into dark slivers.
+                            // All marks share one compositing group, so intersections
+                            // within and between highlights never darken twice.
                             <div
                               key={m.id}
                               data-mark-id={m.id}
                               style={{
                                 position: 'absolute',
                                 inset: 0,
-                                mixBlendMode: 'multiply',
-                                opacity: 0.38,
+
                                 pointerEvents: 'none',
                               }}
                             >
@@ -1233,28 +1218,18 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
                               ))}
                             </div>
                           ))}
-                          {/* Note pin: 📝 icon at first rect's left for 'note' marks */}
+                          </div>
+                          {/* Accessible margin note previews stay opaque above the highlight paint. */}
                           {pageMarks.filter((m) => m.kind === 'note').map((m) => {
                             const r = m.rects[0];
                             if (!r) return null;
                             return (
-                              <span
-                                key={`pin-${m.id}`}
-                                title={m.note ?? m.quote}
-                                style={{
-                                  position: 'absolute',
-                                  left: r.x * w - 18,
-                                  top: r.y * h,
-                                  fontSize: 13,
-                                  pointerEvents: 'auto',
-                                  cursor: 'pointer',
-                                  userSelect: 'none',
-                                  lineHeight: 1,
-                                }}
-                                onClick={() => handleMarkClick(m)}
-                              >
-                                📝
-                              </span>
+                              <button type="button" key={`pin-${m.id}`} className="reomi-pdf-note-pin"
+                                aria-label={`${t('notebooks.marks.note')}: ${m.note ?? m.quote}`}
+                                style={{ left: Math.max(2, r.x * w - 28), top: r.y * h }}
+                                onClick={() => { handleMarkClick(m); setMarksPanelOpen(true); }}>
+                                <NNIcon name="edit" size={14}/><span>{m.note ?? m.quote}</span>
+                              </button>
                             );
                           })}
                           {/* W4 — card marker chip (lime card icon) at first rect's line for 'card' marks */}
@@ -1374,12 +1349,12 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             />
 
             {/* M5 — Selection popover (hand mode only). */}
-            <SelectionPopover
+            <SelectionPopover key={sourceId}
               pageEls={pageElsRef.current}
               handMode={tools.tool === 'hand'}
-              onHighlight={(info, color) => void handleHighlight(info, color)}
-              onNote={(info, noteText) => void handleNote(info, noteText)}
-              onCard={(info) => setQuickCardState({ page: info.page, quote: info.text, rects: info.rects })}
+              onHighlight={handleHighlight}
+              onNote={handleNote}
+              onCard={(info) => setQuickCardState({ sourceVersion, page: info.page, quote: info.text, rects: info.rects })}
               onAsk={handleAsk}
               t={t}
             />
@@ -1393,6 +1368,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             onClose={() => setQuickCardState(null)}
             sourceId={sourceId}
             sourceName={sourceName}
+            sourceVersion={quickCardState.sourceVersion}
             page={quickCardState.page}
             quote={quickCardState.quote}
             prefillBack={quickCardState.prefillBack}

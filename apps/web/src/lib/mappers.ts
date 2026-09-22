@@ -238,7 +238,9 @@ export function notebookFromApi(row: any): Notebook {
 export function notebookArtifactFromApi(row: any): NotebookArtifact {
   return {
     id: row.id,
-    notebookId: row.notebookId,
+    notebookId: row.notebookId ?? null,
+    ownerKind: row.ownerKind ?? 'notebook', sourceId: row.sourceId ?? null,
+    sourceOriginId: row.sourceOriginId ?? null, sourceOriginTitle: row.sourceOriginTitle ?? null,
     type: row.type as NotebookArtifactType,
     status: row.status as ArtifactStatus,
     title: row.title,
@@ -268,7 +270,9 @@ export function quizAttemptFromApi(row: any): QuizAttempt {
 export function notebookNoteFromApi(row: any): NotebookNote {
   return {
     id: row.id,
-    notebookId: row.notebookId,
+    notebookId: row.notebookId ?? null,
+    ownerKind: row.ownerKind ?? 'notebook', sourceId: row.sourceId ?? null,
+    sourceOriginId: row.sourceOriginId ?? null, sourceOriginTitle: row.sourceOriginTitle ?? null,
     title: row.title,
     content: row.content ?? '',
     kind: (row.kind ?? 'manual') as NotebookNoteKind,

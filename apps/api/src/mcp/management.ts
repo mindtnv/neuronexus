@@ -2,10 +2,11 @@ import { DECK_COLORS } from '@neuronexus/shared';
 import { z } from 'zod';
 import { and, count, eq, inArray, sql } from 'drizzle-orm';
 import { db, cards, decks, notes, notebooks, notebookNotes, notebookSources, notebookArtifacts, conversations, reviews, sources, sourceReadingState } from '@neuronexus/db';
-import { NOTEBOOK_COLORS, NOTEBOOK_TITLE_MAX, NOTEBOOK_EMOJI_MAX, NOTEBOOK_DESCRIPTION_MAX, NOTE_TITLE_MAX, NOTE_CONTENT_MAX } from '@neuronexus/shared';
+import { NOTEBOOK_COLORS, NOTEBOOK_TITLE_MAX, NOTEBOOK_EMOJI_MAX, NOTEBOOK_DESCRIPTION_MAX, NOTE_TITLE_MAX, NOTE_CONTENT_MAX, MAX_NOTES_PER_NOTEBOOK } from '@neuronexus/shared';
 import type { ToolContext } from '../ai/tools.ts';
 import { descendantIds } from '../modules/cards.ts';
 import { attachSourceToNotebook } from '../modules/sources-shared.ts';
+import { createStudyNote } from '../modules/study-notes';
 import { env } from '../env.ts';
 import { McpToolError, type KnowledgeTool } from './types.ts';
 
@@ -39,10 +40,16 @@ async function ownedSource(ctx: ToolContext, sourceId: string) {
   return { id: row.id, title: row.title, author: row.author, description: row.description, tags: row.tags, language: row.language };
 }
 async function ownedNote(ctx: ToolContext, noteId: string) {
-  const query = ex(ctx).select().from(notebookNotes).where(and(eq(notebookNotes.userId, ctx.userId), eq(notebookNotes.id, noteId)));
-  return required((await (ctx.tx ? query.for('update') : query))[0]);
+  const condition=and(eq(notebookNotes.userId,ctx.userId),eq(notebookNotes.id,noteId));
+  const initial=required((await ex(ctx).select().from(notebookNotes).where(condition).limit(1))[0]);
+  if (!ctx.tx) return initial;
+  // Match REST's owner-before-note lock order when updating notebook recency.
+  if (initial.notebookId) await ownedNotebook(ctx,initial.notebookId);
+  return required((await ex(ctx).select().from(notebookNotes).where(condition).for('update').limit(1))[0]);
 }
-async function bump(ctx: ToolContext, notebookId: string) {
+
+async function bump(ctx: ToolContext, notebookId: string | null) {
+  if (notebookId === null) return;
   await ex(ctx).update(notebooks).set({ updatedAt: sql`GREATEST(now(), ${notebooks.updatedAt} + interval '1 millisecond')` })
     .where(and(eq(notebooks.userId, ctx.userId), eq(notebooks.id, notebookId)));
 }
@@ -87,14 +94,22 @@ export function managementTools(): KnowledgeTool[] {
         const content = ['title', 'emoji', 'color', 'description'].some(k => k in patch);
         return (await ex(ctx).update(notebooks).set({ ...patch, ...(content ? { updatedAt: sql`GREATEST(now(), ${notebooks.updatedAt} + interval '1 millisecond')` } : {}) }).where(and(eq(notebooks.userId, ctx.userId), eq(notebooks.id, id))).returning())[0];
       }),
-    writer('delete_notebook', 'Propose deleting a notebook, its notes, artifacts and conversations. Library sources and cards survive.', z.strictObject({ id }),
+    writer('delete_notebook', 'Propose deleting a notebook and its notebook-owned notes and artifacts. Conversations, library sources, source-owned study work and cards survive.', z.strictObject({ id }),
       async (ctx, a) => {
         const before = await ownedNotebook(ctx, a.id);
         const ns = await ex(ctx).select({ id: notebookNotes.id, updatedAt: notebookNotes.updatedAt }).from(notebookNotes).where(and(eq(notebookNotes.userId, ctx.userId), eq(notebookNotes.notebookId, a.id))).orderBy(notebookNotes.id);
         const artifacts = await ex(ctx).select({ id: notebookArtifacts.id }).from(notebookArtifacts).where(and(eq(notebookArtifacts.userId, ctx.userId), eq(notebookArtifacts.notebookId, a.id))).orderBy(notebookArtifacts.id);
         const threads = await ex(ctx).select({ id: conversations.id }).from(conversations).where(and(eq(conversations.userId, ctx.userId), eq(conversations.notebookId, a.id))).orderBy(conversations.id);
-        return { before, notes: ns, artifacts, conversations: threads, warning: 'Notes, artifacts and conversations will be deleted; sources and cards remain.' };
+        return { before, notes: ns, artifacts, retainedConversations: threads, warning: 'Notebook-owned notes and artifacts will be deleted. Conversations, sources, source-owned study work and cards remain.' };
       }, async (ctx, a) => { await ex(ctx).delete(notebooks).where(and(eq(notebooks.userId, ctx.userId), eq(notebooks.id, a.id))); return { deleted: a.id }; }, true),
+    writer('save_source_note', 'Propose saving a written note directly to an owned library source, without creating a notebook. Requires confirmation.',
+      z.strictObject({ sourceId: id, title: z.string().trim().min(1).max(NOTE_TITLE_MAX), content: z.string().max(NOTE_CONTENT_MAX) }),
+      async (ctx, args) => {
+        const source = await ownedSource(ctx, args.sourceId);
+        const [total] = await ex(ctx).select({ n: count() }).from(notebookNotes).where(and(eq(notebookNotes.userId,ctx.userId),eq(notebookNotes.ownerKind,'source'),eq(notebookNotes.sourceOriginId,args.sourceId)));
+        if (total!.n >= MAX_NOTES_PER_NOTEBOOK) throw new McpToolError('too_many_notes');
+        return { source, count: total!.n, create: args };
+      }, async (ctx,args) => createStudyNote(ctx.userId,{kind:'source',id:args.sourceId},{title:args.title,content:args.content},ctx.tx)),
     writer('update_note', 'Propose editing or pinning a written notebook note (not a flashcard note).', editNote,
       async (ctx, { id, ...patch }) => ({ before: await ownedNote(ctx, id), changes: nonempty(patch) }),
       async (ctx, { id, ...patch }) => {

@@ -146,10 +146,10 @@ const library = {
     title: 'Delete from library?',
     // Used when the material is attached to one or more notebooks.
     messageAttached:
-      'This material will be detached from {count} notebooks. Cards made from it stay, but their link to the source becomes “source removed”. This cannot be undone.',
+      'This material will be detached from {count} notebooks. Saved study notes, completed study documents and quizzes, attempts, cards and conversations are preserved. The source file, highlights, annotation comments and ink are removed; source links become unavailable. This cannot be undone.',
     // Used when the material is in no notebook.
     message:
-      'Cards made from this material stay, but their link to the source becomes “source removed”. This cannot be undone.',
+      'Saved study notes, completed study documents and quizzes, attempts, cards and conversations are preserved. The source file, highlights, annotation comments and ink are removed; source links become unavailable. This cannot be undone.',
     confirm: 'Delete',
   },
 
@@ -190,7 +190,7 @@ const library = {
 
   // ── Status badge + machine error codes (errorCode → status.<code>) ────────────
   status: {
-    indexWaiting: 'Text has been extracted. AI search and grounded answers will be available after indexing.',
+    indexWaiting: 'Text is available for reading and source-based study. Semantic search will be available after indexing.',
     readable: 'Available to read',
     pending: 'Queued',
     parsing: 'Parsing…',

@@ -343,7 +343,7 @@ describe('list_marked_passages — registry shape', () => {
     expect(frames.some((f) => f.event === 'done')).toBe(true);
   });
 
-  test('NOT in the GLOBAL registry → unknown-tool error, never executed', async () => {
+  test('global registry includes marked passages and reports its empty selected scope', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
 
     __setAiClientForTests({
@@ -359,8 +359,8 @@ describe('list_marked_passages — registry shape', () => {
     const frames = await readSse(await streamReq(cookie, convId, 'what did I highlight?'));
 
     const result = frames.find((f) => f.event === 'tool_result');
-    expect((result!.data as { ok: boolean }).ok).toBe(false);
-    expect((result!.data as { summary: string }).summary).toContain('unknown tool');
+    expect((result!.data as { ok: boolean }).ok).toBe(true);
+    expect((result!.data as { summary: string }).summary).toContain('no ready sources selected');
     expect(frames.some((f) => f.event === 'done')).toBe(true);
   });
 });
@@ -580,7 +580,7 @@ describe('list_marked_passages — grounding → card provenance (end to end)', 
           {
             id: 'w1',
             name: 'create_card',
-            args: { deckId, fieldValues: { Front: 'What is the powerhouse?', Back: 'Mitochondria' } },
+            args: { deckId, evidenceChunkIds: chunkIds.slice(0,2), fieldValues: { Front: 'What is the powerhouse?', Back: 'Mitochondria' } },
           },
         ]),
         answerTurn('Created the card from your markup.'),
@@ -615,12 +615,12 @@ describe('list_marked_passages — grounding → card provenance (end to end)', 
     const pendingRow = rows.find(
       (r) => r.role === 'assistant' && r.toolCalls?.[0]?.name === 'create_card',
     )!;
-    expect(pendingRow.grounding).toBeTruthy();
-    expect([...(pendingRow.grounding as { chunkIds: string[] }).chunkIds].sort()).toEqual(
+    expect(pendingRow.toolCalls![0]!.impact?.cardEvidence).toBeTruthy();
+    expect([...pendingRow.toolCalls![0]!.impact!.cardEvidence![0]!.map(item => item.chunkId)].sort()).toEqual(
       [chunkIds[0]!, chunkIds[1]!].sort(),
     );
     // The page-7 chunk (no marked text) is NOT in the grounding.
-    expect((pendingRow.grounding as { chunkIds: string[] }).chunkIds).not.toContain(chunkIds[2]);
+    expect(pendingRow.toolCalls![0]!.impact!.cardEvidence![0]!.map(item => item.chunkId)).not.toContain(chunkIds[2]);
 
     // No edges yet (still paused).
     expect((await edgesFor(userId)).length).toBe(0);
@@ -669,7 +669,7 @@ describe('list_marked_passages — grounding → card provenance (end to end)', 
           {
             id: 'w1',
             name: 'create_card',
-            args: { deckId, fieldValues: { Front: 'Q', Back: 'A' } },
+            args: { deckId, evidenceChunkIds: [chunkIds[0]!], fieldValues: { Front: 'Q', Back: 'A' } },
           },
         ]),
         answerTurn('Done.'),
@@ -701,7 +701,7 @@ describe('list_marked_passages — grounding → card provenance (end to end)', 
     const pendingRow = rows.find(
       (r) => r.role === 'assistant' && r.toolCalls?.[0]?.name === 'create_card',
     )!;
-    expect(pendingRow.grounding).toEqual({ chunkIds: [chunkIds[0]!] });
+    expect(pendingRow.toolCalls![0]!.impact!.cardEvidence![0]!.map(item => item.chunkId)).toEqual([chunkIds[0]!]);
 
     // Apply → exactly one edge (the one matched chunk), no error from the no-chunk page.
     await readSse(await resumeReq(cookie, convId, { resumeToolCallId: 'w1', decision: 'apply' }));
@@ -736,7 +736,7 @@ describe('list_marked_passages — grounding → card provenance (end to end)', 
           {
             id: 'w1',
             name: 'create_card',
-            args: { deckId, fieldValues: { Front: 'What did I mark?', Back: 'Three passages.' } },
+            args: { deckId, evidenceChunkIds: chunkIds, fieldValues: { Front: 'What did I mark?', Back: 'Three passages.' } },
           },
         ]),
         answerTurn('Created a card from your markup.'),
@@ -780,7 +780,7 @@ describe('list_marked_passages — grounding → card provenance (end to end)', 
     const pendingRow = rows.find(
       (r) => r.role === 'assistant' && r.toolCalls?.[0]?.name === 'create_card',
     )!;
-    const grounded = [...(pendingRow.grounding as { chunkIds: string[] }).chunkIds].sort();
+    const grounded = [...pendingRow.toolCalls![0]!.impact!.cardEvidence![0]!.map(item => item.chunkId)].sort();
     expect(grounded).toEqual([chunkIds[0]!, chunkIds[1]!, chunkIds[2]!].sort());
 
     // Apply → an edge per grounding chunk; the HIGHLIGHT page's chunk is among them.

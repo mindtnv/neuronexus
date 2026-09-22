@@ -133,10 +133,16 @@ export const InkLayer = ({
     redraw();
   }, [redraw, strokes]);
 
+  useEffect(() => {
+    liveRef.current = null;
+    erasedRef.current = new Set();
+    redraw();
+  }, [tool, redraw]);
+
   // ── Pointer handlers ─────────────────────────────────────────────────────────
   const canDraw = useCallback(
     (e: React.PointerEvent) => {
-      if (tool === 'hand') return false;
+      if (tool === 'hand' || tool === 'smart-card') return false;
       if (e.pointerType === 'pen' || e.pointerType === 'mouse') return true;
       if (e.pointerType === 'touch') return fingerDraw;
       return false;
@@ -282,7 +288,7 @@ export const InkLayer = ({
     [tool, color, widthIdx, onChange, redraw],
   );
 
-  const interactive = tool !== 'hand';
+  const interactive = tool !== 'hand' && tool !== 'smart-card';
 
   return (
     <canvas

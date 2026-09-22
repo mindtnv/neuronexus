@@ -15,7 +15,7 @@ export type IconName =
   | 'clip' | 'doc' | 'book' | 'send' | 'note' | 'copy' | 'warning'
   | 'archive' | 'card-type' | 'info' | 'code' | 'globe' | 'star'
   | 'chat' | 'review' | 'decks' | 'cards' | 'library' | 'notebook' | 'chart'
-  | 'panel' | 'menu' | 'logout';
+  | 'panel' | 'menu' | 'logout' | 'stop' | 'expand';
 
 export const NNIcon = ({
   name,
@@ -190,6 +190,8 @@ export const NNIcon = ({
     book: <path d="M4 5a2 2 0 012-2h13v16H6a2 2 0 00-2 2V5zM19 17H6a2 2 0 00-2 2M9 3v14" {...p} />,
     // Send — upward arrow (composer submit, NBIcon parity).
     send: <path d="M12 19V5M6 11l6-6 6 6" {...p} />,
+    stop: <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />,
+    expand: <><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5" {...p}/><path d="M3 3l6 6M21 3l-6 6M3 21l6-6M21 21l-6-6" {...p}/></>,
     // Note — page with a folded corner (save-to-notes action).
     note: (
       <>

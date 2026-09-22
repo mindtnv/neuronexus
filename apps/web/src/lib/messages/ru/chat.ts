@@ -142,6 +142,13 @@ const m = {
   },
   // Agentic tool calls (search_cards / web_search) surfaced as cards in the stream
   tool: {
+    list_source_artifacts: 'Список учебных материалов книги',
+    get_source_artifact: 'Чтение учебного материала книги',
+    list_source_quiz_attempts: 'Попытки квиза книги',
+
+    list_source_notes: 'Список заметок книги',
+    get_source_note: 'Чтение заметки книги',
+    save_source_note: 'Сохранение заметки книги',
     get_capabilities: 'Проверка возможностей AI',
     list_cards: 'Список карточек',
     list_tags: 'Список тегов',
@@ -157,6 +164,9 @@ const m = {
     search_library: 'Поиск по библиотеке',
     get_library_item: 'Сведения о материале',
     read_source_chunks: 'Чтение материала',
+    read_source: 'Чтение источника',
+    search_source: 'Поиск по источникам',
+    list_marked_passages: 'Чтение выделенных фрагментов',
     get_source_cards: 'Карточки из материала',
     get_source_marks: 'Выделения и закладки',
     get_source_annotations: 'Разметка PDF',
@@ -187,6 +197,7 @@ const m = {
     create_url_source: 'Новая веб-страница в библиотеке',
     list_notes: 'Список заметок',
     read_note: 'Чтение заметки',
+    read_context_object: 'Чтение объекта контекста',
 
     deckCount: 'Колод: {count}',
     resultDetails: 'Показать весь результат',
@@ -253,6 +264,10 @@ const m = {
   // Confirm-before-write controls (Phase B) — a write/SRS tool pauses the turn
   // and asks for explicit human approval, rendered inside the pending tool card.
   confirm: {
+    retainedResources: 'Сохранятся',
+    notebookRetainedWork: 'Источники библиотеки, их заметки и готовые материалы, карточки и диалоги сохранятся.',
+    userQuoteEvidence: 'Пользовательская цитата; точный текст источника не подтверждён.',
+    noCardEvidence: 'К этой карточке не прикреплён фрагмент источника.',
     resourceDeleteWarning: 'Будут удалены перечисленные данные. Проверьте объём изменений перед подтверждением.',
     pendingTitle: 'Ожидает вашего подтверждения',
     apply: 'Применить',

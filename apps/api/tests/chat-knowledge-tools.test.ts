@@ -12,7 +12,7 @@ test('global knowledge registry is complete and notebook mode keeps its scope', 
   for (const name of ['list_library','read_source_chunks','list_notebooks','get_notebook','save_note','create_notebook','attach_source','create_text_source','update_source']) tool(name);
   const names = buildToolRegistry().map(t=>t.name);
   expect(new Set(names).size).toBe(names.length);
-  expect(buildToolRegistry({ notebook: true }).some(t=>t.name==='list_library')).toBe(false);
+  expect(buildToolRegistry({ notebook: true }).map(t=>t.name).sort()).toEqual([...names].sort());
 });
 test('reads and previews are user-scoped; write requires matching confirmation', async () => {
   const a = await signUpAndCookie(app, uniqueEmail()), b = await signUpAndCookie(app, uniqueEmail());
@@ -68,4 +68,16 @@ test('library reads work from parsed chunks without embeddings and exclude forei
   const list=await tool('list_library').execute(ctx,{limit:10});
   expect(list.ok).toBe(true);
   if(list.ok) { expect(list.text).toContain('Owned source'); expect(list.text).not.toContain('Secret foreign'); expect(list.text).not.toContain('storageKey'); }
+});
+
+test('notebook deletion preview identifies conversations as retained instead of deleted',async()=>{
+  const {conversations,notebookNotes}=await import('@neuronexus/db');
+  const {userId}=await signUpAndCookie(app,uniqueEmail());
+  const [notebook]=await db.insert(notebooks).values({userId,title:'Notebook'}).returning();
+  await db.insert(conversations).values({userId,notebookId:notebook!.id,title:'Retained conversation'});
+  await db.insert(notebookNotes).values({userId,notebookId:notebook!.id,title:'Notebook-owned note',content:'Deleted with its notebook'});
+  const impact=await tool('delete_notebook').dryRun!({userId,log:rootLogger},{id:notebook!.id});
+  expect(impact.resourcePreview!.affected).not.toContainEqual({kind:'conversations',count:1});
+  expect(impact.resourcePreview!.retained).toContainEqual({kind:'conversations',count:1});
+  expect(impact.resourcePreview!.affected).toContainEqual({kind:'notes',count:1});
 });

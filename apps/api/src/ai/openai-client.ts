@@ -182,6 +182,11 @@ export function isChatStreamEnabled(): boolean {
   return Boolean(injected?.chatStream) || chatEnabled;
 }
 
+/** Source artifacts need a tool-less stream or completion surface. */
+export function isArtifactGenerationEnabled(): boolean {
+  return chatEnabled || Boolean(injected?.chatStream) || Boolean(injected?.complete);
+}
+
 // ── Backoff helper ───────────────────────────────────────────────────────────
 
 const MAX_RETRIES = 4;

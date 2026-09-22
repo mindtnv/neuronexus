@@ -23,6 +23,7 @@ const m = {
   ratePrompt: 'How easily did you recall the answer?',
   recallPrompt: 'Try to recall the answer first',
   info: {
+    resize: 'Resize card information panel',
     title: 'Card information',
     deck: 'Deck',
     type: 'Type',

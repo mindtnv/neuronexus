@@ -6,6 +6,7 @@ import { useLocale, useT } from '@/lib/i18n';
 import { deckPathLabel } from '@/lib/decks';
 import { NNBtn, NNIcon } from './ui';
 import { AppLink } from './navigation';
+import { AssistantAskButton } from './chat/assistant-ask-button';
 import { deckColorValue, deckIconName } from './deck-appearance';
 
 export function deckCardsHref(decks: Deck[], id: string) {
@@ -43,6 +44,7 @@ export function DeckDetails({ deck, decks, counts, onBack, onAppearance }: {
     <div className="reomi-deck-detail-actions">
       {counts && counts.totalAvailable > 0 ? <AppLink className="reomi-button" data-variant="primary" href={`/review?deck=${encodeURIComponent(deck.id)}`}><NNIcon name="play" size={15}/>{t('decks.details.study')} {counts ? `· ${counts.totalAvailable}` : ''}</AppLink> : <NNBtn variant="primary" icon="check" disabled>{t('decks.details.caughtUp')}</NNBtn>}
       <AppLink className="reomi-button" data-variant="soft" href={deckCardsHref(decks, deck.id)}><NNIcon name="cards" size={15}/>{t('cards.openCards')}</AppLink>
+      <AssistantAskButton object={{ kind: 'deck', id: deck.id }} />
     </div>
     {counts?.nextDueAt && counts.totalAvailable === 0 && <p className="reomi-deck-detail-caption">{t('decks.details.nextReview', { date: new Date(counts.nextDueAt).toLocaleString(locale, { day:'numeric',month:'short',hour:'2-digit',minute:'2-digit' }) })}</p>}
     <section className="reomi-deck-detail-section"><h3>{t('decks.details.composition')}</h3>

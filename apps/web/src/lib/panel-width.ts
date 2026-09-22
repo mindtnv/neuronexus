@@ -31,3 +31,11 @@ export function readCardFiltersWidth(): number {
     return raw?.trim() ? boundedPanelWidth(Number(raw), CARD_FILTERS.min, CARD_FILTERS.max, CARD_FILTERS.default) : CARD_FILTERS.default;
   } catch { return CARD_FILTERS.default; }
 }
+
+export const REVIEW_INSPECTOR = { key: 'nn:review:inspector-width', min: 220, max: 420, default: 256 } as const;
+export function readReviewInspectorWidth(storage?: Pick<Storage, 'getItem'>): number {
+  try {
+    const raw = (storage ?? localStorage).getItem(REVIEW_INSPECTOR.key);
+    return raw?.trim() ? boundedPanelWidth(Number(raw), REVIEW_INSPECTOR.min, REVIEW_INSPECTOR.max, REVIEW_INSPECTOR.default) : REVIEW_INSPECTOR.default;
+  } catch { return REVIEW_INSPECTOR.default; }
+}

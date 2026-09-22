@@ -1,396 +1,134 @@
 'use client';
 
-// M5 — SelectionPopover: the floating pill that appears above a text selection
-// inside the PDF text layer. Five actions: 5 color dots (highlight), «Заметка»
-// (inline note textarea), «В карточку» (QuickCardDialog), «Спросить» (chat
-// prefill), «Копировать». Handles iPad Safari's quirky selection events.
-//
-// M5-T3 polish: pill with subtle shadow + downward arrow indicator, 40px
-// touch targets for action buttons, color dots with ring on hover.
-
-import React, {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
-import type { MarkRect, SourceMarkColor } from '@neuronexus/shared';
-import { MARK_RECTS_MAX, SOURCE_MARK_COLORS } from '@neuronexus/shared';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { ASSISTANT_CONTEXT_LIMITS, MARK_NOTE_MAX, MARK_QUOTE_MAX, MARK_RECTS_MAX, SOURCE_MARK_COLORS, type MarkRect, type SourceMarkColor } from '@neuronexus/shared';
 import { clientRectsToMarkRects } from '@/lib/pdf-ink';
+import { NNBtn, NNIcon } from '@/components/ui';
+import { copyCodeText } from '@/components/chat/code-copy';
+import { MARK_COLOR_CSS } from './mark-colors';
 
 type T = (key: string, params?: Record<string, string | number>) => string;
-
-const MARK_COLOR_HEX: Record<SourceMarkColor, string> = {
-  lime:   'var(--lime-500)',
-  amber:  'var(--amber-400)',
-  rose:   'var(--rose-400)',
-  sky:    'var(--sky-400)',
-  violet: 'var(--violet-400)',
-};
-
 export interface SelectionInfo {
-  text: string;
-  rects: MarkRect[];
-  page: number;
-  anchorX: number;
-  anchorY: number;
-  /** Bottom edge of the first selection rect — used to flip the pill below
-   *  the selection when there's no room above. */
-  anchorBottom: number;
+  text: string; rects: MarkRect[]; page: number;
+  anchorX: number; anchorY: number; anchorBottom: number;
 }
-
 export interface SelectionPopoverProps {
-  pageEls: Map<number, HTMLDivElement>;
-  handMode: boolean;
-  onHighlight: (info: SelectionInfo, color: SourceMarkColor) => void;
-  onNote: (info: SelectionInfo, noteText: string) => void;
-  onCard: (info: SelectionInfo) => void;
-  onAsk: (info: SelectionInfo) => void;
-  t: T;
+  pageEls: Map<number, HTMLDivElement>; handMode: boolean;
+  onHighlight(info: SelectionInfo, color: SourceMarkColor): void | Promise<void>;
+  onNote(info: SelectionInfo, text: string): void | Promise<void>;
+  onCard(info: SelectionInfo): void; onAsk(info: SelectionInfo): void; t: T;
 }
+interface State { info: SelectionInfo; noteOpen: boolean; noteText: string; busy: boolean; error: string | null }
 
-interface PopoverState {
-  info: SelectionInfo;
-  noteOpen: boolean;
-  noteText: string;
-}
-
-export function SelectionPopover({
-  pageEls,
-  handMode,
-  onHighlight,
-  onNote,
-  onCard,
-  onAsk,
-  t,
-}: SelectionPopoverProps) {
-  const [state, setState] = useState<PopoverState | null>(null);
-  const noteRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (!handMode) setState(null);
-  }, [handMode]);
-
+export function SelectionPopover({ pageEls, handMode, onHighlight, onNote, onCard, onAsk, t }: SelectionPopoverProps) {
+  const [state, setState] = useState<State | null>(null);
+  const [placement, setPlacement] = useState<React.CSSProperties>({ left: 8, top: 8, width: 360 });
+  const root = useRef<HTMLDivElement>(null), noteRef = useRef<HTMLTextAreaElement>(null);
+  const rangeRef = useRef<Range | null>(null), interacting = useRef(false), alive = useRef(true);
+  const current = useRef(state); current.current = state;
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const dismiss = useCallback(() => { interacting.current = false; rangeRef.current = null; setState(null); window.getSelection()?.removeAllRanges(); }, []);
+  useEffect(() => { if (!handMode) dismiss(); }, [handMode, dismiss]);
   const capture = useCallback(() => {
-    if (!handMode) return;
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-      setState(null);
-      return;
-    }
-    const range = sel.getRangeAt(0);
-    const text = range.toString().trim();
+    if (!handMode || interacting.current || root.current?.contains(document.activeElement)) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) { setState(null); return; }
+    const range = selection.getRangeAt(0), text = range.toString().trim();
     if (!text) { setState(null); return; }
-
-    let page = 0;
-    let pageBox: DOMRect | null = null;
-    for (const [n, el] of pageEls) {
-      if (el.contains(range.commonAncestorContainer)) {
-        page = n;
-        pageBox = el.getBoundingClientRect();
-        break;
+    const entry = [...pageEls].find(([, element]) => element.contains(range.commonAncestorContainer));
+    if (!entry) { setState(null); return; }
+    const [page, element] = entry, box = element.getBoundingClientRect();
+    // Browser range rectangles also include PDF layout sentinels and wrapper
+    // boxes. Measure only selected glyph text, excluding whitespace sentinels.
+    const layer = element.querySelector('.nn-textlayer');
+    const clientRects: DOMRect[] = [];
+    if (layer) {
+      const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        if (!node.textContent?.trim() || !range.intersectsNode(node)) continue;
+        const glyphRange = document.createRange();
+        glyphRange.selectNodeContents(node);
+        if (node === range.startContainer) glyphRange.setStart(node, range.startOffset);
+        if (node === range.endContainer) glyphRange.setEnd(node, range.endOffset);
+        if (!glyphRange.collapsed) clientRects.push(...Array.from(glyphRange.getClientRects()));
       }
-    }
-    if (!page || !pageBox) { setState(null); return; }
-
-    const clientRects = Array.from(range.getClientRects());
-    const rects = clientRectsToMarkRects(clientRects, {
-      left: pageBox.left,
-      top: pageBox.top,
-      width: pageBox.width,
-      height: pageBox.height,
-    }).slice(0, MARK_RECTS_MAX);
-
-    if (rects.length === 0) { setState(null); return; }
-
-    const firstRect = clientRects[0]!;
-    const anchorX = (firstRect.left + firstRect.right) / 2;
-    const anchorY = firstRect.top;
-    const anchorBottom = firstRect.bottom;
-
-    setState((prev) => ({
-      info: { text, rects, page, anchorX, anchorY, anchorBottom },
-      noteOpen: prev?.noteOpen ?? false,
-      noteText: prev?.noteText ?? '',
-    }));
+    } else clientRects.push(...Array.from(range.getClientRects()));
+    const rects = clientRectsToMarkRects(clientRects, box).slice(0, MARK_RECTS_MAX);
+    if (!rects.length) { setState(null); return; }
+    const first = clientRects[0]!;
+    rangeRef.current = range.cloneRange();
+    setState({ info: { text, rects, page, anchorX: (first.left + first.right) / 2, anchorY: first.top, anchorBottom: first.bottom }, noteOpen: false, noteText: '', busy: false, error: null });
   }, [handMode, pageEls]);
-
   useEffect(() => {
-    const onUp = () => { requestAnimationFrame(capture); };
-    let selTimer: ReturnType<typeof setTimeout> | null = null;
-    const onSC = () => {
-      if (selTimer) clearTimeout(selTimer);
-      selTimer = setTimeout(capture, 60);
+    let frame = 0, timer: ReturnType<typeof setTimeout> | undefined;
+    const up = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(capture); };
+    const selection = () => { clearTimeout(timer); timer = setTimeout(capture, 60); };
+    const outside = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) { interacting.current = false; setState(null); }
     };
-    window.addEventListener('pointerup', onUp);
-    document.addEventListener('selectionchange', onSC);
-    return () => {
-      window.removeEventListener('pointerup', onUp);
-      document.removeEventListener('selectionchange', onSC);
-      if (selTimer) clearTimeout(selTimer);
-    };
+    window.addEventListener('pointerup', up); document.addEventListener('selectionchange', selection);
+    window.addEventListener('pointerdown', outside, true);
+    return () => { cancelAnimationFrame(frame); clearTimeout(timer); window.removeEventListener('pointerup', up); document.removeEventListener('selectionchange', selection); window.removeEventListener('pointerdown', outside, true); };
   }, [capture]);
-
-  useEffect(() => {
-    if (!state) return;
-    const onDown = (e: MouseEvent) => {
-      const el = document.getElementById('nn-sel-popover');
-      if (el && !el.contains(e.target as Node)) {
-        setState(null);
-      }
+  useLayoutEffect(() => {
+    if (!state || !root.current) return;
+    const position = () => {
+      const viewport = window.visualViewport;
+      const width = Math.min(360, (viewport?.width ?? window.innerWidth) - 16);
+      const minX = (viewport?.offsetLeft ?? 0) + 8, minY = (viewport?.offsetTop ?? 0) + 8;
+      const maxHeight = Math.max(100, (viewport?.height ?? window.innerHeight) - 16);
+      const r = rangeRef.current?.getClientRects()[0];
+      const center = r ? (r.left + r.right) / 2 : state.info.anchorX;
+      const anchorTop = r?.top ?? state.info.anchorY, anchorBottom = r?.bottom ?? state.info.anchorBottom;
+      const height = Math.min(root.current?.getBoundingClientRect().height ?? 230, maxHeight);
+      const above = anchorTop - height - 10;
+      const top = Math.max(minY, Math.min(above >= minY ? above : anchorBottom + 10, minY + maxHeight - height));
+      setPlacement({ left: Math.max(minX, Math.min(center - width / 2, minX + (viewport?.width ?? window.innerWidth) - 16 - width)), top, width, maxHeight });
     };
-    window.addEventListener('mousedown', onDown, { capture: true });
-    return () => window.removeEventListener('mousedown', onDown, { capture: true });
-  }, [state]);
-
+    position();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(position);
+    observer?.observe(root.current);
+    window.addEventListener('resize', position); window.addEventListener('scroll', position, true);
+    window.visualViewport?.addEventListener('resize', position); window.visualViewport?.addEventListener('scroll', position);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); window.visualViewport?.removeEventListener('resize', position); window.visualViewport?.removeEventListener('scroll', position); };
+  }, [state?.info, state?.noteOpen]);
   if (!state) return null;
-
-  const { info, noteOpen, noteText } = state;
-
-  // Pill width: note-open is wider for the textarea.
-  const popW = noteOpen ? 264 : 280;
-  const vpW = window.innerWidth;
-  let left = info.anchorX - popW / 2;
-  if (left < 8) left = 8;
-  if (left + popW > vpW - 8) left = vpW - popW - 8;
-  // Position above the selection with a small gap + room for the arrow. When
-  // there is no room above (the selection is near the top of the viewport),
-  // flip BELOW the selection bottom and hide the arrow (which only points up).
-  const popH = noteOpen ? 160 : 52;
-  const aboveTop = info.anchorY - popH - 10;
-  const flipped = aboveTop < 8;
-  const top = flipped ? Math.max(8, info.anchorBottom + 10) : aboveTop;
-
-  return (
-    <div
-      id="nn-sel-popover"
-      style={{
-        position: 'fixed',
-        left,
-        top,
-        zIndex: 1000,
-        background: 'var(--surface)',
-        border: '1px solid var(--border)',
-        borderRadius: 'var(--r-lg)',
-        boxShadow: 'var(--shadow-lg)',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        minWidth: popW,
-        width: popW,
-      }}
-    >
-      {/* Main row — color dots + action buttons */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 2,
-          padding: '6px 8px',
-        }}
-      >
-        {/* Color dots → highlight */}
-        {SOURCE_MARK_COLORS.map((c) => (
-          <button
-            key={c}
-            type="button"
-            title={t(`notebooks.marks.color_${c}`)}
-            aria-label={t(`notebooks.marks.color_${c}`)}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              onHighlight(info, c);
-              setState(null);
-            }}
-            style={{
-              width: 24,
-              height: 24,
-              borderRadius: '50%',
-              background: MARK_COLOR_HEX[c],
-              border: '2px solid transparent',
-              cursor: 'pointer',
-              padding: 0,
-              flexShrink: 0,
-              boxShadow: 'var(--mark-swatch-shadow)',
-              transition: 'transform 80ms ease, box-shadow 80ms ease',
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLElement).style.transform = 'scale(1.18)';
-              (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 2px var(--surface), 0 0 0 3px ${MARK_COLOR_HEX[c]}`;
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLElement).style.transform = '';
-              (e.currentTarget as HTMLElement).style.boxShadow = 'var(--mark-swatch-shadow)';
-            }}
-          />
-        ))}
-
-        <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 3px', flexShrink: 0 }} />
-
-        {/* «Заметка» */}
-        <PopBtn
-          active={noteOpen}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            setState((s) => s ? { ...s, noteOpen: !s.noteOpen } : s);
-            if (!noteOpen) requestAnimationFrame(() => noteRef.current?.focus());
-          }}
-          label={t('notebooks.marks.note')}
-        />
-
-        {/* «В карточку» */}
-        <PopBtn
-          onMouseDown={(e) => {
-            e.preventDefault();
-            onCard(info);
-            setState(null);
-          }}
-          label={t('notebooks.marks.cardAction')}
-        />
-
-        {/* «Спросить» */}
-        <PopBtn
-          onMouseDown={(e) => {
-            e.preventDefault();
-            onAsk(info);
-            setState(null);
-          }}
-          label={t('notebooks.marks.askAction')}
-        />
-
-        {/* «Копировать» */}
-        <PopBtn
-          onMouseDown={(e) => {
-            e.preventDefault();
-            void navigator.clipboard.writeText(info.text).catch(() => {});
-            setState(null);
-          }}
-          label={t('notebooks.marks.copyAction')}
-        />
-      </div>
-
-      {/* Inline note textarea */}
-      {noteOpen && (
-        <div
-          style={{
-            borderTop: '1px solid var(--border)',
-            padding: 8,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 6,
-          }}
-        >
-          <textarea
-            ref={noteRef}
-            value={noteText}
-            onChange={(e) => setState((s) => s ? { ...s, noteText: e.target.value } : s)}
-            placeholder={t('notebooks.marks.notePlaceholder')}
-            rows={3}
-            style={{
-              width: '100%',
-              padding: '6px 8px',
-              borderRadius: 'var(--r-sm)',
-              border: '1px solid var(--border)',
-              background: 'var(--surface-2)',
-              color: 'var(--text)',
-              fontSize: 12.5,
-              fontFamily: 'var(--font-sans)',
-              resize: 'none',
-              boxSizing: 'border-box',
-              lineHeight: 1.5,
-            }}
-          />
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onNote(info, noteText);
-                setState(null);
-              }}
-              style={{
-                height: 30,
-                padding: '0 12px',
-                borderRadius: 'var(--r-sm)',
-                border: 'none',
-                background: 'var(--lime-500)',
-                color: 'var(--text-on-accent)',
-                cursor: 'pointer',
-                fontSize: 12,
-                fontWeight: 700,
-                fontFamily: 'var(--font-sans)',
-              }}
-            >
-              {t('notebooks.marks.noteSave')}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Downward arrow indicator — hidden when the pill is flipped below the
-          selection (the arrow only points down toward the selection). */}
-      {!flipped && (
-      <div
-        className="nn-sel-arrow"
-        style={{
-          position: 'absolute',
-          bottom: -7,
-          left: Math.min(Math.max(info.anchorX - left - 6, 12), popW - 24),
-          width: 12,
-          height: 7,
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            width: 10,
-            height: 10,
-            background: 'var(--surface)',
-            border: '1px solid var(--border)',
-            transform: 'rotate(45deg)',
-            marginTop: -6,
-            marginLeft: 1,
-            boxShadow: 'var(--mark-arrow-shadow)',
-          }}
-        />
-      </div>
-      )}
+  const { info, noteOpen, noteText, busy, error } = state;
+  const markTooLong = info.text.length > MARK_QUOTE_MAX;
+  const askTooLong = info.text.length > ASSISTANT_CONTEXT_LIMITS.excerptChars;
+  const run = async (action: () => void | Promise<void>, errorKey = 'assistant.selectionSaveFailed') => {
+    setState(value => value ? { ...value, busy: true, error: null } : value);
+    try {
+      await action();
+      if (alive.current && current.current?.info === info) { dismiss(); window.getSelection()?.removeAllRanges(); }
+    } catch {
+      if (alive.current) setState(value => value?.info === info ? { ...value, busy: false, error: errorKey } : value);
+    }
+  };
+  const pageElement = pageEls.get(info.page);
+  return <>{pageElement && createPortal(<div aria-hidden="true" data-pdf-selection-paint style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 2, opacity: 0.3, mixBlendMode: 'multiply' }}>
+    {info.rects.map((rect, index) => <div key={index} style={{ position: 'absolute', left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%`, background: 'var(--accent-500)' }}/>)}</div>, pageElement)}{createPortal(<div ref={root} id="nn-sel-popover" className="reomi-pdf-selection" role="dialog" aria-label={t('notebooks.marks.selectionTitle')} style={placement}
+    onPointerDownCapture={() => { interacting.current = true; }} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault(); }}
+    onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); dismiss(); } }}>
+    <header><span>{t('notebooks.marks.selectionTitle')} · {t('notebooks.marks.pageGroup', { n: info.page })}</span><NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('actions.close')} onClick={dismiss}/></header>
+    <blockquote title={info.text}>{info.text}</blockquote>
+    <div className="reomi-pdf-selection-colors" role="group" aria-label={t('notebooks.marks.highlightColors')}>
+      {SOURCE_MARK_COLORS.map(color => <button key={color} type="button" disabled={busy || markTooLong} aria-label={t(`notebooks.marks.color_${color}`)} title={t(markTooLong ? 'notebooks.marks.selectionTooLong' : `notebooks.marks.color_${color}`)} onClick={() => void run(() => onHighlight(info, color))}>
+        <span style={{ background: MARK_COLOR_CSS[color] }}/>
+      </button>)}
     </div>
-  );
-}
-
-function PopBtn({
-  active,
-  onMouseDown,
-  label,
-}: {
-  active?: boolean;
-  onMouseDown: React.MouseEventHandler<HTMLButtonElement>;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      onMouseDown={onMouseDown}
-      aria-pressed={active}
-      style={{
-        height: 30,
-        padding: '0 7px',
-        borderRadius: 'var(--r-sm)',
-        border: active ? '1px solid var(--lime-500)' : '1px solid var(--border)',
-        background: active
-          ? 'color-mix(in srgb, var(--lime-500) 16%, transparent)'
-          : 'var(--surface-2)',
-        color: active ? 'var(--lime-300)' : 'var(--text-muted)',
-        cursor: 'pointer',
-        fontSize: 11.5,
-        fontWeight: 600,
-        fontFamily: 'var(--font-sans)',
-        whiteSpace: 'nowrap',
-        flexShrink: 0,
-        transition: 'background 80ms, color 80ms',
-      }}
-    >
-      {label}
-    </button>
-  );
+    <div className="reomi-pdf-selection-actions">
+      <NNBtn variant="soft" size="sm" icon="chat" disabled={busy || askTooLong} title={askTooLong ? t('notebooks.marks.selectionTooLong') : undefined} onClick={() => void run(() => onAsk(info))}>{t('assistant.askObject')}</NNBtn>
+      <NNBtn variant="ghost" size="sm" icon="cards" disabled={busy || askTooLong} onClick={() => void run(() => onCard(info))}>{t('notebooks.marks.cardAction')}</NNBtn>
+      <NNBtn variant="ghost" size="sm" icon="edit" disabled={busy || markTooLong} onClick={() => { setState(value => value ? { ...value, noteOpen: !value.noteOpen } : value); if (!noteOpen) requestAnimationFrame(() => noteRef.current?.focus({ preventScroll: true })); }}>{t('notebooks.marks.note')}</NNBtn>
+      <NNBtn variant="ghost" size="sm" icon="copy" disabled={busy} onClick={() => void run(() => copyCodeText(info.text), 'notebooks.marks.copyFailed')}>{t('notebooks.marks.copyAction')}</NNBtn>
+    </div>
+    {markTooLong && <small>{t('notebooks.marks.selectionTooLong')}</small>}
+    {noteOpen && <div className="reomi-pdf-selection-note"><textarea ref={noteRef} aria-label={t('notebooks.marks.note')} placeholder={t('notebooks.marks.notePlaceholder')} value={noteText} maxLength={MARK_NOTE_MAX} disabled={busy} rows={3} onChange={event => setState(value => value ? { ...value, noteText: event.target.value } : value)}/>
+      <NNBtn variant="primary" size="sm" disabled={busy || !noteText.trim()} onClick={() => void run(() => onNote(info, noteText.trim()))}>{t('notebooks.marks.noteSave')}</NNBtn></div>}
+    {busy && <small role="status">{t('states.loading')}</small>}
+    {error && <p role="alert">{t(error)}</p>}
+  </div>, document.body)}</>;
 }

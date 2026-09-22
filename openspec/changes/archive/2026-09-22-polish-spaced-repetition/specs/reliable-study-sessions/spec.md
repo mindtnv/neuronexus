@@ -36,7 +36,7 @@ Regular study SHALL offer due learning and relearning cards independently of the
 
 #### Scenario: Nothing ready yet
 - **WHEN** the session has only future learning steps
-- **THEN** it shows waiting with the next due time and an explicit finish action instead of claiming that all learning is finished
+- **THEN** it shows waiting with the next due time and navigation away without losing saved grades, rather than claiming that all learning is finished
 
 ### Requirement: Honest availability and recovery
 Study entry points SHALL derive collection and deck counts from the complete server collection, exclude suspended cards from study availability, and apply existing daily caps. Loading, request failure, genuinely empty queues and exhausted daily limits SHALL be distinguishable. Failed requests SHALL offer recovery without reporting success.

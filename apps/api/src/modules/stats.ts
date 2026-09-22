@@ -15,6 +15,7 @@ import { Elysia, t } from 'elysia';
 import { eq } from 'drizzle-orm';
 import { db, decks } from '@neuronexus/db';
 import { authPlugin } from '../auth-plugin.ts';
+import { internalReadDeckScope } from '../mcp/internal-read.ts';
 import { descendantIds } from './cards.ts';
 import { dueForecast, retentionCurve } from './progress-stats.ts';
 
@@ -22,13 +23,15 @@ import { dueForecast, retentionCurve } from './progress-stats.ts';
 async function resolveDeckScope(
   userId: string,
   deckId: string | undefined,
+  allowed?: readonly string[],
 ): Promise<string[] | undefined> {
-  if (!deckId) return undefined;
+  if (!deckId) return allowed ? [...allowed] : undefined;
   const userDecks = await db
     .select({ id: decks.id, parentId: decks.parentId, name: decks.name })
     .from(decks)
     .where(eq(decks.userId, userId));
-  return [deckId, ...descendantIds(deckId, userDecks)];
+  const ids = [deckId, ...descendantIds(deckId, userDecks)];
+  return allowed ? ids.filter(id => allowed.includes(id)) : ids;
 }
 
 /** Parse an optional numeric query param ('' / garbage → undefined). */
@@ -47,16 +50,16 @@ export const statsModule = new Elysia({ prefix: '/stats' })
   .use(authPlugin)
   .get(
     '/forecast',
-    async ({ user, query }) => {
-      const deckIds = await resolveDeckScope(user.id, query.deckId);
+    async ({ user, query, request }) => {
+      const deckIds = await resolveDeckScope(user.id, query.deckId, internalReadDeckScope(request));
       return dueForecast({ userId: user.id, deckIds, days: parseDays(query.days) });
     },
     { auth: true, query: statsQuerySchema },
   )
   .get(
     '/retention',
-    async ({ user, query }) => {
-      const deckIds = await resolveDeckScope(user.id, query.deckId);
+    async ({ user, query, request }) => {
+      const deckIds = await resolveDeckScope(user.id, query.deckId, internalReadDeckScope(request));
       return retentionCurve({ userId: user.id, deckIds, days: parseDays(query.days) });
     },
     { auth: true, query: statsQuerySchema },

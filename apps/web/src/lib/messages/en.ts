@@ -16,7 +16,10 @@ import noteTypes from './en/note-types';
 import notebooks from './en/notebooks';
 import library from './en/library';
 
+import assistant from './en/assistant';
+
 const messages = {
+  assistant,
   ...common,
   home,
   review,

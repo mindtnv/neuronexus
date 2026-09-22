@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { cards as cardsTable, db, messages as messagesTable, reviews } from '@neuronexus/db';
+import { newUuidV7 } from '@neuronexus/shared';
 import { asc, eq } from 'drizzle-orm';
 import { buildApp } from '../src/app.ts';
 import {
@@ -276,7 +277,7 @@ describe('progress read-tools', () => {
   });
 
   test('study_stats foreign/un-owned deckId resolves to an EMPTY scope (not global fallback)', async () => {
-    const foreignDeck = '00000000-0000-0000-0000-0000000000ff';
+    const foreignDeck = newUuidV7();
     __setAiClientForTests({
       chatStreamAgentic: scriptedAgentStream([
         callTurn([{ id: 's1', name: 'study_stats', args: { scope: 'deck', deckId: foreignDeck } }]),
@@ -294,7 +295,9 @@ describe('progress read-tools', () => {
       headers: { 'content-type': 'application/json', cookie },
       body: JSON.stringify({ content: 'stats for that deck', deckId: foreignDeck }),
     });
-    await readSse(await app.handle(req));
+    const response = await app.handle(req);
+    expect(response.status).toBe(200);
+    await readSse(response);
     const text = await toolResultText(convId);
     // EMPTY scope: "no reviews ... in this deck", NOT a global "Reviews: 1".
     expect(text.toLowerCase()).toContain('no reviews');

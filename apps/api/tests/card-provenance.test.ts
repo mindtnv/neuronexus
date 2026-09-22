@@ -1,28 +1,6 @@
-// NotebookLM M3 — auto-provenance integration tests (search_source → create_card
-// → card_sources edges).
-//
-// CONTRACT (read from ai.ts runAgentTurn + the /resume apply path + provenance.ts,
-// NOT invented):
-//   * A notebook create_card that SUSPENDS after reading source passages stamps
-//     `messages.grounding = { chunkIds: [...] }` on the pending assistant
-//     tool_calls row (so provenance survives /resume + reload), and the
-//     `await_confirmation` impact carries `provenance: [{ sourceTitle, page?,
-//     chunkId }]` (capped CARD_SOURCE_LINK_CAP).
-//   * Resume APPLY → writeCardProvenance inserts one card_sources edge per
-//     (created card × distinct grounding chunk): sourceChunkId/sourceId/
-//     notebookId/conversationId/messageId all set; messageId = the pending
-//     assistant row id. Capped at CARD_SOURCE_LINK_CAP distinct chunks per card.
-//   * Reject ⇒ zero edges. All-excluded cardSelections ⇒ degrades to reject ⇒
-//     zero edges. Partial exclusion (batch of 2, exclude 1) ⇒ only the created
-//     card is linked.
-//   * Idempotent double-apply (same toolCallId) ⇒ no duplicate edges.
-//   * A GLOBAL (non-notebook) create_card turn stamps NO grounding and writes
-//     ZERO card_sources rows.
-//
-// Harness mirrors agent-confirm.test.ts (the scripted fake's call counter
-// persists across /stream and /resume). Document fixtures inserted directly via
-// db; the chunk embedding = vectorFor(chunk.text) so a search query equal to a
-// chunk's text ranks it deterministically (cosine 1.0).
+// Grounded card creation through a scripted agent. The fake explicitly chooses
+// evidenceChunkIds from the passages it read; new proposals never infer a
+// blanket cross-product. Legacy pending snapshots are covered separately.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
@@ -47,6 +25,7 @@ import {
 } from '../src/ai/openai-client.ts';
 import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers.ts';
 
+import { env } from '../src/env';
 const app = buildApp();
 const EMBED_DIM = 1536;
 
@@ -97,7 +76,12 @@ function scriptedAgentStream(script: AgentTurn[]) {
     for (const c of turn.content ?? []) yield { type: 'content', text: c };
     let index = 0;
     for (const tc of turn.toolCalls ?? []) {
-      const argsJson = JSON.stringify(tc.args);
+      const readIds = [...new Set(_messages.filter(message => message.role === 'tool').flatMap(message =>
+        [...String(message.content).matchAll(/\[src:([0-9a-f-]+)\]/gi)].map(match => match[1]!)))].slice(0, env.ai.CARD_SOURCE_LINK_CAP);
+      const args = tc.name === 'create_card' ? { ...tc.args,
+        ...(Array.isArray(tc.args.cards) ? { cards: tc.args.cards.map(card => ({ ...card, evidenceChunkIds: readIds })) } : { evidenceChunkIds: readIds }),
+      } : tc.args;
+      const argsJson = JSON.stringify(args);
       const mid = Math.floor(argsJson.length / 2);
       yield { type: 'tool_call_delta', index, id: tc.id, name: tc.name };
       yield { type: 'tool_call_delta', index, argsFragment: argsJson.slice(0, mid) };
@@ -280,16 +264,9 @@ describe('card provenance — suspend stamps grounding + impact preview', () => 
     // await_confirmation carries the provenance preview (AC3.2).
     const await_ = frames.find((f) => f.event === 'await_confirmation');
     expect(await_).toBeTruthy();
-    const impact = (await_!.data as {
-      impact?: { provenance?: { sourceTitle: string; page?: number; chunkId: string }[] };
-    }).impact;
-    expect(impact?.provenance).toBeTruthy();
-    expect(impact!.provenance!.length).toBe(1);
-    expect(impact!.provenance![0]).toEqual({
-      sourceTitle: 'Cell Biology',
-      page: 12,
-      chunkId: chunkIds[0]!,
-    });
+    const impact = (await_!.data as { impact: { cardEvidence: { sourceTitle: string; page?: number; chunkId: string }[][] } }).impact;
+    expect(impact.cardEvidence[0]).toHaveLength(1);
+    expect(impact.cardEvidence[0]![0]).toMatchObject({ sourceTitle: 'Cell Biology', page: 12, chunkId: chunkIds[0]! });
 
     // The pending assistant tool_calls row carries the grounding snapshot.
     const rows = await db
@@ -301,7 +278,9 @@ describe('card provenance — suspend stamps grounding + impact preview', () => 
       (r) => r.role === 'assistant' && (r.toolCalls?.[0]?.name === 'create_card'),
     );
     expect(pendingRow).toBeTruthy();
-    expect(pendingRow!.grounding).toEqual({ chunkIds: [chunkIds[0]!] });
+    expect(pendingRow!.grounding?.version).toBe(1);
+    expect(pendingRow!.grounding?.evidence?.[0]?.chunkId).toBe(chunkIds[0]);
+    expect(pendingRow!.toolCalls![0]!.impact?.cardEvidence?.[0]?.[0]?.chunkId).toBe(chunkIds[0]);
 
     // No edges yet (still paused, nothing applied).
     expect((await edgesFor(userId)).length).toBe(0);

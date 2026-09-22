@@ -1,4 +1,5 @@
 'use client';
+import { InlineDeckCreate } from '../inline-deck-create';
 
 // Feature #2 — «Урожай выделений → карточки» wizard. Opened from the «Разметка»
 // panel's «Собрать карточки из разметки» button. Lifecycle:
@@ -20,6 +21,7 @@
 // this component is the imperative shell.
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ApiError } from '@/lib/api';
 import { isCooldownError, useNN } from '@/lib/store';
 import { buildDeckTree, deckPathLabel, flattenTree } from '@/lib/decks';
 import { NNSelect, type NNSelectOption } from '@/components/nn-select';
@@ -61,7 +63,7 @@ export function HarvestWizard({ open, onClose, sourceId, locale, onApplied, t }:
   const [cursor, setCursor] = useState(0);
   const [deckId, setDeckId] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [applyError, setApplyError] = useState(false);
+  const [applyError, setApplyError] = useState<boolean | 'stale'>(false);
 
   const deckOptions = useMemo<NNSelectOption<string>[]>(
     () =>
@@ -144,8 +146,8 @@ export function HarvestWizard({ open, onClose, sourceId, locale, onApplied, t }:
       raiseToast({ kind: 'success', title: t('notebooks.harvest.created', { n: res.created }) });
       onApplied(res.created, res.cardIds);
       onClose();
-    } catch {
-      setApplyError(true);
+    } catch (error) {
+      setApplyError(error instanceof ApiError && error.safeMessage === 'harvest_evidence_stale' ? 'stale' : true);
     } finally {
       setSubmitting(false);
     }
@@ -324,6 +326,7 @@ function WizardStep({
             options={deckOptions}
             placeholder={t('notebooks.harvest.deckPlaceholder')}
           />
+          <InlineDeckCreate onCreated={onDeckChange} />
         </div>
 
         {/* Front / Back editors (disabled visual when excluded) */}
@@ -412,7 +415,7 @@ function ReviewStep({
   selectionCount: number;
   deckId: string;
   submitting: boolean;
-  applyError: boolean;
+  applyError: boolean | 'stale';
   onJump: (index: number) => void;
   onBack: () => void;
   onApply: () => void;
@@ -465,8 +468,8 @@ function ReviewStep({
           {t('notebooks.harvest.back')}
         </NNBtn>
         {applyError && (
-          <span style={{ fontSize: 11.5, color: 'var(--rose-400)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {t('notebooks.harvest.failed')}
+          <span role="alert" style={{ fontSize: 11.5, color: 'var(--rose-400)', flex: 1, minWidth: 0 }}>
+            {t(applyError === 'stale' ? 'notebooks.harvest.stale' : 'notebooks.harvest.failed')}
           </span>
         )}
         <div style={{ flex: 1 }} />

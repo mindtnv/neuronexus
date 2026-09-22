@@ -88,7 +88,7 @@ export interface ArtifactReaderProps {
    *  opens its citation-viewer. */
   onOpenCitation: (chunkId: string, sourceIds: string[]) => void;
   /** «В заметку» — save the ready artifact's markdown into the notebook's notes. */
-  onSaveToNote: (title: string, contentMd: string) => void | Promise<void>;
+  onSaveToNote: (title: string, contentMd: string, artifact?: NotebookArtifact) => void | Promise<void>;
   /** «Перегенерировать» — kick a regenerate (the parent closes the reader). */
   onRegenerate: () => void;
   /** «Удалить» — delete the artifact (the parent closes the reader). */
@@ -139,6 +139,9 @@ export const ArtifactReader = ({
         aria-hidden
       />
       <div className="nn-artifact-reader" role="dialog" aria-modal="true">
+        {artifact?.ownerKind === 'source' && <p style={{ margin: 0, padding: '8px 16px', fontSize: 12, color: 'var(--text-dim)' }}>
+          {artifact.sourceOriginTitle}{!artifact.sourceId ? ` · ${t('assistant.sourceUnavailable')}` : ''}
+        </p>}
         {isQuizReady ? (
           // The QuizPlayer owns its own header (Back) — drop our chrome and let it
           // fill the overlay column. A thin close affordance rides the corner.
@@ -190,7 +193,7 @@ const DocumentBody = ({
   loading: boolean;
   sourceIds: string[];
   onOpenCitation: (chunkId: string, sourceIds: string[]) => void;
-  onSaveToNote: (title: string, contentMd: string) => void | Promise<void>;
+  onSaveToNote: (title: string, contentMd: string, artifact?: NotebookArtifact) => void | Promise<void>;
   onRegenerate: () => void;
   onDelete: () => void;
   onClose: () => void;
@@ -255,8 +258,9 @@ const DocumentBody = ({
               size="sm"
               icon="doc"
               ariaLabel={t('notebooks.studio.toNote')}
-              title={t('notebooks.studio.toNote')}
-              onClick={() => void onSaveToNote(artifact.title, contentMd)}
+              title={artifact.ownerKind === 'source' && !artifact.sourceId ? t('assistant.sourceUnavailable') : t('notebooks.studio.toNote')}
+              disabled={artifact.ownerKind === 'source' && !artifact.sourceId}
+              onClick={() => void onSaveToNote(artifact.title, contentMd, artifact)}
             />
             <NNBtn
               variant="ghost"
@@ -271,7 +275,8 @@ const DocumentBody = ({
               size="sm"
               icon="sync"
               ariaLabel={t('notebooks.studio.regenerate')}
-              title={t('notebooks.studio.regenerate')}
+              title={artifact.ownerKind === 'source' && !artifact.sourceId ? t('assistant.sourceUnavailable') : t('notebooks.studio.regenerate')}
+              disabled={artifact.ownerKind === 'source' && !artifact.sourceId}
               onClick={onRegenerate}
             />
             <NNBtn

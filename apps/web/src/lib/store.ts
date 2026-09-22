@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 import { countDueCardsByDeck, getDueCards } from './cards';
-import { api, ok, type ApiError } from './api';
+import { api, assistantApi, ok, type ApiError } from './api';
 import { toApiError, type LoadStatus } from './resource-state';
 import { clearStudyHandoff } from './review-session';
 import {
@@ -279,6 +279,7 @@ interface State {
 
   // ── Notebook notes (Р1/Р7, N1) ───────────────────────────────────────────────
   /** List a notebook's notes (GET /notebooks/:id/notes) — pinned-first, opt `q`. */
+  getNotebookNote: (notebookId: string, noteId: string) => Promise<NotebookNote>;
   listNotebookNotes: (notebookId: string, q?: string) => Promise<NotebookNote[]>;
   /** Create a note (POST /notebooks/:id/notes). */
   createNotebookNote: (notebookId: string, input: CreateNoteInput) => Promise<NotebookNote>;
@@ -443,6 +444,8 @@ export interface ReadingStatePatch {
 
 /** Editable library metadata (explicit-field PATCH). */
 export interface LibraryPatch {
+  coverMediaId?: string;
+  pageCount?: number;
   title?: string;
   author?: string;
   description?: string;
@@ -599,6 +602,7 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async addDeck(input) {
+    const generation = bootstrapGeneration;
     const created = deckFromApi(
       await ok(
         await (api as any).decks.post({
@@ -609,7 +613,7 @@ export const useNN = create<State>()((set, get) => ({
         }),
       ),
     );
-    set((s) => ({ decks: [...s.decks, created] }));
+    if (generation === bootstrapGeneration) set((s) => ({ decks: [...s.decks, created] }));
     return created;
   },
 
@@ -1198,11 +1202,14 @@ export const useNN = create<State>()((set, get) => ({
 
   // ── Notebook notes (Р1/Р7, N1) ───────────────────────────────────────────────
 
+  async getNotebookNote(notebookId,noteId) {
+    return notebookNoteFromApi(await ok(await assistantApi.notebooks({id:notebookId}).notes({noteId}).get()));
+  },
   async listNotebookNotes(notebookId, q) {
     const query: Record<string, string> = {};
     if (q && q.trim()) query.q = q.trim();
     const res = (await ok(
-      await (api as any).notebooks({ id: notebookId }).notes.get({ query }),
+      await (assistantApi as any).notebooks({ id: notebookId }).notes.get({ query }),
     )) as { items: any[] };
     return res.items.map(notebookNoteFromApi);
   },
@@ -1213,20 +1220,20 @@ export const useNN = create<State>()((set, get) => ({
     if (input.citations != null) body.citations = input.citations;
     if (input.messageId) body.messageId = input.messageId;
     return notebookNoteFromApi(
-      await ok(await (api as any).notebooks({ id: notebookId }).notes.post(body)),
+      await ok(await (assistantApi as any).notebooks({ id: notebookId }).notes.post(body)),
     );
   },
 
   async patchNotebookNote(notebookId, noteId, patch) {
     return notebookNoteFromApi(
       await ok(
-        await (api as any).notebooks({ id: notebookId }).notes({ noteId }).patch(patch),
+        await (assistantApi as any).notebooks({ id: notebookId }).notes({ noteId }).patch(patch),
       ),
     );
   },
 
   async deleteNotebookNote(notebookId, noteId) {
-    await ok(await (api as any).notebooks({ id: notebookId }).notes({ noteId }).delete());
+    await ok(await (assistantApi as any).notebooks({ id: notebookId }).notes({ noteId }).delete());
   },
 
   // ── Notebook studio: artifacts + overview (N2) ────────────────────────────────
@@ -1409,7 +1416,7 @@ export const useNN = create<State>()((set, get) => ({
     const body: Record<string, string> = {};
     if (locale) body.locale = locale;
     const res = (await ok(
-      await (api as any).sources({ id: sourceId })['harvest-cards'].post(body),
+      await (assistantApi as any).sources({ id: sourceId })['harvest-cards'].post(body),
     )) as { candidates: HarvestCandidate[] };
     return res.candidates ?? [];
   },
@@ -1500,9 +1507,9 @@ export const useNN = create<State>()((set, get) => ({
   },
 
   async patchLibraryItem(id, patch) {
-    return (await ok(
-      await (api as any).library.items({ id }).patch(patch),
-    )) as LibraryItem;
+    await ok(await (api as any).library.items({ id }).patch(patch));
+    // PATCH returns a source row; GET includes coverUrl, progress and library counts.
+    return (await ok(await (api as any).library.items({ id }).get())) as LibraryItemDetail;
   },
 
   async deleteLibraryItem(id) {

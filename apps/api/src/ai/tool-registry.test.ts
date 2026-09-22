@@ -10,7 +10,7 @@ import { __setPageReaderForTests, __resetPageReaderForTests } from './page-reade
 import { buildAgentSystemPrompt } from '@neuronexus/shared';
 
 // The write/SRS tools always present in Phase B (no extra env gate).
-const KNOWLEDGE_TOOLS = buildKnowledgeTools().map(tool => tool.name);
+const KNOWLEDGE_TOOLS = ['search_source', 'read_source', 'list_marked_passages', 'read_context_object', ...buildKnowledgeTools().map(tool => tool.name)];
 const WRITE_SRS_TOOLS = ['create_card', 'edit_card', 'suspend', 'set_due', 'forget'];
 // Read tools always present (semantic card search + the two progress read-tools,
 // S4 — plus the deterministic browse tools list_decks/browse_cards/get_card).

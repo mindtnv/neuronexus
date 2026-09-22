@@ -1,6 +1,9 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useAssistantPageContext } from '@/components/chat/assistant-provider';
+import { ResizeHandle } from '@/components/design-system/resize-handle';
+import { REVIEW_INSPECTOR, boundedPanelWidth, readReviewInspectorWidth } from '@/lib/panel-width';
 import { ReviewCardInfo } from '@/components/review-card-info';
 import { deckPathLabel } from '@/lib/decks';
 import { AppLink, useAppNavigation } from '@/components/navigation';
@@ -25,7 +28,7 @@ import { toApiError } from '@/lib/resource-state';
 import { clearStudyHandoff, createAnswerTimer, emptyStudySession, mergeStudyQueue, readStudyHandoff, recordStudyAnswer, saveStudyHandoff, undoStudyAnswer, skipStudyCard, studyTotals } from '@/lib/review-session';
 import { diffAnswer } from '@/lib/review-answer';
 import { clearStudyResult, saveStudyResult } from '@/lib/study-result';
-import { isReviewEditingTarget, isReviewInteractiveTarget } from '@/lib/review-interactions';
+import { hasBlockingReviewOverlay, isReviewEditingTarget, isReviewInteractiveTarget } from '@/lib/review-interactions';
 import type { Card, CardSourceLink, Rating } from '@/lib/types';
 
 type RatingMeta = {
@@ -72,6 +75,14 @@ export const NNReview = ({ variant: _variant = 'classic' }: { variant?: 'classic
 // Variant A: Classic — functional flip card backed by store + FSRS
 // ─────────────────────────────────────────────
 export const NNReviewClassic = () => {
+  const [inspectorWidth, setInspectorWidth] = useState<number>(REVIEW_INSPECTOR.default);
+  useLayoutEffect(() => setInspectorWidth(readReviewInspectorWidth()), []);
+  const resizeInspector = useCallback((value: number) => {
+    const width = boundedPanelWidth(value, REVIEW_INSPECTOR.min, REVIEW_INSPECTOR.max, REVIEW_INSPECTOR.default);
+    setInspectorWidth(width);
+    try { localStorage.setItem(REVIEW_INSPECTOR.key, String(width)); } catch {}
+  }, []);
+  const inspectorStyle = { '--review-inspector-width': `${inspectorWidth}px` } as React.CSSProperties;
   const t = useT();
   const { locale } = useLocale();
   useEmptyRedirect('first-run');
@@ -195,6 +206,7 @@ export const NNReviewClassic = () => {
   }, [bootstrapped, queueAttempt]);
 
   const current = finished ? undefined : pendingPeek ? session.history.at(-1)?.before : queue.find((c) => c.id === session.activeId);
+  useAssistantPageContext(current ? { kind: 'card', id: current.id } : null);
   const related = useSimilarCards(revealed ? current?.id ?? null : null);
   useEffect(() => setInfoOpen(false), [current?.id]);
   useEffect(() => {
@@ -359,8 +371,7 @@ export const NNReviewClassic = () => {
       if ((e.metaKey || e.ctrlKey || e.altKey) && !((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !e.altKey)) return;
       const inInput = isReviewEditingTarget(e.target);
       if (inInput) return;
-      if (document.querySelector('[aria-modal="true"],dialog[open]') ||
-        (!pendingPeek && document.querySelector('[role="dialog"]'))) return;
+      if (hasBlockingReviewOverlay(document, Boolean(pendingPeek))) return;
 
       // Escape: a held lapse-peek closes FIRST and advances (the grade already
       // committed); otherwise exit the reviewer to home.
@@ -484,7 +495,7 @@ export const NNReviewClassic = () => {
   }, [sessionDone, session.history, completed, xpGained, totals, gradeCounts, decks, deckId, filteredDecks, filteredDeckId, sessionMode, reviewHref, profile?.userId, t]);
 
   if (!bootstrapped || queueLoading) {
-    return <ReviewSkeleton isMobile={isMobile} />;
+    return <ReviewSkeleton isMobile={isMobile} inspectorWidth={inspectorWidth} />;
   }
 
   if (queueError) {
@@ -576,7 +587,7 @@ export const NNReviewClassic = () => {
   </>;
 
   return (
-    <div className="reomi-review-layout nn-review-layout" aria-busy={busy || undefined}><div className="reomi-review-panels">
+    <div className="reomi-review-layout nn-review-layout" style={inspectorStyle} aria-busy={busy || undefined}><div className="reomi-review-panels">
     <div className="reomi-review-workspace">
       <div className="reomi-review-scroll nn-review-scroll nn-scroll">
       <div className="reomi-review-tools">
@@ -998,7 +1009,10 @@ export const NNReviewClassic = () => {
         </div>
       </div>
     </div>
-    <aside className="reomi-review-inspector nn-scroll" aria-label={t('review.info.title')}>{cardInfo}</aside>
+    <aside className="reomi-review-inspector" data-resizable aria-label={t('review.info.title')}>
+      <ResizeHandle edge="left" width={inspectorWidth} min={REVIEW_INSPECTOR.min} max={REVIEW_INSPECTOR.max} defaultWidth={REVIEW_INSPECTOR.default} label={t('review.info.resize')} onChange={resizeInspector} />
+      <div className="reomi-review-inspector-content nn-scroll">{cardInfo}</div>
+    </aside>
     </div>
     <Modal open={infoOpen} title={t('review.info.title')} closeLabel={t('actions.close')} onClose={() => setInfoOpen(false)}><div className="reomi-review-info-dialog">{cardInfo}</div></Modal>
     </div>
@@ -1009,9 +1023,9 @@ export const NNReviewClassic = () => {
 // Empty/loading/done states
 // ─────────────────────────────────────────────
 
-function ReviewSkeleton({ isMobile }: { isMobile: boolean }) {
+function ReviewSkeleton({ isMobile, inspectorWidth }: { isMobile: boolean; inspectorWidth: number }) {
   return (
-    <div className="reomi-review-layout nn-review-loading" role="status" aria-busy="true"><div className="reomi-review-panels">
+    <div className="reomi-review-layout nn-review-loading" style={{ '--review-inspector-width': `${inspectorWidth}px` } as React.CSSProperties} role="status" aria-busy="true"><div className="reomi-review-panels">
       <div className="reomi-review-workspace">
         <div className="reomi-review-scroll nn-scroll">
           <div className="reomi-review-tools"><NNSkeleton width={150} height={20} /><span style={{ flex: 1 }} /><NNSkeleton width={68} height={28} /></div>

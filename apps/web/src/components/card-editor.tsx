@@ -7,6 +7,7 @@ import { RichCard } from './rich-card';
 import { SimilarCardsPanel } from './similar-cards';
 import { SourceLinksPanel } from './source-links';
 import { useT } from '@/lib/i18n';
+import { AssistantAskButton } from './chat/assistant-ask-button';
 
 /** One editor body for the standalone workspace and resizable cards panel. */
 export function CardEditor({ card, onOpen, ...formProps }: NNCardFormProps & { onOpen?: (id: string) => void }) {
@@ -26,7 +27,7 @@ export function CardEditor({ card, onOpen, ...formProps }: NNCardFormProps & { o
   return <div className="reomi-card-editor">
     <div className="reomi-card-detail-tabs"><SegmentedControl label={t('cards.panel.mode')} value={mode} onChange={setMode} options={[
       {value: 'view', label: t('cards.panel.view')}, {value: 'edit', label: t('cards.panel.edit')},
-    ]} /></div>
+    ]} />{card && <AssistantAskButton object={{ kind: 'card', id: card.id }} />}</div>
     <div className="reomi-card-detail-preview nn-scroll" hidden={mode !== 'view'}>
       {isCloze ? <section>
         <div className="reomi-cloze-preview-header">

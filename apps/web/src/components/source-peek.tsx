@@ -16,11 +16,14 @@
 // is an explicit secondary action; it never fires implicitly (navigating away
 // rebuilds the review queue and kills the session).
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { CardSourceLink } from '@/lib/types';
 import { NNBadge, NNBtn, NNIcon } from '@/components/ui';
 import { useNN } from '@/lib/store';
 import { useT } from '@/lib/i18n';
+import { assistantApi, ok } from '@/lib/api';
+import { cardSourceHref as libraryHref } from '@/lib/card-source-link';
+import { raiseToast } from './toasts';
 import { useCardSources } from '@/components/source-links';
 
 type Tr = (key: string, params?: Record<string, string | number>) => string;
@@ -32,16 +35,21 @@ export function useFirstCardSource(cardId: string | null): CardSourceLink | null
   return items.find((it) => it.sourceId) ?? items[0] ?? null;
 }
 
-/** Build the library deep-link query (?chunk=&pos=&page=) — same shape as
- *  SourceLinksPanel.open(). Returns '' when the source is a tombstone. */
-function libraryHref(item: CardSourceLink): string | null {
-  if (!item.sourceId) return null;
-  const params = new URLSearchParams();
-  if (item.sourceChunkId) params.set('chunk', item.sourceChunkId);
-  if (item.position != null) params.set('pos', String(item.position));
-  if (item.page != null) params.set('page', String(item.page));
-  const qs = params.toString();
-  return `/library/${item.sourceId}${qs ? `?${qs}` : ''}`;
+async function freshLink(item: CardSourceLink): Promise<CardSourceLink | null> {
+  if(!item.cardId)return item;
+  const ownerId=useNN.getState().profile?.userId;
+  try {
+    const data=await ok(await assistantApi.cards({id:item.cardId}).sources.get());
+    if(useNN.getState().profile?.userId!==ownerId)return null;
+    const row=data.items.find(row=>row.id===item.id);
+    return row?{...row,cardId:item.cardId,createdAt:row.createdAt?new Date(row.createdAt).toISOString():''}:null;
+  }catch{return null;}
+}
+async function openFresh(item: CardSourceLink, onOpen: (href:string)=>void, isCurrent:()=>boolean=()=>true) {
+  const location=window.location.href;
+  const current=await freshLink(item),href=current?libraryHref(current):null;
+  if(!isCurrent()||window.location.href!==location)return;
+  if(href)onOpen(href);else raiseToast({kind:'info',titleKey:'assistant.sourceUnavailable'});
 }
 
 function originLabel(item: CardSourceLink, t: Tr): string {
@@ -65,13 +73,15 @@ export const SourcePeekChip = ({
   onOpen: (href: string) => void;
 }) => {
   const t = useT();
+  const navigation=useRef(0);
+  useEffect(()=>{navigation.current++;return()=>{navigation.current++;};},[item?.id,item?.sourceId,item?.sourceChunkId]);
   if (!item) return null;
   const href = libraryHref(item);
   return (
     <button
       type="button"
       disabled={!href}
-      onClick={() => href && onOpen(href)}
+      onClick={() => { const current=navigation.current;if(href)void openFresh(item,onOpen,()=>navigation.current===current); }}
       title={href ? t('review.peek.openInLibrary') : undefined}
       style={{
         display: 'inline-flex',
@@ -121,30 +131,32 @@ export const SourcePeekPanel = ({
 }) => {
   const t = useT();
   const getSourceChunks = useNN((s) => s.getSourceChunks);
+  const generation=useRef(0);
+  const [unavailable,setUnavailable]=useState(false);
+  useEffect(()=>{generation.current++;setFullText(null);setLoadingFull(false);setUnavailable(false);return()=>{generation.current++;};},[item.id,item.sourceId,item.sourceChunkId,item.locationAvailable,item.sourceSnapshot?.textHash,item.sourceSnapshot?.sourceVersion]);
   const [fullText, setFullText] = useState<string | null>(null);
   const [loadingFull, setLoadingFull] = useState(false);
   const href = libraryHref(item);
 
   const expand = useCallback(async () => {
-    if (fullText != null || loadingFull) return;
-    if (!item.sourceId || item.position == null) return;
-    setLoadingFull(true);
+    if(fullText!=null||loadingFull||item.locationAvailable===false)return;
+    const current=generation.current;setLoadingFull(true);
     try {
-      const page = await getSourceChunks(item.sourceId, item.position, 1);
-      const text = page.items[0]?.text ?? null;
-      setFullText(text ?? item.snippet ?? '');
-    } catch {
-      // Degrade to the snippet (already shown) — no error toast for a peek.
-      setFullText(item.snippet ?? '');
-    } finally {
-      setLoadingFull(false);
-    }
-  }, [fullText, loadingFull, item.sourceId, item.position, item.snippet, getSourceChunks]);
+      const fresh=await freshLink(item);
+      if(!fresh?.sourceId||fresh.position==null||fresh.locationAvailable===false){if(current===generation.current)setUnavailable(true);return;}
+      const page=await getSourceChunks(fresh.sourceId,fresh.position,1);
+      if(current!==generation.current)return;
+      const chunk=page.items.find(chunk=>chunk.id===fresh.sourceChunkId);
+      if(!chunk){setUnavailable(true);return;}
+      setFullText(chunk.text);
+    }catch{if(current===generation.current)setUnavailable(true);}
+    finally{if(current===generation.current)setLoadingFull(false);}
+  },[fullText,loadingFull,item,getSourceChunks]);
 
   // The body text: full chunk once dotted, else the snippet. Plain TEXT only
   // (whitespace preserved) — this is source content, rendered safely without HTML.
   const body = fullText ?? item.snippet ?? '';
-  const canExpand = fullText == null && item.sourceId != null && item.position != null;
+  const canExpand = !unavailable && item.locationAvailable !== false && fullText == null && item.sourceChunkId != null && item.sourceId != null && item.position != null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -192,6 +204,7 @@ export const SourcePeekPanel = ({
         </div>
       )}
 
+      {(unavailable || item.locationAvailable === false) && <small>{t('assistant.anchorUnavailable')}</small>}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         {canExpand && (
           <NNBtn size="sm" variant="ghost" icon="chevd" onClick={() => void expand()} disabled={loadingFull}>
@@ -199,7 +212,7 @@ export const SourcePeekPanel = ({
           </NNBtn>
         )}
         {href && onOpenLibrary && (
-          <NNBtn size="sm" variant="ghost" icon="link" onClick={() => onOpenLibrary(href)}>
+          <NNBtn size="sm" variant="ghost" icon="link" onClick={() => { const current=generation.current;void openFresh(item,onOpenLibrary,()=>generation.current===current); }}>
             {t('review.peek.openInLibrary')}
           </NNBtn>
         )}

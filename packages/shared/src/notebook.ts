@@ -60,6 +60,7 @@ export type ArtifactStatus = (typeof ARTIFACT_STATUSES)[number];
 
 /** Machine error codes stored in `notebook_artifacts.error_code` (NOT prose). */
 export const ARTIFACT_ERROR_CODES = [
+  'source_unavailable',
   'ai_disabled',
   'timeout',
   'generation_failed',

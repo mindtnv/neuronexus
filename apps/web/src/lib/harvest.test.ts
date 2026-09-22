@@ -98,3 +98,13 @@ describe('initialDecisions', () => {
     ]);
   });
 });
+
+test('editing and excluding candidates preserves only the included origin evidence', () => {
+  const evidence = { sourceVersion: '2026-09-21T00:00:00.000Z', originHash: 'a'.repeat(64) };
+  const included = { ...cand({ front: 'Initial' }), evidence };
+  const excluded = { ...cand({ front: 'Excluded' }), evidence: { ...evidence, originHash: 'b'.repeat(64) } };
+  const result = buildHarvestSelection([included, excluded], [keep('Edited', 'Edited answer'), drop()]);
+  expect(result).toHaveLength(1);
+  expect(result[0]!.evidence).toEqual(evidence);
+  expect(result[0]!.origin).toEqual(included.origin);
+});

@@ -74,5 +74,5 @@ export const MARK_RECTS_MAX = 64;
 
 /** The mark highlight palette — the only colors a mark may carry. The default
  *  (first entry) is 'lime'. Stored verbatim; the web maps each to a CSS var. */
-export const SOURCE_MARK_COLORS = ['lime', 'amber', 'rose', 'sky', 'violet'] as const;
+export const SOURCE_MARK_COLORS = ['lime', 'amber', 'rose', 'sky', 'violet', 'orange', 'teal', 'blue', 'pink', 'gray'] as const;
 export type SourceMarkColor = (typeof SOURCE_MARK_COLORS)[number];

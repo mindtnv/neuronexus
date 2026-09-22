@@ -23,6 +23,8 @@ import {
   type CardQueryNode,
 } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
+import { cardEvidenceFingerprint } from '../ai/card-evidence';
+import { internalReadDeckScope } from '../mcp/internal-read.ts';
 import { buildCardWhere } from './card-query-sql.ts';
 import { resolveDeckConfig } from './deck-config.ts';
 import { SORT_ORDERS, type SortOrder } from './filtered-decks.ts';
@@ -550,13 +552,15 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
   // shorter than the requested limit.
   .get(
     '/',
-    async ({ user, query }) => {
+    async ({ user, query, request }) => {
       const rawLimit = Number(query.limit ?? DEFAULT_CARDS_PAGE);
       const limit = Math.max(
         1,
         Math.min(MAX_CARDS_PAGE, Number.isFinite(rawLimit) ? rawLimit : DEFAULT_CARDS_PAGE),
       );
       const conditions = [eq(cards.userId, user.id)];
+      const allowed = internalReadDeckScope(request);
+      if (allowed !== undefined) conditions.push(allowed.length ? inArray(cards.deckId, [...allowed]) : sql`false`);
       if (query.deckId) conditions.push(eq(cards.deckId, query.deckId));
       if (query.noteTypeId) conditions.push(inArray(cards.noteId,
         db.select({ id: notes.id }).from(notes).where(and(eq(notes.userId, user.id), eq(notes.noteTypeId, query.noteTypeId)))));
@@ -626,7 +630,7 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
   // `mode: 'filtered'` come in Phase 7.)
   .get(
     '/queue',
-    async ({ user, query, status }) => {
+    async ({ user, query, status, request }) => {
       if (query.deckId && query.filteredDeckId) return status(400, { error: 'invalid_scope' });
       for (const value of [query.newLimit, query.reviewLimit]) {
         if (value !== undefined && (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)))) {
@@ -754,10 +758,14 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
       }
 
       const base = [eq(cards.userId, user.id), eq(cards.suspended, false)];
-      const subtree = deckId ? [deckId, ...descendantIds(deckId, userDecks)] : null;
-      if (deckId) {
+      const allowed = internalReadDeckScope(request);
+      if (allowed !== undefined) base.push(allowed.length ? inArray(cards.deckId, [...allowed]) : sql`false`);
+      const requestedSubtree = deckId ? [deckId, ...descendantIds(deckId, userDecks)] : null;
+      const subtree = allowed === undefined ? requestedSubtree
+        : requestedSubtree ? requestedSubtree.filter(id => allowed.includes(id)) : [...allowed];
+      if (subtree) {
         // Scoped path: aggregate the deck + its whole subtree (descendants).
-        base.push(inArray(cards.deckId, subtree!));
+        base.push(subtree.length ? inArray(cards.deckId, subtree) : sql`false`);
       }
       // Whole-collection path (no deckId): no extra filter — spans all the
       // user's non-suspended cards.
@@ -1087,6 +1095,9 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
           conversationId: cardSources.conversationId,
           messageId: cardSources.messageId,
           sourceTitle: sources.title,
+          sourceSnapshot: cardSources.sourceSnapshot,
+          sourceUpdatedAt: sources.updatedAt, sourcePageCount: sources.pageCount,
+          sourceHash: sourceChunks.sourceHash,
           notebookTitle: notebooks.title,
           position: sourceChunks.position,
           page: sourceChunks.page,
@@ -1095,9 +1106,9 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
           createdAt: cardSources.createdAt,
         })
         .from(cardSources)
-        .leftJoin(sourceChunks, eq(sourceChunks.id, cardSources.sourceChunkId))
-        .leftJoin(sources, eq(sources.id, cardSources.sourceId))
-        .leftJoin(notebooks, eq(notebooks.id, cardSources.notebookId))
+        .leftJoin(sourceChunks, and(eq(sourceChunks.id, cardSources.sourceChunkId), eq(sourceChunks.userId, user.id)))
+        .leftJoin(sources, and(eq(sources.id, cardSources.sourceId), eq(sources.userId, user.id)))
+        .leftJoin(notebooks, and(eq(notebooks.id, cardSources.notebookId), eq(notebooks.userId, user.id)))
         .where(and(eq(cardSources.userId, user.id), eq(cardSources.cardId, params.id)))
         .orderBy(desc(cardSources.createdAt));
 
@@ -1108,12 +1119,14 @@ export const cardsModule = new Elysia({ prefix: '/cards' })
         notebookId: r.notebookId,
         conversationId: r.conversationId,
         messageId: r.messageId,
-        sourceTitle: r.sourceTitle ?? null,
+        sourceTitle: r.sourceSnapshot?.sourceTitle ?? r.sourceTitle ?? null,
+        sourceSnapshot: r.sourceSnapshot,
+        locationAvailable: r.sourceSnapshot?.kind === 'user_quote' ? Boolean(r.sourceId && r.sourceSnapshot.page && r.sourcePageCount && r.sourceSnapshot.page <= r.sourcePageCount && r.sourceUpdatedAt?.toISOString() === r.sourceSnapshot.sourceVersion) : Boolean(r.sourceId && r.sourceChunkId && r.chunkText != null && r.position != null && (!r.sourceSnapshot || cardEvidenceFingerprint({ text: r.chunkText, sourceHash: r.sourceHash, position: r.position, page: r.page }) === r.sourceSnapshot.textHash)),
         notebookTitle: r.notebookTitle ?? null,
-        position: r.position ?? null,
-        page: r.page ?? null,
+        position: r.sourceSnapshot?.position ?? r.position ?? null,
+        page: r.sourceSnapshot?.page ?? r.page ?? null,
         heading: r.heading ?? null,
-        snippet: r.chunkText ? r.chunkText.slice(0, 240) : null,
+        snippet: r.sourceSnapshot?.quote ?? (r.chunkText ? r.chunkText.slice(0, 240) : null),
         createdAt: r.createdAt,
       }));
       return { items };

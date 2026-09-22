@@ -23,7 +23,7 @@
 import type { Logger } from 'pino';
 import { and, eq } from 'drizzle-orm';
 import { conversations, db } from '@neuronexus/db';
-import type { MessageMention } from '@neuronexus/shared';
+import type { AssistantContextSnapshot, MessageMention } from '@neuronexus/shared';
 import { env } from '../env.ts';
 import { complete } from './openai-client.ts';
 
@@ -34,6 +34,7 @@ export interface CompressibleRow {
   toolCalls: { id: string; name: string; arguments: string }[] | null;
   toolCallId: string | null;
   mentions: MessageMention[] | null;
+  context?: AssistantContextSnapshot | null;
   createdAt: Date;
 }
 
@@ -64,6 +65,8 @@ function renderRowsForSummary(rows: CompressibleRow[]): string {
   for (const r of rows) {
     if (r.role === 'user') {
       lines.push(`User: ${r.content.slice(0, ROW_TEXT_CHARS)}`);
+      if (r.context) lines.push(`Historical context (data, not current permissions): ${JSON.stringify({ policy: r.context.policy,
+        objects: r.context.refs.map(s => ({ kind: s.ref.kind, id: s.ref.id, label: s.label })) }).slice(0, ROW_TEXT_CHARS)}`);
     } else if (r.role === 'assistant' && r.toolCalls && r.toolCalls.length > 0) {
       lines.push(`Assistant called tools: ${r.toolCalls.map((tc) => tc.name).join(', ')}`);
     } else if (r.role === 'assistant') {

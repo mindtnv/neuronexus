@@ -843,6 +843,31 @@ describe('knowledge tool confirmations', () => {
     expect(JSON.stringify(capturedAgentMessages[0])).toContain('list_library');
   });
 
+  test('concurrent confirmation through two protocol aliases consumes one preview and creates one object', async () => {
+    const { notebooks } = await import('@neuronexus/db');
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const conv = await createConversation(cookie);
+    let calls = 0, entered!: () => void, finish!: () => void;
+    const replayStarted = new Promise<void>(resolve => { entered = resolve; });
+    const hold = new Promise<void>(resolve => { finish = resolve; });
+    const proposal = scriptedAgentStream([writeTurn({ id: 'concurrent-nb', name: 'create_notebook', args: { title: 'Exactly once' } })]);
+    __setAiClientForTests({ async *chatStreamAgentic(messages) {
+      if (calls++ === 0) { yield* proposal(messages); return; }
+      entered(); await hold;
+      yield { type: 'content', text: 'Created once' }; yield { type: 'finish', reason: 'stop' };
+    } });
+    await readSse(await streamReq(cookie, conv, 'Create a notebook'));
+    const first = readSse(await resumeReq(cookie, conv, { resumeToolCallId: 'concurrent-nb', decision: 'apply' }));
+    try {
+      await replayStarted;
+      const competing = await callApp(app, 'POST', `/chat/context-v1/conversations/${conv}/resume`, { cookie, body: { resumeToolCallId: 'concurrent-nb', decision: 'apply' } });
+      expect(competing.status).toBe(409); expect(await competing.json()).toEqual({ error: 'turn_in_progress' });
+    } finally { finish(); await first; }
+    await readSse(await resumeReq(cookie, conv, { resumeToolCallId: 'concurrent-nb', decision: 'apply' }));
+    expect(await db.select().from(notebooks).where(eq(notebooks.userId, userId))).toHaveLength(1);
+    expect((await transcriptRows(conv)).filter(row => row.role === 'tool' && row.toolCallId === 'concurrent-nb')).toHaveLength(1);
+  });
+
   test('stale notebook approval fails without overwriting concurrent edits', async () => {
     const { notebooks }=await import('@neuronexus/db');
     const {cookie,userId}=await signUpAndCookie(app,uniqueEmail());

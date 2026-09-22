@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { db, messages as messagesTable } from '@neuronexus/db';
 import { asc, eq } from 'drizzle-orm';
+import { newUuidV7 } from '@neuronexus/shared';
 import { buildApp } from '../src/app.ts';
 import {
   __resetAiClientForTests,
@@ -109,7 +110,7 @@ async function rows(convId: string) {
     .select()
     .from(messagesTable)
     .where(eq(messagesTable.conversationId, convId))
-    .orderBy(asc(messagesTable.createdAt));
+    .orderBy(asc(messagesTable.createdAt), asc(messagesTable.id));
 }
 
 // ── S5 — rename (AC3.1) ───────────────────────────────────────────────────────
@@ -250,6 +251,54 @@ describe('POST /chat/conversations/:id/regenerate', () => {
   });
   afterEach(() => {
     __resetAiClientForTests();
+  });
+
+  test('edited regeneration targets the latest user beyond 1000 rows and preserves every earlier row', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const convId = await createConversation(cookie, 'Long conversation');
+    const start = Date.now() - 100_000;
+    await db.insert(messagesTable).values(Array.from({ length: 1002 }, (_, i) => ({
+      conversationId: convId, userId, role: i % 2 === 0 ? 'user' as const : 'assistant' as const,
+      content: `Historical row ${i}`, createdAt: new Date(start + i),
+    })));
+    const before = await rows(convId);
+    let replayed = '';
+    __setAiClientForTests({ async *chatStreamAgentic(history) {
+      replayed = String(history.findLast(message => message.role === 'user')?.content);
+      yield { type: 'content', text: 'Updated final answer' };
+      yield { type: 'finish', reason: 'stop' };
+    } });
+    const response = await regenReqWithContent(cookie, convId, 'Edited latest question');
+    expect(response.status).toBe(200); await drain(response);
+    const after = await rows(convId);
+    expect(after.slice(0, 1000)).toEqual(before.slice(0, 1000));
+    expect(after).toHaveLength(1002);
+    expect(after[1000]!.id).toBe(before[1000]!.id);
+    expect(after[1000]!.content).toBe('Edited latest question');
+    expect(after[1001]!.content).toBe('Updated final answer');
+    expect(after[1001]!.id).not.toBe(before[1001]!.id);
+    expect(replayed).toContain('Edited latest question');
+  });
+
+  test('regeneration separates the tail by ID when messages share a timestamp', async () => {
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const convId = await createConversation(cookie, 'Tied timestamps');
+    const createdAt = new Date(Date.now() - 1000);
+    const ids = Array.from({ length: 4 }, () => newUuidV7()).sort();
+    await db.insert(messagesTable).values(ids.map((id, index) => ({
+      id, conversationId: convId, userId, createdAt,
+      role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+      content: `Tied row ${index}`,
+    })));
+    __setAiClientForTests({ chatStreamAgentic: scriptedAgentStream([answerTurn('New tail')]) });
+    const before = await rows(convId);
+    await drain(await regenReqWithContent(cookie, convId, 'Latest edit'));
+    const after = await rows(convId);
+    expect(after.slice(0, 2)).toEqual(before.slice(0, 2));
+    expect(after).toHaveLength(4);
+    expect(after[2]!.id).toBe(ids[2]!);
+    expect(after[2]!.content).toBe('Latest edit');
+    expect(after[3]!.content).toBe('New tail');
   });
 
   test('removes EXACTLY the trailing assistant turn rows + re-streams to a fresh done', async () => {

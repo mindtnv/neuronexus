@@ -2548,3 +2548,7 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 }
 .nn-rendered .nn-content-error strong { color: var(--rose-400); }
 .nn-rendered .nn-content-error pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* A single page overlay paints intersecting glyph boxes at one opacity. */
+.nn-pdf-page:has([data-pdf-selection-paint])::selection,
+.nn-pdf-page:has([data-pdf-selection-paint]) *::selection { background: transparent; color: transparent; }

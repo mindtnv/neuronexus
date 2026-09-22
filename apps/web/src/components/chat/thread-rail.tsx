@@ -41,7 +41,15 @@ export interface ThreadRailProps {
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
   onTogglePin: (id: string, pinned: boolean) => void;
+  searchValue?: string;
+  onSearchChange?: (value: string) => void;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
   t: T;
+  panelWidth?: number;
+  onWidthChange?: (width: number) => void;
+  headerActions?: React.ReactNode;
 }
 
 export const ThreadRail = ({
@@ -54,12 +62,21 @@ export const ThreadRail = ({
   onRename,
   onDelete,
   onTogglePin,
+  searchValue,
+  onSearchChange,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+  panelWidth, onWidthChange, headerActions,
   t,
 }: ThreadRailProps) => {
-  const [railWidth, setRailWidth] = useState<number>(CHAT_RAIL.default);
+  const [localWidth, setRailWidth] = useState<number>(CHAT_RAIL.default);
+  const railWidth = panelWidth ?? localWidth;
   useLayoutEffect(() => { setRailWidth(readChatRailWidth()); }, []);
-  const resize = (value: number) => { const next = boundedPanelWidth(value, CHAT_RAIL.min, CHAT_RAIL.max, CHAT_RAIL.default); setRailWidth(next); try { localStorage.setItem(CHAT_RAIL.key, String(next)); } catch {} };
-  const [search, setSearch] = useState('');
+  const resize = (value: number) => { const next = boundedPanelWidth(value, CHAT_RAIL.min, CHAT_RAIL.max, CHAT_RAIL.default); setRailWidth(next); onWidthChange?.(next); try { localStorage.setItem(CHAT_RAIL.key, String(next)); } catch {} };
+  const [localSearch, setLocalSearch] = useState('');
+  const search = searchValue ?? localSearch;
+  const setSearch = (value: string) => { setLocalSearch(value); onSearchChange?.(value); };
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [menu, setMenu] = useState<{ id: string; x: number; y: number; trigger: HTMLElement } | null>(null);
@@ -96,7 +113,7 @@ export const ThreadRail = ({
       style={{
         width: isMobile ? '100%' : railWidth,
         position: 'relative',
-        maxWidth: isMobile ? undefined : '45%',
+        maxWidth: '100%',
         flexShrink: 0,
         borderRight: isMobile ? 'none' : '1px solid var(--panel-edge)',
         display: 'flex',
@@ -105,7 +122,7 @@ export const ThreadRail = ({
       }}
     >
       {!isMobile && <ResizeHandle width={railWidth} min={CHAT_RAIL.min} max={CHAT_RAIL.max} defaultWidth={CHAT_RAIL.default} label={t('chat.threads.resize')} onChange={resize} />}
-      <div
+      <div className="reomi-thread-rail-header"
         style={{
           padding: '12px 14px',
           display: 'flex',
@@ -125,6 +142,7 @@ export const ThreadRail = ({
         >
           {t('chat.threads.title')}
         </span>
+        {headerActions}
         <NNBtn className="reomi-create-icon" variant="ghost" icon="plus" ariaLabel={t('chat.threads.newThread')} title={t('chat.threads.newThread')} onClick={onNew} />
       </div>
 
@@ -319,6 +337,11 @@ export const ThreadRail = ({
                         >
                           {conversationTitle(c, t('chat.threads.untitled'))}
                         </span>
+                        {c.context?.refs.length ? <span className="reomi-assistant-thread-context">
+                          {c.context.refs.slice(0,2).map(s => `${s.label}${s.available ? '' : ` · ${t('assistant.unavailable')}`}`).join(' · ')}
+                          {c.context.refs.length > 2 ? ` +${c.context.refs.length - 2}` : ''}
+                        </span> : null}
+                        {c.activity && <span className="reomi-assistant-thread-activity" data-activity={c.activity}>{t(`assistant.activity.${c.activity}`)}</span>}
                         {relativeUpdated(c.updatedAt, t) && (
                           <span
                             style={{
@@ -354,6 +377,7 @@ export const ThreadRail = ({
           ))
         )}
       </div>
+      {hasMore && <NNBtn size="sm" variant="ghost" disabled={loadingMore} onClick={onLoadMore}>{t(loadingMore ? 'states.loading' : 'assistant.more')}</NNBtn>}
       {menu && menuConversation && <ThreadContextMenu anchor={menu.trigger} x={menu.x} y={menu.y} label={t('chat.threads.actions')} onClose={closeMenu} actions={[
         { icon: 'pin', label: t(menuConversation.pinned ? 'chat.threads.unpin' : 'chat.threads.pin'), run: () => onTogglePin(menuConversation.id, !menuConversation.pinned) },
         { icon: 'edit', label: t('chat.threads.rename'), run: () => startRename(menuConversation) },

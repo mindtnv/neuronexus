@@ -209,7 +209,11 @@ export interface Notebook {
  *  (pending→generating→ready|error); `errorCode` maps to an i18n string. */
 export interface NotebookArtifact {
   id: string;
-  notebookId: string;
+  notebookId: string | null;
+  ownerKind?: 'notebook' | 'source';
+  sourceId?: string | null;
+  sourceOriginId?: string | null;
+  sourceOriginTitle?: string | null;
   type: NotebookArtifactType;
   status: ArtifactStatus;
   title: string;
@@ -320,7 +324,11 @@ export interface SuggestSourcesResult {
  *  (`answer`). The list view also folds in a light `excerpt`. */
 export interface NotebookNote {
   id: string;
-  notebookId: string;
+  notebookId: string | null;
+  ownerKind?: 'notebook' | 'source';
+  sourceId?: string | null;
+  sourceOriginId?: string | null;
+  sourceOriginTitle?: string | null;
   title: string;
   content: string;
   kind: NotebookNoteKind;
@@ -472,6 +480,7 @@ export type HarvestOrigin =
  *  /sources/:id/harvest-cards). `quote` is the source passage it came from
  *  (wizard context); `page` is its 1-based page or null. */
 export interface HarvestCandidate {
+  evidence?: { sourceVersion: string; originHash: string };
   origin: HarvestOrigin;
   page: number | null;
   front: string;
@@ -482,6 +491,9 @@ export interface HarvestCandidate {
 /** One provenance backlink on a card (GET /cards/:id/sources). All ref fields go
  *  NULL after the source/notebook is deleted — a tombstone row («источник удалён»). */
 export interface CardSourceLink {
+  cardId?: string;
+  sourceSnapshot?: import('@neuronexus/shared').CardEvidenceSnapshot | null;
+  locationAvailable?: boolean;
   id: string;
   sourceChunkId: string | null;
   sourceId: string | null;

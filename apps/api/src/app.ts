@@ -17,9 +17,12 @@ import { reviewsModule } from './modules/reviews.ts';
 import { statsModule } from './modules/stats.ts';
 import { profileModule } from './modules/profile.ts';
 import { mediaModule } from './modules/media.ts';
-import { aiModule, chatModule } from './modules/ai.ts';
+import { aiModule, chatModule, contextualChatModule } from './modules/ai.ts';
 import { cardsSimilarModule, graphModule } from './modules/semantic.ts';
 import { notebooksModule, sourcesModule } from './modules/notebooks.ts';
+import { sourceStudyModule } from './modules/source-study.ts';
+import { sourceTextMarksModule } from './modules/source-text-marks.ts';
+import { StudyError } from './modules/study-notes.ts';
 import { libraryModule } from './modules/library.ts';
 import { personalTokensModule } from './modules/personal-tokens.ts';
 import { handleMcp } from './mcp/server.ts';
@@ -205,6 +208,10 @@ export function buildApp(options: BuildAppOptions = {}) {
     .onError({ as: 'global' }, ({ code, error, status, log, requestState }) => {
       const state = requestState as RequestLifecycleState | undefined;
       const errorLog = log ?? baseLogger;
+      if (error instanceof StudyError) {
+        if (state) state.errorStatus = error.status;
+        return status(error.status, { error: error.message });
+      }
       if (error instanceof NoteContentError) {
         if (state) state.errorStatus = 400;
         return status(400, { error: error.code });
@@ -249,8 +256,11 @@ export function buildApp(options: BuildAppOptions = {}) {
     .use(mediaModule)
     .use(aiModule)
     .use(chatModule)
+    .use(contextualChatModule)
     .use(notebooksModule)
     .use(sourcesModule)
+    .use(sourceStudyModule)
+    .use(sourceTextMarksModule)
     .use(libraryModule)
     .all('/mcp', ({ request, log }) => handleMcp(request, (req) => readHandle(req), log), { parse: 'none' })
     // Explicit fallback keeps the completion hook's final status accurate for

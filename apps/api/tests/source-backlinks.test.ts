@@ -327,7 +327,7 @@ describe('backlinks — cascade asymmetry (AC3.3)', () => {
     expect(body.items[0]!.snippet).toBeNull();
   });
 
-  test('delete NOTEBOOK → conversation cascades away + notebookId/conversationId NULL; source/chunk PRESERVED (library Р3)', async () => {
+  test('delete NOTEBOOK → conversation and source survive; only notebook links detach', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
     const notebookId = await freshNotebook(userId, 'Notebook');
     const deckId = await freshDeck(cookie);
@@ -343,20 +343,17 @@ describe('backlinks — cascade asymmetry (AC3.3)', () => {
       conversationId: convId,
     });
 
-    // Delete the notebook via the real route. Library refactor (Р3): the source
-    // and its chunks live in the library and SURVIVE; only the bound conversation
-    // (FK cascade) + the notebook_sources edge die. The card_sources edge keeps
-    // its sourceId/sourceChunkId (the source is intact) but loses notebookId and
-    // conversationId (those referents are gone → SET NULL).
+    // Delete the notebook through the real route; owned source work and chat history survive.
     const del = await callApp(app, 'DELETE', `/notebooks/${notebookId}`, { cookie });
     expect(del.status).toBe(200);
 
-    // The bound conversation is gone (FK cascade on conversations.notebookId).
+    // The conversation retains its identity with a detached notebook binding.
     const conv = await db
       .select()
       .from(conversationsTable)
       .where(eq(conversationsTable.id, convId));
-    expect(conv.length).toBe(0);
+    expect(conv.length).toBe(1);
+    expect(conv[0]!.notebookId).toBeNull();
 
     // The SOURCE + its CHUNK survive (they're library-owned now).
     expect(
@@ -366,12 +363,11 @@ describe('backlinks — cascade asymmetry (AC3.3)', () => {
       (await db.select().from(sourceChunksTable).where(eq(sourceChunksTable.id, chunkIds[0]!))).length,
     ).toBe(1);
 
-    // The edge survives — the notebook/conversation refs NULL, but the source side
-    // is INTACT (sourceId/sourceChunkId still point at the live source).
+    // Only notebook ownership detaches; conversation and source references remain.
     const [edge] = await db.select().from(cardSourcesTable).where(eq(cardSourcesTable.id, edgeId));
     expect(edge).toBeTruthy();
     expect(edge!.notebookId).toBeNull();
-    expect(edge!.conversationId).toBeNull();
+    expect(edge!.conversationId).toBe(convId);
     expect(edge!.sourceId).toBe(sourceId);
     expect(edge!.sourceChunkId).toBe(chunkIds[0]!);
     expect(edge!.cardId).toBe(card.id);

@@ -149,6 +149,8 @@ export async function deleteMark(sourceId: string, markId: string): Promise<void
 // ── Quick card + AI formulate (M5) ────────────────────────────────────────────
 
 export interface QuickCardInput {
+  pdfSelection?: import('@neuronexus/shared').PdfCardSelection;
+  textSelection?: import('@neuronexus/shared').SourceTextSelection;
   deckId: string;
   front: string;
   back: string;

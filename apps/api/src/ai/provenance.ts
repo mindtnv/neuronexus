@@ -14,8 +14,9 @@
 // on live edges is the storage backstop). Foreign/missing chunk ids are silently
 // dropped (the source may have been deleted between read and apply).
 
+import { legacyChunkEvidence } from './legacy-evidence';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { cardSources, sourceChunks, type Db } from '@neuronexus/db';
+import { cardSources, sourceChunks, sources, type Db } from '@neuronexus/db';
 import { env } from '../env.ts';
 
 /** A Drizzle transaction handle (the arg passed to `db.transaction`). */
@@ -59,8 +60,11 @@ export async function writeCardProvenance(
     .select({
       id: sourceChunks.id,
       sourceId: sourceChunks.sourceId,
+      sourceTitle: sources.title, text: sourceChunks.text, sourceHash: sourceChunks.sourceHash,
+      position: sourceChunks.position, page: sourceChunks.page,
     })
     .from(sourceChunks)
+    .innerJoin(sources, and(eq(sources.id, sourceChunks.sourceId), eq(sources.userId, userId)))
     .where(and(eq(sourceChunks.userId, userId), inArray(sourceChunks.id, distinct)));
   if (rows.length === 0) return 0;
   // Preserve the accumulation order of `distinct` (the select returns arbitrary
@@ -77,6 +81,7 @@ export async function writeCardProvenance(
         cardId,
         sourceChunkId: chunk.id,
         sourceId: chunk.sourceId,
+        sourceSnapshot: legacyChunkEvidence({ id: chunk.sourceId, title: chunk.sourceTitle }, chunk),
         notebookId,
         conversationId,
         messageId,

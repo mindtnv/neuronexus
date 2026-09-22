@@ -29,12 +29,14 @@ import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
 import {
   MAX_SOURCE_BYTES_DEFAULT,
+  isSourceTextReadable,
   SOURCE_MIME_TO_KIND,
   type IngestErrorCode,
   type NotebookColor,
   type SourceMime,
 } from '@neuronexus/shared';
 import { NNBtn, NNCard, NNIcon, NNBadge, NNLoadError, NNSkeleton } from '@/components/ui';
+import { restoreNotebookSourceScope, newlyReadableNotebookSources } from '@/lib/notebook-source-scope';
 import { isCooldownError, useNN } from '@/lib/store';
 import type { ApiError } from '@/lib/api';
 import { toApiError } from '@/lib/resource-state';
@@ -57,7 +59,8 @@ import {
   type AddKind,
 } from '@/components/screens/notebooks';
 import { ChatPanel, type ComposerPrefillHandle } from '@/components/chat/chat-panel';
-import { TextChunkReader, type TextChunkReaderHandle } from '@/components/screens/text-reader';
+import { SourceStudyWorkspace } from '@/components/screens/library-reader';
+import { createPortal } from 'react-dom';
 import { NotesPanel } from '@/components/notebook/notes-panel';
 import { OverviewPanel } from '@/components/notebook/overview-panel';
 import { StudioPanel } from '@/components/notebook/studio-panel';
@@ -175,6 +178,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const listLibrary = useNN((s) => s.listLibrary);
   const attachSources = useNN((s) => s.attachSources);
   const detachSource = useNN((s) => s.detachSource);
+  const getNotebookNote = useNN(s => s.getNotebookNote);
   const listNotebookNotes = useNN((s) => s.listNotebookNotes);
   const createNotebookNote = useNN((s) => s.createNotebookNote);
   const patchNotebookNote = useNN((s) => s.patchNotebookNote);
@@ -319,14 +323,20 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     [createNotebookNote, notebookId, t],
   );
 
-  // ── Citation viewer (text-mode chunk reader over a cited source) ───────────────
+  // ── Full source study workspace over the current notebook ───────────────
   const [viewer, setViewer] = useState<{
     sourceId: string;
     chunkId?: string;
     pos?: number;
     page?: number;
   } | null>(null);
-  const viewerReaderRef = useRef<TextChunkReaderHandle | null>(null);
+
+  const readerReturnFocus = useRef<HTMLElement | null>(null);
+  const closeSourceReader = useCallback(() => {
+    setViewer(null);
+    const target = readerReturnFocus.current; readerReturnFocus.current = null;
+    requestAnimationFrame(() => { if (target?.isConnected) target.focus(); });
+  }, []);
 
   // Mobile tab.
   const [tab, setTab] = useState<WorkspaceTab>('chat');
@@ -351,6 +361,20 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const posParam = searchParams.get('pos');
   const pageParam = searchParams.get('page');
   const threadParam = searchParams.get('thread');
+  const noteParam = searchParams.get('note');
+  const artifactParam = searchParams.get('artifact');
+  useEffect(() => {
+    if (!noteParam && !artifactParam) return;
+    setDockTab(artifactParam ? 'studio' : 'notes');
+    setDockCollapsed(false);
+    if (isTablet) setDockSheetOpen(true);
+    if (!isDesktop && !isTablet) setTab('dock');
+  }, [noteParam, artifactParam, isDesktop, isTablet]);
+  const consumeStudyLink = useCallback((kind: 'note' | 'artifact') => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete(kind);
+    router.replace(`/notebooks/${notebookId}${next.size ? `?${next}` : ''}`, { scroll: false, track: false });
+  }, [searchParams, notebookId, router]);
 
   // ── Load notebook + sources ───────────────────────────────────────────────────
   useEffect(() => {
@@ -375,17 +399,14 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         setSources(rows);
         if (!scopeHydratedRef.current) {
           scopeHydratedRef.current = true;
-          const readyIds = rows.filter((s) => s.status === 'ready').map((s) => s.id);
-          let stored: string[] | null = null;
+          let stored: unknown = null;
           try {
             const raw = localStorage.getItem(scopeKey);
-            stored = raw ? (JSON.parse(raw) as string[]) : null;
+            stored = raw ? JSON.parse(raw) : null;
           } catch {
             stored = null;
           }
-          const next = stored
-            ? new Set(readyIds.filter((id) => stored!.includes(id)))
-            : new Set(readyIds);
+          const next = restoreNotebookSourceScope(rows, stored);
           setScope(next);
         }
       } catch (error) {
@@ -481,8 +502,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
         if (text) {
           sessionStorage.removeItem(key);
           composerPrefillRef.current?.prefill(text);
-          if (!isDesktop) setTab('chat');
-        }
+            }
       } catch {
         /* best-effort */
       }
@@ -524,10 +544,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     [scopeKey],
   );
 
-  // Bulk select-all / clear over the READY sources (the rail's select-all box +
-  // footer link). Only ready sources can be checked into the chat scope.
+  // Scope selection follows parsed readability, independently of embeddings.
   const readyIds = useMemo(
-    () => sources.filter((s) => s.status === 'ready').map((s) => s.id),
+    () => sources.filter((s) => isSourceTextReadable(s.status, s.errorCode)).map((s) => s.id),
     [sources],
   );
   const allSelected = readyIds.length > 0 && readyIds.every((id) => scope.has(id));
@@ -541,17 +560,13 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     fetchOne: (id) => getSource(id).catch(() => null),
     onUpdate: (fresh) => {
       const byId = new Map(fresh.map((s) => [s.id, s]));
-      // Collect ids that just flipped to ready (pure pass — no side effects in
-      // the setSources updater), then auto-add them to the chat scope in ONE
-      // functional update outside the sources updater.
-      const newlyReadyIds: string[] = [];
+      // Determine transitions outside React's state updater. Completing indexing
+      // must not reselect a source the user could already read and unchecked.
+      const newlyReadyIds = newlyReadableNotebookSources(sources, fresh);
       setSources((prev) =>
         prev.map((s) => {
           const updated = byId.get(s.id);
           if (!updated) return s;
-          if (s.status !== 'ready' && updated.status === 'ready') {
-            newlyReadyIds.push(updated.id);
-          }
           // `getSource` (the poll's fetchOne) doesn't carry the list-only reading
           // state; keep the existing values so the rail subline doesn't blank.
           return {
@@ -570,13 +585,11 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   // ── Open the citation viewer (keyed on sourceChunkId/position, NOT page) ───────
   const openViewer = useCallback(
     (v: { sourceId: string; chunkId?: string; pos?: number; page?: number }) => {
+      if (!readerReturnFocus.current && document.activeElement instanceof HTMLElement) readerReturnFocus.current = document.activeElement;
       setViewer(v);
-      if (!isDesktop) setTab('chat');
       // On tablet, the dock sheet would stack over the viewer — close it.
       setDockSheetOpen(false);
-      // The TextChunkReader mounts fresh per sourceId (key) and scrolls once it has
-      // chunks; if it's already mounted for this source, scroll imperatively.
-      requestAnimationFrame(() => viewerReaderRef.current?.scrollToChunk(v.chunkId, v.pos));
+
     },
     [isDesktop],
   );
@@ -596,7 +609,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       const candidates =
         candidateSourceIds.length > 0
           ? candidateSourceIds
-          : sources.filter((s) => s.status === 'ready').map((s) => s.id);
+          : sources.filter((s) => isSourceTextReadable(s.status, s.errorCode)).map((s) => s.id);
       if (candidates.length === 0) return;
       // Single candidate — open directly (the reader pages forward to the chunk).
       if (candidates.length === 1) {
@@ -788,9 +801,9 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   // «Читать в библиотеке» → the full-screen library reader (NOT ?focus=).
   const onReadInLibrary = useCallback(
     (src: Source) => {
-      router.push(`/library/${src.id}`);
+      openViewer({ sourceId: src.id });
     },
-    [router],
+    [openViewer],
   );
 
   // Notebook-mode chat thread change.
@@ -805,10 +818,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   // The checked source ids (stable array) passed to the chat panel.
   const scopeIds = useMemo(() => [...scope], [scope]);
-  const viewerSource = useMemo(
-    () => (viewer ? sources.find((s) => s.id === viewer.sourceId) ?? null : null),
-    [sources, viewer],
-  );
+
 
   // ── Panels ─────────────────────────────────────────────────────────────────────
   const sourcesPanel = sourcesError ? (
@@ -898,7 +908,6 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const askInChat = useCallback(
     (question: string) => {
       prefillChat(question);
-      if (!isDesktop) setTab('chat');
       // Tablet: the dock sheet covers the chat — close it so the prefill is seen.
       setDockSheetOpen(false);
     },
@@ -927,7 +936,6 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const prefillAndReveal = useCallback(
     (text: string) => {
       prefillChat(text);
-      if (!isDesktop) setTab('chat');
       setDockSheetOpen(false);
     },
     [prefillChat, isDesktop],
@@ -935,8 +943,12 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   const notesPanel = (
     <NotesPanel
+      key={notebookId}
       notebookId={notebookId}
+      initialNoteId={noteParam}
+      onInitialOpen={() => consumeStudyLink('note')}
       listNotes={listNotebookNotes}
+      getNote={getNotebookNote}
       createNote={createNotebookNote}
       patchNote={patchNotebookNote}
       deleteNote={deleteNotebookNote}
@@ -948,7 +960,10 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
 
   const studioPanel = (
     <StudioPanel
+      key={notebookId}
       notebookId={notebookId}
+      initialArtifactId={artifactParam}
+      onInitialOpen={() => consumeStudyLink('artifact')}
       scopeIds={scopeIds}
       chatEnabled={chatEnabled}
       listArtifacts={listArtifacts}
@@ -1020,33 +1035,14 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     </div>
   );
 
-  // Citation viewer — right drawer (desktop) / fullscreen sheet (mobile).
-  const citationViewer = viewer ? (
-    <CitationViewer
-      key={viewer.sourceId}
-      source={viewerSource}
-      sourceId={viewer.sourceId}
-      chunkId={viewer.chunkId}
-      pos={viewer.pos}
-      page={viewer.page}
-      isDesktop={isDesktop}
-      getSourceChunks={getSourceChunks}
-      readerRef={viewerReaderRef}
-      onOpenInLibrary={() => {
-        const params = new URLSearchParams();
-        // PDF source + a known page → ?page=; otherwise ?chunk=/?pos=.
-        if (viewerSource?.kind === 'pdf' && viewer.page != null) {
-          params.set('page', String(viewer.page));
-        } else {
-          if (viewer.chunkId) params.set('chunk', viewer.chunkId);
-          if (viewer.pos != null) params.set('pos', String(viewer.pos));
-        }
-        const qs = params.toString();
-        router.push(`/library/${viewer.sourceId}${qs ? `?${qs}` : ''}`);
-      }}
-      onClose={() => setViewer(null)}
-      t={t}
-    />
+  // Keep the notebook mounted underneath the full shared reader. Its source
+  // selection, dock drafts and scroll positions survive opening and returning.
+  const citationViewer = viewer && typeof document !== 'undefined' ? createPortal(
+    <div className="reomi-notebook-source-reader" role="region" aria-label={t('assistant.readSource')}>
+      <SourceStudyWorkspace key={`${viewer.sourceId}:${viewer.chunkId ?? ''}:${viewer.page ?? ''}:${viewer.pos ?? ''}`}
+        sourceId={viewer.sourceId} initialLocation={viewer}
+        origin={{ title: notebook?.title ?? t('nav.notebooks'), onReturn: closeSourceReader }} />
+    </div>, document.body,
   ) : null;
 
   // L1 — "Add from library" picker. N4 (Р11): the picker also surfaces a
@@ -1266,12 +1262,12 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
           </div>
           {/* Right side: the citation viewer (transient) takes precedence over the
               dock; otherwise the dock column (or a thin expand rail when collapsed). */}
-          {citationViewer ??
-            (dockCollapsed ? (
+          {citationViewer}
+          {dockCollapsed ? (
               <DockExpandRail label={t('notebooks.notes.dockExpand')} onExpand={toggleDock} />
             ) : (
               dockColumn
-            ))}
+            )}
         </div>
       </div>
     );
@@ -1367,113 +1363,6 @@ const DockExpandRail = ({ label, onExpand }: { label: string; onExpand: () => vo
   </div>
 );
 
-// ── Citation viewer ───────────────────────────────────────────────────────────
-
-const CitationViewer = ({
-  source,
-  sourceId,
-  isDesktop,
-  getSourceChunks,
-  readerRef,
-  onOpenInLibrary,
-  onClose,
-  t,
-}: {
-  source: Source | null;
-  sourceId: string;
-  chunkId?: string;
-  pos?: number;
-  page?: number;
-  isDesktop: boolean;
-  getSourceChunks: React.ComponentProps<typeof TextChunkReader>['getSourceChunks'];
-  readerRef: React.RefObject<TextChunkReaderHandle | null>;
-  onOpenInLibrary: () => void;
-  onClose: () => void;
-  t: (key: string, params?: Record<string, string | number>) => string;
-}) => {
-  const panel = (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        minHeight: 0,
-        height: '100%',
-        background: 'var(--surface)',
-      }}
-    >
-      {/* Header */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '8px 12px',
-          borderBottom: '1px solid var(--border)',
-          flexShrink: 0,
-        }}
-      >
-        <NNIcon name="doc" size={14} color="var(--sky-400)" />
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            fontSize: 13,
-            fontWeight: 600,
-            color: 'var(--text)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            fontFamily: 'var(--font-sans)',
-          }}
-          title={source?.title}
-        >
-          {source?.title ?? t('notebooks.backlinks.untitled')}
-        </span>
-        <NNBtn variant="soft" size="sm" icon="book" onClick={onOpenInLibrary}>
-          {t('library.viewer.openInLibrary')}
-        </NNBtn>
-        <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.viewer.close')} title={t('library.viewer.close')} onClick={onClose} />
-      </div>
-      {/* Text chunk reader */}
-      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <TextChunkReader
-          ref={readerRef}
-          sourceId={sourceId}
-          getSourceChunks={getSourceChunks}
-          t={t}
-        />
-      </div>
-    </div>
-  );
-
-  if (isDesktop) {
-    return (
-      <div
-        style={{
-          width: 440,
-          flexShrink: 0,
-          borderLeft: '1px solid var(--panel-edge)',
-          display: 'flex',
-          flexDirection: 'column',
-          minHeight: 0,
-        }}
-      >
-        {panel}
-      </div>
-    );
-  }
-
-  // Mobile — fullscreen sheet.
-  return (
-    <>
-      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'var(--scrim)' }} />
-      <div style={{ position: 'fixed', inset: 0, zIndex: 81, display: 'flex', flexDirection: 'column' }}>
-        {panel}
-      </div>
-    </>
-  );
-};
-
 // ── Left: sources panel ──────────────────────────────────────────────────────
 
 interface SourcesPanelProps {
@@ -1489,7 +1378,7 @@ interface SourcesPanelProps {
   readyCount: number;
   /** Number of READY sources currently checked into the chat scope. */
   selectedCount: number;
-  /** True when every ready source is checked (drives the select-all box). */
+  /** True when every readable source is checked (drives the select-all box). */
   allSelected: boolean;
   onToggleSelectAll: () => void;
   onRename: (src: Source) => void;
@@ -1713,6 +1602,7 @@ const WorkspaceSourceRow = ({
 }) => {
   const isError = source.status === 'error';
   const ready = source.status === 'ready';
+  const readable = isSourceTextReadable(source.status, source.errorCode);
   const statusLabel =
     isError && source.errorCode
       ? t(`notebooks.status.${source.errorCode as IngestErrorCode}`)
@@ -1765,7 +1655,7 @@ const WorkspaceSourceRow = ({
         <button
           type="button"
           onClick={onReadInLibrary}
-          title={t('library.workspace.openInLibrary')}
+          title={t('assistant.readSource')}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -1819,7 +1709,7 @@ const WorkspaceSourceRow = ({
             )}
           </span>
         </button>
-        {ready && (
+        {readable && (
           <NNCheck
             on={inScope}
             label={t('notebooks.workspace.inChat')}
@@ -1868,7 +1758,7 @@ const WorkspaceSourceRow = ({
                   <NNIcon name="edit" size={14} color="var(--text-muted)" />
                   {t('notebooks.sources.rename')}
                 </button>
-                {ready && (
+                {readable && (
                   <button
                     type="button"
                     className="nn-lib-menu-item"
@@ -1892,7 +1782,7 @@ const WorkspaceSourceRow = ({
                   }}
                 >
                   <NNIcon name="book" size={14} color="var(--text-muted)" />
-                  {t('library.workspace.openInLibrary')}
+                  {t('assistant.readSource')}
                 </button>
                 <button
                   type="button"

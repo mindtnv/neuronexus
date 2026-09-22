@@ -1,4 +1,5 @@
 'use client';
+import { AssistantAskButton } from '../chat/assistant-ask-button';
 
 // StudioPanel («Блокноты 2.0» N2, Р12 «Студия» tab) — the right-dock studio
 // surface: a grid of generation tiles, the artifact list with job-status badges
@@ -80,11 +81,16 @@ const ARTIFACT_ERROR_CODE_SET = new Set<string>([
   'generation_failed',
   'invalid_quiz',
   'no_sources',
+  'source_unavailable',
   'interrupted',
 ]);
 
 export interface StudioPanelProps {
-  notebookId: string;
+  notebookId?: string;
+  studyScope?: { kind: 'source'; id: string } | { kind: 'saved' };
+  allowGenerate?: boolean;
+  initialArtifactId?: string | null;
+  onInitialOpen?: () => void;
   /** The workspace's checked source scope (chat checkboxes). Empty ⇒ the server
    *  defaults to all ready sources. */
   scopeIds: string[];
@@ -111,14 +117,18 @@ export interface StudioPanelProps {
    *  source + opens its citation-viewer. */
   onOpenCitation: (chunkId: string, sourceIds: string[]) => void;
   /** «В заметку» — save a ready artifact's markdown into the notebook's notes. */
-  onSaveToNote: (title: string, contentMd: string) => void | Promise<void>;
+  onSaveToNote: (title: string, contentMd: string, artifact?: NotebookArtifact) => void | Promise<void>;
   /** «Слабые места → карточки» — prefill the chat composer (quiz result, N3). */
-  onPrefillChat: (text: string) => void;
+  onPrefillChat: (text: string, artifactId?: string) => void;
   t: Tfn;
 }
 
 export const StudioPanel = ({
-  notebookId,
+  notebookId: legacyNotebookId,
+  studyScope,
+  allowGenerate = true,
+  initialArtifactId,
+  onInitialOpen,
   scopeIds,
   chatEnabled,
   listArtifacts,
@@ -134,6 +144,7 @@ export const StudioPanel = ({
   t,
 }: StudioPanelProps) => {
   const { confirm } = useDialog();
+  const notebookId = studyScope?.kind === 'source' ? studyScope.id : studyScope?.kind === 'saved' ? '' : legacyNotebookId ?? '';
 
   // Quiz question-count picker (N3): when the quiz tile is clicked we open a small
   // inline dialog (presets + slider) before POSTing the artifact job.
@@ -141,21 +152,30 @@ export const StudioPanel = ({
 
   const [artifacts, setArtifacts] = useState<NotebookArtifact[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const consumedInitial = useRef<string | null>(null);
   const [creating, setCreating] = useState<NotebookArtifactType | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  useEffect(() => { setGenerationError(null); }, [notebookId]);
 
   // Open viewer (full artifact incl. content); null = list.
   const [openId, setOpenId] = useState<string | null>(null);
   const [openFull, setOpenFull] = useState<NotebookArtifact | null>(null);
   const [openLoading, setOpenLoading] = useState(false);
+  const loadSequence = useRef(0);
+  const refreshSequence = useRef(0);
+  useEffect(() => () => { refreshSequence.current++; }, [notebookId]);
+  useEffect(() => () => { loadSequence.current++; }, [notebookId]);
 
   const refresh = useCallback(async () => {
+    const sequence = ++refreshSequence.current;
     try {
       const rows = await listArtifacts(notebookId);
+      if (sequence !== refreshSequence.current) return;
       setArtifacts(rows);
     } catch {
       /* keep current on a transient error */
     } finally {
-      setLoaded(true);
+      if (sequence === refreshSequence.current) setLoaded(true);
     }
   }, [listArtifacts, notebookId]);
 
@@ -181,14 +201,15 @@ export const StudioPanel = ({
 
   const loadFull = useCallback(
     async (artifactId: string) => {
+      const sequence = ++loadSequence.current;
       setOpenLoading(true);
       try {
         const full = await getArtifact(notebookId, artifactId);
-        setOpenFull(full);
+        if (sequence === loadSequence.current) setOpenFull(full);
       } catch {
-        setOpenFull(null);
+        if (sequence === loadSequence.current) setOpenFull(null);
       } finally {
-        setOpenLoading(false);
+        if (sequence === loadSequence.current) setOpenLoading(false);
       }
     },
     [getArtifact, notebookId],
@@ -224,16 +245,28 @@ export const StudioPanel = ({
     [loadFull],
   );
 
+  useEffect(() => {
+    if (!initialArtifactId) { consumedInitial.current = null; return; }
+    if (!loaded || consumedInitial.current === initialArtifactId) return;
+    consumedInitial.current = initialArtifactId;
+    const artifact = artifacts.find(a => a.id === initialArtifactId);
+    if (artifact) openArtifact(artifact);
+    else raiseToast({ kind: 'error', title: t('notebooks.studio.notFound') });
+    onInitialOpen?.();
+  }, [initialArtifactId, loaded, artifacts, openArtifact, onInitialOpen, t]);
+
   // ── Generate ──────────────────────────────────────────────────────────────────
   const onGenerate = useCallback(
     async (type: NotebookArtifactType, questionCount?: number) => {
       if (creating) return;
       setCreating(type);
+      setGenerationError(null);
       try {
         const scope = scopeIds.length > 0 ? scopeIds : undefined;
         const created = await createArtifact(notebookId, type, scope, questionCount);
         setArtifacts((prev) => [created, ...prev]);
       } catch (err) {
+        setGenerationError(artifactErrorToast(err, t));
         raiseToast({ kind: 'info', title: artifactErrorToast(err, t) });
       } finally {
         setCreating(null);
@@ -290,8 +323,10 @@ export const StudioPanel = ({
   );
 
   const closeViewer = useCallback(() => {
+    loadSequence.current++;
     setOpenId(null);
     setOpenFull(null);
+    setOpenLoading(false);
   }, []);
 
   // ── Render: list + tiles (the reader is a full-window overlay over them) ──────────
@@ -308,7 +343,7 @@ export const StudioPanel = ({
           listQuizAttempts={listQuizAttempts}
           onOpenCitation={onOpenCitation}
           onSaveToNote={onSaveToNote}
-          onPrefillChat={onPrefillChat}
+          onPrefillChat={text => onPrefillChat(text, openId)}
           onRegenerate={() => {
             if (!openFull) return;
             // Kick the regenerate and close the reader so the user sees the pending
@@ -333,7 +368,7 @@ export const StudioPanel = ({
       )}
       <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '10px 10px 14px' }}>
         {/* Generation tiles (or a setup notice when chat is off). */}
-        {!chatEnabled ? (
+        {!allowGenerate ? null : !chatEnabled ? (
           <div className="nn-empty-state" style={{ paddingTop: 24, paddingBottom: 24 }}>
             <span className="nn-empty-state-icon">
               <NNIcon name="sparkle" size={26} color="var(--text-dim)" />
@@ -395,6 +430,7 @@ export const StudioPanel = ({
         >
           {t('notebooks.studio.listHeading')}
         </span>
+        {generationError && <p role="alert" style={{ color: 'var(--rose-400)', fontSize: 12 }}>{generationError}</p>}
         {!loaded ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <NNSkeleton style={{ height: 44 }} />
@@ -432,7 +468,7 @@ export const StudioPanel = ({
         )}
 
         {/* Footnote under the document list (only when the tiles are shown). */}
-        {chatEnabled && (
+        {chatEnabled && allowGenerate && (
           <p
             style={{
               marginTop: 12,
@@ -443,7 +479,7 @@ export const StudioPanel = ({
               padding: '0 2px',
             }}
           >
-            {t('notebooks.studio.docsHint')}
+            {t(studyScope?.kind === 'source' ? 'assistant.sourceDocumentsHint' : studyScope?.kind === 'saved' ? 'assistant.savedDocumentsHint' : 'notebooks.studio.docsHint')}
           </p>
         )}
       </div>
@@ -628,6 +664,7 @@ const ArtifactRow = ({
           </span>
         </button>
         {/* In-flight → a cancel (delete) affordance; otherwise the ⋯ menu. */}
+        {artifact.status === 'ready' && <AssistantAskButton object={{ kind: 'artifact', id: artifact.id }} compact />}
         {inFlight ? (
           <NNBtn
             variant="ghost"
@@ -646,8 +683,8 @@ const ArtifactRow = ({
               variant="ghost"
               size="sm"
               icon="dots"
-              ariaLabel={t('notebooks.studio.regenerate')}
-              title={t('notebooks.studio.regenerate')}
+              ariaLabel={t('library.item.menu')}
+              title={t('library.item.menu')}
               onClick={() => setMenuOpen((v) => !v)}
             />
             {menuOpen && (
@@ -660,7 +697,8 @@ const ArtifactRow = ({
                   <button
                     type="button"
                     className="nn-lib-menu-item"
-                    disabled={!terminal}
+                    disabled={!terminal || (artifact.ownerKind === 'source' && !artifact.sourceId)}
+                    title={artifact.ownerKind === 'source' && !artifact.sourceId ? t('assistant.sourceUnavailable') : undefined}
                     onClick={() => {
                       setMenuOpen(false);
                       onRegenerate();
@@ -829,6 +867,7 @@ const QuizCountDialog = ({
 
 const ROUTE_ERROR_CODES = new Set([
   'no_sources',
+  'source_unavailable',
   'invalid_type',
   'too_many_artifacts',
   'generation_in_progress',

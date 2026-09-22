@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ApiError } from './api.ts';
-import { streamChat } from './chat-stream.ts';
+import { regenerateChat, streamChat } from './chat-stream.ts';
 
 const originalFetch = globalThis.fetch;
 
@@ -9,6 +9,22 @@ afterEach(() => {
 });
 
 describe('chat stream failure correlation', () => {
+  test('typed context and revision are serialized intact; ordinary regeneration does not replace context', async () => {
+    const bodies: any[] = [];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response('event: done\ndata: {"messageId":"saved"}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    const context = { version: 1 as const, policy: 'strict' as const, refs: [] };
+    await streamChat('conversation', 'hello', {}, { context, expectedContextRevision: 4 });
+    expect(bodies[0].context).toEqual(context);
+    expect(bodies[0].expectedContextRevision).toBe(4);
+    await regenerateChat('conversation', {}, {});
+    expect(bodies[1].context).toBeUndefined();
+    await regenerateChat('conversation', { context, policySelection: 'strict', expectedContextRevision: 4 }, {});
+    expect(bodies[2].context).toEqual(context);
+    expect(bodies[2].policySelection).toBe('strict');
+  });
   test('non-success responses surface a typed error with request correlation', async () => {
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ error: 'chat_upstream_failed' }), {
@@ -42,4 +58,14 @@ describe('chat stream failure correlation', () => {
 
     expect(errorCalls).toBe(0);
   });
+});
+
+test('context-aware sends never fall through to an older unversioned mutation route',async()=>{
+  let legacyWrites=0;const failures:string[]=[];
+  globalThis.fetch=(async input=>{
+    if(String(input).includes('/chat/conversations/')){legacyWrites++;return new Response('event: done\ndata: {"type":"done","messageId":"legacy"}\n\n',{headers:{'content-type':'text/event-stream'}});}
+    return Response.json({error:'NotFound'},{status:404});
+  }) as typeof fetch;
+  await streamChat('conversation','Keep my context',{onError:message=>failures.push(message)},{context:{version:1,policy:'strict',refs:[]}});
+  expect(legacyWrites).toBe(0);expect(failures).toEqual(['context_unsupported']);
 });

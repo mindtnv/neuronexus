@@ -23,6 +23,11 @@ export const api = treaty<App>(baseURL, {
   },
 });
 
+// Context excerpts are source text: Eden must not turn date-looking quotes,
+// titles, or message contents into Date objects. Other existing clients retain
+// their established date-revival behavior.
+export const assistantApi = treaty<App>(baseURL, { parseDate: false, fetch: { credentials: 'include' } });
+
 const CLIENT_ERROR_LIMIT = 240;
 
 function safeClientText(value: string): string {

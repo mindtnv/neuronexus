@@ -1,4 +1,5 @@
 'use client';
+import { AssistantAskButton } from '../chat/assistant-ask-button';
 
 // NotesPanel («Блокноты 2.0» N1, Р12 «Заметки» tab) — the right-dock notes
 // surface of a notebook workspace.
@@ -37,8 +38,13 @@ const NOTE_MD_NOTE_TYPE = {
 type Tfn = (key: string, params?: Record<string, string | number>) => string;
 
 export interface NotesPanelProps {
-  notebookId: string;
-  listNotes: (notebookId: string, q?: string) => Promise<NotebookNote[]>;
+  notebookId?: string;
+  studyScope?: { kind: 'source'; id: string } | { kind: 'saved' };
+  allowCreate?: boolean;
+  initialNoteId?: string | null;
+  onInitialOpen?: () => void;
+  getNote?: (scopeId: string, noteId: string) => Promise<NotebookNote>;
+  listNotes: (scopeId: string, q?: string, offset?: number) => Promise<NotebookNote[] | { items: NotebookNote[]; nextOffset: number | null }>;
   createNote: (notebookId: string, input: CreateNoteInput) => Promise<NotebookNote>;
   patchNote: (
     notebookId: string,
@@ -47,7 +53,7 @@ export interface NotesPanelProps {
   ) => Promise<NotebookNote>;
   deleteNote: (notebookId: string, noteId: string) => Promise<void>;
   /** «В карточки» — prefill the chat composer with a make-flashcards prompt. */
-  onPrefillChat: (text: string) => void;
+  onPrefillChat: (text: string, noteId?: string) => void;
   /** Imperative refresh handle the parent can call after a save-from-chat. */
   refreshRef?: React.MutableRefObject<(() => void) | null>;
   t: Tfn;
@@ -73,8 +79,13 @@ const NoteMarkdown = ({ content }: { content: string }) => {
 };
 
 export const NotesPanel = ({
-  notebookId,
+  notebookId: legacyNotebookId,
+  studyScope,
+  allowCreate = true,
+  initialNoteId,
+  onInitialOpen,
   listNotes,
+  getNote,
   createNote,
   patchNote,
   deleteNote,
@@ -83,14 +94,26 @@ export const NotesPanel = ({
   t,
 }: NotesPanelProps) => {
   const { confirm } = useDialog();
+  const notebookId = studyScope?.kind === 'source' ? studyScope.id : studyScope?.kind === 'saved' ? '' : legacyNotebookId ?? '';
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const [notes, setNotes] = useState<NotebookNote[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const openIntent = useRef(0);
+  useEffect(() => () => { openIntent.current++; }, [notebookId]);
+  const consumedInitial = useRef<string | null>(null);
+  const refreshSequence = useRef(0);
+  useEffect(() => () => { refreshSequence.current++; }, [notebookId]);
   const [search, setSearch] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
 
   // Which note is open (viewer/editor); null = list view.
   const [openId, setOpenId] = useState<string | null>(null);
+  const openNoteRef = useRef(openId);
+  openNoteRef.current = openId;
+  const notesOwnerRef = useRef(notebookId);
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
@@ -109,13 +132,26 @@ export const NotesPanel = ({
 
   const refresh = useCallback(
     async (q: string) => {
+      const sequence = ++refreshSequence.current;
       try {
         const rows = await listNotes(notebookId, q || undefined);
-        setNotes(rows);
+        if (sequence !== refreshSequence.current) return;
+        const items = Array.isArray(rows) ? rows : rows.items;
+        const sameOwner = notesOwnerRef.current === notebookId;
+        notesOwnerRef.current = notebookId;
+        // A first-page refresh is not evidence that a note opened by its ID was
+        // deleted. Keep that viewer snapshot until the user leaves it; a newer
+        // copy in the page wins. Never carry it into a different study owner.
+        setNotes(previous => {
+          const active = sameOwner ? previous.find(note => note.id === openNoteRef.current) : undefined;
+          return active && !items.some(note => note.id === active.id) ? [...items, active] : items;
+        });
+        setNextOffset(Array.isArray(rows) ? null : rows.nextOffset);
+        setLoadError(false);
       } catch {
-        /* keep current on a transient error */
+        if (sequence === refreshSequence.current) setLoadError(true);
       } finally {
-        setLoaded(true);
+        if (sequence === refreshSequence.current) setLoaded(true);
       }
     },
     [listNotes, notebookId],
@@ -124,6 +160,20 @@ export const NotesPanel = ({
   useEffect(() => {
     void refresh(debouncedQ);
   }, [debouncedQ, refresh]);
+
+  const loadMore = async () => {
+    if (nextOffset === null || loadingMore) return;
+    const sequence = refreshSequence.current;
+    setLoadingMore(true);
+    try {
+      const page = await listNotes(notebookId, debouncedQ || undefined, nextOffset);
+      if (sequence !== refreshSequence.current) return;
+      const items = Array.isArray(page) ? page : page.items;
+      setNotes(previous => [...new Map([...previous, ...items].map(note => [note.id, note])).values()]);
+      setNextOffset(Array.isArray(page) ? null : page.nextOffset); setLoadError(false);
+    } catch { if (sequence === refreshSequence.current) setLoadError(true); }
+    finally { setLoadingMore(false); }
+  };
 
   // Expose an imperative refresh to the parent (used after «save answer from chat»).
   useEffect(() => {
@@ -138,6 +188,28 @@ export const NotesPanel = ({
     () => (openId ? notes.find((n) => n.id === openId) ?? null : null),
     [notes, openId],
   );
+
+  useEffect(() => {
+    if (!initialNoteId) { consumedInitial.current = null; openIntent.current++; return; }
+    if (!loaded || loadError || consumedInitial.current === initialNoteId) return;
+    if (search || debouncedQ) { setLoaded(false); setSearch(''); setDebouncedQ(''); void refresh(''); return; }
+    consumedInitial.current = initialNoteId;
+    const intent = ++openIntent.current;
+    if (notes.some(note => note.id === initialNoteId)) { setOpenId(initialNoteId); setEditing(false); }
+    else if (getNote) {
+      void getNote(notebookId,initialNoteId).then(note => {
+        if (openIntent.current !== intent) return;
+        setNotes(previous => [...previous.filter(item => item.id !== note.id),note]);
+        setOpenId(note.id);setEditing(false);onInitialOpen?.();
+      }).catch(error => {
+        if (openIntent.current !== intent) return;
+        if (error?.status === 404) { raiseToast({kind:'error',title:t('notebooks.notes.notFound')});onInitialOpen?.(); }
+        else {consumedInitial.current=null;setLoadError(true);}
+      });
+      return;
+    } else raiseToast({ kind: 'error', title: t('notebooks.notes.notFound') });
+    onInitialOpen?.();
+  }, [initialNoteId, loaded, loadError, notes, search, debouncedQ, onInitialOpen, refresh, getNote, notebookId, t]);
 
   // ── Create ────────────────────────────────────────────────────────────────────
   const resetCreate = useCallback(() => {
@@ -244,7 +316,7 @@ export const NotesPanel = ({
 
   const toCards = useCallback(
     (n: NotebookNote) => {
-      onPrefillChat(t('notebooks.notes.toCardsPrompt', { content: n.content }));
+      onPrefillChat(t('notebooks.notes.toCardsPrompt', { content: n.content }), n.id);
     },
     [onPrefillChat, t],
   );
@@ -275,6 +347,8 @@ export const NotesPanel = ({
             {t('notebooks.notes.back')}
           </NNBtn>
           <span style={{ flex: 1 }} />
+          {!editing && <AssistantAskButton object={{ kind: 'written_note', id: openNote.id }} compact />}
+          {openNote.ownerKind === 'source' && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{openNote.sourceOriginTitle}{!openNote.sourceId ? ` · ${t('assistant.unavailable')}` : ''}</span>}
           {!editing && (
             <>
               <NNBtn
@@ -420,15 +494,15 @@ export const NotesPanel = ({
           >
             {t('notebooks.notes.heading')}
           </span>
-          <NNBtn
+          {allowCreate && <NNBtn
             variant="soft"
             size="sm"
             icon="plus"
-            onClick={() => setCreating((v) => !v)}
+            onClick={() => { openIntent.current++; if (initialNoteId) onInitialOpen?.(); setCreating(v => !v); }}
             active={creating}
           >
             {t('notebooks.notes.add')}
-          </NNBtn>
+          </NNBtn>}
         </div>
 
         <div style={{ position: 'relative' }}>
@@ -508,6 +582,8 @@ export const NotesPanel = ({
       </div>
 
       <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '8px 8px 12px' }}>
+        {loadError && <p role="alert">{t('assistant.notesLoadFailed')} <NNBtn size="sm" onClick={() => void refresh(debouncedQ)}>{t('review.retry')}</NNBtn></p>}
+        {nextOffset !== null && <NNBtn size="sm" loading={loadingMore} onClick={() => void loadMore()}>{t('assistant.more')}</NNBtn>}
         {!loaded ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <NNSkeleton style={{ height: 52 }} />
@@ -529,6 +605,8 @@ export const NotesPanel = ({
                 key={n.id}
                 note={n}
                 onOpen={() => {
+                  openIntent.current++;
+                  if (initialNoteId) onInitialOpen?.();
                   setOpenId(n.id);
                   setEditing(false);
                 }}

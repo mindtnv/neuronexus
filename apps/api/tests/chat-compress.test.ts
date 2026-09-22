@@ -13,7 +13,7 @@
 // Rows are seeded via direct db.insert (fast) with explicit createdAt spacing.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { conversations, db, messages as messagesTable } from '@neuronexus/db';
+import { conversations, db, messages as messagesTable, sources } from '@neuronexus/db';
 import { eq } from 'drizzle-orm';
 import { buildApp } from '../src/app.ts';
 import {
@@ -102,6 +102,33 @@ describe('agentic chat — context auto-compression (C6)', () => {
   });
   afterEach(() => {
     __resetAiClientForTests();
+  });
+
+  test('history beyond 500 rows preserves the latest turns for continuation and regeneration', async () => {
+    __setAiClientForTests({
+      chatStreamAgentic: capturingStream(),
+      complete: async () => 'Summary of earlier turns.',
+    });
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const convId = await createConversation(cookie);
+    await seedTurnPairs(convId, userId, 260);
+
+    const response = await streamReq(cookie, convId, 'latest question after 520 rows');
+    expect(response.status).toBe(200);
+    await drain(response);
+    const continued = capturedAgentMessages[0]!;
+    expect(continued.some(m => m.content === 'question 259')).toBe(true);
+    expect(continued.some(m => m.content === 'answer 259')).toBe(true);
+    expect(continued.at(-1)?.content).toBe('latest question after 520 rows');
+
+    const regenerated = await app.handle(new Request(`http://localhost/chat/conversations/${convId}/regenerate`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: '{}',
+    }));
+    expect(regenerated.status).toBe(200);
+    await drain(regenerated);
+    const replayed = capturedAgentMessages.at(-1)!;
+    expect(replayed.some(m => m.content === 'answer 259')).toBe(true);
+    expect(replayed.at(-1)?.content).toBe('latest question after 520 rows');
   });
 
   test('under the threshold: verbatim history, zero summarizer calls', async () => {
@@ -215,5 +242,25 @@ describe('agentic chat — context auto-compression (C6)', () => {
     expect(msgs.filter((m) => m.role === 'system')).toHaveLength(1);
     expect(msgs).toHaveLength(1 + 100 + 1);
     expect((await convRow(convId)).summary).toBeNull();
+  });
+
+  test('compression does not replace pinned object identity or the effective strict policy', async () => {
+    __setAiClientForTests({ chatStreamAgentic: capturingStream(), complete: async () => 'A short summary without object IDs.' });
+    const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
+    const [source] = await db.insert(sources).values({ userId, title: 'Pinned evidence', kind: 'text', status: 'ready' }).returning();
+    const created = await (await callApp(app, 'POST', '/chat/conversations', { cookie, body: {
+      title: 'Scoped discussion', context: { version: 1, policy: 'strict', refs: [{ kind: 'source', id: source!.id }] },
+    } })).json<{ id: string }>();
+    await seedTurnPairs(created.id, userId, 50);
+    await drain(await streamReq(cookie, created.id, 'Continue with this source'));
+    const context = JSON.stringify(capturedAgentMessages[0]);
+    expect(context).toContain('Current context policy: strict');
+    expect(context).toContain(source!.id);
+    expect(context).toContain('Pinned evidence');
+    expect((await convRow(created.id)).summary).toBeTruthy();
+    const detail = await (await callApp(app, 'GET', `/chat/conversations/${created.id}`, { cookie })).json<any>();
+    const lastUser = detail.messages.findLast((row: any) => row.role === 'user');
+    expect(lastUser.context.policy).toBe('strict');
+    expect(lastUser.context.sourceIds).toEqual([source!.id]);
   });
 });

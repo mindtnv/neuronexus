@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { getStudyNote } from '../modules/study-notes';
+import { getStudyArtifact } from '../modules/study-artifacts';
+import { readContextObject } from '../ai/assistant-object-read';
 import type { User } from '@neuronexus/db';
 import type { ToolContext } from '../ai/tools.ts';
 import type { McpPrincipal } from './tokens.ts';
@@ -35,6 +38,11 @@ const READS: ReadSpec[] = [
   { name: 'list_notebooks', description: 'Notebooks with counts and metadata; archived defaults to false.', path: '/notebooks', fields: { archived: z.boolean().default(false) }, arrayPage: true },
   { name: 'get_notebook', description: 'A notebook and its metadata.', path: '/notebooks/:id', fields: { id } },
   { name: 'list_notebook_sources', description: 'Sources attached to a notebook.', path: '/notebooks/:id/sources', fields: { id }, arrayPage: true },
+  { name: 'list_source_notes', description: 'List written notes belonging to one library source, without a notebook. Returns bounded excerpts and nextOffset.', path: '/sources/:id/notes', fields: { id, q: z.string().max(200).optional(), offset, limit: z.int().min(1).max(50).default(10) } },
+  { name: 'list_source_artifacts', description: 'List source-owned study documents and quizzes with nextOffset. Does not require a notebook.', path: '/sources/:id/artifacts', fields: { id, offset, limit: z.int().min(1).max(50).default(5) } },
+  { name: 'get_source_artifact', description: 'Read an owned source study artifact, including after source deletion. Continue with nextOffset and version; restart at offset 0 if content changes.', path: '/study/artifacts/:id', fields: { id, offset: z.int().min(0).max(1_000_000).default(0), version: z.string().regex(/^[a-f0-9]{64}$/).optional() } },
+  { name: 'list_source_quiz_attempts', description: 'Read the ten most recent attempts for an owned source quiz, including retained quizzes. Use limit to bound the returned attempts.', path: '/study/artifacts/:artifactId/attempts', fields: { artifactId: id }, arrayPage: true },
+  { name: 'get_source_note', description: 'Read an owned source-origin note in bounded text pages, including after source deletion. Continue with nextOffset and the returned version; restart at offset 0 if the content changes.', path: '/study/notes/:id', fields: { id, offset: z.int().min(0).max(1_000_000).default(0), version: z.string().regex(/^[a-f0-9]{64}$/).optional() } },
   { name: 'list_notebook_notes', description: 'Written notes and saved answers in a notebook.', path: '/notebooks/:id/notes', fields: { id }, arrayPage: true },
   { name: 'list_artifacts', description: 'Generated summaries, quizzes and other notebook artifacts.', path: '/notebooks/:id/artifacts', fields: { id }, arrayPage: true },
   { name: 'get_artifact', description: 'Read a generated notebook artifact.', path: '/notebooks/:id/artifacts/:artifactId', fields: { id, artifactId: id } },
@@ -48,6 +56,15 @@ export function readTools(principal: Pick<McpPrincipal, 'user'> | ((ctx: ToolCon
     name: spec.name, description: spec.description, readOnly: true,
     schema: z.strictObject({ ...spec.fields, ...(spec.arrayPage ? page : {}) }),
     async execute(ctx, args: McpArgs) {
+      if (spec.name === 'get_source_note' || spec.name === 'get_source_artifact') {
+        try {
+          if (spec.name === 'get_source_artifact') await getStudyArtifact(ctx.userId,String(args.id));
+          else await getStudyNote(ctx.userId,String(args.id));
+        } catch { throw new McpToolError('not_found'); }
+        const result = await readContextObject.execute(ctx,{kind:spec.name === 'get_source_note' ? 'written_note' : 'artifact',id:args.id,offset:args.offset,version:args.version});
+        if (!result.ok) throw new McpToolError(result.error);
+        return JSON.parse(result.text);
+      }
       let path = spec.path;
       const query = new URLSearchParams();
       for (const [key, value] of Object.entries(args)) {
@@ -55,7 +72,8 @@ export function readTools(principal: Pick<McpPrincipal, 'user'> | ((ctx: ToolCon
         else if (value !== undefined && !(spec.arrayPage && (key === 'offset' || key === 'limit'))) query.set(key, String(value));
       }
       const req = new Request(`http://localhost${path}?${query}`);
-      const response = await withInternalRead(req, typeof principal === 'function' ? await principal(ctx) : principal.user, () => handle(req));
+      const response = await withInternalRead(req, typeof principal === 'function' ? await principal(ctx) : principal.user, () => handle(req),
+        ctx.assistantContext?.policy === 'strict' ? ctx.assistantContext.deckIds : undefined);
       if (!response.ok) throw new McpToolError(`read_failed_${response.status}`);
       let data = await response.json();
       if (spec.arrayPage) {

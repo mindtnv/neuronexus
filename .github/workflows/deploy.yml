@@ -212,6 +212,17 @@ jobs:
         run: |
           set -euo pipefail
           auth=(-H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" -H "Content-Type: application/json")
+          # Drain the old writer before the new image applies migrations.
+          # In particular, provenance backfills cannot race an older API.
+          curl -fsS "${auth[@]}" "$COOLIFY_URL/applications/$API_APP_UUID/stop" > /dev/null
+          stopped=""
+          for i in $(seq 1 30); do
+            stopped=$(curl -fsS "${auth[@]}" "$COOLIFY_URL/applications/$API_APP_UUID" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
+            case "$stopped" in exited*|stopped*) break ;; esac
+            sleep 2
+          done
+          case "$stopped" in exited*|stopped*) ;; *) echo "::error::old API did not stop: $stopped"; exit 1 ;; esac
           for uuid in "$API_APP_UUID" "$WEB_APP_UUID"; do
             curl -fsS "${auth[@]}" -X PATCH "$COOLIFY_URL/applications/$uuid" \
               -d "{\"docker_registry_image_tag\":\"$GITHUB_SHA\"}" > /dev/null

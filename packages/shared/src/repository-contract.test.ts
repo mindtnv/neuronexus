@@ -59,4 +59,13 @@ describe('repository contracts', () => {
       'needs: [test, s3-integration, build-api, build-web]',
     );
   });
+  test('deployment stops the old API writer before migration-bearing replacement', () => {
+    const workflow = readRepoFile('.github/workflows/deploy.yml');
+    const stop = workflow.indexOf('$COOLIFY_URL/applications/$API_APP_UUID/stop');
+    const deploy = workflow.indexOf('$COOLIFY_URL/deploy?uuid=$uuid');
+    expect(stop).toBeGreaterThan(-1);
+    expect(deploy).toBeGreaterThan(stop);
+    expect(workflow).toContain('old API did not stop');
+  });
+
 });

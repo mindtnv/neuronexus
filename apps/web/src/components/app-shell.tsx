@@ -12,6 +12,8 @@ import GlobalOverlays from './overlays/global-overlays';
 import { ToastsStack, raiseToast } from './toasts';
 import { NNLoadError } from './ui';
 import { Tooltips } from './design-system/tooltips';
+import { AssistantProvider } from './chat/assistant-provider';
+import { AssistantHost } from './chat/assistant-host';
 
 const AppShellContent = ({ children }: { children: React.ReactNode }) => {
   const bp = useBreakpoint();
@@ -171,6 +173,8 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
   );
 };
 
-export const AppShellWrapper = AppShellContent;
+export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => (
+  <AssistantProvider><AppShellContent>{children}</AppShellContent><AssistantHost/></AssistantProvider>
+);
 
 export default AppShellWrapper;
