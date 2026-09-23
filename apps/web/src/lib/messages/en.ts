@@ -1,3 +1,4 @@
+import operations from './en/operations';
 import common from './en/common';
 import home from './en/home';
 import review from './en/review';
@@ -19,6 +20,7 @@ import library from './en/library';
 import assistant from './en/assistant';
 
 const messages = {
+  operations,
   assistant,
   ...common,
   home,

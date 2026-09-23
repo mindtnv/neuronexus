@@ -1,3 +1,4 @@
+import { newOperationRun } from '../operation-run';
 import { isArtifactGenerationEnabled } from '../ai/openai-client';
 import { isSourceTextReadable } from './source-readability';
 import { cancelArtifactRequests } from '../ai/artifact-cancellation';
@@ -6,7 +7,7 @@ import { db, notebookArtifacts, notebooks, notebookSources, sourceChunks, source
 import { NOTEBOOK_ARTIFACT_TYPES, type NotebookArtifactType } from '@neuronexus/shared';
 import type { Logger } from 'pino';
 import { env } from '../env';
-import { ARTIFACT_TYPE_TITLE, scheduleArtifactGeneration } from '../ai/artifacts';
+import { ARTIFACT_TYPE_TITLE, clampQuestionCount, scheduleArtifactGeneration } from '../ai/artifacts';
 import { StudyError, type StudyOwner } from './study-notes';
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 async function lockOwner(tx: Tx, userId: string, owner: StudyOwner): Promise<{title:string;sourceStatus?:string;sourceError?:string|null}> {
@@ -69,30 +70,54 @@ export async function createStudyArtifact(userId:string,owner:StudyOwner,input:{
     const title=owner.kind==='source'?`${parent.title.slice(0,160)} · ${input.type} ${total!.n+1}`:sameType!.n?`${base} (${sameType!.n+1})`:base;
     const [row]=await tx.insert(notebookArtifacts).values({userId,ownerKind:owner.kind,
       ...(owner.kind==='source'?{sourceId:owner.id,sourceOriginId:owner.id,sourceOriginTitle:parent.title.trim().slice(0,200)||'Source'}:{notebookId:owner.id}),
-      sourceIds:scope,type:input.type,title,status:'pending'}).returning();
+      sourceIds:scope,type:input.type,title,status:'pending',...newOperationRun(),
+      generationOptions:input.type==='quiz'?{questionCount:clampQuestionCount(input.questionCount)}:{}}).returning();
     await bump(tx,userId,owner);return row!;
   });
-  scheduleArtifactGeneration(created.id,{questionCount:input.type==='quiz'?input.questionCount:undefined,requestLog:log});return created;
+  scheduleArtifactGeneration(created.id,{runId:created.operationRunId!,requestLog:log});return created;
 }
-export async function regenerateStudyArtifact(userId:string,id:string,owner?:StudyOwner,log?:Logger) {
-  const original=await getStudyArtifact(userId,id,owner);
-  if(original.ownerKind==='source'&&!original.sourceId)throw new StudyError(409,'source_unavailable');
-  const actualOwner:StudyOwner=owner??{kind:'source',id:original.sourceId!};
-  const updated=await db.transaction(async tx=>{
-    let parent;
-    try {parent=await lockOwner(tx,userId,actualOwner);} catch(error){if(actualOwner.kind==='source'&&error instanceof StudyError)throw new StudyError(409,'source_unavailable');throw error;}
-    const [current]=await tx.select().from(notebookArtifacts).where(and(ownerScope(userId,actualOwner),eq(notebookArtifacts.id,id))).for('update').limit(1);
-    if(!current)throw new StudyError(404,'not_found');
-    if(!['ready','error'].includes(current.status))throw new StudyError(409,'not_terminal');
-    if(actualOwner.kind==='source'&&!isSourceTextReadable(parent.sourceStatus!,parent.sourceError))throw new StudyError(409,'source_unavailable');
-    if(actualOwner.kind==='source'&&!isArtifactGenerationEnabled())throw new StudyError(503,'ai_disabled');
-    const [active]=await tx.select({id:notebookArtifacts.id}).from(notebookArtifacts).where(and(ownerScope(userId,actualOwner),inArray(notebookArtifacts.status,['pending','generating']))).limit(1);
-    if(active)throw new StudyError(409,'generation_in_progress');
-    const [row]=await tx.update(notebookArtifacts).set({status:'pending',errorCode:null,updatedAt:sql`GREATEST(now(), ${notebookArtifacts.updatedAt} + interval '1 millisecond')`})
-      .where(and(ownerScope(userId,actualOwner),eq(notebookArtifacts.id,id),inArray(notebookArtifacts.status,['ready','error']))).returning();
-    if(!row)throw new StudyError(409,'not_terminal');await bump(tx,userId,actualOwner);return row;
-  });
-  scheduleArtifactGeneration(updated.id,{requestLog:log});return updated;
+export async function regenerateStudyArtifactInTransaction(
+  tx: Tx, userId: string, id: string, owner?: StudyOwner,
+  retry?: { runId: string; acceptDefaults?: boolean; beforeStart?: () => void },
+) {
+  const [original] = await tx.select().from(notebookArtifacts).where(and(ownerScope(userId, owner), eq(notebookArtifacts.id, id))).limit(1);
+  if (!original) throw new StudyError(404, 'not_found');
+  if (original.ownerKind === 'source' && !original.sourceId) throw new StudyError(409, 'source_unavailable');
+  const actualOwner: StudyOwner = owner ?? { kind: 'source', id: original.sourceId! };
+  let parent;
+  try { parent = await lockOwner(tx, userId, actualOwner); }
+  catch (error) { if (actualOwner.kind === 'source' && error instanceof StudyError) throw new StudyError(409, 'source_unavailable'); throw error; }
+  const [current] = await tx.select().from(notebookArtifacts).where(and(ownerScope(userId, actualOwner), eq(notebookArtifacts.id, id))).for('update').limit(1);
+  if (!current) throw new StudyError(404, 'not_found');
+  if (retry && current.operationRunId !== retry.runId) return { row: current, stale: true };
+  if (!['ready', 'error'].includes(current.status)) throw new StudyError(409, 'not_terminal');
+  if (retry && current.status !== 'error') throw new StudyError(409, 'not_failed');
+  if (actualOwner.kind === 'source' && !isSourceTextReadable(parent.sourceStatus!, parent.sourceError)) throw new StudyError(409, 'source_unavailable');
+  if ((retry || actualOwner.kind === 'source') && !isArtifactGenerationEnabled()) throw new StudyError(503, 'ai_disabled');
+  if (retry) {
+    const available = await tx.select({ id: sources.id }).from(sources).where(and(eq(sources.userId, userId),
+      inArray(sources.id, current.sourceIds), actualOwner.kind === 'source'
+        ? sql`(${sources.status} IN ('ready','indexing') OR (${sources.status} = 'error' AND ${sources.errorCode} = 'index_failed'))`
+        : eq(sources.status, 'ready'))).limit(1);
+    if (!available.length) throw new StudyError(409, 'source_unavailable');
+    if (current.type === 'quiz' && !current.generationOptions && !retry.acceptDefaults) throw new StudyError(409, 'confirm_defaults');
+  }
+  const [active] = await tx.select({ id: notebookArtifacts.id }).from(notebookArtifacts)
+    .where(and(ownerScope(userId, actualOwner), inArray(notebookArtifacts.status, ['pending', 'generating']))).limit(1);
+  if (active) throw new StudyError(409, 'generation_in_progress');
+  retry?.beforeStart?.();
+  const [row] = await tx.update(notebookArtifacts).set({ status: 'pending', errorCode: null, ...newOperationRun(),
+    generationOptions: current.generationOptions ?? (current.type === 'quiz' ? { questionCount: clampQuestionCount(undefined) } : {}),
+    updatedAt: sql`GREATEST(now(), ${notebookArtifacts.updatedAt} + interval '1 millisecond')` })
+    .where(and(ownerScope(userId, actualOwner), eq(notebookArtifacts.id, id))).returning();
+  await bump(tx, userId, actualOwner);
+  return { row: row!, stale: false };
+}
+
+export async function regenerateStudyArtifact(userId: string, id: string, owner?: StudyOwner, log?: Logger) {
+  const { row } = await db.transaction(tx => regenerateStudyArtifactInTransaction(tx, userId, id, owner));
+  scheduleArtifactGeneration(row.id, { runId: row.operationRunId!, requestLog: log });
+  return row;
 }
 export async function deleteStudyArtifact(userId:string,id:string,owner?:StudyOwner) {
   const result=await db.transaction(async tx=>{

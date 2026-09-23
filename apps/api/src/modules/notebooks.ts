@@ -1,3 +1,4 @@
+import { sourceOperationPresentation } from './source-operation-presentation';
 import { evidenceExcerpt, legacyChunkEvidence, legacySourceEvidence } from '../ai/legacy-evidence';
 import { harvestOriginHash } from '../ai/harvest-cards';
 import { ASSISTANT_CONTEXT_LIMITS } from '@neuronexus/shared';
@@ -136,6 +137,7 @@ export async function indexedCountsFor(sourceIds: string[]): Promise<Map<string,
 function withProgress(source: Source, indexed: number): Record<string, unknown> {
   return {
     ...source,
+    ...sourceOperationPresentation(),
     indexed,
     total: source.chunkCount ?? 0,
   };

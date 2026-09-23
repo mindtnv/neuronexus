@@ -13,6 +13,8 @@ import { ToastsStack, raiseToast } from './toasts';
 import { NNLoadError } from './ui';
 import { Tooltips } from './design-system/tooltips';
 import { AssistantProvider } from './chat/assistant-provider';
+import { OperationsProvider } from './operations-provider';
+import { OperationsHost } from './operations-center';
 import { AssistantHost } from './chat/assistant-host';
 
 const AppShellContent = ({ children }: { children: React.ReactNode }) => {
@@ -166,6 +168,7 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
 
       {!drawerOpen ? <BottomTabs /> : null}
 
+      <OperationsHost />
       <GlobalOverlays />
       <ToastsStack />
       <Tooltips />
@@ -174,7 +177,7 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
 };
 
 export const AppShellWrapper = ({ children }: { children: React.ReactNode }) => (
-  <AssistantProvider><AppShellContent>{children}</AppShellContent><AssistantHost/></AssistantProvider>
+  <AssistantProvider><OperationsProvider><AppShellContent>{children}</AppShellContent><AssistantHost/></OperationsProvider></AssistantProvider>
 );
 
 export default AppShellWrapper;

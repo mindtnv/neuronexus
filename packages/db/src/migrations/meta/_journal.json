@@ -260,6 +260,13 @@
       "when": 1790109793910,
       "tag": "0036_special_dreaming_celestial",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1790147982912,
+      "tag": "0037_special_loners",
+      "breakpoints": true
     }
   ]
 }

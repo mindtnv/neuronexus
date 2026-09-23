@@ -15,6 +15,7 @@ const baseURL =
   typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL
     : 'http://localhost:3000';
+export { baseURL as apiBaseURL };
 
 export const api = treaty<App>(baseURL, {
   fetch: {

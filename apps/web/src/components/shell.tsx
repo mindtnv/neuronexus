@@ -17,6 +17,7 @@ import {
   SIDEBAR_WIDTH_EXPANDED,
 } from '@/lib/ui-store';
 import { useT } from '@/lib/i18n';
+import { OperationsButton } from './operations-center';
 import { AccountMenu } from './account-menu';
 import { ThemeToggle } from './theme-toggle';
 
@@ -158,6 +159,7 @@ export const NNSidebar = ({
       </nav>
 
       <div className="nn-sidebar-footer">
+        <OperationsButton />
         <AccountMenu name={profileName || t('settings.nav.account')} onSignOut={handleSignOut} />
       </div>
     </aside>

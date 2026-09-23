@@ -344,6 +344,7 @@ export interface NotebookNote {
 }
 
 export interface Source {
+  searchAvailable?: boolean;
   id: string;
   notebookId: string;
   kind: SourceKind;
@@ -374,6 +375,7 @@ export type ReadingStatus = 'unread' | 'reading' | 'finished';
  *  library item IS a `sources` row; the list/detail responses fold in the
  *  reading-state + aggregate counts (no N+1). */
 export interface LibraryItem {
+  searchAvailable?: boolean;
   id: string;
   kind: SourceKind;
   title: string;

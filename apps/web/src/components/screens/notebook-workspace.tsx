@@ -65,6 +65,7 @@ import { createPortal } from 'react-dom';
 import { NotesPanel } from '@/components/notebook/notes-panel';
 import { OverviewPanel } from '@/components/notebook/overview-panel';
 import { StudioPanel } from '@/components/notebook/studio-panel';
+import { sourceOperationLabel } from '@/lib/source-operation-label';
 import { useSourceStatus } from '@/lib/use-source-status';
 import { prefillKey } from '@/lib/library-handoff';
 import { api, ok } from '@/lib/api';
@@ -1613,10 +1614,9 @@ const WorkspaceSourceRow = ({
   const isError = source.status === 'error';
   const ready = source.status === 'ready';
   const readable = isSourceTextReadable(source.status, source.errorCode);
-  const statusLabel =
-    isError && source.errorCode
+  const statusLabel = sourceOperationLabel(source, t) ?? (isError && source.errorCode
       ? t(`notebooks.status.${source.errorCode as IngestErrorCode}`)
-      : t(`notebooks.status.${source.status}`);
+      : t(`notebooks.status.${source.status}`));
 
   // Subline: ready → «{author} · прочитано N%» (author → kind label when absent;
   // percent omitted when null). Non-ready rows show the ingest status badge.

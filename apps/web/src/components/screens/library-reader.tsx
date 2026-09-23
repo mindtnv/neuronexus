@@ -114,6 +114,11 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
     return () => window.removeEventListener('nn:assistant:ask', handoff);
   }, [notesOpen]);
 
+  const artifactParam = searchParams.get('artifact') ?? undefined;
+  useEffect(() => {
+    if (artifactParam) { setNotesOpen(true); setStudyTab('artifacts'); }
+  }, [artifactParam]);
+
   const restoringHistory = navigationWorkspace?.restored && Boolean(remembered);
   // Deep-link params (?page=&chunk=&pos=&mark=) — consume-and-clear once.
   const pageParam = restoringHistory ? null : origin ? (initialLocation?.page != null ? String(initialLocation.page) : null) : searchParams.get('page');
@@ -601,7 +606,7 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
         <div style={{ height: '65dvh', minHeight: 240 }}>
           <div hidden={studyTab !== 'notes'} style={{ height: '100%' }}><SourceNotesPanel key={sourceId} sourceId={sourceId} /></div>
           {studyTab === 'annotations' && <div className="nn-scroll" style={{ height: '100%', overflow: 'auto' }}><SourceAnnotationNotes key={sourceId} sourceId={sourceId} onOpen={mark => { setNotesOpen(false); pdfReaderRef.current?.scrollToPage(mark.page, true); }}/></div>}
-          <div hidden={studyTab !== 'artifacts'} style={{ height: '100%' }}><SourceStudioPanel key={sourceId} sourceId={sourceId} chatEnabled={chatEnabled} /></div>
+          <div hidden={studyTab !== 'artifacts'} style={{ height: '100%' }}><SourceStudioPanel key={sourceId} sourceId={sourceId} initialArtifactId={artifactParam} chatEnabled={chatEnabled} /></div>
         </div>
       </Modal>
       {cardsDrawerOpen && (

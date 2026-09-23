@@ -1,3 +1,5 @@
+import { StudyError } from './study-notes';
+import { newOperationRun } from '../operation-run';
 // Shared source/library helpers (L1). The library refactor split a source from
 // any single notebook (sources are user-level; notebooks attach via the
 // `notebook_sources` join). Both the legacy notebook source routes
@@ -140,6 +142,7 @@ export async function insertInlineSource(
         title: input.title,
         url: input.url,
         status: 'pending',
+        ...newOperationRun(),
         verified: true,
       })
       .returning();
@@ -154,6 +157,7 @@ export async function insertInlineSource(
         title: input.title,
         byteSize: text.length,
         status: 'pending',
+        ...newOperationRun(),
         verified: true,
       })
       .returning();
@@ -294,7 +298,7 @@ export async function finalizeUploadSource(
   const source = await db.transaction(async (tx) => {
     const [row] = await tx
       .update(sources)
-      .set({ verified: true, byteSize: size, byteHash, updatedAt: new Date() })
+      .set({ verified: true, byteSize: size, byteHash, ...newOperationRun(), updatedAt: new Date() })
       .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
       .returning();
     if (notebookId) await attachSourceToNotebook(tx, { userId, notebookId, sourceId });
@@ -325,7 +329,7 @@ export async function deleteSourceCompletely(userId: string, sourceId: string): 
     if (!owned) return null;
     await tx.update(sources).set({ status: 'deleting', updatedAt: new Date() })
       .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)));
-    const interrupted = await tx.update(notebookArtifacts).set({ status: 'error', errorCode: 'source_unavailable', contentMd: null, contentJson: null, updatedAt: new Date() })
+    const interrupted = await tx.update(notebookArtifacts).set({ status: 'error', errorCode: 'source_unavailable', operationFinishedAt: new Date(), contentMd: null, contentJson: null, updatedAt: new Date() })
       .where(and(eq(notebookArtifacts.userId, userId), eq(notebookArtifacts.ownerKind, 'source'),
         eq(notebookArtifacts.sourceOriginId, sourceId), inArray(notebookArtifacts.status, ['pending', 'generating']))).returning({ id: notebookArtifacts.id });
     await tx.delete(kbChunk).where(and(eq(kbChunk.userId, userId), eq(kbChunk.sourceType, 'document'), eq(kbChunk.sourceId, sourceId)));
@@ -360,66 +364,38 @@ export type ReingestResult =
  * carries `parked` — true when embeddings are off/dim-degraded, so the source
  * re-parses but defers (re)embedding (mirrors the worker's park decision).
  */
-export async function reingestSource(
-  userId: string,
-  sourceId: string,
-  log: Logger = rootLogger,
-): Promise<ReingestResult> {
-  const [source] = await db
-    .select({ id: sources.id, kind: sources.kind, status: sources.status })
-    .from(sources)
-    .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
-    .limit(1);
-  if (!source) return { ok: false, status: 404, error: 'not_found' };
-  if (source.kind === 'text') return { ok: false, status: 400, error: 'not_reingestable' };
-  if (source.status !== 'ready' && source.status !== 'error') {
-    return { ok: false, status: 409, error: 'not_terminal' };
-  }
-
-  const reset = await db.transaction(async (tx) => {
-    // CAS first — a concurrent reingest / a source already racing back to
-    // pending loses here (0 rows) and the whole tx is a no-op.
-    const moved = await tx
-      .update(sources)
-      .set({
-        status: 'pending',
-        errorCode: null,
-        charCount: null,
-        chunkCount: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(sources.id, sourceId),
-          eq(sources.userId, userId),
-          inArray(sources.status, ['ready', 'error']),
-        ),
-      )
-      .returning({ id: sources.id });
-    if (moved.length === 0) return false;
-
-    // Wipe the SoT chunks (the parse phase rewrites them) + the document
-    // kb_chunk vectors (no FK on kb_chunk.source_id → explicit cleanup).
+export async function reingestSourceInTransaction(
+  tx: Tx, userId: string, sourceId: string,
+  retry?: { runId: string; beforeStart?: () => void },
+) {
+  const [source] = await tx.select().from(sources)
+    .where(and(eq(sources.id, sourceId), eq(sources.userId, userId))).for('update').limit(1);
+  if (!source) throw new StudyError(404, 'not_found');
+  if (retry && source.operationRunId !== retry.runId) return { row: source, stale: true };
+  const indexOnly = Boolean(retry && source.errorCode === 'index_failed');
+  if (source.kind === 'text' && !indexOnly) throw new StudyError(400, 'not_reingestable');
+  if (!['ready', 'error'].includes(source.status)) throw new StudyError(409, 'not_terminal');
+  if (retry && source.status !== 'error') throw new StudyError(409, 'not_failed');
+  if (indexOnly && (!isEmbeddingEnabled() || embeddingDegraded())) throw new StudyError(503, 'ai_disabled');
+  if (retry && !source.verified) throw new StudyError(409, 'source_unavailable');
+  retry?.beforeStart?.();
+  const [row] = await tx.update(sources).set({ status: indexOnly ? 'indexing' : 'pending', errorCode: null,
+    ...newOperationRun(), ...(indexOnly ? {} : { charCount: null, chunkCount: null }), updatedAt: new Date() })
+    .where(and(eq(sources.id, sourceId), eq(sources.userId, userId))).returning();
+  if (!indexOnly) {
     await tx.delete(sourceChunks).where(eq(sourceChunks.sourceId, sourceId));
-    await tx
-      .delete(kbChunk)
-      .where(
-        and(
-          eq(kbChunk.userId, userId),
-          eq(kbChunk.sourceType, 'document'),
-          eq(kbChunk.sourceId, sourceId),
-        ),
-      );
-    return true;
-  });
+    await tx.delete(kbChunk).where(and(eq(kbChunk.userId, userId), eq(kbChunk.sourceType, 'document'), eq(kbChunk.sourceId, sourceId)));
+  }
+  return { row: row!, stale: false };
+}
 
-  if (!reset) return { ok: false, status: 409, error: 'not_terminal' };
+export async function reingestSource(userId: string, sourceId: string, log: Logger = rootLogger): Promise<ReingestResult> {
+  try {
+    await db.transaction(tx => reingestSourceInTransaction(tx, userId, sourceId));
+  } catch (error) {
+    if (error instanceof StudyError) return { ok: false, status: error.status as 400 | 404 | 409, error: error.message as 'not_found' | 'not_terminal' | 'not_reingestable' };
+    throw error;
+  }
   enqueueSource(sourceId, logCorrelation(log));
-  // `parked` mirrors the worker's parse-and-park decision (source-ingest.ts:
-  // `!isEmbeddingEnabled() || embeddingDegraded()`): the source will re-parse +
-  // re-write its SoT chunks but skip (re)embedding until embeddings come back —
-  // so the UI can surface the existing setup-notice. The worker's behavior is
-  // unchanged; this only reports it.
-  const parked = !isEmbeddingEnabled() || embeddingDegraded();
-  return { ok: true, parked };
+  return { ok: true, parked: !isEmbeddingEnabled() || embeddingDegraded() };
 }

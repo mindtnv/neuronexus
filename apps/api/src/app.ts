@@ -24,6 +24,7 @@ import { sourceStudyModule } from './modules/source-study.ts';
 import { sourceTextMarksModule } from './modules/source-text-marks.ts';
 import { StudyError } from './modules/study-notes.ts';
 import { libraryModule } from './modules/library.ts';
+import { operationsModule } from './modules/operations';
 import { personalTokensModule } from './modules/personal-tokens.ts';
 import { handleMcp } from './mcp/server.ts';
 import { AUTH_RATE_RULES, clientIpFromRequest, rateLimitCheck } from './rate-limit.ts';
@@ -262,6 +263,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     .use(sourceStudyModule)
     .use(sourceTextMarksModule)
     .use(libraryModule)
+    .use(operationsModule)
     .all('/mcp', ({ request, log }) => handleMcp(request, (req) => readHandle(req), log), { parse: 'none' })
     // Explicit fallback keeps the completion hook's final status accurate for
     // unmatched routes too (Elysia's implicit 404 is mapped after analytics).

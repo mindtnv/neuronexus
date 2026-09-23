@@ -15,6 +15,7 @@
 //
 // Inline styles + CSS vars + ui.tsx primitives only (no Tailwind).
 
+import { sourceOperationLabel } from '@/lib/source-operation-label';
 import { LibraryIngestIndicator } from '@/components/library-ingest-indicator';
 import { useLibraryPdfCovers } from '@/lib/library-pdf-cover';
 import React, { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
@@ -1110,7 +1111,9 @@ const LibraryListRow = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onO
 };
 
 function labelForStatus(item: LibraryItem, t: Tr): string {
-  if (['error', 'indexing'].includes(item.status) && item.total > 0) return t('library.status.readable');
+  const operationLabel = sourceOperationLabel(item, t);
+  if (operationLabel) return operationLabel;
+  if (item.status === 'error' && item.total > 0) return t('library.status.readable');
   if (item.status === 'error' && item.errorCode) {
     return t(`library.status.${item.errorCode as IngestErrorCode}`);
   }
@@ -1277,14 +1280,9 @@ const DetailsPanel = ({
     return () => { requestVersion.current++; };
   }, [reload]);
 
-  // Poll the detail while the source is mid-ingest (e.g. after a reingest) so
-  // the status badge + progress in this open sheet stay live (the list-level
-  // useSourceStatus updates the grid, not this sheet's own `detail`).
-  useEffect(() => {
-    if (!detail || !isNonTerminal(detail.status as SourceStatus)) return;
-    const id = window.setInterval(() => void reload(), 2000);
-    return () => window.clearInterval(id);
-  }, [detail, reload]);
+  useSourceStatus({ items: detail ? [detail] : [], fetchOne: async () => {
+    await reload(); return null;
+  }, onUpdate: () => {} });
 
   const applyPatch = useCallback(
     async (patch: Parameters<typeof patchLibraryItem>[1]) => {
