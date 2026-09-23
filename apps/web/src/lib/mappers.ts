@@ -34,6 +34,7 @@ const stateFromLabel: Record<string, State> = {
 
 export function deckFromApi(row: any): Deck {
   return {
+    metadataRevision: row.metadataRevision,
     id: row.id,
     name: row.name,
     color: row.color,
@@ -201,6 +202,7 @@ export function profileFromApi(row: any): Profile {
 
 export function notebookFromApi(row: any): Notebook {
   return {
+    metadataRevision: row.metadataRevision,
     id: row.id,
     title: row.title,
     emoji: row.emoji ?? null,

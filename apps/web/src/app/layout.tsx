@@ -41,12 +41,10 @@ export default function RootLayout({
       </head>
       <body>
         <I18nProvider>
-          <DialogProvider>
-            <Suspense fallback={<NNPageSkeleton />}><AppNavigationSessionProvider>
+            <Suspense fallback={<NNPageSkeleton />}><AppNavigationSessionProvider><DialogProvider>
               <Bootstrap />
               {children}
-            </AppNavigationSessionProvider></Suspense>
-          </DialogProvider>
+            </DialogProvider></AppNavigationSessionProvider></Suspense>
         </I18nProvider>
       </body>
     </html>

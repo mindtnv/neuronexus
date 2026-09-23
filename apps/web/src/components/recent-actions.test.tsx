@@ -7,6 +7,9 @@ import { useNN } from '../lib/store';
 ensureTestDom();
 const { createRoot } = await import('react-dom/client');
 const { RecentActionsProvider, RecentActions } = await import('./recent-actions');
+const { ToastsStack, raiseToast } = await import('./toasts');
+const { OperationsProvider } = await import('./operations-provider');
+const { OperationsButton, OperationsHost } = await import('./operations-center');
 let root: Root, host: HTMLDivElement, oldFetch: typeof fetch;
 beforeEach(() => {
   ensureTestDom(); (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true; oldFetch = globalThis.fetch;
@@ -48,4 +51,38 @@ test('lost undo response stays visible and focus reconciliation reads its receip
   await act(async () => window.dispatchEvent(new Event('focus')));
   expect(writes).toBe(1);
   expect(host.textContent).not.toContain('Book 0');
+});
+
+test('an expired actionable toast leaves undo in the common panel without increasing the long-operation count', async () => {
+  const item = receipt(1), owner = useNN.getState().profile!.userId;
+  globalThis.fetch = (async (url: unknown) => {
+    const path = String(url);
+    if (path.includes('/operations/v1')) return Response.json({ serverTime: new Date().toISOString(), active: { items: [], total: 0, nextCursor: null }, attention: { items: [], total: 0, nextCursor: null }, recent: { items: [], total: 0, nextCursor: null } });
+    return Response.json(path.endsWith('/session') ? { sessionId: newUuidV7() } : { items: [item], nextCursor: null, serverTime: new Date().toISOString() });
+  }) as unknown as typeof fetch;
+  await act(async () => root.render(<OperationsProvider><RecentActionsProvider><OperationsButton /><OperationsHost /><ToastsStack /></RecentActionsProvider></OperationsProvider>));
+  let displayed: any;
+  window.addEventListener('nn:toast', event => { displayed = (event as CustomEvent).detail; }, { once: true });
+  await act(async () => window.dispatchEvent(new CustomEvent('nn:ui-action', { detail: { owner, receipt: item } })));
+  expect(host.querySelector('.nn-toast-action')?.textContent).toBe('actionsRecovery.undo');
+  expect(host.querySelector('.nn-operations-count')).toBeNull();
+  await act(async () => raiseToast({ ...displayed, durationMs: 1 }));
+  await act(async () => { await Bun.sleep(10); });
+  expect(host.querySelector('.reomi-toast')).toBeNull();
+  expect(host.querySelector('.nn-recent-actions')?.textContent).toContain('Book 1');
+  expect(host.querySelector('.nn-recent-actions')?.textContent).toContain('actionsRecovery.undo');
+});
+
+test('unavailable session storage is disclosed and server time controls expiry', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')!;
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, get: () => { throw new Error('denied'); } });
+  const item = receipt(0);
+  globalThis.fetch = (async (url: unknown) => Response.json(String(url).endsWith('/session') ? { sessionId: newUuidV7() }
+    : { items: [item], nextCursor: null, serverTime: new Date(Date.now() + 660000).toISOString() })) as unknown as typeof fetch;
+  try {
+    await act(async () => root.render(<RecentActionsProvider><RecentActions /></RecentActionsProvider>));
+    expect(host.textContent).toContain('actionsRecovery.reloadUnavailable');
+    expect(host.textContent).toContain('actionsRecovery.expired');
+    expect([...host.querySelectorAll('button')].find(button => button.textContent === 'actionsRecovery.undo')!.disabled).toBe(true);
+  } finally { Object.defineProperty(globalThis, 'sessionStorage', descriptor); }
 });

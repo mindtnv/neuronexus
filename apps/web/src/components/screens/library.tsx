@@ -16,6 +16,10 @@
 // Inline styles + CSS vars + ui.tsx primitives only (no Tailwind).
 
 import { sourceOperationLabel } from '@/lib/source-operation-label';
+import { useTransientLayer } from '@/lib/use-transient-layer';
+import { useNavigationGuard } from '@/components/navigation';
+import { useSmallAction } from '@/lib/use-small-action';
+import { SaveFeedback } from '@/components/save-feedback';
 import { LibraryIngestIndicator } from '@/components/library-ingest-indicator';
 import { useLibraryPdfCovers } from '@/lib/library-pdf-cover';
 import React, { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
@@ -43,7 +47,8 @@ import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { isNonTerminal, useSourceStatus } from '@/lib/use-source-status';
-import { useSessionResource, peekSessionResource } from '@/lib/session-resource';
+import { useKnowledgeRefresh } from '@/lib/use-knowledge-refresh';
+import { useSessionResource, peekSessionResource, invalidateSessionResourceScope } from '@/lib/session-resource';
 import { AppLink, useAppNavigation, useNavigationWorkspace, useWorkspaceState } from '@/components/navigation';
 
 import { useNavigationScroll, NavigationRestoreNotice } from '@/lib/use-navigation-scroll';
@@ -108,7 +113,7 @@ export const LibraryScreen = () => {
   const workspace = useNavigationWorkspace();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
-  const { confirm, prompt } = useDialog();
+  const { confirm, prompt, edit } = useDialog();
 
   const listLibrary = useNN((s) => s.listLibrary);
   const getLibraryItem = useNN((s) => s.getLibraryItem);
@@ -230,6 +235,7 @@ export const LibraryScreen = () => {
     });
   }, [libraryResource.mutate]);
   const refresh = libraryResource.refresh;
+  useKnowledgeRefresh(() => { invalidateSessionResourceScope('library:list'); refresh(); });
 
   const restoreRows = useCallback(async (anchor: import('@/lib/navigation-context').ScrollAnchor, signal: AbortSignal) => {
     if (!libraryResource.data || searchMode !== 'title') return 'missing' as const;
@@ -434,9 +440,9 @@ export const LibraryScreen = () => {
   );
 
   // ── Details panel data ──────────────────────────────────────────────────────────
-  const onItemPatched = useCallback((updated: LibraryItem) => {
-    setItems((prev) => prev.map((it) => (it.id === updated.id ? { ...it, ...updated } : it)));
-    setShelf((prev) => prev.map((it) => (it.id === updated.id ? { ...it, ...updated } : it)));
+  const onItemPatched = useCallback((updated: Partial<LibraryItem> & Pick<LibraryItem, 'id'>) => {
+    setItems((prev) => prev.map((it) => (it.id === updated.id && (it.metadataRevision ?? 0) <= (updated.metadataRevision ?? it.metadataRevision ?? 0) ? { ...it, ...updated } : it)));
+    setShelf((prev) => prev.map((it) => (it.id === updated.id && (it.metadataRevision ?? 0) <= (updated.metadataRevision ?? it.metadataRevision ?? 0) ? { ...it, ...updated } : it)));
   }, []);
   const onItemDeleted = useCallback((id: string) => {
     setItems((prev) => prev.filter((it) => it.id !== id));
@@ -656,6 +662,7 @@ export const LibraryScreen = () => {
           onDeleted={onItemDeleted}
           confirm={confirm}
           prompt={prompt}
+          edit={edit}
           onOpenNotebook={(id) => navigation.push(`/notebooks/${id}`)}
           onOpenReader={() => openReader(detailId)}
           isMobile={isMobile}
@@ -1224,6 +1231,7 @@ const DetailsPanel = ({
   onDeleted,
   confirm,
   prompt,
+  edit,
   onOpenNotebook,
   onOpenReader,
   isMobile,
@@ -1232,15 +1240,18 @@ const DetailsPanel = ({
   itemId: string;
   getLibraryItem: (id: string) => Promise<LibraryItemDetail>;
   onClose: () => void;
-  onPatched: (item: LibraryItem) => void;
+  onPatched: (item: Partial<LibraryItem> & Pick<LibraryItem, 'id'>) => void;
   onDeleted: (id: string) => void;
   confirm: ReturnType<typeof useDialog>['confirm'];
   prompt: ReturnType<typeof useDialog>['prompt'];
+  edit: ReturnType<typeof useDialog>['edit'];
   onOpenNotebook: (id: string) => void;
   onOpenReader: () => void;
   isMobile: boolean;
   t: Tr;
 }) => {
+  const { select } = useDialog();
+  const panelRef = useRef<HTMLDivElement>(null);
   const patchLibraryItem = useNN((s) => s.patchLibraryItem);
   const deleteLibraryItem = useNN((s) => s.deleteLibraryItem);
   const reingestLibraryItem = useNN((s) => s.reingestLibraryItem);
@@ -1250,6 +1261,10 @@ const DetailsPanel = ({
   const [detail, setDetail] = useState<LibraryItemDetail | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [tagDraft, setTagDraft] = useState('');
+  const ownerId = useNN(state => state.profile?.userId) ?? '';
+  const tagAction = useSmallAction(ownerId, tagDraft);
+  const tagIntent = useRef<'add' | 'remove'>('add');
+  const panelLayer = useTransientLayer({ root: panelRef, modal: true, onClose, busy: tagAction.busy });
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const requestVersion = useRef(0);
@@ -1279,6 +1294,7 @@ const DetailsPanel = ({
     void reload();
     return () => { requestVersion.current++; };
   }, [reload]);
+  useKnowledgeRefresh(reload);
 
   useSourceStatus({ items: detail ? [detail] : [], fetchOne: async () => {
     await reload(); return null;
@@ -1297,51 +1313,56 @@ const DetailsPanel = ({
     [patchLibraryItem, itemId, onPatched, t],
   );
 
-  const onRename = useCallback(async () => {
+  const editField = useCallback(async (field: 'title' | 'author' | 'description') => {
     if (!detail) return;
-    const title = await prompt({
-      title: t('library.details.renameTitle'),
-      label: t('library.details.renameLabel'),
-      defaultValue: detail.title,
-      confirmLabel: t('actions.rename'),
-      validate: (v) => (v.trim().length === 0 ? ' ' : null),
+    await edit({ title: t(field === 'title' ? 'library.details.renameTitle' : field === 'author' ? 'library.details.authorTitle' : 'actionsRecovery.description'),
+      defaultValue: detail[field] ?? '', path: `/sources/${itemId}`, revision: detail.metadataRevision ?? 0,
+      maxLength: field === 'title' ? 300 : field === 'author' ? 500 : 2000, multiline: field === 'description', trim: field !== 'description',
+      patch: value => ({ [field]: value }), validate: value => field === 'title' && !value.trim() ? ' ' : null,
+      readCurrent: async () => { const current = await getLibraryItem(itemId); return { revision: current.metadataRevision ?? 0, value: current[field] ?? '' }; },
+      onSaved: async result => {
+        const row = result.result as LibraryItemDetail;
+        const patch = { id: itemId, [field]: row[field], metadataRevision: row.metadataRevision };
+        setDetail(current => current && (current.metadataRevision ?? 0) <= (row.metadataRevision ?? 0) ? { ...current, ...patch } : current); onPatched(patch);
+      },
     });
-    if (title === null) return;
-    const trimmed = title.trim();
-    if (!trimmed || trimmed === detail.title) return;
-    await applyPatch({ title: trimmed });
-  }, [detail, prompt, t, applyPatch]);
+  }, [detail, edit, t, itemId, getLibraryItem, onPatched]);
+  const onRename = () => editField('title');
+  const onEditAuthor = () => editField('author');
 
-  const onEditAuthor = useCallback(async () => {
-    if (!detail) return;
-    const author = await prompt({
-      title: t('library.details.authorTitle'),
-      label: t('library.details.authorLabel'),
-      defaultValue: detail.author ?? '',
-      confirmLabel: t('actions.save'),
-    });
-    if (author === null) return;
-    await applyPatch({ author: author.trim() });
-  }, [detail, prompt, t, applyPatch]);
-
-  const onAddTag = useCallback(async () => {
-    if (!detail) return;
+  const acceptTags = (accepted: Awaited<ReturnType<typeof tagAction.run>>) => {
+    if (!accepted || useNN.getState().profile?.userId !== ownerId || !accepted.response.result) return;
+    const row = accepted.response.result as LibraryItemDetail;
+    const patch = { id: itemId, tags: row.tags, metadataRevision: row.metadataRevision };
+    setDetail(current => current && (current.metadataRevision ?? 0) <= (row.metadataRevision ?? 0) ? { ...current, ...patch } : current); onPatched(patch);
+    if (accepted.response.outcome === 'applied' && accepted.currentMatches && tagIntent.current === 'add') setTagDraft('');
+  };
+  const onAddTag = async () => {
+    if (!detail || tagAction.busy || tagAction.uncertain) return;
     const tag = tagDraft.trim();
-    if (!tag || detail.tags.includes(tag)) {
-      setTagDraft('');
-      return;
-    }
-    setTagDraft('');
-    await applyPatch({ tags: [...detail.tags, tag] });
-  }, [detail, tagDraft, applyPatch]);
+    if (!tag || detail.tags.includes(tag)) return;
+    tagIntent.current = 'add';
+    acceptTags(await tagAction.run(`/sources/${itemId}`, { expectedRevision: detail.metadataRevision ?? 0, patch: { tags: [...detail.tags, tag] } }));
+  };
+  const onRemoveTag = async (tag: string) => {
+    if (!detail || tagAction.busy || tagAction.uncertain) return;
+    tagIntent.current = 'remove';
+    acceptTags(await tagAction.run(`/sources/${itemId}`, { expectedRevision: detail.metadataRevision ?? 0, patch: { tags: detail.tags.filter(item => item !== tag) } }));
+  };
 
-  const onRemoveTag = useCallback(
-    async (tag: string) => {
-      if (!detail) return;
-      await applyPatch({ tags: detail.tags.filter((x) => x !== tag) });
-    },
-    [detail, applyPatch],
-  );
+  useNavigationGuard(async () => {
+    if (tagAction.busy) return false;
+    if (!tagDraft.trim() && !tagAction.snapshot.pending) return true;
+    const choice = await select({ title: t('editor.draft.leaveTitle'), message: tagAction.snapshot.pending ? t('actionsRecovery.uncertainClose') : undefined,
+      value: 'save', options: [{ value: 'save', label: t('editor.draft.saveAndLeave') }, { value: 'discard', label: t('editor.draft.discardAndLeave') }], cancelLabel: t('editor.draft.stay') });
+    if (choice === 'discard') return true;
+    if (choice !== 'save' || !detail) return false;
+    const accepted = tagAction.uncertain ? await tagAction.retry() : await tagAction.run(`/sources/${itemId}`, {
+      expectedRevision: detail.metadataRevision ?? 0, patch: { tags: [...new Set([...detail.tags, tagDraft.trim()])].filter(Boolean) },
+    });
+    acceptTags(accepted);
+    return Boolean(accepted?.currentMatches && accepted.response.outcome === 'applied');
+  }, panelLayer.id);
 
   const onDelete = useCallback(async () => {
     if (!detail) return;
@@ -1395,9 +1416,10 @@ const DetailsPanel = ({
 
   return (
     <>
-      <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'var(--scrim)' }} />
+      <div className="nn-dialog-backdrop" onClick={() => void panelLayer.close('outside')} style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'var(--scrim)' }} />
       <div
-        ref={detailPosition.ref}
+        ref={node => { panelRef.current = node; detailPosition.ref(node); }}
+        role="dialog" aria-modal="true" aria-label={detail?.title ?? t('nav.library')} tabIndex={-1}
         className="nn-scroll"
         style={{
           position: 'fixed',
@@ -1420,7 +1442,7 @@ const DetailsPanel = ({
           <span className="nn-section-label" style={{ margin: 0, flex: 1 }}>
             {t('library.details.title')}
           </span>
-          <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} title={t('library.details.close')} onClick={onClose} />
+          <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} title={t('library.details.close')} onClick={() => void panelLayer.close()} />
         </div>
 
         {loadError && <NNLoadError title={t('navigation.loadFailed')} description={loadError.safeMessage} requestId={loadError.requestId} retryLabel={t('navigation.retry')} onRetry={() => void reload()} />}
@@ -1458,6 +1480,7 @@ const DetailsPanel = ({
               <NNBtn variant="primary" size="sm" icon="book" onClick={onOpenReader}>{t('library.details.read')}</NNBtn>
               <NNBtn variant="soft" size="sm" icon="edit" onClick={onRename}>{t('library.details.rename')}</NNBtn>
               <NNBtn variant="soft" size="sm" onClick={onEditAuthor}>{t('library.details.editAuthor')}</NNBtn>
+              <NNBtn variant="soft" size="sm" onClick={() => void editField('description')}>{t('actionsRecovery.description')}</NNBtn>
               <NNBtn variant="soft" size="sm" icon="plus" onClick={() => setPickerOpen(true)}>{t('library.details.addToNotebook')}</NNBtn>
             </div>
 
@@ -1489,7 +1512,7 @@ const DetailsPanel = ({
                 {detail.tags.map((tag) => (
                   <span key={tag} className="nn-lib-tag">
                     {tag}
-                    <button type="button" onClick={() => onRemoveTag(tag)} aria-label={t('actions.delete')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', display: 'inline-flex', padding: 0 }}>
+                    <button type="button" disabled={tagAction.busy || tagAction.uncertain} onClick={() => void onRemoveTag(tag)} aria-label={t('actions.delete')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', display: 'inline-flex', padding: 0 }}>
                       <NNIcon name="x" size={11} />
                     </button>
                   </span>
@@ -1521,8 +1544,10 @@ const DetailsPanel = ({
                     boxSizing: 'border-box',
                   }}
                 />
-                <NNBtn variant="soft" size="sm" onClick={onAddTag} disabled={tagDraft.trim().length === 0}>{t('library.details.addTag')}</NNBtn>
+                <NNBtn variant="soft" size="sm" onClick={onAddTag} disabled={!tagDraft.trim() || tagAction.busy || tagAction.uncertain}>{t('library.details.addTag')}</NNBtn>
               </div>
+              <SaveFeedback status={tagAction.snapshot.status} onRetry={() => { void tagAction.retry().then(acceptTags); }} />
+              {tagAction.snapshot.status === 'conflict' && <NNBtn size="sm" onClick={() => { void reload().then(() => tagAction.controller.resolveConflict()); }}>{t('actionsRecovery.current')}</NNBtn>}
             </div>
 
             {/* Notebooks */}

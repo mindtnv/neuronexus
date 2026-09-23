@@ -5,11 +5,17 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
 import { NNBtn, NNIcon } from '@/components/ui';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
+import { createPortal } from 'react-dom';
+import { MetadataPrompt, type MetadataPromptOptions } from './metadata-prompt';
+import { useNN } from '@/lib/store';
+import { newUuidV7, type UiActionResult } from '@neuronexus/shared';
 import { useT } from '@/lib/i18n';
 
 // ─────────────────────────────────────────────
@@ -75,6 +81,7 @@ interface AlertOpts {
 }
 
 export interface DialogApi {
+  edit: (opts: MetadataPromptOptions) => Promise<UiActionResult | null>;
   confirm: (opts: ConfirmOpts) => Promise<boolean>;
   prompt: (opts: PromptOpts) => Promise<string | null>;
   select: <T>(opts: SelectOpts<T>) => Promise<T | null>;
@@ -82,12 +89,20 @@ export interface DialogApi {
 }
 
 // Discriminated union of the active dialog request.
-type ActiveDialog =
+type BasicDialog =
   | { kind: 'confirm'; opts: ConfirmOpts; resolve: (v: boolean) => void }
   | { kind: 'prompt'; opts: PromptOpts; resolve: (v: string | null) => void }
   // `select` is type-erased here; the public API re-types it via the hook.
   | { kind: 'select'; opts: SelectOpts<unknown>; resolve: (v: unknown) => void }
   | { kind: 'alert'; opts: AlertOpts; resolve: () => void };
+
+type ActiveDialog = (BasicDialog | { kind: 'edit'; opts: MetadataPromptOptions; resolve: (v: UiActionResult | null) => void }) & { key: string; owner?: string };
+
+function cancelDialog(dialog: ActiveDialog) {
+  if (dialog.kind === 'confirm') dialog.resolve(false);
+  else if (dialog.kind === 'alert') dialog.resolve();
+  else dialog.resolve(null);
+}
 
 const DialogCtx = createContext<DialogApi | null>(null);
 
@@ -100,12 +115,23 @@ export function useDialog(): DialogApi {
 }
 
 export function DialogProvider({ children }: { children: React.ReactNode }) {
-  const [active, setActive] = useState<ActiveDialog | null>(null);
+  const [dialogs, setDialogs] = useState<ActiveDialog[]>([]);
+  const owner = useNN(state => state.profile?.userId);
+  const current = useRef<ActiveDialog[]>([]);
+  const open = useCallback((dialog: BasicDialog | { kind: 'edit'; opts: MetadataPromptOptions; resolve: (v: UiActionResult | null) => void }) => {
+    const next = { ...dialog, key: newUuidV7(), owner: useNN.getState().profile?.userId } as ActiveDialog;
+    current.current = [...current.current, next]; setDialogs(current.current);
+  }, []);
+  useLayoutEffect(() => {
+    const outgoing = current.current.filter(dialog => dialog.owner !== owner);
+    if (outgoing.length) { for (const dialog of outgoing) cancelDialog(dialog); current.current = current.current.filter(dialog => dialog.owner === owner); setDialogs(current.current); }
+  }, [owner]);
+  const edit = useCallback((opts: MetadataPromptOptions) => new Promise<UiActionResult | null>(resolve => open({ kind: 'edit', opts, resolve })), [open]);
 
   const confirm = useCallback(
     (opts: ConfirmOpts) =>
       new Promise<boolean>((resolve) => {
-        setActive({ kind: 'confirm', opts, resolve });
+        open({ kind: 'confirm', opts, resolve });
       }),
     [],
   );
@@ -113,7 +139,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
   const prompt = useCallback(
     (opts: PromptOpts) =>
       new Promise<string | null>((resolve) => {
-        setActive({ kind: 'prompt', opts, resolve });
+        open({ kind: 'prompt', opts, resolve });
       }),
     [],
   );
@@ -121,7 +147,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
   const select = useCallback(
     <T,>(opts: SelectOpts<T>) =>
       new Promise<T | null>((resolve) => {
-        setActive({
+        open({
           kind: 'select',
           opts: opts as SelectOpts<unknown>,
           resolve: resolve as (v: unknown) => void,
@@ -133,24 +159,29 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
   const alert = useCallback(
     (opts: AlertOpts) =>
       new Promise<void>((resolve) => {
-        setActive({ kind: 'alert', opts, resolve });
+        open({ kind: 'alert', opts, resolve });
       }),
     [],
   );
 
   const api = useMemo<DialogApi>(
-    () => ({ confirm, prompt, select, alert }),
-    [confirm, prompt, select, alert],
+    () => ({ confirm, prompt, select, alert, edit }),
+    [confirm, prompt, select, alert, edit],
   );
 
-  const handleClose = useCallback(() => setActive(null), []);
-
-  return (
-    <DialogCtx.Provider value={api}>
-      {children}
-      {active && <DialogHost dialog={active} onClose={handleClose} />}
-    </DialogCtx.Provider>
-  );
+  const closeDialog = (entry: ActiveDialog) => {
+    current.current = current.current.filter(dialog => dialog !== entry); setDialogs(current.current);
+  };
+  return <DialogCtx.Provider value={api}>{children}{dialogs.filter(dialog => dialog.owner === owner).map((dialog, index, visible) => {
+    const content = <div key={dialog.key} style={{ position: 'fixed', inset: 0, zIndex: 120 + index }} inert={index !== visible.length - 1}>
+      {dialog.kind === 'edit' ? <MetadataPrompt owner={dialog.owner ?? ''} options={dialog.opts} resolve={dialog.resolve} onClose={() => closeDialog(dialog)} />
+        : <DialogHost dialog={dialog} onClose={() => closeDialog(dialog)} />}
+    </div>;
+    // A native reader dialog makes outside DOM inert. Its confirmations belong
+    // inside that top layer, while retaining this provider's React ownership.
+    const native = typeof document !== 'undefined' ? [...document.querySelectorAll<HTMLDialogElement>('dialog[open]')].at(-1) : null;
+    return native ? createPortal(content, native, dialog.key) : content;
+  })}</DialogCtx.Provider>;
 }
 
 // ─────────────────────────────────────────────
@@ -160,7 +191,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => void }) {
+function DialogHost({ dialog, onClose }: { dialog: BasicDialog; onClose: () => void }) {
   const t = useT();
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -193,13 +224,16 @@ function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => 
       : [];
 
   // Cancel: resolve with the negative value for this dialog kind.
-  const cancel = useCallback(() => {
+  const cancelNow = useCallback(() => {
     if (dialog.kind === 'confirm') dialog.resolve(false);
     else if (dialog.kind === 'prompt') dialog.resolve(null);
     else if (dialog.kind === 'select') dialog.resolve(null);
     else dialog.resolve();
     onClose();
   }, [dialog, onClose]);
+
+  const layer = useTransientLayer({ root: panelRef, modal: true, onClose: cancelNow });
+  const cancel = () => { void layer.close(); };
 
   const accept = useCallback(() => {
     if (dialog.kind === 'confirm') {
@@ -255,7 +289,7 @@ function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => 
     return () => {
       window.cancelAnimationFrame(id);
       document.body.style.overflow = prevOverflow;
-      prevFocus.current?.focus?.();
+      prevFocus.current?.focus?.({ preventScroll: true });
     };
     // Only run on mount for this dialog instance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -318,7 +352,7 @@ function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => 
   const message = dialog.opts.message;
 
   return (
-    <div
+    <LayerParent.Provider value={layer.id}><div
       onMouseDown={(e) => {
         // Cancel only when the click starts on the backdrop itself.
         if (e.target === e.currentTarget) cancel();
@@ -562,6 +596,6 @@ function DialogHost({ dialog, onClose }: { dialog: ActiveDialog; onClose: () => 
           </NNBtn>
         </div>
       </div>
-    </div>
+    </div></LayerParent.Provider>
   );
 }

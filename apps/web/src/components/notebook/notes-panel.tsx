@@ -20,11 +20,9 @@ import { AssistantAskButton } from '../chat/assistant-ask-button';
 // All data is panel-local; the parent owns the store methods + the imperative
 // composer-prefill handoff. Inline styles + CSS vars + ui.tsx primitives only.
 
+import { NotePinButton } from './note-pin-button';
 import { WrittenNoteEditor } from './written-note-editor';
 import { useNN } from '@/lib/store';
-import { saveUiAction } from '@/lib/ui-actions-api';
-import { notebookNoteFromApi } from '@/lib/mappers';
-import { newUuidV7 } from '@neuronexus/shared';
 import { ReadingText, TextInput } from '@/components/design-system/primitives';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NNBtn, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
@@ -232,29 +230,8 @@ export const NotesPanel = ({
     : legacyNotebookId ? { kind: 'notebook' as const, id: legacyNotebookId } : undefined;
 
   // ── Pin / delete / to-cards ───────────────────────────────────────────────────
-  const togglePin = useCallback(
-    async (n: NotebookNote) => {
-      try {
-        const response = await saveUiAction(account, `/study-notes/${n.id}`, 'PATCH', { expectedRevision: n.metadataRevision ?? 0, patch: { pinned: !n.pinned } }, newUuidV7());
-        if (useNN.getState().profile?.userId !== account || response.outcome !== 'applied' || !response.result) return;
-        const updated = notebookNoteFromApi(response.result);
-        // Re-fetch keeps the pinned-first server ordering correct.
-        setNotes((prev) => {
-          const next = prev.map((x) => (x.id === updated.id ? updated : x));
-          return [...next].sort((a, b) =>
-            a.pinned === b.pinned
-              ? Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
-              : a.pinned
-                ? -1
-                : 1,
-          );
-        });
-      } catch {
-        raiseToast({ kind: 'info', title: t('notebooks.notes.createFailed') });
-      }
-    },
-    [account, notebookId, t],
-  );
+  const pinUpdated = (updated: NotebookNote) => setNotes(previous => previous.map(note => note.id === updated.id ? updated : note)
+    .sort((a, b) => a.pinned === b.pinned ? Date.parse(b.updatedAt) - Date.parse(a.updatedAt) : a.pinned ? -1 : 1));
 
   const removeNote = useCallback(
     async (n: NotebookNote) => {
@@ -313,15 +290,7 @@ export const NotesPanel = ({
           {openNote.ownerKind === 'source' && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{openNote.sourceOriginTitle}{!openNote.sourceId ? ` · ${t('assistant.unavailable')}` : ''}</span>}
           {!editing && (
             <>
-              <NNBtn
-                variant="ghost"
-                size="sm"
-                icon="pin"
-                active={openNote.pinned}
-                ariaLabel={openNote.pinned ? t('notebooks.notes.unpin') : t('notebooks.notes.pin')}
-                title={openNote.pinned ? t('notebooks.notes.unpin') : t('notebooks.notes.pin')}
-                onClick={() => void togglePin(openNote)}
-              />
+              <NotePinButton note={openNote} onUpdated={pinUpdated} readCurrent={getNote ? () => getNote(notebookId, openNote.id) : undefined} />
               <NNBtn
                 variant="ghost"
                 size="sm"
@@ -483,7 +452,7 @@ export const NotesPanel = ({
                   setOpenId(n.id);
                   setEditing(false); setCreating(false);
                 })}
-                onTogglePin={() => void togglePin(n)}
+                pin={<NotePinButton note={n} onUpdated={pinUpdated} readCurrent={getNote ? () => getNote(notebookId, n.id) : undefined} />}
                 t={t}
               />
             ))}
@@ -497,12 +466,12 @@ export const NotesPanel = ({
 const NoteRow = ({
   note,
   onOpen,
-  onTogglePin,
+  pin,
   t,
 }: {
   note: NotebookNote;
   onOpen: () => void;
-  onTogglePin: () => void;
+  pin: React.ReactNode;
   t: Tfn;
 }) => (
   <div className="nn-source-row" style={{ cursor: 'pointer' }}>
@@ -561,15 +530,7 @@ const NoteRow = ({
         )}
       </button>
       <div className="nn-source-row-actions" style={{ display: 'flex', flexShrink: 0 }}>
-        <NNBtn
-          variant="ghost"
-          size="sm"
-          icon="pin"
-          active={note.pinned}
-          ariaLabel={note.pinned ? t('notebooks.notes.unpin') : t('notebooks.notes.pin')}
-          title={note.pinned ? t('notebooks.notes.unpin') : t('notebooks.notes.pin')}
-          onClick={onTogglePin}
-        />
+        {pin}
       </div>
     </div>
   </div>

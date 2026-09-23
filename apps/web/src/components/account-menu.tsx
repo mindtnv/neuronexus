@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
+import { useTransientLayer } from '@/lib/use-transient-layer';
 import { AppLink } from './navigation';
 import { NNIcon } from './ui';
 import { useT } from '@/lib/i18n';
@@ -12,24 +13,15 @@ export function AccountMenu({ name, onSignOut }: { name: string; onSignOut: () =
   const pathname = usePathname();
   const root = useRef<HTMLDetailsElement>(null);
   const trigger = useRef<HTMLElement>(null);
-  useEffect(() => { if (root.current) root.current.open = false; }, [pathname]);
-  useEffect(() => {
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && root.current && !root.current.contains(event.target)) root.current.open = false;
-    };
-    document.addEventListener('pointerdown', outside);
-    return () => document.removeEventListener('pointerdown', outside);
-  }, []);
-  const close = () => { if (root.current) root.current.open = false; };
+  const [open, setOpen] = useState(false);
+  const layer = useTransientLayer({ root, enabled: open, onClose: () => setOpen(false) });
+  useEffect(() => { setOpen(false); }, [pathname]);
+  const close = () => setOpen(false);
   return (
-    <details ref={root} className="nn-account" onKeyDown={event => {
-      if (event.key === 'Escape' && root.current?.open) {
-        event.preventDefault(); event.stopPropagation(); close(); trigger.current?.focus();
-      }
-    }} onBlur={event => {
-      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) close();
+    <details ref={root} open={open} className="nn-account" onBlur={event => {
+      if (!layer.contains(event.relatedTarget as Node | null)) void layer.close('outside');
     }}>
-      <summary ref={trigger} className="nn-account-trigger" aria-label={`${t('settings.nav.account')}: ${name}`} title={t('settings.nav.account')}>
+      <summary onClick={event => { event.preventDefault(); setOpen(value => !value); }} ref={trigger} className="nn-account-trigger" aria-label={`${t('settings.nav.account')}: ${name}`} title={t('settings.nav.account')}>
         <span className="nn-account-avatar" aria-hidden="true">{name.trim().slice(0, 2).toUpperCase()}</span>
         <span className="nn-account-copy"><strong>{name}</strong><span>{t('settings.nav.account')}</span></span>
         <span className="nn-account-chevron"><NNIcon name="chevd" size={14} /></span>

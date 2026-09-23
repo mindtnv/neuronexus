@@ -43,8 +43,8 @@ NODE_ENV=test bun --env-file=.env test \
 ## Remaining work and implementation notes
 
 - Card and note-type save routes/controllers now use receipts and shared feedback; see the editor checkpoint below. Final browser acceptance and post-final-edit release gates remain required.
-- Source/notebook/deck metadata forms and deck move UI still use their previous write paths. Expose their metadata revisions in existing shaped read payloads/mappers, retain input in their dialogs on failure, and wire versioned actions with request reconciliation. Do not fetch a fresh version after an error and silently apply stale input.
-- Note pinning uses the safe server route, but its local failed/uncertain feedback still needs the common mutation UI; avoid minting a fresh request identity to retry an unknown result.
+- Source/notebook/deck metadata forms, pinning and deck moves now use the safe routes; their final browser acceptance remains required. See the metadata/layer checkpoint below.
+- Note pinning now retains its original uncertain identity and exposes inline retry. Keep this coverage in the final gate.
 - Complete the remaining receipt/session/undo conformance scenarios and keyboard/visual acceptance. Current DOM tests do not prove real mobile behavior.
 - Implement the shared layer registry and history integration, migrate all listed consumers, and verify Escape/outside/Back/Forward, nested portals and dirty input in real browsers.
 - Update CLAUDE.md then AGENTS.md, run full migration-faithful tests/build/real S3 and browser gates after final edits, sync/archive both changes, merge and verify production health. No deployment has occurred for this change.
@@ -69,3 +69,37 @@ Verification:
 - Final release tests/build/S3/browser acceptance must still run after all remaining implementation edits.
 
 Next implementation priorities remain the metadata/pin/move UI adapters and the shared layer/history dismissal contract. GitHub CLI authentication was checked successfully; no PR, merge or deployment has been performed yet. For later browser proofs, a Playwright package exists at `/private/tmp/reomi-navigation-browser/node_modules/playwright/index.mjs`; its default Chromium/WebKit executable paths were absent, so provision/resolve the disposable browser binaries before relying on it.
+
+
+## 2026-09-23 — metadata adapters and shared layer foundation
+
+Implemented:
+
+- Book title/author/description, notebook title and deck name use an open, recoverable edit dialog. Failed saves retain input; lost replies reconcile first; conflicts require an explicit current-version read and decision. Tag input is cleared only after the matching confirmed save.
+- Pin/unpin, deck appearance and pointer/explicit deck moves use versioned actions. The hierarchy read now returns its revision and rows under one owner lock, rather than assembling a revision from a separate stale tree read.
+- Added real API tests for subtree schedule preservation, deleted-parent rejection, legacy pin ABA, concurrent replay, and a confirmed MCP update racing a UI move. Existing management confirmation/ownership remains intact.
+- Undo/save notifications refresh mounted Library/Notebooks/source views without resetting their editor state or notebook source selections. A scope invalidation prevents an older in-flight response from rewriting the cache after undo.
+- Added the owner-scoped layer stack and DOM adapter, including top-only dismissal, portal ownership, IME handling, outside click consumption, guarded close and focus fallback. Navigation guards are stacked instead of replacing an underlying editor guard. DialogProvider now lives inside navigation, retains nested dialogs, and portals confirmations inside an open native dialog when needed.
+- Migrated shared dialogs/native Modal, the mobile shell drawer, account/card/thread menus, NNSelect, command palette and cheatsheet. PDF/text selection controls now retain quote/input during dirty-close decisions and failed saves.
+
+Evidence:
+
+- Full migration-faithful `bun run test:ci`: **2993 passed, 0 failed**, 261 files, 108.04 seconds. This preceded the final focus-fallback refinement; the affected 67 UI/unit tests and all workspace typechecks then passed again.
+- Metadata/MCP race suite: **30 passed** across the UI-action and MCP files. Targeted metadata/guard/cache/UI suites also passed.
+- The reusable `navigation-browser-proof.mjs` passed with Chromium **153.0.8010.12**, Firefox **155.0**, and WebKit **26.6**. This proves the existing real-Next navigation contract still holds; it does NOT yet prove the new mobile transient-layer Back behavior, whose history integration is not implemented.
+- Native Firefox failed at launch with the same macOS profile-folder issue documented in the previous navigation acceptance. The successful Firefox run used the existing official Playwright 1.63.0 Linux image, with a new localhost-only server.
+
+Browser tooling prepared for the remaining acceptance:
+
+- Module: `/private/tmp/reomi-navigation-browser/node_modules/playwright/index.mjs`.
+- `PLAYWRIGHT_BROWSERS_PATH=/private/tmp/reomi-navigation-browser/browsers` (Chromium/WebKit and native Firefox files exist).
+- Owned temporary container `reomi-actions-firefox`, created by this goal, exposes `ws://127.0.0.1:9333/`; its only bind mount is the read-only Playwright node_modules directory. Revalidate its running state before reuse and remove this owned container when browser work is finished.
+- Navigation proof log: `/private/tmp/layers-navigation-browser-remote-firefox.log`. Full suite log: `/private/tmp/metadata-layers-full-tests.log`.
+
+Remaining layer/release work:
+
+- Implement transient mobile Back/history markers through the existing pre-hydration bridge, including repeated Back, Forward/reload cleanup and navigation drain. The `history` flag is currently metadata only.
+- Finish the PDF annotation saved-work editor guard, the reader's programmatic handoff/tab-switch paths, mobile card inspector/filter sheets, and assistant-owned portals/focus. Existing custom Escape/outside handlers in those remaining consumers need reconciliation with the stack.
+- Prove same-tab recent-action restoration, the full adapter conformance matrix, small viewport/reduced-motion/focus behavior, and the standalone recent-actions fallback in final acceptance.
+- Check Operations reachability when the desktop sidebar is completely hidden, and focus retention when an operation changes run identity.
+- Run full production-build/real-S3/performance/browser gates after final edits, update canonical agent docs, sync/archive both changes, create/merge the PR and verify production health. No PR/merge/deployment has happened yet.

@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useTransientLayer } from '@/lib/use-transient-layer';
 import { createPortal } from 'react-dom';
 import { NNIcon } from '@/components/ui';
 
@@ -9,6 +10,7 @@ export function ThreadContextMenu({ x, y, label, actions, anchor, onClose }: {
   onClose: (restoreFocus: boolean) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const layer = useTransientLayer({ root: ref, onClose: reason => onClose(reason !== 'outside' && reason !== 'navigation'), restoreFocus: false });
   const [position, setPosition] = useState({ x, y });
   useLayoutEffect(() => {
     const menu = ref.current;
@@ -18,22 +20,17 @@ export function ThreadContextMenu({ x, y, label, actions, anchor, onClose }: {
     menu.querySelector<HTMLButtonElement>('button')?.focus();
   }, [x, y]);
   useEffect(() => {
-    const outside = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node) && !(anchor.tagName === 'BUTTON' && anchor.contains(event.target as Node))) onClose(false); };
     const dismiss = () => onClose(false);
     const scroll = (event: Event) => { if (!ref.current?.contains(event.target as Node)) dismiss(); };
-    document.addEventListener('pointerdown', outside);
-    window.addEventListener('resize', dismiss);
     window.addEventListener('scroll', scroll, true);
     return () => {
-      document.removeEventListener('pointerdown', outside);
-      window.removeEventListener('resize', dismiss);
       window.removeEventListener('scroll', scroll, true);
     };
   }, [onClose, anchor]);
   return createPortal(<div ref={ref} className="reomi-thread-menu" role="menu" aria-label={label}
     style={{ left: position.x, top: position.y }} onContextMenu={event => event.preventDefault()}
     onKeyDown={event => {
-      if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); onClose(true); return; }
+      if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); void layer.close(); return; }
       if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
       event.preventDefault();
       const buttons = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
@@ -42,6 +39,6 @@ export function ThreadContextMenu({ x, y, label, actions, anchor, onClose }: {
       buttons[next]?.focus();
     }}>
     {actions.map(action => <button key={action.label} type="button" role="menuitem" data-danger={action.danger || undefined}
-      onClick={() => { onClose(true); action.run(); }}><NNIcon name={action.icon} size={16} /><span>{action.label}</span></button>)}
+      onClick={() => { void layer.close().then(closed => { if (closed) action.run(); }); }}><NNIcon name={action.icon} size={16} /><span>{action.label}</span></button>)}
   </div>, document.body);
 }

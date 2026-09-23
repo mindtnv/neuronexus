@@ -1,4 +1,7 @@
 export default {
+  uncertainClose: 'Closing will not cancel the submitted request. Its outcome can be checked in recent actions.',
+  description: 'Description',
+  reopenConflict: 'Your input remains in the form. Explicitly close it and reopen the current object before making a new change.',
   saving: 'Saving…', saved: 'Saved', failed: 'Could not save', uncertain: 'Checking whether the change was saved',
   conflict: 'The saved version has changed. Your text is still here.', retry: 'Retry',
   current: 'Show saved version', keepMine: 'Save my version', currentVersion: 'Currently saved',

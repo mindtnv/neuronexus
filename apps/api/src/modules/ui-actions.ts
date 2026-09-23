@@ -1,5 +1,6 @@
 import { Elysia, t } from 'elysia';
-import { db } from '@neuronexus/db';
+import { db, decks } from '@neuronexus/db';
+import { eq, sql } from 'drizzle-orm';
 import { newUuidV7, DECK_COLORS, NOTE_TITLE_MAX, NOTE_CONTENT_MAX, NOTEBOOK_TITLE_MAX } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin';
 import { createStudyNote } from './study-notes';
@@ -48,7 +49,10 @@ export const uiActionsModule = new Elysia({ prefix: '/ui-actions/v1' }).use(auth
     body: t.Object({ ...envelope, expectedRevision: revision, patch: t.Object({ name: t.Optional(t.String({ minLength: 1, maxLength: 100 })),
       color: t.Optional(t.Union(DECK_COLORS.map(color => t.Literal(color)))), icon: t.Optional(t.Union([t.String({ maxLength: 100 }), t.Null()])),
     }, { additionalProperties: false }) }) })
-  .get('/deck-hierarchy', ({ user }) => db.transaction(async tx => ({ revision: await hierarchyRevision(tx, user.id) })), { auth: true })
+  .get('/deck-hierarchy', ({ user }) => db.transaction(async tx => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${user.id}, 73))`);
+    return { revision: await hierarchyRevision(tx, user.id), decks: await tx.select().from(decks).where(eq(decks.userId, user.id)) };
+  }), { auth: true })
   .post('/decks/:id/move', ({ user, params, body }) => performUiAction(user.id, body, 'deck-move',
     { id: params.id, placement: body.placement, targetId: body.targetId, expectedRevision: body.expectedRevision },
     tx => moveDeckInTransaction(tx, user.id, params.id, body, body.expectedRevision)), { auth: true, params: t.Object({ id }),

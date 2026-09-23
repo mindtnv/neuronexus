@@ -7,6 +7,9 @@ import { clientRectsToMarkRects } from '@/lib/pdf-ink';
 import { NNBtn, NNIcon } from '@/components/ui';
 import { copyCodeText } from '@/components/chat/code-copy';
 import { MARK_COLOR_CSS } from './mark-colors';
+import { useTransientLayer } from '@/lib/use-transient-layer';
+import { useNavigationGuard } from '@/components/navigation';
+import { useDialog } from '@/components/dialog';
 
 type T = (key: string, params?: Record<string, string | number>) => string;
 export interface SelectionInfo {
@@ -22,6 +25,7 @@ export interface SelectionPopoverProps {
 interface State { info: SelectionInfo; noteOpen: boolean; noteText: string; busy: boolean; error: string | null }
 
 export function SelectionPopover({ pageEls, handMode, onHighlight, onNote, onCard, onAsk, t }: SelectionPopoverProps) {
+  const { select } = useDialog();
   const [state, setState] = useState<State | null>(null);
   const [placement, setPlacement] = useState<React.CSSProperties>({ left: 8, top: 8, width: 360 });
   const root = useRef<HTMLDivElement>(null), noteRef = useRef<HTMLTextAreaElement>(null);
@@ -29,9 +33,25 @@ export function SelectionPopover({ pageEls, handMode, onHighlight, onNote, onCar
   const current = useRef(state); current.current = state;
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const dismiss = useCallback(() => { interacting.current = false; rangeRef.current = null; setState(null); window.getSelection()?.removeAllRanges(); }, []);
+  const layer = useTransientLayer({ root, enabled: Boolean(state), busy: Boolean(state?.busy), onClose: dismiss });
+  useNavigationGuard(async () => {
+    const selected = current.current;
+    if (!selected) return true;
+    if (selected.busy) return false;
+    if (!selected.noteOpen || !selected.noteText.trim()) return true;
+    const choice = await select({ title: t('editor.draft.leaveTitle'), value: 'save', options: [
+      { value: 'save', label: t('editor.draft.saveAndLeave') }, { value: 'discard', label: t('editor.draft.discardAndLeave') },
+    ], cancelLabel: t('editor.draft.stay') });
+    if (!alive.current || current.current?.info !== selected.info) return false;
+    if (choice === 'discard') return true;
+    if (choice !== 'save') return false;
+    setState(value => value ? { ...value, busy: true, error: null } : value);
+    try { await onNote(selected.info, selected.noteText.trim()); dismiss(); return true; }
+    catch { setState(value => value ? { ...value, busy: false, error: 'assistant.selectionSaveFailed' } : value); return false; }
+  }, state && (state.noteOpen || state.busy) ? layer.id : false);
   useEffect(() => { if (!handMode) dismiss(); }, [handMode, dismiss]);
   const capture = useCallback(() => {
-    if (!handMode || interacting.current || root.current?.contains(document.activeElement)) return;
+    if (!handMode || current.current?.noteOpen || current.current?.busy || interacting.current || root.current?.contains(document.activeElement)) return;
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || !selection.rangeCount) { setState(null); return; }
     const range = selection.getRangeAt(0), text = range.toString().trim();
@@ -65,12 +85,8 @@ export function SelectionPopover({ pageEls, handMode, onHighlight, onNote, onCar
     let frame = 0, timer: ReturnType<typeof setTimeout> | undefined;
     const up = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(capture); };
     const selection = () => { clearTimeout(timer); timer = setTimeout(capture, 60); };
-    const outside = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) { interacting.current = false; setState(null); }
-    };
     window.addEventListener('pointerup', up); document.addEventListener('selectionchange', selection);
-    window.addEventListener('pointerdown', outside, true);
-    return () => { cancelAnimationFrame(frame); clearTimeout(timer); window.removeEventListener('pointerup', up); document.removeEventListener('selectionchange', selection); window.removeEventListener('pointerdown', outside, true); };
+    return () => { cancelAnimationFrame(frame); clearTimeout(timer); window.removeEventListener('pointerup', up); document.removeEventListener('selectionchange', selection); };
   }, [capture]);
   useLayoutEffect(() => {
     if (!state || !root.current) return;
@@ -111,8 +127,8 @@ export function SelectionPopover({ pageEls, handMode, onHighlight, onNote, onCar
   return <>{pageElement && createPortal(<div aria-hidden="true" data-pdf-selection-paint style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 2, opacity: 0.3, mixBlendMode: 'multiply' }}>
     {info.rects.map((rect, index) => <div key={index} style={{ position: 'absolute', left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%`, background: 'var(--accent-500)' }}/>)}</div>, pageElement)}{createPortal(<div ref={root} id="nn-sel-popover" className="reomi-pdf-selection" role="dialog" aria-label={t('notebooks.marks.selectionTitle')} style={placement}
     onPointerDownCapture={() => { interacting.current = true; }} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault(); }}
-    onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); dismiss(); } }}>
-    <header><span>{t('notebooks.marks.selectionTitle')} · {t('notebooks.marks.pageGroup', { n: info.page })}</span><NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('actions.close')} onClick={dismiss}/></header>
+    onKeyDown={event => { event.stopPropagation(); }}>
+    <header><span>{t('notebooks.marks.selectionTitle')} · {t('notebooks.marks.pageGroup', { n: info.page })}</span><NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('actions.close')} onClick={() => void layer.close()}/></header>
     <blockquote title={info.text}>{info.text}</blockquote>
     <div className="reomi-pdf-selection-colors" role="group" aria-label={t('notebooks.marks.highlightColors')}>
       {SOURCE_MARK_COLORS.map(color => <button key={color} type="button" disabled={busy || markTooLong} aria-label={t(`notebooks.marks.color_${color}`)} title={t(markTooLong ? 'notebooks.marks.selectionTooLong' : `notebooks.marks.color_${color}`)} onClick={() => void run(() => onHighlight(info, color))}>

@@ -10,14 +10,14 @@
 ## 2. Existing editor and metadata adapters
 
 - [x] 2.1 Add failing contract tests for card/note-type save acknowledgement and ambiguous create/update; integrate shared feedback/receipt handling with existing preview/version/draft owners, verifying destructive previews, single-use confirmation replay and existing recovery tests remain valid.
-- [ ] 2.2 Add failing source metadata save/undo tests, then add revision triggers and adapters for title/author/description/tags; verify legacy/agent writes invalidate stale inverses while ingestion and reading progress do not.
-- [ ] 2.3 Add failing notebook-title and deck-name/color/icon tests, then add their adapters and form status UI; verify owned reads, stale conflicts, input retention and preserved unrelated metadata.
-- [ ] 2.4 Add failing study-note pin tests, then implement its conditional inverse without changing content recency; verify pin/unpin A→B→C→B and concurrent requests are handled safely.
+- [x] 2.2 Add failing source metadata save/undo tests, then add revision triggers and adapters for title/author/description/tags; verify legacy/agent writes invalidate stale inverses while ingestion and reading progress do not.
+- [x] 2.3 Add failing notebook-title and deck-name/color/icon tests, then add their adapters and form status UI; verify owned reads, stale conflicts, input retention and preserved unrelated metadata.
+- [x] 2.4 Add failing study-note pin tests, then implement its conditional inverse without changing content recency; verify pin/unpin A→B→C→B and concurrent requests are handled safely.
 
 ## 3. Deck move reversal
 
-- [ ] 3.1 Add failing integration tests for restoring parent/sibling order, subtree moves, deleted parents, later hierarchy changes and legacy/assistant races; verify fixtures include multiple owners and unchanged card schedules.
-- [ ] 3.2 Add owner hierarchy revisions/triggers and the move receipt/inverse under compatible owner locks; verify 3.1, receipt replay and no cycle or cross-owner restoration.
+- [x] 3.1 Add failing integration tests for restoring parent/sibling order, subtree moves, deleted parents, later hierarchy changes and legacy/assistant races; verify fixtures include multiple owners and unchanged card schedules.
+- [x] 3.2 Add owner hierarchy revisions/triggers and the move receipt/inverse under compatible owner locks; verify 3.1, receipt replay and no cycle or cross-owner restoration.
 
 ## 4. Durable offers and explicit Undo
 
@@ -28,8 +28,8 @@
 
 ## 5. Shared dismissal and navigation
 
-- [ ] 5.1 Add failing layer conformance tests for nested portals, one-layer Escape, outside click-through, dirty guards, IME composition and focus return; implement the registry and guarded closure, verifying the suite passes.
-- [ ] 5.2 Migrate shared dialogs, shell drawers, account/card/thread menus and global overlays; verify each uses the conformance suite and preserves keyboard action/confirmation semantics.
+- [x] 5.1 Add failing layer conformance tests for nested portals, one-layer Escape, outside click-through, dirty guards, IME composition and focus return; implement the registry and guarded closure, verifying the suite passes.
+- [x] 5.2 Migrate shared dialogs, shell drawers, account/card/thread menus and global overlays; verify each uses the conformance suite and preserves keyboard action/confirmation semantics.
 - [ ] 5.3 Migrate PDF/text selection editors, reader saved-work panels and mobile inspector/filter sheets; verify selection snapshots and text survive errors and every closing path, while saved marks remain unchanged.
 - [ ] 5.4 Integrate assistant-owned popups with the common layer ownership/focus model; verify pending approvals never confirm on dismissal, stream ownership persists and disabled controls stay outside focus cycling.
 - [ ] 5.5 Add failing history-bridge tests, then integrate mobile layer markers through the existing navigation provider; verify one-layer Back, Forward, reload cleanup, repeated Back during a guard, route-backed readers and browser keyboard dismissal without loops.

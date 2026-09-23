@@ -1,9 +1,9 @@
 import { beforeEach, expect, test } from 'bun:test';
-import { db, sources, notebookNotes, notebooks, decks, uiActionReceipts } from '@neuronexus/db';
+import { db, sources, notebookNotes, notebooks, decks, cards, uiActionReceipts } from '@neuronexus/db';
 import { eq } from 'drizzle-orm';
 import { newUuidV7 } from '@neuronexus/shared';
 import { buildApp } from '../src/app';
-import { callApp, resetTestDb, signUpAndCookie, uniqueEmail } from './helpers';
+import { callApp, resetTestDb, seedBasicCard, signUpAndCookie, uniqueEmail } from './helpers';
 import { cleanupUiActionReceipts } from '../src/modules/ui-action-receipts';
 
 const app = buildApp();
@@ -185,4 +185,42 @@ test('an expired request cannot become a second create after its receipt is clea
   } });
   expect(response.status).toBe(409);
   expect(await db.select().from(notebookNotes)).toHaveLength(0);
+});
+
+test('subtree move and undo keep schedules intact; deleting the new parent cannot resurrect the subtree', async () => {
+  const owner = await signUpAndCookie(app, uniqueEmail());
+  const [parent, root] = await db.insert(decks).values([{ userId: owner.userId, name: 'Parent', position: 0 }, { userId: owner.userId, name: 'Root', position: 1 }]).returning();
+  const [child] = await db.insert(decks).values({ userId: owner.userId, name: 'Child', parentId: root!.id }).returning();
+  const card = await seedBasicCard(app, owner.cookie, { deckId: child!.id, front: 'Question' });
+  await callApp(app, 'POST', '/reviews', { cookie: owner.cookie, body: { cardId: card.id, rating: 4 } });
+  const before = await db.select().from(cards).where(eq(cards.id, card.id));
+  const move = async () => {
+    const snapshot = await (await callApp(app, 'GET', '/ui-actions/v1/deck-hierarchy', { cookie: owner.cookie })).json<any>();
+    expect(snapshot.decks.map((row: any) => row.id)).toContain(child!.id);
+    const result = await callApp(app, 'POST', `/ui-actions/v1/decks/${root!.id}/move`, { cookie: owner.cookie,
+      body: { ...envelope(), expectedRevision: snapshot.revision, targetId: parent!.id, placement: 'inside' } });
+    expect(result.status).toBe(200); return result.json<any>();
+  };
+  const first = await move();
+  expect(await db.select().from(cards).where(eq(cards.id, card.id))).toEqual(before);
+  expect((await callApp(app, 'POST', `/ui-actions/v1/receipts/${first.receipt.id}/undo`, { cookie: owner.cookie })).status).toBe(200);
+  expect(await db.select().from(cards).where(eq(cards.id, card.id))).toEqual(before);
+  const second = await move();
+  expect((await callApp(app, 'DELETE', `/decks/${parent!.id}`, { cookie: owner.cookie })).status).toBe(200);
+  expect((await callApp(app, 'POST', `/ui-actions/v1/receipts/${second.receipt.id}/undo`, { cookie: owner.cookie })).status).toBe(409);
+  expect(await db.select().from(decks).where(eq(decks.id, root!.id))).toHaveLength(0);
+});
+
+test('pin ABA through the legacy endpoint invalidates an earlier undo and concurrent pin replay only advances once', async () => {
+  const owner = await signUpAndCookie(app, uniqueEmail());
+  const [source] = await db.insert(sources).values({ userId: owner.userId, kind: 'text', title: 'Book' }).returning();
+  const note = await (await callApp(app, 'POST', `/sources/${source!.id}/notes`, { cookie: owner.cookie, body: { title: 'Note', content: 'Body' } })).json<any>();
+  const body = { ...envelope(), expectedRevision: 0, patch: { pinned: true } };
+  const [a, b] = await Promise.all([1, 2].map(() => callApp(app, 'PATCH', `/ui-actions/v1/study-notes/${note.id}`, { cookie: owner.cookie, body })));
+  expect(a.status).toBe(200); expect(b.status).toBe(200);
+  const result = await a.json<any>();
+  expect(result.result.metadataRevision).toBe(1);
+  await callApp(app, 'PATCH', `/study/notes/${note.id}`, { cookie: owner.cookie, body: { pinned: false } });
+  await callApp(app, 'PATCH', `/study/notes/${note.id}`, { cookie: owner.cookie, body: { pinned: true } });
+  expect((await callApp(app, 'POST', `/ui-actions/v1/receipts/${result.receipt.id}/undo`, { cookie: owner.cookie })).status).toBe(409);
 });

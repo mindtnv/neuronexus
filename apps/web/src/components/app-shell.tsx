@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useLayoutEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import { useBreakpoint } from '@/lib/use-breakpoint';
 import { useNN } from '@/lib/store';
@@ -15,12 +15,16 @@ import { Tooltips } from './design-system/tooltips';
 import { AssistantProvider } from './chat/assistant-provider';
 import { RecentActionsProvider, StandaloneActions } from './recent-actions';
 import { OperationsProvider } from './operations-provider';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { OperationsHost } from './operations-center';
 import { AssistantHost } from './chat/assistant-host';
 
 const AppShellContent = ({ children }: { children: React.ReactNode }) => {
   const bp = useBreakpoint();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const drawerLayer = useTransientLayer({ root: drawerRef, enabled: drawerOpen, modal: true, onClose: () => setDrawerOpen(false) });
+  useEffect(() => { if (drawerOpen) drawerRef.current?.querySelector<HTMLElement>('a,button')?.focus({ preventScroll: true }); }, [drawerOpen]);
   const pathname = usePathname();
   const sidebarWidth = useUI((s) => s.sidebarWidth);
   const setSidebarWidth = useUI((s) => s.setSidebarWidth);
@@ -104,6 +108,9 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
 
       <div
         className="nn-route-slot"
+        role="main"
+        tabIndex={-1}
+        data-layer-focus-fallback
         style={{
           flex: 1,
           display: 'flex',
@@ -138,7 +145,7 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
       {drawerOpen ? (
         <div
           className="nn-mobile-drawer-backdrop"
-          onClick={() => setDrawerOpen(false)}
+          onClick={() => void drawerLayer.close('outside')}
           role="presentation"
           style={{
             position: 'fixed',
@@ -149,6 +156,8 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
           }}
         >
           <div
+            ref={drawerRef}
+            tabIndex={-1}
             className="nn-mobile-drawer-panel"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
@@ -162,7 +171,7 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
               display: 'flex',
             }}
           >
-            <NNSidebar fullWidth />
+            <LayerParent.Provider value={drawerLayer.id}><NNSidebar fullWidth /></LayerParent.Provider>
           </div>
         </div>
       ) : null}

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
+import { useTransientLayer } from '@/lib/use-transient-layer';
 import { useModalFocus } from '@/lib/use-modal-focus';
 import { NNIcon, NNBtn, NNKbd } from '@/components/ui';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -65,17 +66,12 @@ const COLOR_MAP: Record<string, string> = {
 export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(dialogRef);
+  const layer = useTransientLayer({ root: dialogRef, modal: true, onClose: () => onClose?.() });
   const t = useT();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const isDesktop = bp === 'desktop';
   const KBD_GROUPS = buildKbdGroups(t);
-
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' || e.key === '?') onClose?.(); };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [onClose]);
 
   return (
     <div style={{
@@ -83,7 +79,7 @@ export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
       background: 'var(--scrim-strong)', backdropFilter: 'blur(4px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       padding: isMobile ? '2vw' : 0,
-    }} onClick={onClose}>
+    }} onClick={() => void layer.close('outside')}>
       <div ref={dialogRef} className="nn-shortcut-dialog" role="dialog" aria-modal="true" aria-label={t('overlays.cheatsheet.title')} tabIndex={-1} onClick={e => e.stopPropagation()} style={{
         width: isMobile ? '96vw' : 780,
         maxWidth: '100%',
@@ -107,7 +103,7 @@ export const KbdCheatsheet = ({ onClose }: { onClose?: () => void }) => {
           <NNKbd>?</NNKbd>
           <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 2 }}>{t('overlays.cheatsheet.toToggle')}</span>
           <div style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 6px' }}/>
-          <NNBtn size="sm" variant="ghost" icon="x" onClick={onClose} ariaLabel={t('actions.close')}/>
+          <NNBtn size="sm" variant="ghost" icon="x" onClick={() => void layer.close()} ariaLabel={t('actions.close')}/>
         </div>
 
         {/* Grid of groups */}

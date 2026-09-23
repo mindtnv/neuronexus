@@ -81,6 +81,7 @@ interface LibraryItemAggregates {
 function shapeLibraryItem(s: Source, agg: LibraryItemAggregates): Record<string, unknown> {
   return {
     ...sourceOperationPresentation(),
+    metadataRevision: s.metadataRevision,
     id: s.id,
     kind: s.kind,
     title: s.title,

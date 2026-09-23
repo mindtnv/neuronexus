@@ -36,7 +36,8 @@ import { relativeUpdated } from '@/lib/notebook-format';
 import { sourceKindToneVar } from '@/lib/source-kind';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
-import { useSessionResource } from '@/lib/session-resource';
+import { useKnowledgeRefresh } from '@/lib/use-knowledge-refresh';
+import { useSessionResource, invalidateSessionResourceScope } from '@/lib/session-resource';
 import { useAppNavigation, useNavigationWorkspace, useWorkspaceState } from '@/components/navigation';
 
 type Tfn = (key: string, params?: Record<string, string | number>) => string;
@@ -193,7 +194,7 @@ export const NotebooksScreen = () => {
   const navigation = useAppNavigation();
   const workspace = useNavigationWorkspace();
   const isMobile = useIsMobile();
-  const { prompt, confirm } = useDialog();
+  const { prompt, confirm, edit } = useDialog();
 
   const listNotebooks = useNN((s) => s.listNotebooks);
   const createNotebook = useNN((s) => s.createNotebook);
@@ -215,6 +216,7 @@ export const NotebooksScreen = () => {
     fetcher: fetchNotebooks,
     keepPreviousData: true,
   });
+  useKnowledgeRefresh(() => { invalidateSessionResourceScope('notebooks:list'); notebooksResource.refresh(); });
   const notebooks = notebooksResource.data ?? [];
   const notebooksLoaded = notebooksResource.data !== null || notebooksResource.status === 'error';
   const listPosition = useNavigationScroll('notebooks','list',{ready:Boolean(notebooksResource.data),queryKey:JSON.stringify([archived,search])});
@@ -257,42 +259,14 @@ export const NotebooksScreen = () => {
     [createNotebook, patchNotebook, t],
   );
 
-  const onRename = useCallback(
-    async (nb: Notebook) => {
-      const title = await prompt({
-        title: t('notebooks.list.renameTitle'),
-        label: t('notebooks.list.createLabel'),
-        defaultValue: nb.title,
-        confirmLabel: t('actions.rename'),
-        validate: (v) => (v.trim().length === 0 ? ' ' : null),
-      });
-      if (title === null) return;
-      const trimmed = title.trim();
-      if (!trimmed || trimmed === nb.title) return;
-      try {
-        const updated = await patchNotebook(nb.id, { title: trimmed });
-        setNotebooks((prev) =>
-          prev.map((n) =>
-            n.id === nb.id
-              ? {
-                  ...updated,
-                  sourceCount: n.sourceCount,
-                  noteCount: n.noteCount,
-                  cardCount: n.cardCount,
-                  artifactCount: n.artifactCount,
-                  generatingCount: n.generatingCount,
-                  generatingTitle: n.generatingTitle,
-                  coverSources: n.coverSources,
-                }
-              : n,
-          ),
-        );
-      } catch {
-        raiseToast({ kind: 'error', title: t('notebooks.meta.saveFailed') });
-      }
-    },
-    [prompt, t, patchNotebook],
-  );
+  const onRename = useCallback(async (nb: Notebook) => {
+    await edit({ title: t('notebooks.list.renameTitle'), label: t('notebooks.list.createLabel'), defaultValue: nb.title,
+      path: `/notebooks/${nb.id}`, revision: nb.metadataRevision ?? 0, maxLength: 200,
+      patch: title => ({ title }), validate: title => title.trim() ? null : ' ',
+      readCurrent: async () => { const current = await useNN.getState().getNotebook(nb.id); return { revision: current.metadataRevision ?? 0, value: current.title }; },
+      onSaved: result => { if (result.result) setNotebooks(previous => previous.map(row => row.id === nb.id ? { ...row, title: (result.result as Notebook).title, metadataRevision: (result.result as Notebook).metadataRevision } : row)); },
+    });
+  }, [edit, t]);
 
   const onTogglePin = useCallback(
     async (nb: Notebook) => {

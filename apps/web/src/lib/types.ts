@@ -22,6 +22,7 @@ export type DeckColor = import('@neuronexus/shared').DeckColor;
 export type PlantSpecies = 'fern' | 'cactus' | 'succulent' | 'bonsai' | 'sakura' | 'mushroom';
 
 export interface Deck {
+  metadataRevision?: number;
   id: string;
   name: string;
   color: DeckColor;
@@ -170,6 +171,7 @@ export interface NotebookCoverSource {
 }
 
 export interface Notebook {
+  metadataRevision?: number;
   id: string;
   title: string;
   /** «Блокноты 2.0» metadata (Р13) — all nullable. */
@@ -345,6 +347,7 @@ export interface NotebookNote {
 }
 
 export interface Source {
+  metadataRevision?: number;
   searchAvailable?: boolean;
   id: string;
   notebookId: string;
@@ -376,6 +379,7 @@ export type ReadingStatus = 'unread' | 'reading' | 'finished';
  *  library item IS a `sources` row; the list/detail responses fold in the
  *  reading-state + aggregate counts (no N+1). */
 export interface LibraryItem {
+  metadataRevision?: number;
   searchAvailable?: boolean;
   id: string;
   kind: SourceKind;

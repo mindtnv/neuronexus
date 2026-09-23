@@ -24,6 +24,7 @@ import { useAppNavigation, useNavigationWorkspace, useWorkspaceState } from '@/c
 import { NNBtn, NNIcon, NNLoadError, NNSkeleton } from '@/components/ui';
 import { api, ok, type ApiError } from '@/lib/api';
 import { toApiError } from '@/lib/resource-state';
+import { useKnowledgeRefresh } from '@/lib/use-knowledge-refresh';
 import { canReadSource } from '@/lib/source-reading';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useNN } from '@/lib/store';
@@ -86,6 +87,13 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
+  const metadataRefresh = useRef(0);
+  useEffect(() => () => { metadataRefresh.current++; }, [sourceId]);
+  useKnowledgeRefresh(async () => {
+    const sequence = ++metadataRefresh.current, owner = useNN.getState().profile?.userId;
+    const fresh = await getSource(sourceId);
+    if (sequence === metadataRefresh.current && useNN.getState().profile?.userId === owner) setSource(previous => previous?.id === fresh.id ? { ...previous, ...fresh } : previous);
+  });
 
   // PDF | Text reader mode. PDF sources default to 'pdf' (persisted per source);
   // non-PDF sources are always 'text'.

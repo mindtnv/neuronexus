@@ -1,5 +1,7 @@
 'use client';
 
+import { restoreLayerFocus } from '@/lib/use-transient-layer';
+
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation, useNavigationWorkspace, useWorkspaceState, NavigationReturn } from '@/components/navigation';
@@ -166,7 +168,7 @@ export const NNCardsBrowser = () => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionMenu, setActionMenu] = useState<{ x: number; y: number; anchor: HTMLElement } | null>(null);
   const closeActions = useCallback((restoreFocus: boolean) => {
-    if (restoreFocus && actionMenu?.anchor.isConnected) actionMenu.anchor.focus();
+    if (restoreFocus) restoreLayerFocus(actionMenu?.anchor);
     setActionMenu(null);
   }, [actionMenu]);
   const lastClickedRef = useRef<string | null>(null);
