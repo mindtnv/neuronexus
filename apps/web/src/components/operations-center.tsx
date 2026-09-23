@@ -16,11 +16,11 @@ export function OperationsButton({ mobile = false }: { mobile?: boolean }) {
   const t = useT();
   if (!context) return null;
   const count = context.snapshot.feed?.active.total ?? 0;
-  return <button type="button" className={mobile ? 'nn-operations-mobile-button' : 'nn-operations-button'}
+  return <button type="button" className={mobile ? 'nn-operations-mobile-button' : 'nn-sidebar-nav-item nn-operations-button'}
     aria-label={count ? t('operations.count', { count }) : t('operations.title')}
     title={t('operations.title')} aria-haspopup="dialog" aria-expanded={context.open} onClick={event => { event.currentTarget.focus({ preventScroll: true }); context.setOpen(true); }}>
-    <NNIcon name="clock" size={18} /><span className="nn-sidebar-label">{t('operations.title')}</span>
-    {count > 0 && <span className="nn-operations-count" aria-hidden="true">{count}</span>}
+    <span className="nn-sidebar-nav-icon"><NNIcon name="clock" size={mobile ? 22 : 18} /></span><span className="nn-sidebar-label">{t('operations.title')}</span>
+    {count > 0 && <><span className="nn-sidebar-badge nn-operations-count" aria-hidden="true">{count}</span><span className="nn-sidebar-badge-dot" aria-hidden="true" /></>}
   </button>;
 }
 
@@ -97,9 +97,10 @@ function OperationRow({ row, missing = false }: { row: OperationItem; missing?: 
   const fallback = row.destination.kind === 'notebook-artifact' ? '/notebooks' : row.kind === 'source' ? '/library' : '/library/study';
   const fallbackLabel = row.destination.kind === 'notebook-artifact' ? 'nav.notebooks' : row.kind === 'source' ? 'nav.library' : 'assistant.savedStudy';
   const phase = row.phase === 'ready' && row.artifactType === 'quiz' ? t('operations.quizReady') : t(`operations.phases.${row.phase}`);
-  return <li ref={root} tabIndex={-1} className="nn-operation-row" data-operation-id={row.id}
+  const tone = unavailable ? 'muted' : row.phase === 'failed' || row.phase === 'search_unavailable' ? 'attention' : row.phase === 'ready' ? 'ready' : 'active';
+  return <li ref={root} tabIndex={-1} className="nn-operation-row" data-tone={tone} data-operation-id={row.id}
     onFocus={() => { focused.current = true; }} onBlur={event => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) focused.current = false; }}>
-    <NNIcon name={unavailable ? row.kind === 'source' ? 'book' : 'doc' : row.phase === 'failed' ? 'warning' : row.phase === 'ready' ? 'check' : 'clock'} size={17} />
+    <span className="nn-operation-icon" aria-hidden="true"><NNIcon name={unavailable ? row.kind === 'source' ? 'book' : 'doc' : tone === 'attention' ? 'warning' : row.phase === 'ready' ? 'check' : row.kind === 'artifact' ? 'sparkle' : 'book'} size={17} /></span>
     <div className="nn-operation-copy"><strong title={row.title}>{row.title}</strong>{!unavailable && <><span>{phase}</span>
       {row.canRead && ['parsing', 'queued', 'failed'].includes(row.phase) && <span>{t('operations.readable')}</span>}
       {row.progress && <progress max={row.progress.total} value={row.progress.completed}
@@ -136,7 +137,7 @@ export function OperationsHost() {
   const incoming = new Map<string, { group: typeof OPERATION_GROUPS[number]; row: OperationItem }>(OPERATION_GROUPS.flatMap(group => snapshot.feed?.[group].items.map(row => [`${row.kind}:${row.id}`, { group, row }] as const) ?? []));
   if (!focused) stable.current = incoming;
   else for (const [key, value] of stable.current) { const next = incoming.get(key); stable.current.set(key, next ? { group: value.group, row: next.row } : { ...value, missing: true }); }
-  return <Modal open={open} title={t('operations.title')} closeLabel={t('actions.close')} onClose={() => setOpen(false)} className="nn-operations-panel">
+  return <Modal open={open} title={t('operations.title')} description={t('operations.description')} closeLabel={t('actions.close')} closeIcon={<NNIcon name="x" size={18} />} initialFocus="panel" onClose={() => setOpen(false)} className="nn-operations-panel">
     <div className="nn-operations-content" onFocus={event => setFocused(Boolean((event.target as Element).closest('[data-operation-id]')))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setFocused(false); }}>
       {snapshot.status === 'loading' && <p role="status">{t('operations.loading')}</p>}
       {(snapshot.status === 'stale' || snapshot.status === 'unavailable') && <div className="nn-operation-notice" role="status">
@@ -146,15 +147,15 @@ export function OperationsHost() {
         const items = [...stable.current.values()].filter(value => value.group === group);
         const page = snapshot.feed![group];
         if (!items.length && (!page.total || focused)) return null;
-        return <section key={group} aria-label={t(`operations.${group}`)}>
+        return <section key={group} className="nn-operation-group" data-group={group} aria-label={t(`operations.${group}`)}>
           <h3>{t(`operations.${group}`)} {!focused && <span>{page.total}</span>}</h3>
           <ul>{items.map(({ row, missing }) => <OperationRow key={`${row.kind}:${row.id}`} row={row} missing={missing} />)}</ul>
           {page.nextCursor && <NNBtn size="sm" variant="ghost" disabled={snapshot.loadingMore !== null} onClick={() => void observer.loadMore(group)}>{t('operations.more')}</NNBtn>}
         </section>;
       })}
-      {snapshot.feed && stable.current.size === 0 && OPERATION_GROUPS.every(group => !snapshot.feed![group].total) && <p>{t('operations.empty')}</p>}
+      {snapshot.feed && stable.current.size === 0 && OPERATION_GROUPS.every(group => !snapshot.feed![group].total) && <div className="nn-operations-empty"><span className="nn-operation-icon" aria-hidden="true"><NNIcon name="check" size={20} /></span><p>{t('operations.empty')}</p></div>}
       <RecentActions />
-      <p className="nn-operations-history">{t('operations.history')}</p>
     </div>
+    <footer className="nn-operations-history"><NNIcon name="clock" size={13} /><span>{t('operations.history')}</span></footer>
   </Modal>;
 }

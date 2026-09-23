@@ -1,4 +1,5 @@
 export default {
+  description: 'Source processing and generated materials',
   opening: 'Opening…', resultUnavailable: 'This result is no longer available.', openFailed: 'Could not open the result. Try again.',
   title: 'Operations', active: 'In progress', attention: 'Needs attention', recent: 'Recent',
   empty: 'No operations yet. Book processing and generated results will appear here.',

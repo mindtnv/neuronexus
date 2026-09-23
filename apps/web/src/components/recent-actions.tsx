@@ -7,7 +7,7 @@ import { useNN } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import { useOperations } from './operations-provider';
 import { raiseToast } from './toasts';
-import { NNBtn } from './ui';
+import { NNBtn, NNIcon } from './ui';
 import { Modal } from './design-system/modal';
 
 type UndoState = 'pending' | 'failed' | 'uncertain' | 'conflict';
@@ -123,10 +123,11 @@ export function RecentActions() {
     {context.storageUnavailable && <p role="status">{t('actionsRecovery.reloadUnavailable')}</p>}
     {context.error && <p role="status">{t('operations.stale')} <NNBtn size="sm" onClick={() => void context.refresh()}>{t('operations.refresh')}</NNBtn></p>}
     {!context.loaded && !context.error && !context.rows.length && <p role="status">{t('operations.loading')}</p>}
-    {context.loaded && !context.error && !context.rows.length && <p>{t('actionsRecovery.noActions')}</p>}
+    {context.loaded && !context.error && !context.rows.length && <p className="nn-recent-actions-empty">{t('actionsRecovery.noActions')}</p>}
     <ul>{context.rows.map(receipt => {
       const state = context.statuses[receipt.id], expired = !receipt.undoUntil || Date.parse(receipt.undoUntil) <= context.now;
-      return <li className="nn-operation-row" key={receipt.id}>
+      return <li className="nn-operation-row" data-tone="muted" key={receipt.id}>
+        <span className="nn-operation-icon" aria-hidden="true"><NNIcon name={receipt.kind === 'study-note-pin' ? 'pin' : 'edit'} size={16} /></span>
         <div className="nn-operation-copy"><strong>{receipt.label}</strong><span>{t(`actionsRecovery.kinds.${receipt.kind}`)}</span>
           <small>{expired ? t('actionsRecovery.expired') : t('actionsRecovery.expires', { minutes: Math.max(1, Math.ceil((Date.parse(receipt.undoUntil!) - context.now) / 60000)) })}</small>
           {state && state !== 'pending' && <span role="status">{t(state === 'conflict' ? 'actionsRecovery.undoConflict' : state === 'uncertain' ? 'actionsRecovery.uncertain' : 'actionsRecovery.undoFailed')}</span>}

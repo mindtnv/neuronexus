@@ -42,6 +42,8 @@ test('the shell list survives route content changes and opens an exact retained 
   await act(async () => root.render(render('Cards')));
   await act(async () => host.querySelector<HTMLButtonElement>('.nn-operations-button')!.click());
   expect(host.querySelector('dialog')?.open).toBe(true);
+  expect(document.activeElement).toBe(host.querySelector('dialog'));
+  expect(host.querySelector('dialog')?.getAttribute('aria-describedby')).toBeTruthy();
   expect(host.textContent).toContain('Ready quiz');
   await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.open')!.click());
   expect(paths).toEqual(['/library/study?artifact=quiz']);
