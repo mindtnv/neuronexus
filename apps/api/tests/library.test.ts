@@ -38,6 +38,8 @@ import {
 } from '@neuronexus/db';
 import { buildApp } from '../src/app.ts';
 import { env } from '../src/env.ts';
+import { drainSourceIngest } from '../src/ai/source-ingest.ts';
+import { sourceIngestWorkerState } from '../src/runtime-state.ts';
 import {
   __resetAiClientForTests,
   __setAiClientForTests,
@@ -54,6 +56,14 @@ import {
 
 const app = buildApp();
 const EMBED_DIM = 1536;
+
+async function finishSourceIngest() {
+  // POST returns before parsing finishes. Release source/chunk locks before
+  // the next test's TRUNCATE takes exclusive table locks.
+  await drainSourceIngest({ timeoutMs: 4000 });
+  expect(sourceIngestWorkerState.snapshot()).toMatchObject({ active: 0, queued: 0 });
+  __resetAiClientForTests();
+}
 
 // ── deterministic text→vector (mirror notebook-chat.test.ts) ──────────────────
 function vectorFor(text: string): number[] {
@@ -557,9 +567,7 @@ describe('library — POST /library/items (inline create + optional attach)', ()
   beforeEach(async () => {
     await resetTestDb();
   });
-  afterEach(() => {
-    __resetAiClientForTests();
-  });
+  afterEach(finishSourceIngest);
 
   test('text create returns a pending source (no notebook)', async () => {
     const { cookie } = await signUpAndCookie(app, uniqueEmail());
@@ -852,9 +860,7 @@ describe('library — MAX_LIBRARY_ITEMS_PER_USER cap', () => {
   beforeEach(async () => {
     await resetTestDb();
   });
-  afterEach(() => {
-    __resetAiClientForTests();
-  });
+  afterEach(finishSourceIngest);
 
   test('at the cap → 409 library_full (per-user; another user is unaffected)', async () => {
     const { cookie, userId } = await signUpAndCookie(app, uniqueEmail());
