@@ -1,6 +1,6 @@
 # Navigation continuity acceptance
 
-Completed locally on 2026-09-23. The change is implemented and verified; it has not been deployed or archived. The unrelated remainder of `complete-spaced-repetition-polish` remains open.
+Completed locally on 2026-09-23. The change is implemented and verified; it was archived on 2026-09-23. Deployment results are tracked by the main-branch release workflow. The unrelated remainder of `complete-spaced-repetition-polish` remains open.
 
 ## Release gates
 
