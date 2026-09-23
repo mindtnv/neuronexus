@@ -200,3 +200,46 @@ test('legacy source creation is tracked at acceptance and source retry preserves
   const chunks = await db.select().from(sourceChunks).where(eq(sourceChunks.sourceId, source!.id));
   expect(chunks.map(x => x.text).join(' ')).toContain('Retained parsed text.');
 });
+
+test('legacy regeneration racing a versioned retry shares the domain lock and starts only one job', async () => {
+  const owner = await signUpAndCookie(app, uniqueEmail()), { artifact } = await failedArtifact(owner.userId);
+  const release = Promise.withResolvers<string>(); let calls = 0;
+  __setAiClientForTests({ complete: async () => { calls++; return release.promise; } });
+  try {
+    const input = { kind: 'artifact' as const, id: artifact.id, runId: artifact.operationRunId!, requestId: newUuidV7() };
+    const [retry, legacy] = await Promise.all([
+      retryOperation(owner.userId, input),
+      callApp(app, 'POST', `/study/artifacts/${artifact.id}/regenerate`, { cookie: owner.cookie }),
+    ]);
+    expect([200, 409]).toContain(legacy.status);
+    if (legacy.status === 200) expect(retry.stale).toBe(true);
+    const [current] = await db.select().from(notebookArtifacts).where(eq(notebookArtifacts.id, artifact.id));
+    expect(current!.operationRunId).toBe(retry.runId);
+  } finally { release.resolve('invalid quiz'); await drainArtifactGeneration({ timeoutMs: 2000 }); }
+  expect(calls).toBe(1);
+});
+
+test('commit-before-dispatch interruption leaves one reconcilable failed run and requires a new explicit retry', async () => {
+  const owner = await signUpAndCookie(app, uniqueEmail()), { artifact } = await failedArtifact(owner.userId);
+  let calls = 0;
+  __setAiClientForTests({ complete: async () => { calls++; return 'invalid quiz'; } });
+  const input = { kind: 'artifact' as const, id: artifact.id, runId: artifact.operationRunId!, requestId: newUuidV7() };
+  await expect(retryOperation(owner.userId, input, undefined, () => ({ ok: true }), () => { throw new Error('dispatch interrupted'); })).rejects.toThrow('dispatch interrupted');
+  const [accepted] = await db.select().from(notebookArtifacts).where(eq(notebookArtifacts.id, artifact.id));
+  expect(accepted!.status).toBe('pending'); expect(accepted!.operationRunId).not.toBe(input.runId); expect(calls).toBe(0);
+  await reconcileArtifactsOnStartup();
+  const [interrupted] = await db.select().from(notebookArtifacts).where(eq(notebookArtifacts.id, artifact.id));
+  expect(interrupted!.status).toBe('error'); expect(interrupted!.errorCode).toBe('interrupted');
+  expect(await retryOperation(owner.userId, input)).toMatchObject({ replayed: true, runId: accepted!.operationRunId }); expect(calls).toBe(0);
+  await retryOperation(owner.userId, { ...input, runId: accepted!.operationRunId!, requestId: newUuidV7() });
+  await drainArtifactGeneration({ timeoutMs: 2000 }); expect(calls).toBe(1);
+});
+
+test('retry after source deletion preserves retained work without scheduling unavailable input', async () => {
+  const owner = await signUpAndCookie(app, uniqueEmail()), { artifact, source } = await failedArtifact(owner.userId);
+  let calls = 0; __setAiClientForTests({ complete: async () => { calls++; return 'invalid quiz'; } });
+  await db.delete(sources).where(eq(sources.id, source.id));
+  await expect(retryOperation(owner.userId, { kind: 'artifact', id: artifact.id, runId: artifact.operationRunId!, requestId: newUuidV7() })).rejects.toThrow('source_unavailable');
+  const [current] = await db.select().from(notebookArtifacts).where(eq(notebookArtifacts.id, artifact.id));
+  expect(current!.operationRunId).toBe(artifact.operationRunId); expect(calls).toBe(0);
+});

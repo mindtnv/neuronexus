@@ -71,3 +71,34 @@ test('refresh preserves the loaded tail and does not mistake a failed page for a
   expect(observer.getSnapshot().feed?.active.items).toHaveLength(2);
   observer.dispose();
 });
+
+test('one clock handles idle discovery, active cadence, bounded backoff and hidden-tab suspension', async () => {
+  const tasks: Array<{ run: () => void; delay: number; cancelled: boolean }> = [];
+  const schedule = (run: () => void, delay: number) => { const task = { run, delay, cancelled: false }; tasks.push(task); return () => { task.cancelled = true; }; };
+  let current = data(false), failing = false, calls = 0;
+  const observer = new OperationObserver(async () => { calls++; if (failing) throw new Error('offline'); return current; }, schedule);
+  try {
+    observer.start(); await observer.refresh(); expect(tasks.at(-1)?.delay).toBe(30000);
+    current = data(); tasks.at(-1)!.run(); await observer.refresh(); expect(tasks.at(-1)?.delay).toBe(2500);
+    failing = true;
+    for (const delay of [5000, 10000, 20000, 30000, 30000]) { await observer.refresh(); expect(tasks.at(-1)?.delay).toBe(delay); }
+    observer.setVisible(false); expect(tasks.at(-1)?.cancelled).toBe(true);
+    const count = tasks.length; await observer.refresh(); expect(tasks).toHaveLength(count);
+    failing = false; observer.setVisible(true); await observer.refresh(); expect(tasks.at(-1)?.delay).toBe(2500);
+    expect(calls).toBe(9);
+  } finally { observer.dispose(); }
+});
+
+test('slow detail reads coalesce operation pulses instead of being starved by later snapshots', async () => {
+  const { followOperationRefresh } = await import('./operation-observer');
+  const observer = new OperationObserver(async () => data());
+  const first = Promise.withResolvers<void>(), second = Promise.withResolvers<void>(); let calls = 0, applied = 0;
+  const stop = followOperationRefresh(observer, async current => {
+    calls++; await (calls === 1 ? first.promise : second.promise); if (current()) applied++;
+  });
+  await observer.refresh(); await observer.refresh(); await observer.refresh(); expect(calls).toBe(1);
+  first.resolve(); for (let n = 0; n < 6; n++) await Promise.resolve();
+  expect(applied).toBe(1); expect(calls).toBe(2);
+  stop(); second.resolve(); for (let n = 0; n < 6; n++) await Promise.resolve();
+  expect(applied).toBe(1); observer.dispose();
+});

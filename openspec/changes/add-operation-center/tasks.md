@@ -14,14 +14,14 @@
 
 ## 3. Safe explicit retry
 
-- [ ] 3.1 Add failing retry tests for concurrent clicks, lost response, canonical argument mismatch, stale run, missing source, AI unavailability and cooldown; verify no fixture relies on test-mode cooldown bypass for the cooldown contract.
-- [ ] 3.2 Add receipt schema/migration and versioned retry adapters using existing domain locks and after-commit enqueue; verify 3.1, legacy-route races and commit-before-enqueue restart recovery without duplicate work.
-- [ ] 3.3 Add client retry/reconciliation states and eligibility messaging; verify error persistence, disabled repeated submission, no automatic replay, and no unsafe legacy endpoint fallback.
+- [x] 3.1 Add failing retry tests for concurrent clicks, lost response, canonical argument mismatch, stale run, missing source, AI unavailability and cooldown; verify no fixture relies on test-mode cooldown bypass for the cooldown contract.
+- [x] 3.2 Add receipt schema/migration and versioned retry adapters using existing domain locks and after-commit enqueue; verify 3.1, legacy-route races and commit-before-enqueue restart recovery without duplicate work.
+- [x] 3.3 Add client retry/reconciliation states and eligibility messaging; verify error persistence, disabled repeated submission, no automatic replay, and no unsafe legacy endpoint fallback.
 
 ## 4. Shared presentation and accessibility
 
-- [ ] 4.1 Add failing status-presentation tests, then reuse capability-based copy in Operations, Library and Studio; verify PDF-original availability, text readability, index failure, disabled embeddings and real versus indeterminate progress in both locales.
-- [ ] 4.2 Replace overlapping status loops with shared observation/invalidation; verify focus/wake refresh, idle discovery, hidden-tab suspension, backoff and account changes including late responses.
+- [x] 4.1 Add failing status-presentation tests, then reuse capability-based copy in Operations, Library and Studio; verify PDF-original availability, text readability, index failure, disabled embeddings and real versus indeterminate progress in both locales.
+- [x] 4.2 Replace overlapping status loops with shared observation/invalidation; verify focus/wake refresh, idle discovery, hidden-tab suspension, backoff and account changes including late responses.
 - [ ] 4.3 Implement desktop popover/mobile sheet and top-layer dismissal adapter; verify keyboard access, reduced motion, small viewport, focus restoration and one completion announcement per observed run.
 
 ## 5. Acceptance and release readiness

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { newUuidV7, OPERATION_GROUPS, type OperationItem, type OperationRetryInput } from '@neuronexus/shared';
 import { useT } from '@/lib/i18n';
 import { operationHref, OperationRequestError, requestOperationRetry } from '@/lib/operations-api';
@@ -17,7 +17,7 @@ export function OperationsButton({ mobile = false }: { mobile?: boolean }) {
   const count = context.snapshot.feed?.active.total ?? 0;
   return <button type="button" className={mobile ? 'nn-operations-mobile-button' : 'nn-operations-button'}
     aria-label={count ? t('operations.count', { count }) : t('operations.title')}
-    aria-haspopup="dialog" aria-expanded={context.open} onClick={() => context.setOpen(true)}>
+    title={t('operations.title')} aria-haspopup="dialog" aria-expanded={context.open} onClick={() => context.setOpen(true)}>
     <NNIcon name="clock" size={18} /><span className="nn-sidebar-label">{t('operations.title')}</span>
     {count > 0 && <span className="nn-operations-count" aria-hidden="true">{count}</span>}
   </button>;
@@ -31,45 +31,55 @@ function OperationRow({ row }: { row: OperationItem }) {
   const [retryAt, setRetryAt] = useState(0), [now, setNow] = useState(Date.now);
   const [requestError, setRequestError] = useState<string | null>(null);
   const request = useRef<OperationRetryInput | null>(null);
-  const pending = useRef(false), alive = useRef(true);
+  const pending = useRef(false), alive = useRef(true), generation = useRef(0);
+  const root = useRef<HTMLLIElement>(null), focused = useRef(false);
   const controller = useRef<AbortController | null>(null);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; controller.current?.abort(); }; }, []);
+  useEffect(() => {
+    alive.current = true; generation.current++; pending.current = false; request.current = null;
+    setState('idle'); setRetryAt(0); setRequestError(null); setConfirmDefaults(false);
+    return () => { alive.current = false; generation.current++; controller.current?.abort(); };
+  }, [row.runId]);
+  useLayoutEffect(() => {
+    if (focused.current && document.activeElement === document.body) root.current?.focus({ preventScroll: true });
+  }, [row.runId, row.phase, row.canRead, row.retry.allowed]);
   useEffect(() => {
     if (retryAt <= Date.now()) return;
-    const timer = setInterval(() => setNow(Date.now()), 500);
+    const timer = setInterval(() => { const current = Date.now(); setNow(current); if (current >= retryAt) clearInterval(timer); }, 500);
     return () => clearInterval(timer);
   }, [retryAt]);
   const retry = async (acceptDefaults = false) => {
     if (pending.current || retryAt > Date.now()) return;
     pending.current = true;
+    const turn = generation.current;
+    const current = () => alive.current && generation.current === turn;
     try {
       if (!request.current) {
         if (row.retry.needsDefaults && !acceptDefaults) { setConfirmDefaults(true); return; }
-        if (!alive.current) return;
+        if (!current()) return;
         request.current = { kind: row.kind, id: row.id, runId: row.runId, requestId: newUuidV7(), acceptDefaults: row.retry.needsDefaults };
       }
       setConfirmDefaults(false); setState('pending'); setRequestError(null);
       controller.current = new AbortController();
       await requestOperationRetry(request.current, controller.current.signal);
-      if (!alive.current) return;
+      if (!current()) return;
       setState('idle'); request.current = null;
       await context.observer.refresh();
     } catch (error) {
-      if (!alive.current) return;
+      if (!current()) return;
       const known = error instanceof OperationRequestError && error.status >= 400 && error.status < 500;
       setState(known ? 'failed' : 'uncertain');
       if (error instanceof OperationRequestError && error.status === 429) setRetryAt(Date.now() + error.retryAfterMs);
       if (error instanceof OperationRequestError && error.status >= 500 && error.requestId) setRequestError(error.message);
       if (known) await context.observer.refresh();
-    } finally { pending.current = false; }
+    } finally { if (generation.current === turn) pending.current = false; }
   };
   const open = () => {
-    context.setOpen(false);
     navigation.push(operationHref(row.destination));
   };
   const canOpen = row.kind === 'source' ? row.canRead : row.phase === 'ready';
   const phase = row.phase === 'ready' && row.artifactType === 'quiz' ? t('operations.quizReady') : t(`operations.phases.${row.phase}`);
-  return <li className="nn-operation-row" data-operation-id={row.id}>
+  return <li ref={root} tabIndex={-1} className="nn-operation-row" data-operation-id={row.id}
+    onFocus={() => { focused.current = true; }} onBlur={event => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) focused.current = false; }}>
     <NNIcon name={row.phase === 'failed' ? 'warning' : row.phase === 'ready' ? 'check' : 'clock'} size={17} />
     <div className="nn-operation-copy"><strong title={row.title}>{row.title}</strong><span>{phase}</span>
       {row.canRead && ['parsing', 'queued', 'failed'].includes(row.phase) && <span>{t('operations.readable')}</span>}
@@ -117,7 +127,7 @@ export function OperationsHost() {
         if (!items.length && !page.total) return null;
         return <section key={group} aria-label={t(`operations.${group}`)}>
           <h3>{t(`operations.${group}`)} <span>{page.total}</span></h3>
-          <ul>{items.map(({ row }) => <OperationRow key={`${row.kind}:${row.id}:${row.runId}`} row={row} />)}</ul>
+          <ul>{items.map(({ row }) => <OperationRow key={`${row.kind}:${row.id}`} row={row} />)}</ul>
           {page.nextCursor && <NNBtn size="sm" variant="ghost" disabled={snapshot.loadingMore !== null} onClick={() => void observer.loadMore(group)}>{t('operations.more')}</NNBtn>}
         </section>;
       })}

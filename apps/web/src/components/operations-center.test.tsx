@@ -2,7 +2,7 @@ import { ensureTestDom, GlobalRegistrator } from '../lib/test-dom-setup';
 import { afterAll, afterEach, beforeEach, expect, test } from 'bun:test';
 import React, { act } from 'react';
 import { PathnameContext, SearchParamsContext } from 'next/dist/shared/lib/hooks-client-context.shared-runtime';
-import { AppNavigationProvider } from './navigation';
+import { AppNavigationProvider, useNavigationGuard } from './navigation';
 import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 import type { Root } from 'react-dom/client';
 import type { OperationsFeed } from '@neuronexus/shared';
@@ -58,4 +58,43 @@ test('account change removes outgoing titles before a delayed replacement feed a
   await act(async () => useNN.setState({ profile: { userId: 'next-owner' } as any }));
   expect(host.textContent).not.toContain('Ready quiz');
   await act(async () => resolve(Response.json({ ...feed, recent: { items: [], total: 0, nextCursor: null } })));
+});
+
+test('a denied departure keeps Operations open and its exact destination ready for retry', async () => {
+  const paths: string[] = []; let allowed = false;
+  function Editor() { useNavigationGuard(async () => allowed); return <input defaultValue="Unsaved note" />; }
+  globalThis.fetch = (async () => Response.json(feed)) as unknown as typeof fetch;
+  await act(async () => root.render(<Navigation push={path => paths.push(path)}><OperationsProvider><Editor /><OperationsButton /><OperationsHost /></OperationsProvider></Navigation>));
+  await act(async () => host.querySelector<HTMLButtonElement>('.nn-operations-button')!.click());
+  const open = () => [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.open')!.click();
+  await act(async () => open());
+  expect(paths).toEqual([]); expect(host.querySelector('dialog')!.open).toBe(true); expect(host.querySelector('input')!.value).toBe('Unsaved note');
+  allowed = true; await act(async () => open()); expect(paths).toEqual(['/library/study?artifact=quiz']);
+});
+
+test('a new run for the same operation preserves the focused result control', async () => {
+  let current = structuredClone(feed);
+  globalThis.fetch = (async () => Response.json(current)) as unknown as typeof fetch;
+  await act(async () => root.render(<Navigation><OperationsProvider><OperationsButton /><OperationsHost /></OperationsProvider></Navigation>));
+  await act(async () => host.querySelector<HTMLButtonElement>('.nn-operations-button')!.click());
+  const button = [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.open')!;
+  await act(async () => button.focus()); current.recent.items[0]!.runId = 'replacement-run';
+  await act(async () => window.dispatchEvent(new Event('nn:operations-changed')));
+  expect(document.activeElement === button).toBe(true); expect(button.isConnected).toBe(true);
+});
+
+test('lost retry response remains explicit and reuses its receipt identity', async () => {
+  const failed = structuredClone(feed); failed.recent = { items: [], total: 0, nextCursor: null };
+  failed.attention = { items: [{ ...feed.recent.items[0]!, phase: 'failed', retry: { allowed: true, reason: null, needsDefaults: false } }], total: 1, nextCursor: null };
+  const requests: any[] = [];
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    if (init?.method === 'POST') { requests.push(JSON.parse(String(init.body))); if (requests.length === 1) throw new Error('lost response'); return Response.json({ ok: true }); }
+    return Response.json(failed);
+  }) as unknown as typeof fetch;
+  await act(async () => root.render(<Navigation><OperationsProvider><OperationsButton /><OperationsHost /></OperationsProvider></Navigation>));
+  await act(async () => host.querySelector<HTMLButtonElement>('.nn-operations-button')!.click());
+  const retry = () => [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.retry')!.click();
+  await act(async () => retry()); expect(host.textContent).toContain('operations.uncertain');
+  await act(async () => window.dispatchEvent(new Event('focus'))); expect(requests).toHaveLength(1);
+  await act(async () => retry()); expect(requests).toHaveLength(2); expect(requests[1]).toEqual(requests[0]);
 });

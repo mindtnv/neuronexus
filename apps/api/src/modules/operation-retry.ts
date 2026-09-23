@@ -17,6 +17,10 @@ export class OperationCooldownError extends Error {
 
 export async function retryOperation(userId: string, input: OperationRetryInput, log: Logger = rootLogger,
   checkCooldown = () => cooldownCheck(`operation:${userId}:${input.kind}:${input.id}`, 5000),
+  dispatch: (accepted: OperationRetryResult) => void = accepted => {
+    if (accepted.kind === 'source') enqueueSource(accepted.id, logCorrelation(log));
+    else scheduleArtifactGeneration(accepted.id, { runId: accepted.runId, requestLog: log });
+  },
 ): Promise<OperationRetryResult> {
   const hash = createHash('sha256').update(JSON.stringify([input.kind, input.id, input.runId, input.acceptDefaults === true])).digest('hex');
   const result = await db.transaction(async tx => {
@@ -49,10 +53,7 @@ export async function retryOperation(userId: string, input: OperationRetryInput,
     return { kind: input.kind, id: input.id, runId: updated.row.operationRunId, replayed: false, stale: false };
   });
   // Matching replays do not schedule twice. Durable rows survive commit/enqueue crashes.
-  if (!result.replayed && !result.stale) {
-    if (input.kind === 'source') enqueueSource(input.id, logCorrelation(log));
-    else scheduleArtifactGeneration(input.id, { runId: result.runId, requestLog: log });
-  }
+  if (!result.replayed && !result.stale) dispatch(result);
   return result;
 }
 

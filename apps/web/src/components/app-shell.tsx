@@ -16,7 +16,7 @@ import { AssistantProvider } from './chat/assistant-provider';
 import { RecentActionsProvider, StandaloneActions } from './recent-actions';
 import { OperationsProvider } from './operations-provider';
 import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
-import { OperationsHost } from './operations-center';
+import { OperationsButton, OperationsHost } from './operations-center';
 import { AssistantHost } from './chat/assistant-host';
 
 const AppShellContent = ({ children }: { children: React.ReactNode }) => {
@@ -178,6 +178,7 @@ const AppShellContent = ({ children }: { children: React.ReactNode }) => {
 
       {!drawerOpen ? <BottomTabs /> : null}
 
+      {sidebarCollapsed && bp !== 'mobile' && <div className="nn-operations-floating-entry"><OperationsButton /></div>}
       <OperationsHost />
       <StandaloneActions />
       <GlobalOverlays />

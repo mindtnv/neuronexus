@@ -18,7 +18,7 @@ export class OperationObserver {
   private pending: Promise<void> | null = null;
   private abort: AbortController | null = null;
   private disposed = false;
-  private timer?: ReturnType<typeof setTimeout>;
+  private cancelTimer?: () => void;
   private running = false;
   private visible = true;
   private failures = 0;
@@ -26,7 +26,10 @@ export class OperationObserver {
   private observedActive = new Set<string>();
   private announced = new Set<string>();
 
-  constructor(private fetchFeed: (signal: AbortSignal, cursors: OperationCursors) => Promise<OperationsFeed>) {}
+  constructor(private fetchFeed: (signal: AbortSignal, cursors: OperationCursors) => Promise<OperationsFeed>,
+    private delay: (run: () => void, milliseconds: number) => () => void = (run, milliseconds) => {
+      const timer = setTimeout(run, milliseconds); return () => clearTimeout(timer);
+    }) {}
   getSnapshot = () => this.snapshot;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private publish(update: Partial<OperationSnapshot>) {
@@ -61,7 +64,7 @@ export class OperationObserver {
   private request(work: (signal: AbortSignal) => Promise<OperationsFeed>) {
     if (this.disposed) return Promise.resolve();
     if (this.pending) return this.pending;
-    clearTimeout(this.timer);
+    this.cancelTimer?.();
     const controller = new AbortController();
     this.abort = controller;
     this.pending = (async () => {
@@ -95,10 +98,10 @@ export class OperationObserver {
     });
   };
   private schedule() {
-    clearTimeout(this.timer);
+    this.cancelTimer?.();
     if (!this.running || !this.visible || this.disposed) return;
     const delay = this.failures ? Math.min(30000, 2500 * 2 ** Math.min(this.failures, 4)) : this.snapshot.feed?.active.total ? 2500 : 30000;
-    this.timer = setTimeout(() => void this.refresh(), delay);
+    this.cancelTimer = this.delay(() => void this.refresh(), delay);
   }
   start = () => {
     this.disposed = false; this.running = true;
@@ -107,7 +110,27 @@ export class OperationObserver {
   setVisible = (visible: boolean) => {
     this.visible = visible;
     if (visible && this.running) void this.refresh();
-    else clearTimeout(this.timer);
+    else this.cancelTimer?.();
   };
-  dispose = () => { this.disposed = true; this.running = false; clearTimeout(this.timer); this.abort?.abort(); this.listeners.clear(); };
+  dispose = () => { this.disposed = true; this.running = false; this.cancelTimer?.(); this.abort?.abort(); this.listeners.clear(); };
+}
+
+/** A single shell clock invalidates details; slow reads finish before one queued
+ * refresh. A new feed revision must not cancel every result on a slow link. */
+export function followOperationRefresh(observer: OperationObserver, refresh: (current: () => boolean) => Promise<void>) {
+  let active = true, running = false, queued = false, revision = -1;
+  const run = async () => {
+    if (!active) return;
+    if (running) { queued = true; return; }
+    running = true;
+    try { await refresh(() => active); } catch { /* The next observation can retry the read. */ }
+    finally { running = false; if (active && queued) { queued = false; void run(); } }
+  };
+  const pulse = () => {
+    const snapshot = observer.getSnapshot();
+    if (snapshot.status !== 'ready' || snapshot.revision === revision) return;
+    revision = snapshot.revision; void run();
+  };
+  const remove = observer.subscribe(pulse); pulse();
+  return () => { active = false; remove(); };
 }

@@ -244,7 +244,7 @@ export const StudioPanel = ({
   useEffect(() => {
     if (!openId) return;
     if (openFullStatus !== 'pending' && openFullStatus !== 'generating') return;
-    const interval = setInterval(() => void loadFull(openId), 2000);
+    const interval = setInterval(() => { if (document.visibilityState !== 'hidden') void loadFull(openId); }, 2000);
     return () => clearInterval(interval);
   }, [openId, openFullStatus, loadFull]);
 
