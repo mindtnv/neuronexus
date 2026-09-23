@@ -30,6 +30,8 @@ import type { NotebookArtifactType, NotebookColor, NotebookNoteKind, QuizAttempt
 type BulkAction = 'move' | 'delete' | 'suspend' | 'unsuspend' | 'addTag' | 'removeTag' | 'forget' | 'setDue';
 
 interface State {
+  acceptRecoveredNote: (owner: string, result: any) => Card[];
+  acceptRecoveredType: (owner: string, result: NoteType, originalId?: string) => Promise<NoteType>;
   bootstrapped: boolean;
   /** Detailed bootstrap lifecycle; `bootstrapped` remains for existing consumers. */
   bootstrapStatus: LoadStatus;
@@ -514,6 +516,38 @@ let typeMutationSequence = 0;
 const latestTypeMutation = new Map<string, number>();
 let cardReadGeneration = 0;
 
+async function mergeNoteTypeResult(updated: NoteType, id: string, current: () => boolean, get: () => State, set: (update: (state: State) => Partial<State>) => void, refreshCards = true) {
+    cardReadGeneration += 1;
+    const refreshed = new Map<string, Card>();
+    if (refreshCards && updated.id === id) {
+      const loadedIds = get().cards.filter((card) => card.noteType?.id === id).map((card) => card.id);
+      const reads: Promise<any>[] = [(api as any).cards.get({ query: { noteTypeId: id, includeSuspended: 'true' } }).then(ok)];
+      for (let offset = 0; offset < loadedIds.length; offset += 200) {
+        reads.push((api as any).cards.lookup.post({ ids: loadedIds.slice(offset, offset + 200) }).then(ok));
+      }
+      for (const result of await Promise.allSettled(reads)) {
+        if (result.status === 'fulfilled') for (const row of result.value.items ?? []) {
+          const card = cardFromApi(row); refreshed.set(card.id, card);
+        }
+      }
+      if (!current()) return updated;
+    }
+    // Clone-on-edit: editing a global builtin returns a NEW id (a user-owned
+    // copy). The original builtin stays in the list; we append the clone.
+    // Editing an owned type returns the same id and we replace it in place.
+    set((s) => {
+      const exists = s.noteTypes.some((nt) => nt.id === updated.id);
+      return {
+        ...(refreshCards && updated.id === id ? { cards: [...s.cards.filter((card) => card.noteType?.id !== id), ...refreshed.values()] } : {}),
+        noteTypes: exists
+          ? s.noteTypes.map((nt) => (nt.id === updated.id ? updated : nt))
+          : [...s.noteTypes, updated],
+      };
+    });
+    if (current()) latestTypeMutation.delete(id);
+    return updated;
+}
+
 export const useNN = create<State>()((set, get) => ({
   bootstrapped: false,
   bootstrapStatus: 'idle',
@@ -645,6 +679,26 @@ export const useNN = create<State>()((set, get) => ({
       decks: s.decks.filter((d) => !removed.has(d.id)),
       cards: s.cards.filter((c) => !removed.has(c.deckId)),
     }));
+  },
+
+  acceptRecoveredNote(owner, result) {
+    if (get().profile?.userId !== owner) return [];
+    if (!result?.note?.id || !Array.isArray(result.cards)) throw new Error('invalid_note_result');
+    const noteType = get().noteTypes.find(type => type.id === result.note.noteTypeId)
+      ?? get().cards.find(card => card.noteId === result.note.id)?.noteType;
+    const updated = result.cards.map((row: any) => cardFromApi({ ...row, note: result.note, noteType }));
+    cardReadGeneration += 1;
+    set(state => ({ cards: [...state.cards.filter(card => card.noteId !== result.note.id), ...updated] }));
+    return updated;
+  },
+
+  async acceptRecoveredType(owner, updated, originalId) {
+    const id = originalId ?? updated.id;
+    const generation = bootstrapGeneration, operation = ++typeMutationSequence;
+    latestTypeMutation.set(id, operation);
+    const current = () => generation === bootstrapGeneration && get().profile?.userId === owner && latestTypeMutation.get(id) === operation;
+    if (!current()) return updated;
+    return mergeNoteTypeResult(updated, id, current, get, set, Boolean(originalId));
   },
 
   async addNote(input) {
@@ -798,35 +852,7 @@ export const useNN = create<State>()((set, get) => ({
         : (api as any)['note-types']({ id }).patch(body))),
     );
     if (!current()) return updated;
-    cardReadGeneration += 1;
-    const refreshed = new Map<string, Card>();
-    if (updated.id === id) {
-      const loadedIds = get().cards.filter((card) => card.noteType?.id === id).map((card) => card.id);
-      const reads: Promise<any>[] = [(api as any).cards.get({ query: { noteTypeId: id, includeSuspended: 'true' } }).then(ok)];
-      for (let offset = 0; offset < loadedIds.length; offset += 200) {
-        reads.push((api as any).cards.lookup.post({ ids: loadedIds.slice(offset, offset + 200) }).then(ok));
-      }
-      for (const result of await Promise.allSettled(reads)) {
-        if (result.status === 'fulfilled') for (const row of result.value.items ?? []) {
-          const card = cardFromApi(row); refreshed.set(card.id, card);
-        }
-      }
-      if (!current()) return updated;
-    }
-    // Clone-on-edit: editing a global builtin returns a NEW id (a user-owned
-    // copy). The original builtin stays in the list; we append the clone.
-    // Editing an owned type returns the same id and we replace it in place.
-    set((s) => {
-      const exists = s.noteTypes.some((nt) => nt.id === updated.id);
-      return {
-        ...(updated.id === id ? { cards: [...s.cards.filter((card) => card.noteType?.id !== id), ...refreshed.values()] } : {}),
-        noteTypes: exists
-          ? s.noteTypes.map((nt) => (nt.id === updated.id ? updated : nt))
-          : [...s.noteTypes, updated],
-      };
-    });
-    if (current()) latestTypeMutation.delete(id);
-    return updated;
+    return mergeNoteTypeResult(updated, id, current, get, set);
   },
 
   async convertNotes(input) {

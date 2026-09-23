@@ -2,7 +2,7 @@ import { newUuidV7, type UiActionResult } from '@neuronexus/shared';
 
 export type SaveStatus = 'clean' | 'dirty' | 'saving' | 'saved' | 'failed' | 'uncertain' | 'conflict';
 export interface PendingSave<T> { owner: string; requestId: string; payload: T; fingerprint: string }
-export interface SaveSnapshot<T> { status: SaveStatus; pending: PendingSave<T> | null; error: string | null }
+export interface SaveSnapshot<T> { status: SaveStatus; pending: PendingSave<T> | null; error: string | null; errorStatus?: number }
 
 /** Tracks a submitted revision, never owns or replaces the editor's live buffer. */
 export class RecoverableSave<T> {
@@ -34,6 +34,12 @@ export class RecoverableSave<T> {
     this.publish({ status: 'uncertain', pending: request, error: null });
   };
   resolveConflict = () => { if (!this.busy) this.publish({ status: 'dirty', pending: null, error: null }); };
+  canonicalizeAcknowledgement = (submitted: string, canonical: string) => {
+    if (this.baseline !== submitted || this.snapshot.pending) return;
+    this.baseline = canonical;
+    if (this.fingerprint === submitted) this.fingerprint = canonical;
+    this.publish({ status: this.fingerprint === canonical ? 'saved' : 'dirty' });
+  };
 
   async run(payload: T, fingerprint: string,
     execute: (request: PendingSave<T>) => Promise<UiActionResult>, reconcile: (requestId: string) => Promise<UiActionResult>,
@@ -44,7 +50,7 @@ export class RecoverableSave<T> {
     const submitted = original ?? { owner: this.owner, requestId: newUuidV7(), payload: structuredClone(payload), fingerprint };
     this.busy = true;
     let executing = !original;
-    this.publish({ status: 'saving', pending: submitted, error: null });
+    this.publish({ status: 'saving', pending: submitted, error: null, errorStatus: undefined });
     try {
       let response: UiActionResult;
       if (original) {
@@ -60,13 +66,14 @@ export class RecoverableSave<T> {
       this.baseline = submitted.fingerprint;
       const conflict = response.outcome !== 'applied';
       this.publish({ pending: null, status: conflict ? 'conflict' : currentMatches ? 'saved' : 'dirty',
-        error: conflict ? response.outcome : null });
+        error: conflict ? response.outcome : null, errorStatus: conflict ? 409 : undefined });
       return { response, submitted, currentMatches: currentMatches && !conflict };
     } catch (error) {
       if (!this.alive) return null;
       const status = (error as { status?: number }).status ?? 0;
       const knownFailure = executing && status >= 400 && status < 500;
       this.publish({ status: knownFailure && status === 409 ? 'conflict' : knownFailure ? 'failed' : 'uncertain',
+        errorStatus: status,
         pending: knownFailure ? null : submitted,
         error: typeof (error as { safeMessage?: string }).safeMessage === 'string' ? (error as { safeMessage: string }).safeMessage : 'save_failed' });
       return null;

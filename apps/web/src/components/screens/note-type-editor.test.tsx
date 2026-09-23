@@ -8,6 +8,7 @@ import { AppNavigationProvider } from '../navigation';
 import { DialogProvider } from '../dialog';
 import { useNN } from '../../lib/store';
 import { readEditorDraft } from '../../lib/editor-drafts';
+import { adaptRecoveryFetch } from '../../lib/test-recovery-fetch';
 import { noteTypeFromApi } from '../../lib/mappers';
 
 ensureTestDom();
@@ -27,7 +28,8 @@ beforeEach(() => {
   ensureTestDom(); (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   savedFetch = globalThis.fetch;
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
-  useNN.setState({ bootstrapped: true, noteTypes: [noteTypeFromApi(type)], cards: [] });
+  localStorage.clear(); sessionStorage.clear();
+  useNN.setState({ profile: { userId: 'type-editor-owner' } as any, bootstrapped: true, noteTypes: [noteTypeFromApi(type)], cards: [] });
 });
 afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); globalThis.fetch = savedFetch;
@@ -35,7 +37,8 @@ afterEach(async () => {
 });
 afterAll(() => { try { GlobalRegistrator.unregister(); } catch {} });
 const button = (text: string) => Array.from(host.querySelectorAll('button')).find((node) => node.textContent?.includes(text))!;
-async function render(search = new URLSearchParams({ edit: type.id })) {
+async function render(search = new URLSearchParams({ edit: type.id }), adapt = true) {
+  if (adapt) globalThis.fetch = adaptRecoveryFetch(globalThis.fetch);
   await act(async () => root.render(<AppRouterContext.Provider value={router}><PathnameContext.Provider value="/note-types">
     <SearchParamsContext.Provider value={search}><AppNavigationProvider><DialogProvider>
       <NNNoteTypeEditor />
@@ -205,6 +208,29 @@ test('budget timeout preserves draft and reports a retryable error', async () =>
   expect(host.textContent).toContain('noteTypes.errors.busy');
   expect((host.querySelector('fieldset') as HTMLFieldSetElement).disabled).toBe(false);
   expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe(type.templates[0]!.frontTemplate);
+});
+
+test('an uncertain type save reconciles its receipt without repeating its preview or write', async () => {
+  let previews = 0, writes = 0, requestId = '';
+  const committed = { ...type, updatedAt: '2026-09-23T00:00:00.000Z' };
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const path = String(url);
+    if (path.endsWith('/session')) return Response.json({ sessionId: '01900000-0000-7000-8000-000000000010' });
+    if (path.endsWith('/preview')) { previews++; return Response.json({ sourceVersion: type.updatedAt, confirmationToken: 'consent', impact: { willCreateCards: 0, willKeepCards: 0, willDeleteCards: 0, willDeleteReviews: 0, removedCards: [] } }); }
+    if (init?.method === 'PATCH') { writes++; requestId = JSON.parse(String(init.body)).requestId; throw new Error('lost reply'); }
+    if (path.includes('/receipts/')) return Response.json({ result: committed, replayed: true, outcome: 'applied', serverTime: new Date().toISOString(),
+      receipt: { id: 'receipt', requestId, kind: 'note-type-save', label: type.name, target: { kind: 'note-type', id: type.id, revision: committed.updatedAt },
+        createdAt: committed.updatedAt, undoUntil: null, consumedAt: null } });
+    return Response.json({ items: [] });
+  }) as unknown as typeof fetch;
+  await render(new URLSearchParams({ edit: type.id }), false);
+  await act(async () => button('noteTypes.actions.save').click());
+  expect(host.textContent).toContain('actionsRecovery.uncertain');
+  await act(async () => window.dispatchEvent(new Event('pagehide')));
+  expect((readEditorDraft({ ownerId: 'type-editor-owner', kind: 'type', entityId: type.id })?.value as any).pendingSave.requestId).toBe(requestId);
+  await act(async () => button('actionsRecovery.retry').click());
+  expect(writes).toBe(1); expect(previews).toBe(1);
+  expect(useNN.getState().noteTypes.find(row => row.id === type.id)?.updatedAt).toBe(committed.updatedAt);
 });
 
 

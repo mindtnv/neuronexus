@@ -17,7 +17,8 @@ import { SaveFeedback } from '../save-feedback';
 import { EditorDraftNotice } from '../editor-draft-notice';
 
 /** Key by account + original note/creation slot; never replace a live buffer from refreshed props. */
-export function WrittenNoteEditor({ note, studyOwner, onSaved, onClose, getCurrent, closeGuardRef }: {
+export function WrittenNoteEditor({ note, studyOwner, onSaved, onClose, getCurrent, closeGuardRef, draftSlot }: {
+  draftSlot?: string;
   closeGuardRef?: React.MutableRefObject<(() => Promise<boolean>) | null>;
   note?: NotebookNote;
   studyOwner?: { kind: 'source' | 'notebook'; id: string };
@@ -38,8 +39,8 @@ export function WrittenNoteEditor({ note, studyOwner, onSaved, onClose, getCurre
   useEffect(() => { controller.activate(); return () => controller.dispose(); }, [controller]);
   const value: StudyNoteDraft = { version: 1, id, owner: studyOwner, expectedRevision: version, title, content, pendingSave: state.pending };
   const draft = useEditorDraft({
-    scope: { ownerId: account, kind: 'study-note', entityId: note?.id ?? `${studyOwner?.kind}:${studyOwner?.id}:new` },
-    value, fingerprint, validate: isStudyNoteDraft, busy: state.status === 'saving',
+    scope: { ownerId: account, kind: 'study-note', entityId: draftSlot ?? note?.id ?? `${studyOwner?.kind}:${studyOwner?.id}:new` },
+    value, fingerprint, validate: isStudyNoteDraft, busy: state.status === 'saving', unsettled: Boolean(state.pending),
     onRestore: restored => {
       setTitle(restored.title); setContent(restored.content); setId(restored.id); setVersion(restored.expectedRevision);
       if (restored.pendingSave) controller.restorePending(restored.pendingSave);

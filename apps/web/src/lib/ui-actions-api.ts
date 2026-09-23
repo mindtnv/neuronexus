@@ -1,6 +1,7 @@
 import type { UiActionEnvelope, UiActionOffers, UiActionResult } from '@neuronexus/shared';
 import { apiBaseURL, apiErrorFromResponse, ApiError } from './api';
 import { useNN } from './store';
+import { acknowledgeInactiveDraft } from './acknowledge-inactive-draft';
 
 const sessions = new Map<string, Promise<string>>();
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -9,9 +10,14 @@ export async function uiActionRequest<T>(owner: string, path: string, method = '
   if (!owned(owner)) throw new ApiError('owner_changed', { status: 409 });
   const response = await fetch(`${apiBaseURL}/ui-actions/v1${path}`, { method, credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
-  if (!owned(owner)) throw new ApiError('owner_changed', { status: 409 });
   if (!response.ok) throw await apiErrorFromResponse(response);
-  return response.json() as Promise<T>;
+  const result = await response.json();
+  if (!owned(owner)) {
+    const requestId = (body as { requestId?: string } | undefined)?.requestId;
+    if (requestId && result?.outcome === 'applied' && result?.receipt?.requestId === requestId) acknowledgeInactiveDraft(owner, requestId);
+    throw new ApiError('owner_changed', { status: 409 });
+  }
+  return result as T;
 }
 export function uiActionSession(owner: string): Promise<string> {
   if (!owned(owner)) return Promise.reject(new ApiError('owner_changed', { status: 409 }));

@@ -1,6 +1,7 @@
 'use client';
 
-import { normalizeFieldName, validFieldNames, validateTemplates, typedAnswerField, renameFieldValues, renameTemplateFields } from '@neuronexus/shared';
+import { withDraftKeys, withoutDraftKey, adoptTypeIdentities } from '@/lib/type-draft-identities';
+import { newUuidV7, normalizeFieldName, validFieldNames, validateTemplates, typedAnswerField, renameFieldValues, renameTemplateFields } from '@neuronexus/shared';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -23,6 +24,8 @@ import { useEditorDraft } from '@/lib/use-editor-draft';
 import { draftFingerprint } from '@/lib/editor-drafts';
 import { isTypeDraftValue } from '@/lib/editor-draft-values';
 import { EditorDraftNotice } from '@/components/editor-draft-notice';
+import { useRecoverableAction, type RecoveryAction } from '@/lib/use-recoverable-action';
+import { SaveFeedback } from '@/components/save-feedback';
 import { noteTypeFromApi } from '@/lib/mappers';
 
 // ─────────────────────────────────────────────
@@ -101,13 +104,13 @@ interface Draft {
 function emptyDraft(): Draft {
   return {
     name: '',
-    fields: [
+    fields: withDraftKeys([
       { name: 'Front', ord: 0 },
       { name: 'Back', ord: 1 },
-    ],
-    templates: [
+    ]),
+    templates: withDraftKeys([
       { name: 'Card 1', ord: 0, frontTemplate: '{{Front}}', backTemplate: '{{Front}}<hr>{{Back}}' },
-    ],
+    ]),
     styling: '',
   };
 }
@@ -115,8 +118,8 @@ function emptyDraft(): Draft {
 function draftFromNoteType(nt: NoteType): Draft {
   return {
     name: nt.name,
-    fields: [...nt.fields].sort((a, b) => a.ord - b.ord).map((f) => ({ ...f })),
-    templates: [...nt.templates].sort((a, b) => a.ord - b.ord).map((t) => ({ ...t })),
+    fields: withDraftKeys([...nt.fields].sort((a, b) => a.ord - b.ord)),
+    templates: withDraftKeys([...nt.templates].sort((a, b) => a.ord - b.ord)),
     styling: nt.styling,
   };
 }
@@ -458,7 +461,7 @@ const TemplatePreview = ({
 // ── Form view ────────────────────────────────────────────────────────────────
 
 const NoteTypeForm = ({
-  editing,
+  editing: initialEditing,
   onDone,
   onCancel,
 }: {
@@ -471,8 +474,8 @@ const NoteTypeForm = ({
   const router = useAppNavigation();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
-  const addNoteType = useNN((s) => s.addNoteType);
-  const updateNoteType = useNN((s) => s.updateNoteType);
+  const [savedType, setSavedType] = useState<NoteType | null>(null);
+  const editing = savedType ?? initialEditing;
   const { confirm } = useDialog();
   const saveLock = useRef(false);
   const formRoot = useRef<HTMLDivElement>(null);
@@ -486,7 +489,7 @@ const NoteTypeForm = ({
 
   const isClone = editing?.isBuiltin ?? false;
   const [draft, setDraft] = useState<Draft>(() =>
-    editing ? { ...draftFromNoteType(editing), fields: editing.fields.map((field) => ({ ...field, ...(editing.kind === 'typein' && field === typedAnswerField(editing.fields) ? { typeinAnswer: true } : {}) })) } : emptyDraft(),
+    editing ? { ...draftFromNoteType(editing), fields: withDraftKeys(editing.fields.map((field) => ({ ...field, ...(editing.kind === 'typein' && field === typedAnswerField(editing.fields) ? { typeinAnswer: true } : {}) }))) } : emptyDraft(),
   );
   // Per-field sample values for the preview, keyed by field name. Default to the
   // field name itself so the author immediately sees where each field lands.
@@ -499,6 +502,8 @@ const NoteTypeForm = ({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const saveFingerprint = draftFingerprint(draft);
+  const recovery = useRecoverableAction(ownerId, saveFingerprint, baseVersion);
 
   const fieldNames = useMemo(() => draft.fields.map((f) => f.name).filter(Boolean), [draft.fields]);
 
@@ -546,7 +551,7 @@ const NoteTypeForm = ({
   const addField = useCallback(() => {
     setDraft((d) => ({
       ...d,
-      fields: [...d.fields, { name: `Field ${d.fields.length + 1}`, ord: d.fields.length }],
+      fields: [...d.fields, { draftKey: newUuidV7(), name: `Field ${d.fields.length + 1}`, ord: d.fields.length }],
     }));
   }, []);
 
@@ -571,7 +576,7 @@ const NoteTypeForm = ({
         templates: [
           ...d.templates,
           {
-            name: `Card ${d.templates.length + 1}`,
+            draftKey: newUuidV7(), name: `Card ${d.templates.length + 1}`,
             ord: d.templates.length,
             frontTemplate: `{{${first}}}`,
             backTemplate: `{{${first}}}<hr>{{${second}}}`,
@@ -609,14 +614,18 @@ const NoteTypeForm = ({
     // Re-pack ordinals dense+unique (server validates this) and trim names.
     const payload = {
       name: draft.name.trim(),
-      fields: reindex(draft.fields.map((f) => ({ ...f, name: normalizeFieldName(f.name) }))),
-      templates: reindex(draft.templates.map((tpl) => ({ ...tpl, name: tpl.name.trim(), frontTemplate: renameTemplateFields(tpl.frontTemplate, new Map()), backTemplate: renameTemplateFields(tpl.backTemplate, new Map()) }))),
+      fields: reindex(draft.fields.map((f) => ({ ...withoutDraftKey(f), name: normalizeFieldName(f.name) }))),
+      templates: reindex(draft.templates.map((tpl) => ({ ...withoutDraftKey(tpl), name: tpl.name.trim(), frontTemplate: renameTemplateFields(tpl.frontTemplate, new Map()), backTemplate: renameTemplateFields(tpl.backTemplate, new Map()) }))),
       styling: draft.styling,
     };
     try {
-      let saved: NoteType;
-      if (editing && saveCopy) {
-        saved = await addNoteType({ ...payload, kind: editing.kind });
+      const fingerprint = saveFingerprint;
+      let action: RecoveryAction;
+      if (recovery.snapshot.status === 'uncertain' && recovery.snapshot.pending) {
+        action = recovery.snapshot.pending.payload;
+      } else if (editing && saveCopy) {
+        recovery.controller.resolveConflict();
+        action = { path: '/note-types', method: 'POST', args: { input: { ...payload, kind: editing.kind } } };
       } else if (editing && !editing.isBuiltin) {
         const preview = await ok(await (api as any)['note-types']({ id: editing.id }).preview.post({
           ...payload, preview: true, expectedUpdatedAt: baseVersion,
@@ -636,18 +645,35 @@ const NoteTypeForm = ({
           }))) return false;
         }
         if (!alive.current) return false;
-        saved = await updateNoteType(editing.id, { ...payload, expectedUpdatedAt: preview.sourceVersion,
-          confirmationToken: preview.confirmationToken });
+        action = { path: `/note-types/${editing.id}`, method: 'PATCH', args: { input: { ...payload,
+          expectedUpdatedAt: preview.sourceVersion, confirmationToken: preview.confirmationToken } } };
       } else if (editing && editing.isBuiltin) {
         // CLONE-ON-EDIT: PATCH a builtin → server returns a NEW user-owned copy
         // (kind preserved server-side). Store appends the clone.
-        saved = await updateNoteType(editing.id, payload);
+        action = { path: `/note-types/${editing.id}`, method: 'PATCH', args: { input: { ...payload, expectedUpdatedAt: baseVersion } } };
       } else {
         // New custom type.
-        saved = await addNoteType({ ...payload, kind: 'custom' });
+        action = { path: '/note-types', method: 'POST', args: { input: { ...payload, kind: 'custom' } } };
       }
-      localDraft.markSaved();
-      if (alive.current) { setBaseVersion(saved.updatedAt); setBaseKind(saved.kind); if (notify) onDone(saved); return true; }
+      if (recovery.snapshot.status !== 'uncertain') action.draft = { ...draft, baseVersion, kind: baseKind };
+      const accepted = await recovery.save(action, fingerprint);
+      if (!alive.current || useNN.getState().profile?.userId !== ownerId) return false;
+      if (!accepted.response.result || accepted.response.outcome !== 'applied') {
+        if (accepted.response.result) setLatest(noteTypeFromApi(accepted.response.result));
+        throw new ApiError('note_type_changed', { status: 409 });
+      }
+      const saved = noteTypeFromApi(accepted.response.result);
+      await useNN.getState().acceptRecoveredType(ownerId, saved, accepted.submitted.payload.method === 'PATCH' ? accepted.submitted.payload.path.split('/')[2] : undefined);
+      if (!alive.current) return false;
+      setSavedType(saved); setBaseVersion(saved.updatedAt); setBaseKind(saved.kind); setLatest(null);
+      const submittedDraft = isTypeDraftValue(accepted.submitted.payload.draft) ? accepted.submitted.payload.draft : { ...draft, baseVersion, kind: baseKind };
+      const canonical = adoptTypeIdentities(submittedDraft, submittedDraft, saved);
+      const canonicalFingerprint = draftFingerprint({ name: canonical.name, fields: canonical.fields, templates: canonical.templates, styling: canonical.styling });
+      setDraft(current => adoptTypeIdentities(current, submittedDraft, saved));
+      recovery.controller.canonicalizeAcknowledgement(accepted.submitted.fingerprint, canonicalFingerprint);
+      localDraft.markSaved(accepted.submitted.fingerprint, { ...canonical, baseVersion: saved.updatedAt, kind: saved.kind, savedType: saved, pendingSave: null }, canonicalFingerprint);
+      if (accepted.currentMatches) { if (notify) onDone(saved); return true; }
+      return false;
     } catch (err) {
       if (!alive.current) return false;
       if (err instanceof ApiError && err.safeMessage === 'note_type_operation_too_large') {
@@ -669,10 +695,10 @@ const NoteTypeForm = ({
     return false;
   };
 
-  const localDraft = useEditorDraft({ scope: { ownerId, kind: 'type', entityId: editing?.id ?? 'new' },
-    value: { ...draft, baseVersion, kind: baseKind }, fingerprint: draftFingerprint(draft), validate: isTypeDraftValue,
-    busy: saving, onSave: () => handleSave(false, false),
-    onRestore: ({ baseVersion, kind, ...value }) => { setDraft(value); setBaseVersion(baseVersion); setBaseKind(kind ?? editing?.kind ?? 'custom'); setLatest(editing && baseVersion !== editing.updatedAt ? editing : null); setError(null); requestAnimationFrame(() => formRoot.current?.querySelector<HTMLInputElement>('input')?.focus()); },
+  const localDraft = useEditorDraft({ scope: { ownerId, kind: 'type', entityId: initialEditing?.id ?? 'new' },
+    value: { ...draft, baseVersion, kind: baseKind, savedType: savedType ?? undefined, pendingSave: recovery.snapshot.pending }, fingerprint: saveFingerprint, validate: isTypeDraftValue,
+    busy: saving, unsettled: Boolean(recovery.snapshot.pending), onSave: () => handleSave(false, false),
+    onRestore: ({ baseVersion, kind, savedType, pendingSave, ...value }) => { if (pendingSave) recovery.controller.restorePending(pendingSave); setSavedType(savedType ?? null); setDraft(value); setBaseVersion(baseVersion); setBaseKind(kind ?? editing?.kind ?? 'custom'); setLatest(editing && baseVersion !== editing.updatedAt ? editing : null); setError(null); requestAnimationFrame(() => formRoot.current?.querySelector<HTMLInputElement>('input')?.focus()); },
   });
 
   const title = !editing
@@ -684,8 +710,9 @@ const NoteTypeForm = ({
   return (
     <div ref={formRoot} className="reomi-page-surface reomi-note-type-editor nn-scroll">
       <EditorDraftNotice draft={localDraft} stale={Boolean(localDraft.pending && localDraft.pending.value.baseVersion !== editing?.updatedAt)} />
+<SaveFeedback status={recovery.snapshot.status} onRetry={() => void handleSave()} />
 <header className="reomi-note-type-editor-heading">
-        <NNBtn size="sm" variant="ghost" icon="chevl" onClick={onCancel} disabled={saving}>
+        <NNBtn size="sm" variant="ghost" icon="chevl" onClick={() => { void localDraft.confirmLeave().then(allowed => { if (allowed) onCancel(); }); }} disabled={saving}>
           {t('noteTypes.editor.back')}
         </NNBtn>
         <div style={sectionTitleStyle}>{title}</div>
@@ -713,7 +740,7 @@ const NoteTypeForm = ({
         <NNBtn disabled={saving} size="sm" onClick={async () => {
           if (await confirm({ title: t('noteTypes.impact.replaceDraft'), danger: true })) {
             localDraft.markSaved(draftFingerprint(draftFromNoteType(latest)));
-            setDraft(draftFromNoteType(latest)); setBaseVersion(latest.updatedAt); setBaseKind(latest.kind); setLatest(null); setError(null);
+            setSavedType(latest); setDraft(draftFromNoteType(latest)); setBaseVersion(latest.updatedAt); setBaseKind(latest.kind); setLatest(null); setError(null);
           }
         }}>{t('noteTypes.impact.loadLatest')}</NNBtn>
       </NNCard>}
@@ -861,10 +888,11 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
   const modal = useRef<HTMLDivElement>(null);
   useModalFocus(modal);
   const { confirm } = useDialog();
-  const update = useNN((state) => state.updateNoteType);
+  const ownerId = useNN(state => state.profile?.userId) ?? '';
   const [kind, setKind] = useState<RenderKind>(editing.kind);
   const [answerFieldId, setAnswerFieldId] = useState(typedAnswerField(editing.fields)?.id ?? '');
-  const [version] = useState(editing.updatedAt);
+  const [version, setVersion] = useState(editing.updatedAt);
+  const recovery = useRecoverableAction(ownerId, draftFingerprint({ kind, answerFieldId }), version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lock = useRef(false);
@@ -876,6 +904,9 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
     lock.current = true; setBusy(true); setError(null);
     const body = { kind, expectedUpdatedAt: version, ...(kind === 'typein' ? { answerFieldId } : {}) };
     try {
+      let action: RecoveryAction;
+      if (recovery.snapshot.status === 'uncertain' && recovery.snapshot.pending) action = recovery.snapshot.pending.payload;
+      else {
       const preview = await ok(await (api as any)['note-types']({ id: editing.id }).kind.preview.post(body)) as CardRegenerationPreview;
       if (!alive.current) return;
       const samples = preview.validation?.samples.map((sample) => `• ${sample.front || '—'} → ${sample.error ? t(sample.error === 'typein_answer_placement' ? 'editor.errors.typeinPlacement' : 'noteTypes.validation.invalid') : sample.questions.join(' / ') || t('noteTypes.validation.media')}${sample.answer ? ` — ${sample.answer}` : ''}`).join('\n') ?? '';
@@ -888,8 +919,14 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
         message: `${preview.kindTransition?.resetsQuestions ? t('noteTypes.kind.reset') : t('noteTypes.kind.preserve')}\n${t('noteTypes.impact.counts', { create: impact.willCreateCards, keep: impact.willKeepCards, remove: impact.willDeleteCards, reviews: impact.willDeleteReviews })}${samples ? `\n\n${t('noteTypes.validation.samples')}\n${samples}` : ''}`,
       });
       if (!approved || !alive.current) return;
-      await update(editing.id, { ...body, expectedUpdatedAt: preview.sourceVersion, confirmationToken: preview.confirmationToken });
-      if (alive.current) onDone();
+      action = { path: `/note-types/${editing.id}/kind`, method: 'POST', args: { input: { ...body, expectedUpdatedAt: preview.sourceVersion, confirmationToken: preview.confirmationToken } } };
+      }
+      const accepted = await recovery.save(action);
+      if (!alive.current || !accepted.response.result || accepted.response.outcome !== 'applied') throw new ApiError('note_type_changed', { status: 409 });
+      const saved = noteTypeFromApi(accepted.response.result);
+      setVersion(saved.updatedAt);
+      await useNN.getState().acceptRecoveredType(ownerId, saved, editing.id);
+      if (alive.current && accepted.currentMatches) onDone();
     } catch (error) {
       if (alive.current) {
         const tooLarge = error instanceof ApiError && error.safeMessage === 'note_type_operation_too_large';
@@ -903,6 +940,7 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
       onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.stopPropagation(); onDone(); } }}>
     <header><h2 id="note-type-mode-title">{t('noteTypes.kind.title', { name: editing.name })}</h2><NNBtn variant="ghost" icon="x" onClick={onDone} disabled={busy} ariaLabel={t('actions.close')} /></header>
     <p className="reomi-flow-intro">{t('noteTypes.kind.intro')}</p>
+    <SaveFeedback status={recovery.snapshot.status} onRetry={() => void apply()} />
     <fieldset disabled={busy} style={{ border: 0, padding: 0, display: 'grid', gap: 16 }}>
       <label>{t('noteTypes.kind.mode')}<select aria-label={t('noteTypes.kind.mode')} style={inputStyle} value={kind} onChange={(event) => setKind(event.target.value as RenderKind)}>
         {(['basic', 'custom', 'typein', 'cloze'] as const).map((value) => <option value={value} key={value}>{label(value)}</option>)}

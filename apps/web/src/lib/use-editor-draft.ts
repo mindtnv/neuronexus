@@ -9,9 +9,9 @@ import { useNavigationGuard } from '@/components/navigation';
 
 type DraftStatus = 'idle' | 'saved' | 'saving' | 'pending' | DraftStorageError['code'];
 /** Components using this hook must be keyed by owner and edited entity. */
-export function useEditorDraft<T extends object>({ scope, value, fingerprint, validate, onRestore, onSave, busy }: {
+export function useEditorDraft<T extends object>({ scope, value, fingerprint, validate, onRestore, onSave, busy, unsettled = false }: {
   scope: DraftScope; value: T; fingerprint: string; validate: (value: unknown) => value is T;
-  onRestore: (value: T) => void; onSave: () => Promise<boolean>; busy: boolean;
+  onRestore: (value: T) => void; onSave: () => Promise<boolean>; busy: boolean; unsettled?: boolean;
 }) {
   const t = useT(); const { select } = useDialog();
   const [pending, setPending] = useState<EditorDraft<T> | null>(null);
@@ -27,13 +27,13 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
   const invalid = useRef(false);
   const loaded = useRef(false); const alive = useRef(true);
   const lastSaved = useRef('');
-  const live = useRef({ value, fingerprint, onRestore, onSave, busy });
-  live.current = { value, fingerprint, onRestore, onSave, busy };
+  const live = useRef({ value, fingerprint, onRestore, onSave, busy, unsettled });
+  live.current = { value, fingerprint, onRestore, onSave, busy, unsettled };
   const owned = () => Boolean(scope.ownerId) && useNN.getState().profile?.userId === scope.ownerId;
   const update = (next: DraftStatus) => { if (alive.current) setStatus(next); };
   const errorStatus = (error: unknown) => error instanceof DraftStorageError ? error.code : 'unavailable';
   const serializedValue = draftFingerprint(value);
-  const dirty = () => restored.current || clean.current !== live.current.fingerprint;
+  const dirty = () => restored.current || live.current.unsettled || clean.current !== live.current.fingerprint;
   const flush = (closing = false): boolean => {
     if ((!owned() && !(closing && scope.ownerId)) || !loaded.current || offered.current || invalid.current) return false;
     if (!dirty()) return true;
@@ -54,9 +54,13 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
       revision.current = null; lastSaved.current = ''; update('idle'); return true;
     } catch (error) { update(errorStatus(error)); return false; }
   };
-  const markSaved = (fingerprint = live.current.fingerprint, savedValue?: T) => {
+  const markSaved = (fingerprint = live.current.fingerprint, savedValue?: T, canonicalFingerprint?: string) => {
     const matches = live.current.fingerprint === fingerprint;
-    restored.current = false; invalid.current = false; clean.current = fingerprint;
+    restored.current = false; invalid.current = false; live.current.unsettled = false; clean.current = canonicalFingerprint ?? fingerprint;
+    // Save-and-return can run before React renders the finally(setBusy(false)).
+    // A confirmed matching save is already settled; do not bounce its navigation.
+    if (matches) live.current.busy = false;
+    if (matches && canonicalFingerprint) { live.current.fingerprint = canonicalFingerprint; if (savedValue) live.current.value = savedValue; }
     if (savedValue) baselineValue.current = savedValue; else if (matches) baselineValue.current = live.current.value;
     offered.current = null; if (alive.current) setPending(null);
     if (matches) clear(true); else flush();
@@ -75,7 +79,7 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     } else if (!clear()) return false;
     offered.current = null; setPending(null);
     invalid.current = false; restored.current = false;
-    if (reset) { live.current.value = baselineValue.current; live.current.fingerprint = clean.current; live.current.onRestore(baselineValue.current); }
+    if (reset) { live.current.unsettled = false; live.current.value = baselineValue.current; live.current.fingerprint = clean.current; live.current.onRestore(baselineValue.current); }
     else flush();
     return true;
   };

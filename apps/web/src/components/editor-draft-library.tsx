@@ -53,13 +53,11 @@ export function EditorDraftLibrary() {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {study && <NNBtn size="sm" variant="primary" icon="edit" onClick={() => {
             if (useNN.getState().profile?.userId !== owner) return;
-            const notebook = study.owner?.kind === 'notebook' ? study.owner.id : null;
-            nav.push(study.id ? notebook ? `/notebooks/${encodeURIComponent(notebook)}?note=${encodeURIComponent(study.id)}` : `/library/study?note=${encodeURIComponent(study.id)}`
-              : notebook ? `/notebooks/${encodeURIComponent(notebook)}?newNote=1` : `/library/${encodeURIComponent(study.owner!.id)}?newNote=1`);
+            nav.push(`/library/study?draft=${encodeURIComponent(entry.scope.entityId)}`);
           }}>{t('editor.draft.openOriginal')}</NNBtn>}
           {note && <NNBtn size="sm" variant="primary" icon="edit" onClick={() => {
             if (useNN.getState().profile?.userId !== owner) return;
-            nav.push(note.cardId ? `/editor?card=${encodeURIComponent(note.cardId)}` : `/editor?${new URLSearchParams({ deck: note.deckId, noteType: note.noteTypeId })}`);
+            nav.push(entry.scope.entityId !== 'new' && note.cardId ? `/editor?card=${encodeURIComponent(note.cardId)}` : `/editor?${new URLSearchParams({ deck: note.deckId, noteType: note.noteTypeId })}`);
           }}>{t('editor.draft.openOriginal')}</NNBtn>}
           {type && entry.record && <NNBtn size="sm" variant="primary" icon="edit" onClick={() => {
             if (useNN.getState().profile?.userId === owner) nav.push(entry.scope.entityId === 'new' ? '/note-types?new=1' : `/note-types?edit=${encodeURIComponent(entry.scope.entityId)}`);

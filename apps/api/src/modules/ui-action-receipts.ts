@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { and, desc, eq, gt, lt, isNull, sql } from 'drizzle-orm';
-import { db, deckHierarchyRevisions, decks, notebookNotes, notebooks, notes, noteTypes, sources, uiActionReceipts } from '@neuronexus/db';
+import { db, cards, deckHierarchyRevisions, decks, notebookNotes, notebooks, notes, noteTypes, sources, uiActionReceipts } from '@neuronexus/db';
 import type { UiActionEnvelope, UiActionInverse, UiActionKind, UiActionOffers, UiActionReceipt, UiActionResult, UiActionTarget } from '@neuronexus/shared';
 import { StudyError } from './study-notes';
 
@@ -8,6 +8,11 @@ export type ActionTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type StoredReceipt = typeof uiActionReceipts.$inferSelect;
 export const ACTION_RECEIPT_MS = 7 * 86400_000;
 export const ACTION_UNDO_MS = 10 * 60_000;
+
+/** Existing domain handlers can carry structured validation/budget feedback. */
+export class ActionDomainError extends Error {
+  constructor(readonly status: 400 | 404 | 409 | 413 | 503, readonly payload: unknown) { super('action_rejected'); }
+}
 
 export function actionHash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
@@ -18,6 +23,13 @@ export function actionReceipt(row: StoredReceipt): UiActionReceipt {
     createdAt: row.createdAt.toISOString(), undoUntil: row.undoUntil?.toISOString() ?? null, consumedAt: row.consumedAt?.toISOString() ?? null };
 }
 export async function readActionTarget(tx: ActionTx, userId: string, target: UiActionTarget): Promise<{ row: unknown; revision: string } | null> {
+  if (target.kind === 'card-note') {
+    const [row] = await tx.select({ note: notes, typeVersion: noteTypes.updatedAt }).from(notes)
+      .innerJoin(noteTypes, eq(noteTypes.id, notes.noteTypeId)).where(and(eq(notes.userId, userId), eq(notes.id, target.id))).limit(1);
+    if (!row) return null;
+    const generated = await tx.select().from(cards).where(and(eq(cards.userId, userId), eq(cards.noteId, target.id)));
+    return { row: { note: row.note, cards: generated }, revision: `${row.note.updatedAt.toISOString()}_${row.typeVersion.toISOString()}` };
+  }
   if (target.kind === 'deck-tree') {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 73))`);
     const [version] = await tx.select().from(deckHierarchyRevisions).where(eq(deckHierarchyRevisions.userId, userId));
@@ -27,7 +39,7 @@ export async function readActionTarget(tx: ActionTx, userId: string, target: UiA
   }
   // A fixed allow-list; no request-provided table, field or SQL identifier.
   const table = target.kind === 'study-note' ? notebookNotes : target.kind === 'source' ? sources
-    : target.kind === 'notebook' ? notebooks : target.kind === 'deck' ? decks : target.kind === 'card-note' ? notes : noteTypes;
+    : target.kind === 'notebook' ? notebooks : target.kind === 'deck' ? decks : noteTypes;
   const [row] = await tx.select().from(table).where(and(eq(table.userId, userId), eq(table.id, target.id))).limit(1);
   if (!row) return null;
   return { row, revision: 'metadataRevision' in row ? String(row.metadataRevision) : row.updatedAt.toISOString() };

@@ -9,7 +9,7 @@
 
 ## 2. Existing editor and metadata adapters
 
-- [ ] 2.1 Add failing contract tests for card/note-type save acknowledgement and ambiguous create/update; integrate shared feedback/receipt handling with existing preview/version/draft owners, verifying destructive previews, single-use confirmation replay and existing recovery tests remain valid.
+- [x] 2.1 Add failing contract tests for card/note-type save acknowledgement and ambiguous create/update; integrate shared feedback/receipt handling with existing preview/version/draft owners, verifying destructive previews, single-use confirmation replay and existing recovery tests remain valid.
 - [ ] 2.2 Add failing source metadata save/undo tests, then add revision triggers and adapters for title/author/description/tags; verify legacy/agent writes invalidate stale inverses while ingestion and reading progress do not.
 - [ ] 2.3 Add failing notebook-title and deck-name/color/icon tests, then add their adapters and form status UI; verify owned reads, stale conflicts, input retention and preserved unrelated metadata.
 - [ ] 2.4 Add failing study-note pin tests, then implement its conditional inverse without changing content recency; verify pin/unpin A→B→C→B and concurrent requests are handled safely.
