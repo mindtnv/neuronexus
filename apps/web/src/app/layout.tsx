@@ -1,4 +1,3 @@
-import { JetBrains_Mono } from "next/font/google";
 import localFont from "next/font/local";
 import { THEME_CSS, THEME_INIT_SCRIPT } from "@/lib/theme";
 import { Bootstrap } from "@/lib/bootstrap";
@@ -14,10 +13,10 @@ import "@/components/design-system/components.css";
 const golos = localFont({ src: './fonts/GolosText.ttf', variable: '--font-golos-text', weight: '400 900', display: 'swap' });
 const literata = localFont({ src: './fonts/Literata.ttf', variable: '--font-literata', weight: '200 900', display: 'swap' });
 
-const jetbrainsMono = JetBrains_Mono({
+const jetbrainsMono = localFont({
+  src: './fonts/JetBrainsMono.ttf',
   variable: "--font-jetbrains-mono",
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
+  weight: '400 600',
   display: "swap",
 });
 
