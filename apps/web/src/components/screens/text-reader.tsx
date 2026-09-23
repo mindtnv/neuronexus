@@ -1,5 +1,8 @@
 'use client';
 
+import { useNavigationScroll, NavigationRestoreNotice } from '@/lib/use-navigation-scroll';
+import { restoreCollectionPages } from '@/lib/navigation-restore';
+
 // TextChunkReader (L2) — the text-mode chunk reader, extracted from the M2
 // notebook workspace so it can be reused in BOTH the full-screen library reader
 // (`/library/[id]`) and the notebook citation-viewer drawer. It owns its own
@@ -67,6 +70,7 @@ const ReaderChunk = ({ chunk, t }: { chunk: SourceChunkRow; t: Tr }) => {
   return (
     <div
       data-chunk-id={chunk.id}
+      data-navigation-anchor={chunk.id}
       data-chunk-pos={chunk.position}
       className="nn-reader-chunk"
       style={{
@@ -140,6 +144,7 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
     const inFlight = useRef(false);
     const loadedPages = useRef(new Set<number>());
     const pendingScrollRef = useRef<{ sourceId: string; chunkId?: string; pos?: number } | null>(null);
+    const [jumpRevision,setJumpRevision]=useState(0);
 
     const loadChunks = useCallback(
       async (from: number, append: boolean) => {
@@ -190,6 +195,20 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
       return () => { loadGeneration.current++; inFlight.current = false; };
     }, [sourceId, loadChunks]);
 
+    const restoreRows = useCallback(async (anchor:import('@/lib/navigation-context').ScrollAnchor,signal:AbortSignal)=>{
+      const generation=loadGeneration.current;
+      inFlight.current=true;
+      try {
+        const result=await restoreCollectionPages({throughId:anchor.endId,initial:{items:chunks,nextCursor:nextFrom===null?null:String(nextFrom)},
+          anchors:[anchor.id,...(anchor.nearby??[])].filter((id):id is string=>Boolean(id)),signal,
+          fetchPage:async cursor=>{const page=await getSourceChunks(sourceId,Number(cursor),READER_PAGE);return {items:page.items,nextCursor:page.nextFrom===null?null:String(page.nextFrom)};}});
+        if(!signal.aborted&&generation===loadGeneration.current){setChunks(result.items);setNextFrom(result.nextCursor===null?null:Number(result.nextCursor));}
+        return result.reason;
+      } finally {if(generation===loadGeneration.current)inFlight.current=false;}
+    },[chunks,nextFrom,getSourceChunks,sourceId]);
+    const position=useNavigationScroll(`source:${sourceId}`,'text',{ready:chunks.length>0&&!loadError,fractional:true,restoreRows});
+    const setHostRef=useCallback((node:HTMLDivElement|null)=>{hostRef.current=node;position.ref(node);},[position.ref]);
+
     // Auto-load next page when the sentinel scrolls into view.
     useEffect(() => {
       const el = sentinelRef.current;
@@ -205,8 +224,10 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
     }, [nextFrom, loading, loadChunks, loadError]);
 
     const scrollToChunk = useCallback((chunkId?: string, pos?: number) => {
+      position.beginExplicitJump();
       pendingScrollRef.current = { sourceId, chunkId, pos };
-    }, [sourceId]);
+      setJumpRevision(revision=>revision+1);
+    }, [sourceId,position.beginExplicitJump]);
 
     useImperativeHandle(ref, () => ({ scrollToChunk }), [scrollToChunk]);
 
@@ -215,6 +236,7 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
     useEffect(() => {
       const target = pendingScrollRef.current;
       if (!target || loadError) return;
+      if(position.isCancelled()){pendingScrollRef.current=null;return;}
       if (target.sourceId !== sourceId) { pendingScrollRef.current = null; return; }
       if (
         !target.chunkId &&
@@ -237,10 +259,10 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
         return;
       }
       pendingScrollRef.current = null;
-      node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      node.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth', block: 'center' });
       node.classList.add('nn-chunk-flash');
       window.setTimeout(() => node?.classList.remove('nn-chunk-flash'), 2200);
-    }, [chunks, loading, nextFrom, loadChunks, sourceId, loadError]);
+    }, [chunks, loading, nextFrom, loadChunks, sourceId, loadError,jumpRevision,position.isCancelled]);
 
     // L2 — report the topmost visible chunk position for server progress.
     useEffect(() => {
@@ -275,10 +297,11 @@ export const TextChunkReader = forwardRef<TextChunkReaderHandle, TextChunkReader
 
     return (
       <div
-        ref={hostRef}
+        ref={setHostRef}
         className="nn-scroll"
         style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 40px' }}
       >
+        <NavigationRestoreNotice failure={position.failure} retry={position.retry}/>
         {loadError && <div role="alert" style={{ padding: 12 }}>
           <p>{t('assistant.textLoadFailed')}{loadError.requestId ? ` · ${loadError.requestId}` : ''}</p>
           <NNBtn size="sm" disabled={loading} onClick={() => void loadChunks(loadError.from,loadError.append)}>{t('review.retry')}</NNBtn>

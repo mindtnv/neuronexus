@@ -1,5 +1,5 @@
 import { ensureTestDom, GlobalRegistrator } from '../../lib/test-dom-setup';
-import { afterAll, afterEach, beforeEach, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, expect, test, spyOn } from 'bun:test';
 import React, { act, useLayoutEffect, useRef } from 'react';
 import type { Root } from 'react-dom/client';
 import { DialogProvider } from '../dialog';
@@ -57,4 +57,15 @@ test('a failed next page leaves readable text in place and resumes only after re
   expect(host.textContent).toContain('Text first');expect(host.textContent).toContain('assistant.textLoadFailed');expect(attempts).toBe(1);
   await act(async()=>Array.from(host.querySelectorAll('button')).find(button=>button.textContent==='review.retry')!.click());
   expect(host.textContent).toContain('Text first');expect(host.textContent).toContain('Text second');expect(attempts).toBe(2);
+});
+
+test('an explicit jump after text has loaded executes and respects reduced motion',async()=>{
+  const ref=React.createRef<import('./text-reader').TextChunkReaderHandle>();
+  const scroll=spyOn(HTMLElement.prototype,'scrollIntoView').mockImplementation(()=>{});
+  const media=spyOn(window,'matchMedia').mockImplementation(()=>({matches:true,addEventListener(){},removeEventListener(){}}) as any);
+  try{
+    await act(async()=>root.render(<DialogProvider><TextChunkReader ref={ref} sourceId="book" getSourceChunks={async()=>page('chunk')} t={key=>key}/></DialogProvider>));
+    await act(async()=>ref.current?.scrollToChunk('chunk'));
+    expect(scroll).toHaveBeenCalledWith({behavior:'auto',block:'center'});
+  }finally{scroll.mockRestore();media.mockRestore();}
 });

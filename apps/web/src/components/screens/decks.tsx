@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { DeckPlacement } from '@neuronexus/shared';
-import { AppLink, useAppNavigation } from '@/components/navigation';
+import { AppLink, useAppNavigation, useNavigationWorkspace, useWorkspaceState, useWorkspaceSet } from '@/components/navigation';
 import { Modal } from '@/components/design-system/modal';
 import { TextInput, Field, PageSurface } from '@/components/design-system/primitives';
 import { NNAppPage } from '@/components/app-page';
@@ -14,6 +14,8 @@ import { useAssistantPageContext } from '@/components/chat/assistant-provider';
 import { DeckDetails, deckCardsHref } from '@/components/deck-details';
 import { useDeckDrag } from '@/lib/use-deck-drag';
 import { useNN } from '@/lib/store';
+import { api, ok } from '@/lib/api';
+import { deckFromApi } from '@/lib/mappers';
 import { useStudyOverview } from '@/lib/use-study-overview';
 import type { Deck, DeckColor } from '@/lib/types';
 import { useBreakpoint } from '@/lib/use-breakpoint';
@@ -22,6 +24,8 @@ import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { filterDeckTree } from '@/lib/deck-filter';
 import { buildDeckTree, flattenTree, deckPathLabel, canBeParentOf } from '@/lib/decks';
+
+import { useNavigationScroll, NavigationRestoreNotice } from '@/lib/use-navigation-scroll';
 
 const EXPANDED_KEY = 'nn:decks:collapsed';
 export const NNDecks = () => {
@@ -32,6 +36,7 @@ export const NNDecks = () => {
   const wide = bp === 'desktop';
   const router = useAppNavigation();
   const params = useSearchParams();
+  const workspace = useNavigationWorkspace();
   const bootstrapped = useNN(s => s.bootstrapped);
   const decks = useNN(s => s.decks);
   const presets = useNN(s => s.presets);
@@ -41,13 +46,33 @@ export const NNDecks = () => {
   const deleteDeck = useNN(s => s.deleteDeck);
   const bindDeckPreset = useNN(s => s.bindDeckPreset);
   const study = useStudyOverview();
-  const [deckSearch, setDeckSearch] = useState('');
-  const [filterCollapsed, setFilterCollapsed] = useState<Set<string>>(() => new Set());
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [deckSearch, setDeckSearch] = useWorkspaceState('decks', 'deckSearch', '');
+  const [filterCollapsed, setFilterCollapsed] = useWorkspaceSet('decks', 'filterCollapsed');
+  const [collapsed, setCollapsed] = useWorkspaceSet('decks', 'collapsed');
+  const [selectedId, setSelectedId] = useWorkspaceState<string | null>('decks', 'selectedId', null);
+  const selectedRef = useRef(selectedId); selectedRef.current = selectedId;
+  const [hierarchyError, setHierarchyError] = useState(false);
+  const [refreshRevision, setRefreshRevision] = useState(0);
+  useEffect(() => {
+    if (!bootstrapped) return;
+    let active = true;
+    const before = useNN.getState();
+    setHierarchyError(false);
+    void api.decks.get().then(ok).then((rows) => {
+      const current = useNN.getState();
+      if (!active || current.profile?.userId !== before.profile?.userId || current.decks !== before.decks) return;
+      const fresh = rows.map(deckFromApi);
+      useNN.setState({ decks: fresh });
+      if (selectedRef.current && !fresh.some(deck => deck.id === selectedRef.current)) {
+        setSelectedId(null);
+        raiseToast({ kind: 'info', title: t('navigation.itemUnavailable') });
+      }
+    }).catch(() => { if (active) setHierarchyError(true); });
+    return () => { active = false; };
+  }, [bootstrapped, workspace?.entry?.id, refreshRevision]);
   const filterActive = Boolean(deckSearch.trim());
   const clearFilters = () => { setDeckSearch(''); setFilterCollapsed(new Set()); };
-  useEffect(() => { try { const raw = localStorage.getItem(EXPANDED_KEY); if (raw) setCollapsed(new Set(JSON.parse(raw))); } catch {} }, []);
+  useEffect(() => { if (workspace?.entry?.views.decks?.fields.collapsed) return; try { const raw = localStorage.getItem(EXPANDED_KEY); if (raw) setCollapsed(new Set(JSON.parse(raw))); } catch {} }, []);
   const saveCollapsed = (next: Set<string>) => {
     setCollapsed(next);
     try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...next])); } catch {}
@@ -171,6 +196,8 @@ export const NNDecks = () => {
   ] : [];
 
   const treeRef = useRef<HTMLDivElement>(null);
+  const treePosition = useNavigationScroll('decks', 'tree', {ready:bootstrapped,queryKey:deckSearch});
+  const setTreeRef = useCallback((node:HTMLDivElement|null)=>{treeRef.current=node;treePosition.ref(node);},[treePosition.ref]);
   const { dragging, drop, start: startDrag, consumeClick } = useDeckDrag({ decks, disabled: busy || filterActive || isMobile,
     root: treeRef, expand, onMove: (id,target,placement) => { void performMove(id,target,placement); } });
   return <NNAppPage title={t('nav.decks')} subtitle={study.data ? String(study.data.overall.total) : undefined}
@@ -196,20 +223,23 @@ export const NNDecks = () => {
           </div><footer className="reomi-modal-footer"><NNBtn variant="ghost" disabled={busy} onClick={() => setMovingId(null)}>{t('actions.cancel')}</NNBtn><NNBtn type="submit" variant="primary" loading={busy}>{t('decks.move.apply')}</NNBtn></footer>
         </form>
       </Modal>
-      {decks.length > 0 && <div className="reomi-decks-toolbar">
+      {(decks.length > 0 || filterActive) && <div className="reomi-decks-toolbar">
         <div className="reomi-decks-search"><NNIcon name="search" size={16} />
           <TextInput value={deckSearch} aria-label={t('decks.filters.search')} placeholder={t('decks.filters.search')}
             onChange={event => { setDeckSearch(event.target.value); setFilterCollapsed(new Set()); }} />
         </div>
+        <NNBtn size="sm" variant="ghost" ariaLabel={t('navigation.reset')} onClick={()=>{workspace?.resetView('decks');router.replace('/decks',{track:false});}}>{t('navigation.reset')}</NNBtn>
         <span className="reomi-decks-count">{t('decks.filters.count', { n: filterNodes.length })}</span>
         {filterActive && <NNBtn icon="x" variant="ghost" ariaLabel={t('decks.filters.clear')} title={t('decks.filters.clear')} onClick={clearFilters} />}
         <NNBtn icon={hasOpenBranch ? 'chevd' : 'chevr'} variant="ghost" disabled={!filterNodes.some(node => node.children.length > 0)}
           ariaLabel={t(hasOpenBranch ? 'decks.filters.collapseAll' : 'decks.filters.expandAll')}
           title={t(hasOpenBranch ? 'decks.filters.collapseAll' : 'decks.filters.expandAll')} onClick={toggleAll} />
       </div>}
+      <NavigationRestoreNotice failure={treePosition.failure} retry={treePosition.retry}/>
+      {hierarchyError && <div role="alert" className="reomi-deck-status">{t('common.toasts.error')} <NNBtn onClick={() => setRefreshRevision(value => value + 1)}>{t('review.retry')}</NNBtn></div>}
       {study.error && <div role="alert" className="reomi-deck-status">{t('home.countsError')} <NNBtn onClick={study.reload}>{t('review.retry')}</NNBtn></div>}
       <div className="reomi-deck-workspace" data-detail={selected ? 'open' : 'closed'}>
-        <div className="reomi-deck-tree-pane nn-scroll" data-empty={rows.length === 0 || undefined} ref={treeRef}>
+        <div className="reomi-deck-tree-pane nn-scroll" data-empty={rows.length === 0 || undefined} ref={setTreeRef}>
           {filterActive && rows.length > 0 && <p className="reomi-deck-drag-hint">{t('decks.move.filterHint')}</p>}
           {dragging && <div className="reomi-deck-root-drop" style={{ left: (treeRef.current?.getBoundingClientRect().left ?? 0) + 12, top: (treeRef.current?.getBoundingClientRect().bottom ?? 0) - 54, width: (treeRef.current?.getBoundingClientRect().width ?? 0) - 24 }} data-deck-root-drop data-active={drop?.id === null || undefined}>{t('decks.move.toRoot')}</div>}
           {rows.length === 0 ? <div className="reomi-decks-empty">
@@ -222,7 +252,7 @@ export const NNDecks = () => {
               const d = node.deck, counts = study.data?.decks[d.id];
               const hasChildren = decks.some(child => child.parentId === d.id);
               const isCollapsed = effectiveCollapsed.has(d.id);
-              return <div key={d.id} role="treeitem" tabIndex={0} aria-level={node.depth + 1} aria-selected={selected?.id === d.id}
+              return <div key={d.id} data-navigation-anchor={d.id} role="treeitem" tabIndex={0} aria-level={node.depth + 1} aria-selected={selected?.id === d.id}
                 aria-expanded={hasChildren ? !isCollapsed : undefined} aria-label={d.name}
                 className="nn-deck-row reomi-organized-deck-row" data-deck-id={d.id} data-selected={selected?.id === d.id || undefined}
                 data-drop={drop?.id === d.id ? drop.placement : undefined} data-dragging={dragging === d.id || undefined}

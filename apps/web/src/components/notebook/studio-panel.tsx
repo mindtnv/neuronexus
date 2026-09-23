@@ -1,4 +1,7 @@
 'use client';
+
+import { useWorkspaceState } from '@/components/navigation';
+import { useNavigationScroll } from '@/lib/use-navigation-scroll';
 import { AssistantAskButton } from '../chat/assistant-ask-button';
 
 // StudioPanel («Блокноты 2.0» N2, Р12 «Студия» tab) — the right-dock studio
@@ -158,9 +161,12 @@ export const StudioPanel = ({
   useEffect(() => { setGenerationError(null); }, [notebookId]);
 
   // Open viewer (full artifact incl. content); null = list.
-  const [openId, setOpenId] = useState<string | null>(null);
+  const navigationScope = studyScope?.kind === 'source' ? `source:${notebookId}` : `notebook:${notebookId}`;
+  const [openId, setOpenId] = useWorkspaceState<string | null>(navigationScope,'artifactId',null);
+  const listPosition=useNavigationScroll(navigationScope,'artifacts-list',{ready:loaded});
   const [openFull, setOpenFull] = useState<NotebookArtifact | null>(null);
   const [openLoading, setOpenLoading] = useState(false);
+  const [openError, setOpenError] = useState(false);
   const loadSequence = useRef(0);
   const refreshSequence = useRef(0);
   useEffect(() => () => { refreshSequence.current++; }, [notebookId]);
@@ -203,26 +209,32 @@ export const StudioPanel = ({
     async (artifactId: string) => {
       const sequence = ++loadSequence.current;
       setOpenLoading(true);
+      setOpenError(false);
       try {
         const full = await getArtifact(notebookId, artifactId);
         if (sequence === loadSequence.current) setOpenFull(full);
-      } catch {
-        if (sequence === loadSequence.current) setOpenFull(null);
+      } catch (error) {
+        if (sequence === loadSequence.current) {
+          if ((error as {status?:number}).status === 404) {
+            setOpenFull(null); setOpenId(null);
+            raiseToast({kind:'error',title:t('notebooks.studio.notFound')});
+          } else setOpenError(true);
+        }
       } finally {
         if (sequence === loadSequence.current) setOpenLoading(false);
       }
     },
-    [getArtifact, notebookId],
+    [getArtifact, notebookId, setOpenId, t],
   );
 
   // Re-fetch the full content when the open row's status changes under polling
   // (e.g. generating → ready), so the viewer shows the finished document.
   useEffect(() => {
-    if (!openId || !openListRow) return;
-    if (openListRow.status !== openFullStatusRef.current) {
+    if (!openId || !loaded) return;
+    if (!openListRow || openListRow.status !== openFullStatusRef.current) {
       void loadFull(openId);
     }
-  }, [openId, openListRow, loadFull]);
+  }, [openId, openListRow, loadFull, loaded]);
 
   // LIVE viewer: while the open artifact is still generating, poll its FULL
   // content every ~2s so the growing partial text streams into the viewer (the
@@ -242,7 +254,7 @@ export const StudioPanel = ({
       setOpenFull(null);
       void loadFull(a.id);
     },
-    [loadFull],
+    [loadFull, setOpenId],
   );
 
   useEffect(() => {
@@ -335,6 +347,8 @@ export const StudioPanel = ({
       {/* Full-window reader overlay — a ready/generating document opens here. */}
       {openId && (
         <ArtifactReader
+          loadError={openError}
+          onRetry={() => { if (openId) void loadFull(openId); }}
           notebookId={notebookId}
           artifact={openFull}
           loading={openLoading}
@@ -366,7 +380,7 @@ export const StudioPanel = ({
           t={t}
         />
       )}
-      <div className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '10px 10px 14px' }}>
+      <div ref={listPosition.ref} className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '10px 10px 14px' }}>
         {/* Generation tiles (or a setup notice when chat is off). */}
         {!allowGenerate ? null : !chatEnabled ? (
           <div className="nn-empty-state" style={{ paddingTop: 24, paddingBottom: 24 }}>

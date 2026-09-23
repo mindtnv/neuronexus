@@ -38,3 +38,14 @@ test('source generation failures stay visible inside the panel and its hint name
   await act(async () => host.querySelector<HTMLButtonElement>('button[title="notebooks.studio.type_summaryDesc"]')!.click());
   expect(host.querySelector('[role="alert"]')?.textContent).toBe('notebooks.studio.err_no_sources');
 });
+
+test('an artifact read failure retains a retryable viewer and never starts generation', async () => {
+  let unavailable=true;const methods:string[]=[];
+  globalThis.fetch=(async(url:any,init:any)=>{methods.push(init?.method??'GET');return Response.json(String(url).includes('/study/artifacts/quiz')?(unavailable?{error:'unavailable'}:artifact):{items:[artifact],nextOffset:null},{status:String(url).includes('/study/artifacts/quiz')&&unavailable?503:200});}) as unknown as typeof fetch;
+  await act(async()=>root.render(<AppRouterContext.Provider value={{push(){}} as any}><DialogProvider><SourceStudioPanel initialArtifactId="quiz" chatEnabled/></DialogProvider></AppRouterContext.Provider>));
+  expect(document.body.querySelector('[role="alert"]')).not.toBeNull();
+  unavailable=false;
+  const retry=[...document.body.querySelectorAll('button')].find(button=>button.textContent==='review.retry');
+  expect(retry).not.toBeUndefined();await act(async()=>retry!.click());
+  expect(document.body.textContent).toContain('notebooks.quiz.start');expect(methods.every(method=>method==='GET')).toBe(true);
+});

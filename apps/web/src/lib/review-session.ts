@@ -82,8 +82,24 @@ export function createAnswerTimer(now: () => number = () => performance.now()) {
   const elapsed = () => Math.min(MAX_REVIEW_DURATION_MS, Math.round(accumulated + (started === null ? 0 : Math.max(0, now() - started))));
   return {
     elapsed,
+    restore(ms: number) { accumulated=Math.max(0,Math.min(MAX_REVIEW_DURATION_MS,Number.isFinite(ms)?ms:0));started=null; },
+    heartbeat(maxGapMs=2500) {
+      if(started===null)return;
+      const tick=now(),delta=Math.max(0,tick-started);
+      if(delta<=maxGapMs)accumulated=Math.min(MAX_REVIEW_DURATION_MS,accumulated+delta);
+      started=tick;
+    },
     pause() { accumulated = elapsed(); started = null; },
     resume() { if (started === null) started = now(); },
     reset(active: boolean) { accumulated = 0; started = active ? now() : null; },
   };
 }
+
+/** Due comparisons cannot jump when the local wall clock changes. Wake/focus
+ * refresh supplies a new server reading when a platform pauses its monotonic clock. */
+export function createStudyClock(monotonic:()=>number=()=>performance.now()) {
+  let epoch=Date.now(),anchor=monotonic();
+  return {sync(serverNow:number){epoch=serverNow;anchor=monotonic();},now(){return epoch+Math.max(0,monotonic()-anchor);}};
+}
+export {readStudyCheckpoint,writeStudyCheckpoint,clearStudyCheckpoints} from './study-checkpoint';
+export type {StudyCheckpoint,StudyViewCheckpoint,PendingStudyGrade} from './study-checkpoint';

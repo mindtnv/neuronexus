@@ -1,4 +1,17 @@
 const common = {
+  navigation: {
+    itemUnavailable: 'The saved item is no longer available. Your filters are retained.',
+    loadFailed: 'Could not load your workspace',
+    refreshFailed: 'Could not refresh the full list. Your previous view is kept.',
+    originUnavailable: 'The previous item is unavailable. Opened its parent workspace.',
+    returnFailed: 'Could not return to the previous workspace. Try again.',
+    source: 'Source',
+    returnTo: 'Back: {place}',
+    reset: 'Reset view',
+    storageUnavailable: 'Your place is retained during navigation, but restoring it after reload is currently unavailable.',
+    positionUnavailable: 'The exact position could not be restored. Your filters are retained.',
+    retry: 'Retry restoration',
+  },
   app: {
     cardCount: 'Cards: {n}',
     name: 'Reomi',

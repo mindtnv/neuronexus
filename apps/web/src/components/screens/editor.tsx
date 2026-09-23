@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useAppNavigation } from '@/components/navigation';
+import { useAppNavigation, useNavigationWorkspace, NavigationReturn } from '@/components/navigation';
 import { EditorDraftLibrary } from '@/components/editor-draft-library';
 import { CardEditor } from '@/components/card-editor';
 import { RichCard } from '@/components/rich-card';
@@ -19,6 +19,7 @@ import { clearStudyHandoff } from '@/lib/review-session';
 export const NNEditor = () => {
   const t = useT();
   const router = useAppNavigation();
+  const navigationWorkspace=useNavigationWorkspace();
   const params = useSearchParams();
   const requestedCardId = params.get('card');
   const noteId = requestedCardId ? null : params.get('noteId');
@@ -46,7 +47,7 @@ export const NNEditor = () => {
     <NNLoadError title={t('editor.errors.loadFailed')} description={t(loadError.status === 404 ? 'editor.errors.notFound' : 'review.loadFailedBody')}
       retryLabel={t('review.retry')} onRetry={noteResource.error ? noteResource.refresh : resource.refresh} requestId={loadError.requestId} />
     <NNBtn variant="soft" onClick={() => router.push('/editor?drafts=1')}>{t('editor.draft.libraryTitle')}</NNBtn>
-    <NNBtn variant="ghost" onClick={() => router.push(returnTo ?? '/cards')}>{t('actions.cancel')}</NNBtn>
+    <NNBtn variant="ghost" onClick={() => router.returnTo(returnTo ?? '/cards')}>{t('actions.cancel')}</NNBtn>
   </div>;
 
   if (noteData && !cardId) return <div className="reomi-page-surface" style={{ padding: 24, overflow: 'auto' }}>
@@ -57,24 +58,24 @@ export const NNEditor = () => {
     <NNBtn variant="soft" onClick={() => router.push('/cards')}>{t('actions.back')}</NNBtn>
   </div>;
 
-  return <div className="reomi-page-surface reomi-editor-workspace"><CardEditor
+  return <div className="reomi-page-surface reomi-editor-workspace"><NavigationReturn fallback={returnTo??'/cards'}/><CardEditor
     key={cardId ?? `new:${defaultDeckId}:${noteTypeQuery ?? ''}`}
     card={editing}
     defaultDeckId={defaultDeckId}
     defaultNoteTypeId={noteTypeQuery}
-    autoFocusFront
+    autoFocusFront={!navigationWorkspace?.restored}
     onOpen={id => router.push(`/editor?card=${id}`)}
     saveLabel={returnTo ? t('editor.saveAndReturn') : undefined}
     footerExtra={returnTo
-      ? <NNBtn size="sm" variant="ghost" onClick={() => router.push(returnTo)}>{t('actions.cancel')}</NNBtn>
+      ? <NNBtn size="sm" variant="ghost" onClick={() => router.returnTo(returnTo)}>{t('actions.cancel')}</NNBtn>
       : editing ? <NNBtn size="sm" variant="soft" onClick={() => router.push(`/editor?${new URLSearchParams({ deck: editing.deckId, ...(editing.noteType ? { noteType: editing.noteType.id } : {}) })}`)}>{t('editor.addAnother')}</NNBtn> : undefined}
     onSaved={(card) => {
       raiseToast({ kind: 'success', title: t('editor.saved') });
-      if (returnTo) router.replace(returnTo);
+      if (returnTo) router.returnTo(returnTo);
       else if (cardId === card.id) resource.mutate(card);
       else router.replace(`/editor?card=${encodeURIComponent(card.id)}`, { track: false });
     }}
-    onDeleted={() => { clearStudyHandoff(); router.push(returnTo ?? '/decks'); }}
+    onDeleted={() => { clearStudyHandoff(); router.returnTo(returnTo ?? '/decks'); }}
   /></div>;
 
 };

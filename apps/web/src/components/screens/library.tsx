@@ -42,8 +42,13 @@ import { useT } from '@/lib/i18n';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { isNonTerminal, useSourceStatus } from '@/lib/use-source-status';
-import { useSessionResource } from '@/lib/session-resource';
-import { AppLink, useAppNavigation } from '@/components/navigation';
+import { useSessionResource, peekSessionResource } from '@/lib/session-resource';
+import { AppLink, useAppNavigation, useNavigationWorkspace, useWorkspaceState } from '@/components/navigation';
+
+import { useNavigationScroll, NavigationRestoreNotice } from '@/lib/use-navigation-scroll';
+import { restoreCollectionPages, refreshLoadedCollection } from '@/lib/navigation-restore';
+import { toApiError } from '@/lib/resource-state';
+import type { ApiError } from '@/lib/api';
 
 type Tr = (key: string, params?: Record<string, string | number>) => string;
 type ViewMode = 'grid' | 'list';
@@ -99,6 +104,7 @@ export const LibraryScreen = () => {
   const t = useT();
   const navigation = useAppNavigation();
   const searchParams = useSearchParams();
+  const workspace = useNavigationWorkspace();
   const bp = useBreakpoint();
   const isMobile = bp === 'mobile';
   const { confirm, prompt } = useDialog();
@@ -111,16 +117,19 @@ export const LibraryScreen = () => {
   const getSource = useNN((s) => s.getSource);
 
   // ── List state + filters ──────────────────────────────────────────────────────
-  const [search, setSearch] = useState('');
-  const [debouncedQ, setDebouncedQ] = useState('');
-  const [kind, setKind] = useState<KindFilter>('all');
-  const [reading, setReading] = useState<ReadingFilter>('all');
-  const [tag, setTag] = useState<string | null>(null);
-  const [unattached, setUnattached] = useState(false);
-  const [sort, setSort] = useState<SortMode>('added');
+  const [search, setSearch] = useWorkspaceState('library', 'search', '');
+  const queryEntry = workspace?.entry?.id;
+  const [debounced, setDebounced] = useState({ entry: queryEntry, value: search.trim() });
+  const debouncedQ = debounced.entry === queryEntry ? debounced.value : search.trim();
+  const setDebouncedQ = useCallback((value: string) => setDebounced({entry: queryEntry, value}), [queryEntry]);
+  const [kind, setKind] = useWorkspaceState<KindFilter>('library', 'kind', 'all');
+  const [reading, setReading] = useWorkspaceState<ReadingFilter>('library', 'reading', 'all');
+  const [tag, setTag] = useWorkspaceState<string | null>('library', 'tag', null);
+  const [unattached, setUnattached] = useWorkspaceState('library', 'unattached', false);
+  const [sort, setSort] = useWorkspaceState<SortMode>('library', 'sort', 'added');
   const [view, setView] = useState<ViewMode>('grid');
   // Search mode: by title/author (the list) vs by content (semantic search).
-  const [searchMode, setSearchMode] = useState<'title' | 'content'>('title');
+  const [searchMode, setSearchMode] = useWorkspaceState<'title' | 'content'>('library', 'searchMode', 'title');
 
   // Hydrate the persisted view mode.
   useEffect(() => {
@@ -144,7 +153,7 @@ export const LibraryScreen = () => {
   useEffect(() => {
     const id = window.setTimeout(() => setDebouncedQ(search.trim()), 300);
     return () => window.clearTimeout(id);
-  }, [search]);
+  }, [search, setDebouncedQ]);
 
   const query = useMemo<LibraryQuery>(() => {
     const q: LibraryQuery = { sort };
@@ -161,7 +170,7 @@ export const LibraryScreen = () => {
   useEffect(() => {
     try {
       const v = localStorage.getItem(SEARCHMODE_KEY);
-      if (v === 'content' || v === 'title') setSearchMode(v);
+      if (!workspace?.entry?.views.library?.fields.searchMode && (v === 'content' || v === 'title')) setSearchMode(v);
     } catch {
       /* default title */
     }
@@ -183,7 +192,7 @@ export const LibraryScreen = () => {
   const [dragActive, setDragActive] = useState(false);
 
   // ── Details panel ────────────────────────────────────────────────────────────
-  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailId, setDetailId] = useWorkspaceState<string | null>('library', 'detailId', null);
 
   // L2 — clicking a material opens the full-screen reader; details moved to a
   // ⋯ button on each card/row.
@@ -193,7 +202,14 @@ export const LibraryScreen = () => {
   // A stable scope gives us latest-request-wins across different filter keys;
   // each key remains session-cached so returning to a previous filter is instant.
   const libraryKey = useMemo(() => `library:list:${JSON.stringify(query)}`, [query]);
-  const fetchLibrary = useCallback(() => listLibrary(query), [listLibrary, query]);
+  const libraryRequest=useRef(0);
+  const fetchLibrary = useCallback(() => {
+    const generation=++libraryRequest.current,owner=useNN.getState().profile?.userId;
+    return refreshLoadedCollection(peekSessionResource<{items:LibraryItem[];nextCursor:string|null}>(libraryKey),async cursor=>{
+      if(generation!==libraryRequest.current||useNN.getState().profile?.userId!==owner)throw new DOMException('Cancelled','AbortError');
+      return listLibrary({...query,...(cursor?{cursor}:{})});
+    },t('navigation.refreshFailed'));
+  }, [listLibrary, query, libraryKey, t]);
   const libraryResource = useSessionResource({
     key: libraryKey,
     scope: 'library:list',
@@ -213,6 +229,15 @@ export const LibraryScreen = () => {
     });
   }, [libraryResource.mutate]);
   const refresh = libraryResource.refresh;
+
+  const restoreRows = useCallback(async (anchor: import('@/lib/navigation-context').ScrollAnchor, signal: AbortSignal) => {
+    if (!libraryResource.data || searchMode !== 'title') return 'missing' as const;
+    const result = await restoreCollectionPages({ throughId:anchor.endId, initial: libraryResource.data, anchors: [anchor.id, ...(anchor.nearby ?? [])].filter((id): id is string => Boolean(id)),
+      fetchPage: cursor => listLibrary({...query, cursor}), signal });
+    if (!signal.aborted && result.reason !== 'cancelled') libraryResource.mutate({items:result.items,nextCursor:result.nextCursor});
+    return result.reason;
+  }, [libraryResource.data, libraryResource.mutate, searchMode, listLibrary, query]);
+  const listPosition = useNavigationScroll('library', 'list', {ready: Boolean(libraryResource.data), queryKey: libraryKey, restoreRows});
 
   // Distinct tags from the loaded items (the simple client-side collection path).
   const allTags = useMemo(() => {
@@ -425,11 +450,11 @@ export const LibraryScreen = () => {
     setDebouncedQ('');
     setKind('all');
     setReading('all');
-  }, []);
+  }, [setSearch, setDebouncedQ, setKind, setReading]);
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <PageSurface className="reomi-library"
+    <PageSurface ref={listPosition.ref} className="reomi-library"
       aria-busy={libraryResource.status === 'loading' || libraryResource.status === 'refreshing'}
       onDragOver={(e) => {
         if (e.dataTransfer?.types?.includes('Files')) {
@@ -465,6 +490,8 @@ export const LibraryScreen = () => {
 
       {/* Header */}
       <LibraryHeader
+        refreshing={libraryResource.status==='refreshing'}
+        onReset={()=>{workspace?.resetView('library');setDebouncedQ('');navigation.replace('/library',{track:false});}}
         search={search}
         setSearch={setSearch}
         kind={kind}
@@ -497,6 +524,7 @@ export const LibraryScreen = () => {
         t={t}
       />
 
+      <NavigationRestoreNotice failure={listPosition.failure} retry={listPosition.retry}/>
       {/* Upload progress strip */}
       {uploadQueue && (
         <div className="nn-lib-upload-strip">
@@ -508,11 +536,6 @@ export const LibraryScreen = () => {
         </div>
       )}
 
-      {libraryResource.status === 'refreshing' && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '6px 0' }}>
-          <NNInlineRefresh label={t('states.loading')} />
-        </div>
-      )}
 
       {libraryResource.status === 'error' && (
         <div style={{ margin: '10px 0' }}>
@@ -645,6 +668,8 @@ export const LibraryScreen = () => {
 // ── Header ──────────────────────────────────────────────────────────────────────
 
 const LibraryHeader = ({
+  refreshing,
+  onReset,
   search,
   setSearch,
   kind,
@@ -670,6 +695,8 @@ const LibraryHeader = ({
   isMobile,
   t,
 }: {
+  refreshing: boolean;
+  onReset: () => void;
   search: string;
   setSearch: (v: string) => void;
   kind: KindFilter;
@@ -697,11 +724,12 @@ const LibraryHeader = ({
 }) => (
   <div className="reomi-library-toolbar">
     {/* Search-mode toggle + search + add */}
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+    <div style={{ display: 'flex', alignItems: 'center', flexWrap:isMobile?'wrap':'nowrap',gap: 10 }}>
       <SegmentedControl label={t('library.header.searchPlaceholder')} value={searchMode}
         onChange={setSearchMode} options={[{ value: 'title', label: t('library.search.byTitle') }, { value: 'content', label: t('library.search.byContent') }]} />
       <AppLink className="reomi-button" data-variant="ghost" href="/library/study">{t('assistant.savedStudy')}</AppLink>
-      <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+      <div style={{ position: 'relative', flex: isMobile?'1 0 100%':1,order:isMobile?1:undefined,minWidth: 0 }}>
+        {refreshing&&<span style={{position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',pointerEvents:'none'}}><NNInlineRefresh label={t('states.loading')}/></span>}
         <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
           <NNIcon name="search" size={15} color="var(--text-dim)" />
         </span>
@@ -710,9 +738,10 @@ const LibraryHeader = ({
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t(searchMode === 'content' ? 'library.search.contentPlaceholder' : 'library.header.searchPlaceholder')}
           aria-label={t('library.header.searchPlaceholder')}
-          style={{ paddingLeft: 32 }}
+          style={{ paddingLeft: 32,paddingRight:100 }}
         />
       </div>
+      <NNBtn variant="ghost" icon="sync" ariaLabel={t('navigation.reset')} title={t('navigation.reset')} onClick={onReset}/>
       <div style={{ position: 'relative' }}>
         <NNBtn className="reomi-create-icon" variant="soft" icon="plus" ariaLabel={t('library.header.add')} title={t('library.header.add')} aria-expanded={addMenuOpen} onClick={() => setAddMenuOpen(!addMenuOpen)} />
         {addMenuOpen && (
@@ -951,7 +980,7 @@ const LibraryCard = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onOpen
   const notReady = item.status !== 'ready' && (item.total === 0 || item.status === 'deleting');
   const statusLabel = labelForStatus(item, t);
   return (
-    <button type="button" onClick={onOpen} className="nn-lib-card">
+    <button type="button" data-navigation-anchor={item.id} onClick={onOpen} className="nn-lib-card">
       <div style={{ position: 'relative' }}>
         <CoverPlaceholder item={item} aspect />
         {['pending', 'parsing', 'indexing'].includes(item.status) && <LibraryIngestIndicator item={item} t={t} />}
@@ -1032,7 +1061,7 @@ const LibraryCard = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onOpen
 const LibraryListRow = ({ item, onOpen, onDetails, t }: { item: LibraryItem; onOpen: () => void; onDetails: () => void; t: Tr }) => {
   const notReady = item.status !== 'ready' && (item.total === 0 || item.status === 'deleting');
   return (
-    <button type="button" onClick={onOpen} className="nn-lib-row">
+    <button type="button" data-navigation-anchor={item.id} onClick={onOpen} className="nn-lib-row">
       <CoverPlaceholder item={item} size={40} />
       <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
         <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1219,20 +1248,33 @@ const DetailsPanel = ({
   const [loaded, setLoaded] = useState(false);
   const [tagDraft, setTagDraft] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [loadError, setLoadError] = useState<ApiError | null>(null);
+  const requestVersion = useRef(0);
+  const closeRef = useRef(onClose); closeRef.current = onClose;
+  const translateRef = useRef(t); translateRef.current = t;
 
   const reload = useCallback(async () => {
+    const version = ++requestVersion.current;
+    setLoadError(null);
     try {
       const d = await getLibraryItem(itemId);
+      if (version !== requestVersion.current) return;
       setDetail(d);
-    } catch {
-      onClose();
+    } catch (error) {
+      if (version !== requestVersion.current) return;
+      const failure = toApiError(error);
+      if (failure.status === 404 || failure.status === 403) {
+        raiseToast({ kind: 'info', title: translateRef.current('navigation.itemUnavailable') });
+        closeRef.current();
+      } else setLoadError(failure);
     } finally {
-      setLoaded(true);
+      if (version === requestVersion.current) setLoaded(true);
     }
-  }, [getLibraryItem, itemId, onClose]);
+  }, [getLibraryItem, itemId]);
 
   useEffect(() => {
     void reload();
+    return () => { requestVersion.current++; };
   }, [reload]);
 
   // Poll the detail while the source is mid-ingest (e.g. after a reingest) so
@@ -1345,6 +1387,8 @@ const DetailsPanel = ({
     }
   }, [detail, confirm, t, reingestLibraryItem, itemId, reload]);
 
+  const detailPosition = useNavigationScroll('library', 'details', {ready:loaded&&Boolean(detail),queryKey:itemId});
+
   const onAttached = useCallback(() => {
     setPickerOpen(false);
     void reload();
@@ -1355,6 +1399,7 @@ const DetailsPanel = ({
     <>
       <div className="nn-dialog-backdrop" onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'var(--scrim)' }} />
       <div
+        ref={detailPosition.ref}
         className="nn-scroll"
         style={{
           position: 'fixed',
@@ -1380,7 +1425,8 @@ const DetailsPanel = ({
           <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.details.close')} title={t('library.details.close')} onClick={onClose} />
         </div>
 
-        {!loaded || !detail ? (
+        {loadError && <NNLoadError title={t('navigation.loadFailed')} description={loadError.safeMessage} requestId={loadError.requestId} retryLabel={t('navigation.retry')} onRetry={() => void reload()} />}
+        {loadError && !detail ? null : !loaded || !detail ? (
           <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <NNSkeleton style={{ height: 120 }} />
             <NNSkeleton style={{ height: 16, width: '70%' }} />

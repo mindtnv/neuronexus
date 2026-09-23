@@ -8,6 +8,7 @@ import { NNBtn, NNIcon } from './ui';
 import { AppLink } from './navigation';
 import { AssistantAskButton } from './chat/assistant-ask-button';
 import { deckColorValue, deckIconName } from './deck-appearance';
+import { useNavigationScroll } from '@/lib/use-navigation-scroll';
 
 export function deckCardsHref(decks: Deck[], id: string) {
   const path = deckPathLabel(decks, id).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -17,6 +18,7 @@ export function DeckDetails({ deck, decks, counts, onBack, onAppearance }: {
   deck: Deck; decks: Deck[]; counts?: StudySummary; onBack: () => void; onAppearance: () => void;
 }) {
   const t = useT();
+  const position=useNavigationScroll('decks','detail',{ready:Boolean(counts),queryKey:deck.id});
   const { locale } = useLocale();
   const forecast = useStudyForecast(7, `${counts?.serverNow ?? ''}:${decks.map(d => `${d.id}:${d.parentId}`).join(',')}`, deck.id);
   const states = [
@@ -33,7 +35,7 @@ export function DeckDetails({ deck, decks, counts, onBack, onAppearance }: {
     return { date, count: buckets.get(date.toISOString().slice(0,10)) ?? 0 };
   });
   const max = Math.max(1, ...days.map(d => d.count));
-  return <aside className="reomi-deck-details" aria-label={t('decks.details.title')}>
+  return <aside ref={position.ref} className="reomi-deck-details" aria-label={t('decks.details.title')}>
     <NNBtn className="reomi-deck-back" variant="ghost" icon="chevl" onClick={onBack}>{t('decks.details.back')}</NNBtn>
     <div className="reomi-deck-detail-heading">
       <button className="reomi-deck-emblem" style={{ color: deckColorValue(deck.color) }} aria-label={t('decks.appearance.title')} onClick={onAppearance}><NNIcon name={deckIconName(deck.icon)} size={30}/></button>

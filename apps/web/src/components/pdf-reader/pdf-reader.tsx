@@ -1,5 +1,6 @@
 'use client';
 
+import { useNavigationScroll, NavigationRestoreNotice } from '@/lib/use-navigation-scroll';
 import { NNIcon } from '@/components/ui';
 import { PdfPageVisibility } from '@/lib/pdf-page-visibility';
 
@@ -23,12 +24,13 @@ import React, {
   forwardRef,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useImperativeHandle,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import { useAppNavigation } from '@/components/navigation';
+import { useAppNavigation, useNavigationWorkspace, useWorkspaceState } from '@/components/navigation';
 import type { InkStroke, MarkRect, PageAnnotations, SourceMarkColor } from '@neuronexus/shared';
 import { ANNOTATION_MAX_STROKES, MARKED_TEXT_MAX } from '@neuronexus/shared';
 import { extractMarkedText, textItemBBox, type PdfTextItem } from '@/lib/pdf-ink';
@@ -140,8 +142,12 @@ const POS_KEY = (id: string) => `nn:pdf:pos:${id}`;
 export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
   ({ sourceId, sourceName, sourceVersion, initialPage, initialMarkId, t, onMode, onAskChat, chatEnabled = false, onPageChange, tocOpen, tocAvailable, onToggleToc, onDocInfo, onExportMarkup }, ref) => {
     const router = useAppNavigation();
+    const navigationWorkspace=useNavigationWorkspace();
+    const navigationScope=`source:${sourceId}`;
+    const hasNavigationAnchor=Boolean(navigationWorkspace?.entry?.views[navigationScope]?.scrolls.pdf);
     const { locale } = useLocale();
     const containerRef = useRef<HTMLDivElement>(null);
+    const readerRootRef=useRef<HTMLDivElement>(null);
     const pageElsRef = useRef<Map<number, HTMLDivElement>>(new Map());
     const pdfjsRef = useRef<any>(null);
     const docRef = useRef<PdfDocument | null>(null);
@@ -157,6 +163,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     const [numPages, setNumPages] = useState(0);
     // Unscaled (scale=1) page dims for aspect-ratio placeholders.
     const [pageDims, setPageDims] = useState<PdfPageViewport[]>([]);
+    const [dimensionsThrough,setDimensionsThrough]=useState(0);
     const [scale, setScale] = useState(1);
     const [fitScale, setFitScale] = useState(1);
     const [visible, setVisible] = useState<Set<number>>(new Set([1]));
@@ -167,7 +174,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     // M5 — marks state.
     const [marks, setMarks] = useState<SourceMark[]>([]);
     const activeSource = useRef(sourceId); activeSource.current = sourceId;
-    const [marksPanelOpen, setMarksPanelOpen] = useState(false);
+    const [marksPanelOpen, setMarksPanelOpen] = useWorkspaceState(navigationScope,'marksOpen',false);
     // Feature #2 — harvest wizard open flag.
     const [harvestOpen, setHarvestOpen] = useState(false);
     // M5 — QuickCardDialog state. Opened from a text selection (the popover),
@@ -184,6 +191,13 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     } | null>(null);
     const marqueeRef = useRef(marquee);
     useEffect(() => { marqueeRef.current = marquee; }, [marquee]);
+
+    const savedAnchor=navigationWorkspace?.entry?.views[navigationScope]?.scrolls.pdf;
+    const initialTargetRef=useRef(Math.max(1,Number(savedAnchor?.endId??savedAnchor?.id??initialPage??1)||1));
+    const dimensionsReady=dimensionsThrough>=Math.min(numPages||1,initialTargetRef.current);
+    const initialPositionDone=useRef(false);
+    const position = useNavigationScroll(navigationScope,'pdf',{ready:loadState==='ready'&&dimensionsReady&&pageDims.length===numPages&&numPages>0,fractional:true});
+    const setContainerRef=useCallback((node:HTMLDivElement|null)=>{containerRef.current=node;position.ref(node);},[position.ref]);
 
     const pendingInitialPageRef = useRef<number | undefined>(initialPage);
     const pendingInitialMarkRef = useRef<string | undefined>(initialMarkId);
@@ -396,7 +410,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
       let cancelled = false;
       let loadingTask: PdfLoadingTask | null = null;
       const ac = new AbortController();
-      setLoadState('loading');
+      setLoadState('loading');setDimensionsThrough(0);initialPositionDone.current=false;
       setLoadProgress({ loaded: 0, total: null });
       textCacheRef.current = new Map();
       renderedRef.current = new Map();
@@ -439,12 +453,14 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
           const vp1 = first.getViewport({ scale: 1 });
           const dims: PdfPageViewport[] = new Array(doc.numPages).fill({ width: vp1.width, height: vp1.height });
           dims[0] = { width: vp1.width, height: vp1.height };
-          setPageDims(dims);
+          setPageDims(dims);setDimensionsThrough(1);
 
-          const containerW = containerRef.current?.clientWidth ?? 800;
+          const containerW = readerRootRef.current?.clientWidth ?? containerRef.current?.clientWidth ?? 800;
           const fit = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (containerW - 48) / vp1.width));
           setFitScale(fit);
-          setScale(fit);
+          let preferredScale=fit;
+          try{const saved=JSON.parse(localStorage.getItem(POS_KEY(sourceId))??'null');if(typeof saved?.scale==='number'&&saved.scale>=ZOOM_MIN&&saved.scale<=ZOOM_MAX)preferredScale=saved.scale;}catch{}
+          setScale(preferredScale);
 
           // L3 — surface doc metadata + a lazy page-1 cover renderer ONCE so the
           // library reader can backfill pageCount/author/cover (NULL fields only).
@@ -496,7 +512,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
                 });
               } catch {
                 /* keep the seeded dims */
-              }
+              } finally {if(!cancelled)setDimensionsThrough(n);}
             }
           })();
 
@@ -571,13 +587,15 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     }, [currentPage, scale, loadState, sourceId]);
 
     // Once ready: jump to the deep-link page if any, else the stored position.
-    useEffect(() => {
-      if (loadState !== 'ready' || numPages === 0) return;
+    useLayoutEffect(() => {
+      if (loadState !== 'ready' || numPages === 0 || hasNavigationAnchor || !dimensionsReady || !containerRef.current || initialPositionDone.current) return;
+      initialPositionDone.current=true;
+      if(position.isCancelled())return;
       const wanted = pendingInitialPageRef.current;
       if (wanted && wanted >= 1 && wanted <= numPages) {
         pendingInitialPageRef.current = undefined;
         // Defer to next frame so placeholders are laid out.
-        requestAnimationFrame(() => scrollToPage(wanted, true));
+        scrollToPage(wanted, true);
         return;
       }
       try {
@@ -588,18 +606,18 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             setScale(storedScale);
           }
           if (typeof page === 'number' && page > 1 && page <= numPages) {
-            requestAnimationFrame(() => scrollToPage(page, false));
+            scrollToPage(page, false);
           }
         }
       } catch {
         /* ignore */
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [loadState, numPages, sourceId]);
+    }, [loadState, numPages, sourceId,dimensionsReady]);
 
     // ── Virtualization: observe page wrappers (±2) + track current page ───────────
     useEffect(() => {
-      if (loadState !== 'ready' || numPages === 0) return;
+      if (loadState !== 'ready' || numPages === 0 || !dimensionsReady) return;
       const root = containerRef.current;
       if (!root) return;
       const pages = new PdfPageVisibility(numPages);
@@ -617,7 +635,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
       }, { root, threshold: Array.from({ length: 11 }, (_, index) => index / 10) });
       for (const element of pageElsRef.current.values()) { nearby.observe(element); viewport.observe(element); }
       return () => { nearby.disconnect(); viewport.disconnect(); };
-    }, [loadState, numPages]);
+    }, [loadState, numPages, dimensionsReady]);
 
     // ── Render a page canvas when it becomes visible / scale changes ──────────────
     const renderPage = useCallback(
@@ -680,7 +698,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
           renderedRef.current.delete(n);
         }
       }
-    }, [visible, scale, loadState, renderPage]);
+    }, [visible, scale, loadState, dimensionsReady, renderPage]);
 
     // ── M5 — Text layer: render per visible page (lazy, cached, freed with virt) ───
     const renderTextLayer = useCallback(
@@ -776,20 +794,21 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
           textLayerInstances.current.delete(n);
         }
       }
-    }, [visible, scale, loadState, renderTextLayer]);
+    }, [visible, scale, loadState, dimensionsReady, renderTextLayer]);
 
     // ── scrollToPage (exposed) ────────────────────────────────────────────────────
     const scrollToPage = useCallback((page: number, flash = false) => {
       const el = pageElsRef.current.get(page);
       const root = containerRef.current;
       if (!el || !root) return;
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      position.beginExplicitJump();
+      el.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth', block: 'start' });
       setCurrentPage(page);
       if (flash) {
         el.classList.add('nn-pdf-page-flash');
         window.setTimeout(() => el.classList.remove('nn-pdf-page-flash'), 1600);
       }
-    }, []);
+    }, [position.beginExplicitJump]);
 
     // L2 — resolve the PDF outline (table of contents) into flat entries. Each
     // entry's `dest` is resolved through getDestination/getPageIndex to a 1-based
@@ -1028,6 +1047,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     if (loadState === 'error') {
       return (
         <div className="nn-empty-state" style={{ flex: 1 }}>
+        <NavigationRestoreNotice failure={position.failure} retry={position.retry}/>
           <p className="nn-empty-state-hint">
             {t('notebooks.reader.loadError')}
           </p>
@@ -1039,7 +1059,8 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
     }
 
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <div ref={readerRootRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        <NavigationRestoreNotice failure={position.failure} retry={position.retry}/>
         <ReaderToolbar
             tool={tools.tool}
             color={tools.color}
@@ -1070,7 +1091,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
             t={t}
           />
 
-        {loadState === 'loading' ? (
+        {loadState === 'loading' || !dimensionsReady ? (
           <div className="nn-empty-state nn-reader-bg" style={{ flex: 1 }}>
             <div style={{ width: 180, height: 4, borderRadius: 99, background: 'var(--surface-3)', overflow: 'hidden' }}>
               <div
@@ -1096,7 +1117,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
           // Reader body: relative container so the Разметка panel can be absolute.
           <div style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden' }}>
             <div
-              ref={containerRef}
+              ref={setContainerRef}
               className="nn-scroll nn-reader-bg"
               tabIndex={0}
               onFocus={() => (focusRef.current = true)}
@@ -1166,7 +1187,7 @@ export const PdfReader = forwardRef<PdfReaderHandle, PdfReaderProps>(
                       key={n}
                       data-page={n}
                       ref={(el) => {
-                        if (el) pageElsRef.current.set(n, el);
+                        if (el) { el.dataset.navigationAnchor=String(n); pageElsRef.current.set(n, el); }
                         else pageElsRef.current.delete(n);
                       }}
                       className="nn-pdf-page"

@@ -1,13 +1,15 @@
 'use client';
 
-import { useEffect, useLayoutEffect, type CSSProperties } from 'react';
+import { Fragment, useEffect, useLayoutEffect, type CSSProperties } from 'react';
 import { usePathname } from 'next/navigation';
 import { useUI, readSidebarWidth, readSidebarCollapsed } from '@/lib/ui-store';
 import { useSession } from '@/lib/auth';
-import { NNPageSkeleton, NNSkeleton } from './ui';
+import { NNPageSkeleton, NNSkeleton, NNLoadError } from './ui';
 import { useAppNavigation } from './navigation';
+import { useNN } from '@/lib/store';
+import { useT } from '@/lib/i18n';
 
-function AuthGateSkeleton() {
+function AuthGateSkeleton({error}:{error?:React.ReactNode}={}) {
   const width = useUI(state => state.sidebarWidth);
   const hidden = useUI(state => state.sidebarCollapsed);
   useLayoutEffect(() => {
@@ -16,7 +18,7 @@ function AuthGateSkeleton() {
     if (collapsed !== null) useUI.getState().setSidebarCollapsed(collapsed);
   }, []);
   return (
-    <div className="nn-auth-gate-skeleton" data-compact={width < 160 || undefined} style={{ '--nn-sidebar-width': `${width}px` } as CSSProperties} aria-busy="true" aria-label="Loading session">
+    <div className="nn-auth-gate-skeleton" data-compact={width < 160 || undefined} style={{ '--nn-sidebar-width': `${width}px` } as CSSProperties} aria-busy={!error} aria-label={error?undefined:'Loading session'}>
       {!hidden && <aside className="nn-auth-gate-sidebar" aria-hidden>
         <div className="nn-auth-gate-logo"><NNSkeleton width={96} height={18} /></div>
         <div style={{ padding: '18px 14px', display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -32,10 +34,25 @@ function AuthGateSkeleton() {
           <NNSkeleton width={120} height={14} />
           <NNSkeleton width={36} height={36} radius={9} />
         </div>
-        <NNPageSkeleton />
+        {error??<NNPageSkeleton />}
       </main>
     </div>
   );
+}
+
+/** Session identity can change before bootstrap finishes. Do not mount a new
+ * account's routes against the previous account's mirror or resource cache. */
+export function AuthenticatedWorkspace({owner,children}:{owner:string;children:React.ReactNode}) {
+  const profileOwner=useNN(state=>state.profile?.userId);
+  const ready=useNN(state=>state.bootstrapped);
+  const status=useNN(state=>state.bootstrapStatus);
+  const error=useNN(state=>state.bootstrapError);
+  const bootstrap=useNN(state=>state.bootstrap);
+  const t=useT();
+  if(!ready||profileOwner!==owner)return <AuthGateSkeleton error={!profileOwner&&status==='error'
+    ?<NNLoadError title={t('navigation.loadFailed')} description={error?.safeMessage} requestId={error?.requestId}
+      retryLabel={t('review.retry')} onRetry={()=>void bootstrap().catch(()=>{})}/>:undefined}/>;
+  return <Fragment key={owner}>{children}</Fragment>;
 }
 
 /**
@@ -63,5 +80,5 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     return <AuthGateSkeleton />;
   }
 
-  return <>{children}</>;
+  return <AuthenticatedWorkspace owner={data.session.userId}>{children}</AuthenticatedWorkspace>;
 }

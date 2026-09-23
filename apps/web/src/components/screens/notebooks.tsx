@@ -37,7 +37,7 @@ import { sourceKindToneVar } from '@/lib/source-kind';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
 import { useSessionResource } from '@/lib/session-resource';
-import { useAppNavigation } from '@/components/navigation';
+import { useAppNavigation, useNavigationWorkspace, useWorkspaceState } from '@/components/navigation';
 
 type Tfn = (key: string, params?: Record<string, string | number>) => string;
 
@@ -184,11 +184,14 @@ export function mimeFor(file: File): SourceMime | null {
   return null;
 }
 
+import { useNavigationScroll, NavigationRestoreNotice } from '@/lib/use-navigation-scroll';
+
 export type AddKind = 'file' | 'url' | 'text';
 
 export const NotebooksScreen = () => {
   const t = useT();
   const navigation = useAppNavigation();
+  const workspace = useNavigationWorkspace();
   const isMobile = useIsMobile();
   const { prompt, confirm } = useDialog();
 
@@ -197,8 +200,8 @@ export const NotebooksScreen = () => {
   const patchNotebook = useNN((s) => s.patchNotebook);
   const deleteNotebook = useNN((s) => s.deleteNotebook);
 
-  const [archived, setArchived] = useState(false);
-  const [search, setSearch] = useState('');
+  const [archived, setArchived] = useWorkspaceState('notebooks', 'archived', false);
+  const [search, setSearch] = useWorkspaceState('notebooks', 'search', '');
   const [createOpen, setCreateOpen] = useState(false);
 
   // ── Notebook list (re-fetched per archive toggle) ─────────────────────────────
@@ -214,6 +217,7 @@ export const NotebooksScreen = () => {
   });
   const notebooks = notebooksResource.data ?? [];
   const notebooksLoaded = notebooksResource.data !== null || notebooksResource.status === 'error';
+  const listPosition = useNavigationScroll('notebooks','list',{ready:Boolean(notebooksResource.data),queryKey:JSON.stringify([archived,search])});
   const setNotebooks = useCallback((update: SetStateAction<Notebook[]>) => {
     notebooksResource.mutate((previous) => {
       const value = previous ?? [];
@@ -353,7 +357,7 @@ export const NotebooksScreen = () => {
   const continueNb = !archived && !search.trim() && notebooks.length > 0 ? notebooks[0] : null;
 
   return (
-    <PageSurface className="reomi-notebooks"
+    <PageSurface ref={listPosition.ref} className="reomi-notebooks"
       aria-busy={notebooksResource.status === 'loading' || notebooksResource.status === 'refreshing'}
     >
       {createOpen && (
@@ -373,6 +377,8 @@ export const NotebooksScreen = () => {
         <NNBtn className="reomi-create-icon" variant="soft" icon="plus" ariaLabel={t('notebooks.list.create')} title={t('notebooks.list.create')} onClick={() => setCreateOpen(true)} />
       </div>
 
+      <div style={{display:'flex',justifyContent:'flex-end'}}><NNBtn size="sm" variant="ghost" ariaLabel={t('navigation.reset')} onClick={()=>{workspace?.resetView('notebooks');navigation.replace('/notebooks',{track:false});}}>{t('navigation.reset')}</NNBtn></div>
+      <NavigationRestoreNotice failure={listPosition.failure} retry={listPosition.retry}/>
       {notebooksResource.status === 'refreshing' && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '-10px 0 10px' }}>
           <NNInlineRefresh label={t('states.loading')} />
@@ -591,6 +597,7 @@ const NotebookCard = ({
 
   return (
     <div
+      data-navigation-anchor={notebook.id}
       className="nn-nb-card"
       onClick={onOpen}
       onKeyDown={pressToOpen(onOpen)}

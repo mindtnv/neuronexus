@@ -8,7 +8,7 @@ import { useNN } from '../../lib/store';
 import { AppNavigationProvider } from '../navigation';
 import { BASIC_NOTE_TYPE, CLOZE_NOTE_TYPE } from '@neuronexus/shared';
 import { cardFromApi, noteTypeFromApi, profileFromApi, reviewFromApi } from '../../lib/mappers';
-import { emptyStudySession, mergeStudyQueue, recordStudyAnswer, saveStudyHandoff } from '../../lib/review-session';
+import { emptyStudySession, mergeStudyQueue, recordStudyAnswer, saveStudyHandoff, writeStudyCheckpoint, readStudyCheckpoint, clearStudyCheckpoints } from '../../lib/review-session';
 
 // Re-register before loading DOM-dependent modules; other suites tear the DOM down.
 ensureTestDom();
@@ -49,6 +49,7 @@ beforeEach(() => {
   ensureTestDom();
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   originalFetch = globalThis.fetch;
+  clearStudyCheckpoints('test-user');
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -236,6 +237,7 @@ describe('review screen lifecycle', () => {
         loads++;
         return Promise.resolve(Response.json({ due: [], new: graded ? [] : [studyCard], mode: 'regular' }));
       }
+      if (String(url).includes('/reviews/records')) return Promise.resolve(Response.json({items:[{id:'saved',cardId:studyCard.id,rating:4,reviewedAt:new Date().toISOString(),nextDue:new Date().toISOString()}]}));
       if (String(url).includes('/reviews')) {
         graded = true; posts++;
         return Promise.resolve(Response.json({ card: { ...studyCard, state: 'review', reps: 1 }, review: { id: 'saved', cardId: studyCard.id, rating: 4 }, profile: null }));
@@ -249,7 +251,7 @@ describe('review screen lifecycle', () => {
     await render();
     expect(loads).toBe(3); // entry, exhausted-batch refill, re-entry
     expect(posts).toBe(1);
-    expect(container.textContent).toContain('review.allCaught.title');
+    expect(container.textContent).toContain('review.sessionComplete.title');
   });
 
   test('Again waits for the saved learning step instead of ending the session', async () => {
@@ -570,4 +572,63 @@ test('card details open in a dismissible dialog without changing review state', 
   expect(dialog.open).toBe(false);
   expect(container.textContent).toContain('Question');
   expect(writes).toBe(0);
+});
+
+test('reload restores the current type-in answer after read-only version reconciliation',async()=>{
+  const raw={...studyCard,renderKind:'typein',noteType:{...BASIC_NOTE_TYPE,kind:'typein'}};
+  const current=cardFromApi(raw);writeStudyCheckpoint({id:'checkpoint',owner:'test-user',href:'/review',session:{pending:[current],activeId:current.id,history:[]},view:{revealed:false,submitted:false,typedAnswer:'restored input',elapsedMs:1400,finished:false,infoOpen:false,pendingPeek:null},pending:null});
+  const methods:string[]=[];
+  globalThis.fetch=(async(url:any,init:any)=>{methods.push(init?.method??'GET');return Response.json(String(url).includes('/queue')?{due:[],new:[raw],mode:'regular'}:String(url).includes('/cards/'+current.id)?raw:{items:[]});}) as unknown as typeof fetch;
+  await render();
+  expect((container.querySelector('input') as HTMLInputElement).value).toBe('restored input');expect(methods.every(m=>m==='GET')).toBe(true);
+  await act(async()=>new Promise(resolve=>setTimeout(resolve,180)));expect(readStudyCheckpoint('test-user','/review')?.view.elapsedMs).toBeGreaterThanOrEqual(1400);
+});
+
+test('a lost grade response is recovered from its receipt without a second POST',async()=>{
+  const current=cardFromApi(studyCard),nextRaw={...studyCard,id:'01900000-0000-7000-8000-000000000004',renderFrontText:'Next question',note:{...studyCard.note,fieldValues:{Front:'Next question',Back:'Next answer'}}};
+  writeStudyCheckpoint({id:'uncertain',owner:'test-user',href:'/review',session:{pending:[current,cardFromApi(nextRaw)],activeId:current.id,history:[]},view:{revealed:true,submitted:false,typedAnswer:'',elapsedMs:1200,finished:false,infoOpen:false,pendingPeek:null},pending:{id:'01900000-0000-7000-8000-000000000005',cardId:current.id,rating:3,durationMs:1200,mode:'regular',before:current}});
+  const methods:string[]=[];
+  globalThis.fetch=(async(url:any,init:any)=>{methods.push(init?.method??'GET');const path=String(url);return Response.json(path.includes('/queue')?{due:[],new:[nextRaw],mode:'regular'}:path.includes('/reviews/operations/')?{status:'committed',result:{card:{...studyCard,suspended:true,reps:1},review:{id:'01900000-0000-7000-8000-000000000006',cardId:current.id,rating:3,durationMs:1200,reviewedAt:new Date().toISOString(),nextDue:new Date().toISOString()}}}:path.includes('/cards/'+nextRaw.id)?nextRaw:{items:[]});}) as unknown as typeof fetch;
+  await render();await act(async()=>new Promise(resolve=>setTimeout(resolve,200)));expect(container.textContent).toContain('Next question');expect(methods.every(m=>m==='GET')).toBe(true);expect(readStudyCheckpoint('test-user','/review')?.session.history.map(row=>row.review.id)).toContain('01900000-0000-7000-8000-000000000006');
+});
+
+test('an intentional editor return adopts the saved card version while preserving session recovery',async()=>{
+  const before=cardFromApi(studyCard);const session={pending:[before],activeId:before.id,history:[]};
+  writeStudyCheckpoint({id:'editing',owner:'test-user',href:'/review',session,view:{revealed:true,submitted:false,typedAnswer:'',elapsedMs:1500,finished:false,infoOpen:false,pendingPeek:null},pending:null});
+  saveStudyHandoff('test-user','/review',before.id,session);
+  const edited={...studyCard,updatedAt:'2026-01-02T00:00:00Z',note:{...studyCard.note,fieldValues:{Front:'Edited prompt from editor',Back:'Edited answer'}}};
+  globalThis.fetch=(async(url:any)=>Response.json(String(url).includes('/queue')?{due:[],new:[edited],mode:'regular'}:{items:[]})) as unknown as typeof fetch;
+  await render();expect(container.textContent).toContain('Edited prompt from editor');expect(container.textContent).not.toContain('review.cardChanged');expect(container.textContent).not.toContain('Edited answer');
+});
+
+test('focus and visibility wake coalesce into one read and preserve a changed typed draft',async()=>{
+  const raw={...studyCard,renderKind:'typein',noteType:{...BASIC_NOTE_TYPE,kind:'typein'}};
+  const current=cardFromApi(raw);
+  writeStudyCheckpoint({id:'wake',owner:'test-user',href:'/review',session:{pending:[current],activeId:current.id,history:[]},view:{revealed:false,submitted:false,typedAnswer:'keep on wake',elapsedMs:1200,finished:false,infoOpen:false,pendingPeek:null},pending:null});
+  let queues=0,writes=0,release:((value:Response)=>void)|undefined;
+  globalThis.fetch=(async(url:any,init:any)=>{
+    if(init?.method&&init.method!=='GET')writes++;
+    if(String(url).includes('/queue')){queues++;if(queues===2)return new Promise<Response>(resolve=>{release=resolve;});return Response.json({due:[],new:[raw],mode:'regular'});}
+    return Response.json({items:[]});
+  }) as unknown as typeof fetch;
+  await render();expect(queues).toBe(1);
+  await act(async()=>{window.dispatchEvent(new Event('focus'));document.dispatchEvent(new Event('visibilitychange'));await new Promise(resolve=>setTimeout(resolve,20));});
+  expect(queues).toBe(2);
+  await act(async()=>{window.dispatchEvent(new Event('focus'));await new Promise(resolve=>setTimeout(resolve,20));});expect(queues).toBe(2);
+  await act(async()=>release!(Response.json({due:[],new:[{...raw,updatedAt:'2026-02-01T00:00:00Z'}],mode:'regular'})));
+  expect((container.querySelector('input') as HTMLInputElement).value).toBe('keep on wake');
+  expect(container.textContent).toContain('review.cardChanged');expect(writes).toBe(0);
+});
+test('a slow empty queue crossing a learning deadline gets one compensating read',async()=>{
+  let queues=0;const serverNow='2026-01-01T00:00:00Z';
+  globalThis.fetch=(async(url:any)=>{
+    if(String(url).includes('/queue')){
+      queues++;
+      if(queues===1){await new Promise(resolve=>setTimeout(resolve,30));return Response.json({due:[],new:[],mode:'regular',summary:{serverNow,nextLearningAt:'2026-01-01T00:00:00.001Z'}});}
+      return Response.json({due:[studyCard],new:[],mode:'regular',summary:{serverNow:'2026-01-01T00:00:01Z',nextLearningAt:null}});
+    }
+    return Response.json({items:[]});
+  }) as unknown as typeof fetch;
+  await render();await act(async()=>new Promise(resolve=>setTimeout(resolve,50)));
+  expect(queues).toBe(2);expect(container.textContent).toContain('Question');
 });
