@@ -2,10 +2,10 @@
 
 ## 1. Written-note saving and recovery slice
 
-- [ ] 1.1 Add failing controller/component tests for revision A acknowledgement after newer input B, inline failure, unknown outcome and account change; verify failures expose the missing shared save contract.
-- [ ] 1.2 Implement the revision-aware save controller/presentation and integrate written-note create/edit; verify 1.1 passes without converting explicit Save to autosave.
-- [ ] 1.3 Add failing integration tests for lost create response, repeat request, changed arguments and stale study-note revision; then add receipt/revision migrations and typed transactional adapters, verifying one created note and no overwritten concurrent content.
-- [ ] 1.4 Extend existing draft scopes/list/export for source, notebook and retained study notes; verify reload, source deletion, late acknowledgement, denied storage and capacity failure preserve all text and existing note/type drafts.
+- [x] 1.1 Add failing controller/component tests for revision A acknowledgement after newer input B, inline failure, unknown outcome and account change; verify failures expose the missing shared save contract.
+- [x] 1.2 Implement the revision-aware save controller/presentation and integrate written-note create/edit; verify 1.1 passes without converting explicit Save to autosave.
+- [x] 1.3 Add failing integration tests for lost create response, repeat request, changed arguments and stale study-note revision; then add receipt/revision migrations and typed transactional adapters, verifying one created note and no overwritten concurrent content.
+- [x] 1.4 Extend existing draft scopes/list/export for source, notebook and retained study notes; verify reload, source deletion, late acknowledgement, denied storage and capacity failure preserve all text and existing note/type drafts.
 
 ## 2. Existing editor and metadata adapters
 

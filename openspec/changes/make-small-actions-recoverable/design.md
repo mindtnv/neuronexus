@@ -58,6 +58,8 @@ Deck placement uses an owner-scoped hierarchy revision incremented on any deck i
 
 Alternative: client-only inverse PATCH or matching current field values. Rejected because both miss intervening writes, lose offers on route changes and can overwrite another tab's work.
 
+Implementation refinement: old deck positions can tie and use names as the ordering tie-breaker. Move receipts also retain the affected parents' original ordered IDs. Undo validates the hypothetical restored order against current names before writing; a later rename that would change that order rejects the inverse without reverting the rename. Metadata-only changes still do not increment the hierarchy revision.
+
 ### 5. Undo remains available beyond a toast
 
 Add typed action buttons to toast presentation, with pause on hover/focus and an explicit close. A shell-owned, account-keyed “Недавние действия” list stores only receipt IDs, bounded labels, expiry and state for the current session; fetch full pagination of unexpired session offers instead of evicting them when the four-toast display limit is reached. Pending/failed undo remains actionable. Expiry uses server time and is shown clearly. This is not persistent action history across devices.

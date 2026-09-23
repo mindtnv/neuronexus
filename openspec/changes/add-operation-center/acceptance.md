@@ -36,8 +36,8 @@ NODE_ENV=test bun --env-file=.env test \
 ## Still required
 
 - Complete the unchecked tasks, notably shared mobile Back/dismissal, deeper retry UI and guarded navigation tests, visibility/backoff verification, performance query plans and live browser acceptance.
-- Wire bounded retry-receipt maintenance into runtime lifecycle; the helper currently exists but is not scheduled.
-- Complete all of `make-small-actions-recoverable`; its application implementation has not begun beyond a reusable Modal class hook.
+- Bounded retry-receipt maintenance is now scheduled and drained with API shutdown (shared with UI-action receipts); retain this coverage in the final release gate.
+- Finish `make-small-actions-recoverable`; written-note recovery, server action receipts/inverses and the recent-actions list are implemented in its current checkpoint. Remaining metadata/card-editor wiring and shared dismissal are still required.
 - Recheck keyboard focus across run replacement, real mobile geometry and the source-artifact deep-link lifecycle in a browser. The current UI is not visually accepted.
 - Update canonical agent documentation, run full migration-faithful tests/build/real S3 after final edits, sync/archive both specs and verify the actual production deployment.
 

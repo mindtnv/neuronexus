@@ -48,15 +48,18 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     } catch (error) { update(errorStatus(error)); return false; }
   };
   const clear = (confirmed = false) => {
-    if (!owned() && !(confirmed && scope.ownerId)) return;
+    if (!owned() && !(confirmed && scope.ownerId)) return false;
     try {
-      if (!clearEditorDraft(scope, revision.current)) { update('changed'); return; }
-      revision.current = null; lastSaved.current = ''; update('idle');
-    } catch (error) { update(errorStatus(error)); }
+      if (!clearEditorDraft(scope, revision.current)) { update('changed'); return false; }
+      revision.current = null; lastSaved.current = ''; update('idle'); return true;
+    } catch (error) { update(errorStatus(error)); return false; }
   };
-  const markSaved = (fingerprint = live.current.fingerprint) => {
-    restored.current = false; invalid.current = false; clean.current = fingerprint; live.current.fingerprint = fingerprint; baselineValue.current = live.current.value;
-    offered.current = null; if (alive.current) setPending(null); clear(true);
+  const markSaved = (fingerprint = live.current.fingerprint, savedValue?: T) => {
+    const matches = live.current.fingerprint === fingerprint;
+    restored.current = false; invalid.current = false; clean.current = fingerprint;
+    if (savedValue) baselineValue.current = savedValue; else if (matches) baselineValue.current = live.current.value;
+    offered.current = null; if (alive.current) setPending(null);
+    if (matches) clear(true); else flush();
   };
   const restore = () => {
     if (!offered.current || !owned()) return;
@@ -66,14 +69,15 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     live.current.onRestore(record.value); update('saved');
   };
   const discard = (reset = false) => {
-    if (!owned()) return;
+    if (!owned()) return false;
     if (status === 'invalid' && revision.current === null) {
-      try { clearInvalidEditorDraft(scope); revision.current = null; update('idle'); } catch (error) { update(errorStatus(error)); return; }
-    } else clear();
+      try { clearInvalidEditorDraft(scope); revision.current = null; update('idle'); } catch (error) { update(errorStatus(error)); return false; }
+    } else if (!clear()) return false;
     offered.current = null; setPending(null);
     invalid.current = false; restored.current = false;
     if (reset) { live.current.value = baselineValue.current; live.current.fingerprint = clean.current; live.current.onRestore(baselineValue.current); }
     else flush();
+    return true;
   };
 
   useEffect(() => {
@@ -111,7 +115,7 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     return () => clearTimeout(timer);
   }, [fingerprint, serializedValue]);
 
-  useNavigationGuard(async () => {
+  const confirmLeave = async () => {
     if (!owned()) return true;
     if (live.current.busy) return false;
     if (!dirty() || offered.current) return true;
@@ -122,12 +126,13 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     if (!alive.current || !owned()) return false;
     if (choice === 'save') return await live.current.onSave();
     if (choice === 'keep') return flush();
-    if (choice === 'discard') { discard(true); return true; }
+    if (choice === 'discard') return discard(true);
     return false;
-  });
+  };
+  useNavigationGuard(confirmLeave);
   const download = () => {
     if (!owned()) return false;
     try { downloadEditorDraft(live.current.value, scope.kind); return true; } catch { return false; }
   };
-  return { download, pending, blocked: !ready || Boolean(pending), status, dirty: dirty(), restore, discard: () => discard(), markSaved, flush };
+  return { download, pending, blocked: !ready || Boolean(pending), status, dirty: dirty(), restore, discard: () => discard(), markSaved, flush, confirmLeave };
 }

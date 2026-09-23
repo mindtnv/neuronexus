@@ -323,6 +323,7 @@ export interface SuggestSourcesResult {
 /** A notebook note (Р1/Р7) — user markdown (`manual`) or a saved chat answer
  *  (`answer`). The list view also folds in a light `excerpt`. */
 export interface NotebookNote {
+  metadataRevision?: number;
   id: string;
   notebookId: string | null;
   ownerKind?: 'notebook' | 'source';

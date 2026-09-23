@@ -16,6 +16,9 @@ import { ensureVectorExtension, kbChunk } from '@neuronexus/db';
 import { sql } from 'drizzle-orm';
 
 const TABLES = [
+  'ui_action_receipts',
+  'deck_hierarchy_revisions',
+  'operation_retry_receipts',
   'mcp_actions',
   'personal_access_tokens',
   // RAG substrate first — messages → conversations → kb_chunk reference

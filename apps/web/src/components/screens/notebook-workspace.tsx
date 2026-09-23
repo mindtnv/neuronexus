@@ -369,13 +369,14 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const threadParam = searchParams.get('thread');
   const noteParam = searchParams.get('note');
   const artifactParam = searchParams.get('artifact');
+  const newNoteParam = searchParams.get('newNote') === '1';
   useEffect(() => {
-    if (!noteParam && !artifactParam) return;
+    if (!noteParam && !artifactParam && !newNoteParam) return;
     setDockTab(artifactParam ? 'studio' : 'notes');
     setDockCollapsed(false);
     if (isTablet) setDockSheetOpen(true);
     if (!isDesktop && !isTablet) setTab('dock');
-  }, [noteParam, artifactParam, isDesktop, isTablet]);
+  }, [noteParam, artifactParam, newNoteParam, isDesktop, isTablet]);
   const consumeStudyLink = useCallback((kind: 'note' | 'artifact') => {
     const next = new URLSearchParams(searchParams.toString());
     next.delete(kind);
@@ -952,6 +953,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       key={notebookId}
       notebookId={notebookId}
       initialNoteId={noteParam}
+      initialCreate={newNoteParam}
       onInitialOpen={() => consumeStudyLink('note')}
       listNotes={listNotebookNotes}
       getNote={getNotebookNote}

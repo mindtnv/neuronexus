@@ -3,7 +3,7 @@ import { newUuidV7 } from '@neuronexus/shared';
 export const MAX_DRAFT_BYTES = 256 * 1024;
 export const MAX_DRAFTS = 10;
 const MAX_OWNER_BYTES = 1024 * 1024;
-export interface DraftScope { ownerId: string; kind: 'note' | 'type'; entityId: string }
+export interface DraftScope { ownerId: string; kind: 'note' | 'type' | 'study-note'; entityId: string }
 export interface EditorDraft<T = unknown> extends DraftScope { version: 1; revision: string; updatedAt: number; value: T }
 type DraftStorage = Pick<Storage, 'length' | 'key' | 'getItem' | 'setItem' | 'removeItem'>;
 export class DraftStorageError extends Error {
@@ -91,7 +91,7 @@ export function listEditorDrafts(ownerId: string, storage?: DraftStorage): Draft
       const candidate = store.key(i);
       if (!candidate?.startsWith(prefix(ownerId))) continue;
       const parts = candidate.slice(prefix(ownerId).length).split(':');
-      if (parts.length !== 2 || !['note', 'type'].includes(parts[0]!)) continue;
+      if (parts.length !== 2 || !['note', 'type', 'study-note'].includes(parts[0]!)) continue;
       let entityId: string; try { entityId = decodeURIComponent(parts[1]!); } catch { continue; }
       const scope: DraftScope = { ownerId, kind: parts[0] as DraftScope['kind'], entityId };
       try { entries.push({ scope, record: readEditorDraft(scope, store) }); }

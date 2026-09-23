@@ -2578,3 +2578,11 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
   .nn-operations-mobile-button .nn-operations-count { position: absolute; top: 2px; right: 2px; }
   .nn-operations-panel { margin: auto 0 0; width: 100%; max-width: 100%; max-height: calc(100dvh - 40px); border-radius: 18px 18px 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
 }
+
+.nn-written-note-editor { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.nn-written-note-editor label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); }
+.nn-written-note-editor textarea { min-height: 160px; }
+.nn-save-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.nn-save-feedback.is-error { color: var(--rose-400); }
+.nn-save-conflict { border: 1px solid var(--border); padding: 10px; border-radius: 10px; }
+.nn-save-conflict pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: inherit; }

@@ -269,6 +269,7 @@ export function quizAttemptFromApi(row: any): QuizAttempt {
 
 export function notebookNoteFromApi(row: any): NotebookNote {
   return {
+    metadataRevision: row.metadataRevision,
     id: row.id,
     notebookId: row.notebookId ?? null,
     ownerKind: row.ownerKind ?? 'notebook', sourceId: row.sourceId ?? null,

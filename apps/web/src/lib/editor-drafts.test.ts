@@ -74,3 +74,19 @@ test('the draft library scopes entries by owner and never exposes an invalid for
   expect(bob).toEqual([{ scope: other, record: null }]);
   expect(JSON.stringify(bob)).not.toContain('Unsaved');
 });
+
+test('study-note drafts share owner bounds without evicting card drafts and retain uncertainty metadata', () => {
+  const storage = new MemoryStorage();
+  for (let i = 0; i < MAX_DRAFTS - 1; i++) writeEditorDraft({ ...scope, entityId: String(i) }, value, null, storage);
+  const studyScope = { ownerId: 'alice', kind: 'study-note' as const, entityId: 'source:book:new' };
+  const study = { version: 1, title: 'Written', content: 'Full\ntext', expectedRevision: 3, owner: { kind: 'source', id: 'book' },
+    pendingSave: { owner: 'alice', requestId: 'pending-request', fingerprint: 'revision-a', payload: { title: 'Previous', content: 'Original', expectedRevision: 3 } } };
+  writeEditorDraft(studyScope, study, null, storage);
+  expect(readEditorDraft(studyScope, storage)?.value).toEqual(study);
+  expect(() => writeEditorDraft({ ...studyScope, entityId: 'extra' }, study, null, storage)).toThrow(DraftStorageError);
+  expect(listEditorDrafts('alice', storage)).toHaveLength(MAX_DRAFTS);
+  expect(readEditorDraft({ ...studyScope, ownerId: 'bob' }, storage)).toBeNull();
+  storage.setItem = () => { throw new Error('storage denied'); };
+  expect(() => writeEditorDraft(studyScope, { ...study, content: 'New text' }, readEditorDraft(studyScope, storage)!.revision, storage)).toThrow(DraftStorageError);
+  expect(readEditorDraft(studyScope, storage)?.value).toEqual(study);
+});

@@ -267,6 +267,13 @@
       "when": 1790147982912,
       "tag": "0037_special_loners",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790149713825,
+      "tag": "0038_fancy_yellowjacket",
+      "breakpoints": true
     }
   ]
 }

@@ -7,7 +7,7 @@ import type { CreateNoteInput } from '@/lib/store';
 import { NotesPanel } from './notes-panel';
 import { askAssistant } from '../chat/assistant-provider';
 
-export function SourceNotesPanel({ sourceId, initialNoteId, unavailable = false }: { sourceId?: string; initialNoteId?: string; unavailable?: boolean }) {
+export function SourceNotesPanel({ sourceId, initialNoteId, initialCreate = false, unavailable = false }: { sourceId?: string; initialNoteId?: string; initialCreate?: boolean; unavailable?: boolean }) {
   const t = useT();
   const refreshRef = useRef<(() => void) | null>(null);
   const listNotes = useCallback(async (_scope: string, q?: string, offset?: number) => {
@@ -39,6 +39,6 @@ export function SourceNotesPanel({ sourceId, initialNoteId, unavailable = false 
     return () => window.removeEventListener('nn:knowledge-changed', refresh);
   }, []);
   return <NotesPanel studyScope={sourceId ? { kind: 'source', id: sourceId } : { kind: 'saved' }} allowCreate={Boolean(sourceId)}
-    initialNoteId={initialNoteId} listNotes={listNotes} getNote={getNote} createNote={createNote} patchNote={patchNote} deleteNote={deleteNote} refreshRef={refreshRef}
+    initialNoteId={initialNoteId} initialCreate={initialCreate} listNotes={listNotes} getNote={getNote} createNote={createNote} patchNote={patchNote} deleteNote={deleteNote} refreshRef={refreshRef}
     onPrefillChat={(prefill, noteId) => { if (noteId) askAssistant({ ref: { kind: 'written_note', id: noteId }, prefill }); }} t={t} />;
 }

@@ -1,6 +1,7 @@
 'use client';
 import { useMemo, useState } from 'react';
 import { clearEditorDraft, clearInvalidEditorDraft, downloadEditorDraft, listEditorDrafts, type DraftListEntry } from '@/lib/editor-drafts';
+import { isStudyNoteDraft } from '@/lib/study-note-draft';
 import { isNoteDraftValue, isTypeDraftValue } from '@/lib/editor-draft-values';
 import { useNN } from '@/lib/store';
 import { useT } from '@/lib/i18n';
@@ -42,13 +43,20 @@ export function EditorDraftLibrary() {
       const value = entry.record?.value;
       const note = isNoteDraftValue(value) ? value : null;
       const type = isTypeDraftValue(value) ? value : null;
+      const study = entry.scope.kind === 'study-note' && isStudyNoteDraft(value) ? value : null;
       const firstField = note && [...(note.noteType?.fields ?? [])].sort((a, b) => a.ord - b.ord).map(field => note.fieldValues[field.name]).find(value => value?.trim());
-      const label = type?.name || (note ? (note.label || firstField || Object.values(note.fieldValues).find(value => value.trim()))?.replace(/\s+/g, ' ').slice(0, 100) : '') || t('editor.draft.untitled');
+      const label = study?.title || type?.name || (note ? (note.label || firstField || Object.values(note.fieldValues).find(value => value.trim()))?.replace(/\s+/g, ' ').slice(0, 100) : '') || t('editor.draft.untitled');
       return <NNCard key={`${owner}:${entry.scope.kind}:${entry.scope.entityId}`} className="reomi-draft-card">
-        <NNBadge size="xs" tone="neutral">{t(entry.scope.kind === 'type' ? 'noteTypes.pageTitle' : 'cards.panel.title')}</NNBadge>
+        <NNBadge size="xs" tone="neutral">{t(study ? 'notebooks.notes.heading' : entry.scope.kind === 'type' ? 'noteTypes.pageTitle' : 'cards.panel.title')}</NNBadge>
         <h2 style={{ fontSize: 16, overflowWrap: 'anywhere' }}>{entry.record ? label : t('editor.draft.invalid')}</h2>
         {entry.record && <p style={{ fontSize: 12 }}>{new Date(entry.record.updatedAt).toLocaleString()}</p>}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {study && <NNBtn size="sm" variant="primary" icon="edit" onClick={() => {
+            if (useNN.getState().profile?.userId !== owner) return;
+            const notebook = study.owner?.kind === 'notebook' ? study.owner.id : null;
+            nav.push(study.id ? notebook ? `/notebooks/${encodeURIComponent(notebook)}?note=${encodeURIComponent(study.id)}` : `/library/study?note=${encodeURIComponent(study.id)}`
+              : notebook ? `/notebooks/${encodeURIComponent(notebook)}?newNote=1` : `/library/${encodeURIComponent(study.owner!.id)}?newNote=1`);
+          }}>{t('editor.draft.openOriginal')}</NNBtn>}
           {note && <NNBtn size="sm" variant="primary" icon="edit" onClick={() => {
             if (useNN.getState().profile?.userId !== owner) return;
             nav.push(note.cardId ? `/editor?card=${encodeURIComponent(note.cardId)}` : `/editor?${new URLSearchParams({ deck: note.deckId, noteType: note.noteTypeId })}`);
@@ -59,7 +67,8 @@ export function EditorDraftLibrary() {
           {entry.record && <NNBtn size="sm" onClick={() => download(entry)}>{t('editor.draft.download')}</NNBtn>}
           <NNBtn size="sm" variant="danger" onClick={() => void remove(entry)}>{t('editor.draft.discard')}</NNBtn>
         </div>
-        {(note || type) && <details style={{ marginTop: 12 }}><summary>{t('editor.draft.showText')}</summary>
+        {(note || type || study) && <details style={{ marginTop: 12 }}><summary>{t('editor.draft.showText')}</summary>
+          {study && <textarea readOnly aria-label={study.title} value={study.content} style={{ width: '100%', minHeight: 120 }} />}
           {note && Object.entries(note.fieldValues).map(([name, text]) => <label key={name} style={{ display: 'block', marginTop: 12 }}>{name}<textarea readOnly aria-label={name} value={text} style={{ width: '100%', minHeight: 100, background: 'var(--surface-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: 10, boxSizing: 'border-box' }} /></label>)}
           {type && <>
             <p>{type.fields.map(field => field.name).join(' · ')}</p>

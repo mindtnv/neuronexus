@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { newUuidV7, OPERATION_GROUPS, type OperationItem, type OperationRetryInput } from '@neuronexus/shared';
 import { useT } from '@/lib/i18n';
 import { operationHref, OperationRequestError, requestOperationRetry } from '@/lib/operations-api';
+import { RecentActions } from './recent-actions';
 import { useOperations } from './operations-provider';
 import { useAppNavigation } from './navigation';
 import { Modal } from './design-system/modal';
@@ -121,6 +122,7 @@ export function OperationsHost() {
         </section>;
       })}
       {snapshot.feed && OPERATION_GROUPS.every(group => !snapshot.feed![group].total) && <p>{t('operations.empty')}</p>}
+      <RecentActions />
       <p className="nn-operations-history">{t('operations.history')}</p>
     </div>
   </Modal>;

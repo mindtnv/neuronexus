@@ -2,6 +2,7 @@ import { DECK_COLORS } from '@neuronexus/shared';
 import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
+  bigint,
   check,
   doublePrecision,
   index,
@@ -155,6 +156,7 @@ export const decks = pgTable(
   'decks',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    metadataRevision: bigint('metadata_revision', { mode: 'number' }).notNull().default(0),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -663,6 +665,7 @@ export const notebooks = pgTable(
   'notebooks',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    metadataRevision: bigint('metadata_revision', { mode: 'number' }).notNull().default(0),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -696,6 +699,7 @@ export const notebookNotes = pgTable(
   'notebook_notes',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    metadataRevision: bigint('metadata_revision', { mode: 'number' }).notNull().default(0),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -873,6 +877,7 @@ export const sources = pgTable(
   'sources',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    metadataRevision: bigint('metadata_revision', { mode: 'number' }).notNull().default(0),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
