@@ -27,6 +27,7 @@ import { useNN } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import { installNavigationHistoryBridge } from '@/lib/navigation-history';
 import { transientLayers } from '@/lib/layer-stack';
+import { LayerHistory } from '@/lib/layer-history';
 import { LayerParent } from '@/lib/use-transient-layer';
 import { NNBtn } from '@/components/ui';
 import { raiseToast } from '@/components/toasts';
@@ -127,6 +128,7 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
   const ownerRef = useRef(owner); ownerRef.current = owner;
   const journalRef = useRef<NavigationJournal | null>(null);
   const pendingRef = useRef<NavigationEntry | null>(null);
+  const layerHistoryRef = useRef<LayerHistory | null>(null);
   const traversingRef = useRef(false);
   const renderedEntryRef = useRef<NavigationEntry | null>(null);
   const approvedTraversal = useRef(false);
@@ -177,6 +179,7 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
     const current = journalRef.current;
     if (current && ownerRef.current === current.owner && sameLocation(current.current.href, window.location.pathname + window.location.search)) {
       window.history.replaceState({ ...window.history.state, [NAVIGATION_HISTORY_KEY]: current.marker() }, '');
+      layerHistoryRef.current?.refresh();
     }
   }, []);
   useLayoutEffect(() => {
@@ -251,8 +254,10 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
   }, []);
   const hasGuard = useCallback(() => guardRef.current !== null || transientLayers.hasLayers(), []);
   const guarded = useCallback((action: () => void, href?: string) => {
-    if (!guardRef.current && !transientLayers.hasLayers()) { action(); return; }
-    void confirmLeave(href).then(async allowed => { if (allowed) { await transientLayers.closeForNavigation(); action(); } });
+    const owner = ownerRef.current;
+    const perform = async () => { await layerHistoryRef.current?.settled(); if (ownerRef.current === owner) action(); };
+    if (!guardRef.current && !transientLayers.hasLayers()) { void perform(); return; }
+    void confirmLeave(href).then(async allowed => { if (allowed) { await transientLayers.closeForNavigation(); await perform(); } });
   }, [confirmLeave]);
 
   const beginResolved = useCallback((target: URL, track = true) => {
@@ -300,12 +305,18 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
       begin(href, options?.track);
       startTransition(() => (replace ? router.replace : router.push)(href, { scroll: options?.scroll ?? false }));
     };
-    if(replace&&options?.viewOnly&&requestedPath===pathnameRef.current)perform();
+    if(replace&&options?.viewOnly&&requestedPath===pathnameRef.current) {
+      const owner = ownerRef.current;
+      void (layerHistoryRef.current?.settled() ?? Promise.resolve()).then(() => { if (ownerRef.current === owner) perform(); });
+    }
     else guarded(perform, href);
   }, [begin, router, guarded, flush, stamp]);
   const push = useCallback((href: string, options?: NavigationOptions) => navigate(href, options, false), [navigate]);
   const replace = useCallback((href: string, options?: NavigationOptions) => navigate(href, options, true), [navigate]);
-  const back = useCallback(() => { guarded(() => { flush(); approvedTraversal.current = true; router.back(); }); }, [router, guarded, flush]);
+  const back = useCallback(() => {
+    if (transientLayers.hasLayers()) { void transientLayers.dismissTop('back'); return; }
+    guarded(() => { flush(); approvedTraversal.current = true; router.back(); });
+  }, [router, guarded, flush]);
   const returnTo = useCallback((fallback = '/cards') => {
     if(returning.current)return;
     guarded(async () => {
@@ -360,7 +371,16 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
   useEffect(() => {
     let bounce: { owner: string; currentId: string; targetId: string; delta: number; href: string; checking: boolean } | null = null;
     let approvedId: string | null = null;
+    const mobile = window.matchMedia('(max-width: 719px)');
+    const makeLayers = () => new LayerHistory(transientLayers, {
+      state: () => window.history.state, enabled: () => mobile.matches,
+      push: state => window.history.pushState(state, ''), go: delta => window.history.go(delta),
+      replace: state => window.history.replaceState(state, '', journalRef.current?.current.href),
+    });
+    let layers = makeLayers();
+    layerHistoryRef.current = layers;
     const onPopState = (event: PopStateEvent) => {
+      if (layers.onPop(event)) return;
       const current = journalRef.current;
       const marker = readNavigationMarker(event.state?.[NAVIGATION_HISTORY_KEY]);
       if (!current || ownerRef.current !== current.owner || marker?.owner !== current.owner) return;
@@ -383,7 +403,7 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
           if (bounce !== request) return;
           bounce = null;
           const distance=current.distanceTo(request.targetId);
-          if (allowed && ownerRef.current === current.owner && distance!==null && distance!==0) { await transientLayers.closeForNavigation(); approvedId = request.targetId; window.history.go(distance); }
+          if (allowed && ownerRef.current === current.owner && distance!==null && distance!==0) { await transientLayers.closeForNavigation(); await layers.settled(); approvedId = request.targetId; window.history.go(distance); }
         });
         return;
       }
@@ -402,7 +422,29 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
     };
     installNavigationHistoryBridge();
     window.__nnNavigationPop = onPopState;
-    return () => { bounce = null; if (window.__nnNavigationPop === onPopState) delete window.__nnNavigationPop; };
+    let active = true;
+    // React Strict Mode replays mount effects. Do not schedule two physical
+    // traversals from the same reload marker before either popstate can arrive.
+    queueMicrotask(() => { if (active) { layers.start(window.__nnNavigationInitialLayer); delete window.__nnNavigationInitialLayer; } });
+    const resizeLayers = () => layers.refresh();
+    const hideLayers = () => layers.dispose();
+    const restoreLayers = (event: PageTransitionEvent) => {
+      if (!event.persisted || !active) return;
+      // A reload can traverse to the previous document's base entry via BFCache.
+      // Its old marker coordinator and transient DOM must not bounce us again.
+      void transientLayers.closeForNavigation().then(() => {
+        if (!active) return;
+        layers = makeLayers(); layerHistoryRef.current = layers; layers.start();
+      });
+    };
+    mobile.addEventListener('change', resizeLayers);
+    window.addEventListener('pagehide', hideLayers); window.addEventListener('pageshow', restoreLayers);
+    return () => {
+      active = false; bounce = null; layers.dispose(); mobile.removeEventListener('change', resizeLayers);
+      window.removeEventListener('pagehide', hideLayers); window.removeEventListener('pageshow', restoreLayers);
+      if (layerHistoryRef.current === layers) layerHistoryRef.current = null;
+      if (window.__nnNavigationPop === onPopState) delete window.__nnNavigationPop;
+    };
   }, [beginResolved, confirmLeave, flush]);
 
   useEffect(() => () => controllerRef.current?.dispose(), []);

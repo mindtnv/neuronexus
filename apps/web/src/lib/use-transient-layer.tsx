@@ -1,9 +1,14 @@
 'use client';
-import { createContext, useContext, useId, useLayoutEffect, useRef, type RefObject } from 'react';
+import { createContext, useContext, useId, useLayoutEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { useNN } from './store';
 import { transientLayers, type CloseReason } from './layer-stack';
 
 export const LayerParent = createContext<string | null | false>(null);
+/** Keep a mounted pane's draft but suspend its guards while another pane is shown. */
+export function ActiveLayerScope({ active, children }: { active: boolean; children: ReactNode }) {
+  const parent = useContext(LayerParent);
+  return <LayerParent.Provider value={active ? parent : false}>{children}</LayerParent.Provider>;
+}
 let currentWindow: Window | null = null;
 let currentDocument: Document | null = null;
 let cleanupEvents: (() => void) | null = null;

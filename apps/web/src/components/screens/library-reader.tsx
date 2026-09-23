@@ -3,7 +3,7 @@ import { AssistantAskButton } from '../chat/assistant-ask-button';
 import { SourceStudioPanel } from '../notebook/source-studio-panel';
 import { SourceAnnotationNotes } from '../pdf-reader/source-annotation-notes';
 import { SourceNotesPanel } from '../notebook/source-notes-panel';
-import { Modal } from '../design-system/modal';
+import { Modal, type ModalHandle } from '../design-system/modal';
 
 // LibraryReader (L2) — the full-screen reader at `/library/[id]`. The complete
 // M4/M5 reading-first workflow (PDF + ink + highlights + notes + quick-card +
@@ -36,6 +36,7 @@ import type {
   SourceMark,
 } from '@/lib/types';
 import { useT } from '@/lib/i18n';
+import { ActiveLayerScope, LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { useWcoTopInsets } from '@/lib/ui-store';
 import { useDialog } from '@/components/dialog';
 import { raiseToast } from '@/components/toasts';
@@ -113,14 +114,28 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
   const [cardsDrawerOpen, setCardsDrawerOpen] = useWorkspaceState(navigationScope,'cardsDrawerOpen',false);
   const [notesOpen, setNotesOpen] = useWorkspaceState(navigationScope, 'notesOpen', false);
   const [studyTab, setStudyTab] = useWorkspaceState<'notes' | 'annotations' | 'artifacts'>(navigationScope, 'studyTab', 'notes');
+  const notesModal = useRef<ModalHandle>(null);
+  const changeStudyTab = async (tab: typeof studyTab) => {
+    if (tab === studyTab || await notesModal.current?.checkClose()) setStudyTab(tab);
+  };
   useEffect(() => {
     if (!notesOpen) return;
-    // A native dialog makes the rest of the page inert, including the floating
-    // assistant. Hand off to it without discarding the mounted study panel.
-    const handoff = () => setNotesOpen(false);
-    window.addEventListener('nn:assistant:ask', handoff);
-    return () => window.removeEventListener('nn:assistant:ask', handoff);
-  }, [notesOpen]);
+    let forwarding = false;
+    const owner = useNN.getState().profile?.userId;
+    const handoff = (event: Event) => {
+      if (forwarding) return;
+      event.stopImmediatePropagation();
+      const intent = (event as CustomEvent).detail;
+      void notesModal.current?.close().then(allowed => {
+        if (!allowed || !notesModal.current || useNN.getState().profile?.userId !== owner) return;
+        forwarding = true;
+        window.dispatchEvent(new CustomEvent('nn:assistant:ask', { detail: intent }));
+        forwarding = false;
+      });
+    };
+    window.addEventListener('nn:assistant:ask', handoff, true);
+    return () => { window.removeEventListener('nn:assistant:ask', handoff, true); };
+  }, [notesOpen, sourceId]);
 
   const artifactParam = searchParams.get('artifact') ?? undefined;
   const newNoteParam = searchParams.get('newNote') === '1';
@@ -607,16 +622,16 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
       </div>
 
       {/* Cards drawer (L4 §8.4) — the «N карточек» badge in the header. */}
-      <Modal open={notesOpen} title={t('assistant.savedStudy')} closeLabel={t('actions.close')} onClose={() => setNotesOpen(false)}>
+      <Modal controlRef={notesModal} open={notesOpen} title={t('assistant.savedStudy')} closeLabel={t('actions.close')} onClose={() => setNotesOpen(false)}>
         <div style={{ display: 'flex', gap: 8, padding: 8 }}>
-          <NNBtn size="sm" active={studyTab === 'notes'} onClick={() => setStudyTab('notes')}>{t('notebooks.marks.studyNotes')}</NNBtn>
-          <NNBtn size="sm" active={studyTab === 'annotations'} onClick={() => setStudyTab('annotations')}>{t('notebooks.marks.annotationNotes')}</NNBtn>
-          <NNBtn size="sm" active={studyTab === 'artifacts'} onClick={() => setStudyTab('artifacts')}>{t('notebooks.studio.listHeading')}</NNBtn>
+          <NNBtn size="sm" active={studyTab === 'notes'} onClick={() => void changeStudyTab('notes')}>{t('notebooks.marks.studyNotes')}</NNBtn>
+          <NNBtn size="sm" active={studyTab === 'annotations'} onClick={() => void changeStudyTab('annotations')}>{t('notebooks.marks.annotationNotes')}</NNBtn>
+          <NNBtn size="sm" active={studyTab === 'artifacts'} onClick={() => void changeStudyTab('artifacts')}>{t('notebooks.studio.listHeading')}</NNBtn>
         </div>
         <div style={{ height: '65dvh', minHeight: 240 }}>
-          <div hidden={studyTab !== 'notes'} style={{ height: '100%' }}><SourceNotesPanel key={sourceId} sourceId={sourceId} initialCreate={newNoteParam} /></div>
-          {studyTab === 'annotations' && <div className="nn-scroll" style={{ height: '100%', overflow: 'auto' }}><SourceAnnotationNotes key={sourceId} sourceId={sourceId} onOpen={mark => { setNotesOpen(false); pdfReaderRef.current?.scrollToPage(mark.page, true); }}/></div>}
-          <div hidden={studyTab !== 'artifacts'} style={{ height: '100%' }}><SourceStudioPanel key={sourceId} sourceId={sourceId} initialArtifactId={artifactParam} chatEnabled={chatEnabled} /></div>
+          <div hidden={studyTab !== 'notes'} style={{ height: '100%' }}><ActiveLayerScope active={studyTab === 'notes'}><SourceNotesPanel key={sourceId} sourceId={sourceId} initialCreate={newNoteParam} /></ActiveLayerScope></div>
+          {studyTab === 'annotations' && <div className="nn-scroll" style={{ height: '100%', overflow: 'auto' }}><SourceAnnotationNotes key={sourceId} sourceId={sourceId} onOpen={mark => { void notesModal.current?.close().then(allowed => { if (allowed) pdfReaderRef.current?.scrollToPage(mark.page, true); }); }}/></div>}
+          <div hidden={studyTab !== 'artifacts'} style={{ height: '100%' }}><ActiveLayerScope active={studyTab === 'artifacts'}><SourceStudioPanel key={sourceId} sourceId={sourceId} initialArtifactId={artifactParam} chatEnabled={chatEnabled} /></ActiveLayerScope></div>
         </div>
       </Modal>
       {cardsDrawerOpen && (
@@ -920,6 +935,8 @@ const CardsDrawer = ({
   onClose: () => void;
   t: Tr;
 }) => {
+  const root = useRef<HTMLDivElement>(null);
+  const layer = useTransientLayer({ root, modal: true, onClose });
   const [rows, setRows] = useState<SourceLinkedCard[] | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -937,13 +954,14 @@ const CardsDrawer = ({
   }, [sourceId, listSourceCards]);
 
   return (
-    <>
+    <LayerParent.Provider value={layer.id}>
       <div
         className="nn-dialog-backdrop"
-        onClick={onClose}
+        onClick={() => void layer.close()}
         style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--scrim)' }}
       />
       <div
+        ref={root} role="dialog" aria-modal="true" aria-label={t('library.reader.cardsTitle')} tabIndex={-1}
         className="nn-scroll"
         style={{
           position: 'fixed',
@@ -977,7 +995,7 @@ const CardsDrawer = ({
           <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0, flex: 1, fontFamily: 'var(--font-sans)' }}>
             {t('library.reader.cardsTitle')}
           </h3>
-          <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.reader.tocClose')} onClick={onClose} />
+          <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('library.reader.tocClose')} onClick={() => void layer.close()} />
         </div>
         <div style={{ padding: '8px 8px 16px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           {rows === null ? (
@@ -1012,7 +1030,7 @@ const CardsDrawer = ({
           )}
         </div>
       </div>
-    </>
+    </LayerParent.Provider>
   );
 };
 

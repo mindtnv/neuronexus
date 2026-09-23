@@ -1,19 +1,22 @@
 'use client';
 
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useImperativeHandle, type Ref, type ReactNode } from 'react';
 import { Button } from './primitives';
 import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { useNavigationGuard } from '../navigation';
+import { transientLayers } from '@/lib/layer-stack';
+export interface ModalHandle { close(): Promise<boolean>; checkClose(): Promise<boolean> }
 
 /** Native modal provides focus containment, inert background and focus restoration. */
-export function Modal({ open, title, closeLabel, busy = false, onClose, children, className = '', beforeClose }: {
+export function Modal({ open, title, closeLabel, busy = false, onClose, children, className = '', beforeClose, controlRef }: {
   open: boolean; title: string; closeLabel: string; busy?: boolean;
   onClose: () => void; children: ReactNode; className?: string;
-  beforeClose?: () => Promise<boolean>;
+  beforeClose?: () => Promise<boolean>; controlRef?: Ref<ModalHandle>;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const layer = useTransientLayer({ root: ref, enabled: open, onClose, busy, modal: true });
+  useImperativeHandle(controlRef, () => ({ close: () => layer.close(), checkClose: async () => { const current = transientLayers.get(layer.id); return !current || await transientLayers.canDismiss(current); } }));
   useNavigationGuard(beforeClose ?? (async () => true), open ? layer.id : false);
   useEffect(() => {
     const dialog = ref.current;

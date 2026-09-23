@@ -32,7 +32,7 @@
 - [x] 5.2 Migrate shared dialogs, shell drawers, account/card/thread menus and global overlays; verify each uses the conformance suite and preserves keyboard action/confirmation semantics.
 - [ ] 5.3 Migrate PDF/text selection editors, reader saved-work panels and mobile inspector/filter sheets; verify selection snapshots and text survive errors and every closing path, while saved marks remain unchanged.
 - [ ] 5.4 Integrate assistant-owned popups with the common layer ownership/focus model; verify pending approvals never confirm on dismissal, stream ownership persists and disabled controls stay outside focus cycling.
-- [ ] 5.5 Add failing history-bridge tests, then integrate mobile layer markers through the existing navigation provider; verify one-layer Back, Forward, reload cleanup, repeated Back during a guard, route-backed readers and browser keyboard dismissal without loops.
+- [x] 5.5 Add failing history-bridge tests, then integrate mobile layer markers through the existing navigation provider; verify one-layer Back, Forward, reload cleanup, repeated Back during a guard, route-backed readers and browser keyboard dismissal without loops.
 
 ## 6. Acceptance and release readiness
 
