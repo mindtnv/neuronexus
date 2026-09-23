@@ -31,8 +31,8 @@ function installEvents() {
     const top = transientLayers.top();
     if (event.key === 'Tab' && top?.modal) {
       const roots = [top.root(), ...(top.portals?.() ?? [])].filter((root): root is HTMLElement => Boolean(root));
-      const controls = roots.flatMap(root => [...root.querySelectorAll<HTMLElement>('button,a[href],input,select,textarea,[tabindex]')])
-        .filter(node => !node.matches(':disabled') && node.tabIndex >= 0 && !node.closest('[inert],[aria-hidden="true"]') && node.getClientRects().length > 0);
+      const controls = [...new Set(roots.flatMap(root => [...root.querySelectorAll<HTMLElement>('button,a[href],input,select,textarea,[tabindex]')]))]
+        .filter(node => !node.matches(':disabled') && node.tabIndex >= 0 && !node.closest('[inert],[hidden],[aria-hidden="true"]') && node.getClientRects().length > 0);
       const first = controls[0] ?? top.root(), last = controls.at(-1) ?? first;
       if (!transientLayers.owns(top, doc.activeElement) || (event.shiftKey ? doc.activeElement === first : doc.activeElement === last)) {
         event.preventDefault(); event.stopImmediatePropagation(); (event.shiftKey ? last : first)?.focus({ preventScroll: true });
@@ -42,7 +42,7 @@ function installEvents() {
     if (event.key !== 'Escape') { swallowClick = false; return; }
     if (!transientLayers.hasLayers()) return;
     event.preventDefault(); event.stopImmediatePropagation();
-    void transientLayers.dismissTop('escape');
+    if (!top?.onEscape?.()) void transientLayers.dismissTop('escape');
   };
   const outside = (event: PointerEvent) => {
     swallowClick = false;
@@ -54,7 +54,7 @@ function installEvents() {
       const rect = root.getBoundingClientRect();
       inside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
     }
-    if (inside) return;
+    if (inside || layer.dismissOnOutside === false) return;
     const dangerous = event.target instanceof Element && event.target.closest('[data-danger="true"],[data-destructive],.nn-btn-danger,[data-variant="danger"]');
     if (layer.modal || transientLayers.hasGuard(layer.id) || dangerous) {
       swallowClick = true; event.preventDefault(); event.stopImmediatePropagation();
@@ -66,30 +66,35 @@ function installEvents() {
   cleanupEvents = () => { doc.removeEventListener('keydown', key, true); doc.removeEventListener('pointerdown', outside, true); doc.removeEventListener('click', click, true); };
 }
 
-export function useTransientLayer({ root, enabled = true, onClose, busy = false, modal = false, history = true, portals, parent, restoreFocus = true }: {
+export function useTransientLayer({ root, enabled = true, onClose, busy = false, modal = false, history = true, portals, parent, restoreFocus = true, dismissOnOutside = true, retainOnNavigation = false, onEscape }: {
   root: RefObject<HTMLElement | null>; enabled?: boolean; onClose: (reason: CloseReason) => void;
   busy?: boolean; modal?: boolean; history?: boolean; portals?: () => Array<HTMLElement | null>;
   parent?: string | null;
-  restoreFocus?: boolean;
+  restoreFocus?: boolean; dismissOnOutside?: boolean; retainOnNavigation?: boolean; onEscape?: () => boolean;
 }) {
   const owner = useNN(state => state.profile?.userId) ?? '', token = useId(), contextParent = useContext(LayerParent);
   const inherited = parent === undefined ? contextParent : parent;
   const id = `${owner}:${token}`;
-  const live = useRef({ onClose, busy, portals }); live.current = { onClose, busy, portals };
+  const latest = { onClose, busy, portals, modal, history, dismissOnOutside, retainOnNavigation, onEscape, restoreFocus };
+  const live = useRef(latest); live.current = latest;
   useLayoutEffect(() => {
     if (!enabled || inherited === false) return;
     installEvents();
     const invoker = document.activeElement;
     const parent = inherited ?? transientLayers.closest(invoker)?.id ?? null;
-    return transientLayers.register({ id, owner, parent, root: () => root.current, portals: () => live.current.portals?.() ?? [], modal, history,
+    return transientLayers.register({ id, owner, parent, root: () => root.current, portals: () => live.current.portals?.() ?? [],
+      get modal() { return live.current.modal; }, get history() { return live.current.history; },
+      get dismissOnOutside() { return live.current.dismissOnOutside; }, get retainOnNavigation() { return live.current.retainOnNavigation; },
+      onEscape: () => live.current.onEscape?.() ?? false,
       canClose: () => !live.current.busy,
       close: reason => {
         live.current.onClose(reason);
-        if (!restoreFocus || reason === 'outside' || reason === 'navigation' || useNN.getState().profile?.userId !== (owner || undefined)) return;
+        if (!live.current.restoreFocus || reason === 'outside' || reason === 'navigation' || useNN.getState().profile?.userId !== (owner || undefined)) return;
         restoreLayerFocus(invoker);
       },
     });
-  }, [id, owner, enabled, inherited, root, modal, history, restoreFocus]);
+  }, [id, owner, enabled, inherited, root]);
+  useLayoutEffect(() => transientLayers.refresh(), [modal, history, dismissOnOutside, retainOnNavigation]);
   return { id, close: (reason: CloseReason = 'button') => transientLayers.dismiss(id, reason),
     contains: (node: Node | null) => { const layer = transientLayers.get(id); return Boolean(layer && transientLayers.owns(layer, node)); } };
 }

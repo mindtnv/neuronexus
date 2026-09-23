@@ -21,17 +21,17 @@
 
 ## 4. Durable offers and explicit Undo
 
-- [ ] 4.1 Add failing receipt tests for atomic undo, expiry, lost response, changed arguments, foreign owner, stale target and bounded cleanup; implement shared receipt lookup/consumption and verify all adapters pass the same suite.
-- [ ] 4.2 Add the owner/session scope and paginated unexpired-offer listing; verify same-tab reload, more than four actions, storage denial, account switching and exact expiry based on server time.
-- [ ] 4.3 Implement accessible toast actions and the shell recent-actions list; verify toast expiry does not remove valid offers and failed/uncertain undo stays visible for reconciliation.
-- [ ] 4.4 Integrate the recent-actions section with Operations when available, retaining an independent shell entry otherwise; verify small saves never inflate the long-operation active count and unsupported actions never show Undo.
+- [x] 4.1 Add failing receipt tests for atomic undo, expiry, lost response, changed arguments, foreign owner, stale target and bounded cleanup; implement shared receipt lookup/consumption and verify all adapters pass the same suite.
+- [x] 4.2 Add the owner/session scope and paginated unexpired-offer listing; verify same-tab reload, more than four actions, storage denial, account switching and exact expiry based on server time.
+- [x] 4.3 Implement accessible toast actions and the shell recent-actions list; verify toast expiry does not remove valid offers and failed/uncertain undo stays visible for reconciliation.
+- [x] 4.4 Integrate the recent-actions section with Operations when available, retaining an independent shell entry otherwise; verify small saves never inflate the long-operation active count and unsupported actions never show Undo.
 
 ## 5. Shared dismissal and navigation
 
 - [x] 5.1 Add failing layer conformance tests for nested portals, one-layer Escape, outside click-through, dirty guards, IME composition and focus return; implement the registry and guarded closure, verifying the suite passes.
 - [x] 5.2 Migrate shared dialogs, shell drawers, account/card/thread menus and global overlays; verify each uses the conformance suite and preserves keyboard action/confirmation semantics.
 - [ ] 5.3 Migrate PDF/text selection editors, reader saved-work panels and mobile inspector/filter sheets; verify selection snapshots and text survive errors and every closing path, while saved marks remain unchanged.
-- [ ] 5.4 Integrate assistant-owned popups with the common layer ownership/focus model; verify pending approvals never confirm on dismissal, stream ownership persists and disabled controls stay outside focus cycling.
+- [x] 5.4 Integrate assistant-owned popups with the common layer ownership/focus model; verify pending approvals never confirm on dismissal, stream ownership persists and disabled controls stay outside focus cycling.
 - [x] 5.5 Add failing history-bridge tests, then integrate mobile layer markers through the existing navigation provider; verify one-layer Back, Forward, reload cleanup, repeated Back during a guard, route-backed readers and browser keyboard dismissal without loops.
 
 ## 6. Acceptance and release readiness

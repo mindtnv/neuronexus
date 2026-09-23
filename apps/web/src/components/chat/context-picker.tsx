@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {visibleAssistantViewport} from '@/lib/assistant-overlay-geometry';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { createPortal } from 'react-dom';
 import { ASSISTANT_OBJECT_KINDS, assistantRefKey, type AssistantObjectKind, type AssistantObjectSnapshot } from '@neuronexus/shared';
 import { assistantApi, ok } from '@/lib/api';
@@ -31,6 +32,7 @@ export function ContextPicker({ ownerId, query, onPick, onClose, handleRef, anch
   const [revision, setRevision] = useState(0);
   const sequence = useRef(0);
   const root=useRef<HTMLDivElement>(null);
+  const layer = useTransientLayer({ root, onClose, portals: () => [anchorRef?.current?.closest<HTMLElement>('.reomi-assistant-composer,.reomi-assistant-threads') ?? null] });
   const [placement,setPlacement]=useState<React.CSSProperties | null>(null);
   useLayoutEffect(()=>{
     if(!anchorRef?.current)return;
@@ -45,11 +47,6 @@ export function ContextPicker({ ownerId, query, onPick, onClose, handleRef, anch
     update();window.addEventListener('resize',update);window.addEventListener('scroll',update,true);window.visualViewport?.addEventListener('resize',update);window.visualViewport?.addEventListener('scroll',update);
     return()=>{window.removeEventListener('resize',update);window.removeEventListener('scroll',update,true);window.visualViewport?.removeEventListener('resize',update);window.visualViewport?.removeEventListener('scroll',update);};
   },[anchorRef]);
-  useEffect(()=>{
-    if(!anchorRef)return;
-    const outside=(event:PointerEvent)=>{const target=event.target as Node;if(target instanceof Element && target.closest('[data-assistant-overlay]'))return;if(!root.current?.contains(target)&&!anchorRef.current?.closest('.reomi-assistant-composer,.reomi-assistant-threads')?.contains(target))onClose();};
-    document.addEventListener('pointerdown',outside);return()=>document.removeEventListener('pointerdown',outside);
-  },[anchorRef,onClose]);
   useLayoutEffect(() => { setSource(null); setSectionQuery(''); setItems([]); }, [ownerId]);
   const run = useCallback(async (more?: string) => {
     const request = ++sequence.current; setBusy(true); setError(false);
@@ -68,7 +65,7 @@ export function ContextPicker({ ownerId, query, onPick, onClose, handleRef, anch
     return () => { clearTimeout(timer); sequence.current++; };
   }, [run, ownerId, revision]);
   const keyDown = useCallback((event: React.KeyboardEvent): boolean => {
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose(); return true; }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); void layer.close(); return true; }
     if ((event.target as HTMLElement).closest?.('button,select')) return false;
     if (event.key === 'Enter' && (busy || !items.length)) { event.preventDefault(); return true; }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setIndex(i => Math.max(0, Math.min(items.length - 1, i + (event.key === 'ArrowDown' ? 1 : -1)))); return true; }
@@ -76,14 +73,14 @@ export function ContextPicker({ ownerId, query, onPick, onClose, handleRef, anch
     return false;
   }, [items,index,busy,onClose,onPick]);
   useEffect(() => { if (!handleRef) return; handleRef.current = { keyDown }; return () => { handleRef.current = null; }; }, [handleRef,keyDown]);
-  const panel=<div ref={root} className="reomi-assistant-context-picker" role="dialog" data-assistant-overlay aria-label={t('assistant.addContext')} onKeyDown={keyDown} style={placement??undefined}>
+  const panel=<LayerParent.Provider value={layer.id}><div ref={root} className="reomi-assistant-context-picker" role="dialog" data-assistant-overlay aria-label={t('assistant.addContext')} onKeyDown={keyDown} style={placement??undefined}>
     <div className="reomi-assistant-picker-toolbar">
       {source ? <><NNBtn size="sm" variant="ghost" icon="chevl" onClick={() => setSource(null)}>{source.label}</NNBtn>
         <input autoFocus value={sectionQuery} onChange={e => setSectionQuery(e.target.value)} aria-label={t('assistant.findSections')} placeholder={t('assistant.findSections')} /></>
         : <select aria-label={t('assistant.objectType')} value={type} onChange={e => setType(e.target.value)}>
           <option value="">{t('assistant.allObjects')}</option>{ASSISTANT_OBJECT_KINDS.filter(kind => kind !== 'source_passage').map(kind => <option key={kind} value={kind}>{t(`assistant.kinds.${kind}`)}</option>)}
         </select>}
-      <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('actions.close')} onClick={onClose} />
+      <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('actions.close')} onClick={() => void layer.close()} />
     </div>
     {selectedMaterials}
     {error ? <div role="alert">{t('assistant.searchFailed')} <NNBtn size="sm" onClick={() => setRevision(v => v + 1)}>{t('review.retry')}</NNBtn></div>
@@ -97,6 +94,6 @@ export function ContextPicker({ ownerId, query, onPick, onClose, handleRef, anch
         {!items.length && <p>{t(busy ? 'states.loading' : 'assistant.noResults')}</p>}
         {cursor && <NNBtn size="sm" disabled={busy} onClick={() => void run(cursor)}>{t('assistant.more')}</NNBtn>}
       </div>}
-  </div>;
+  </div></LayerParent.Provider>;
   return placement?createPortal(panel,document.body):panel;
 }

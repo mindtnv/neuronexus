@@ -115,3 +115,18 @@ Remaining layer/release work:
 - Task 5.3 remains open until actual reader/tab/handoff/mobile-inspector acceptance is recorded. Assistant ownership/portal migration (5.4), the complete release gates and product acceptance remain open. No production deployment has occurred.
 
 - Full checkpoint `bun run test:ci`: **3004 passed, 0 failed**, 263 files, 121.91 s (`/private/tmp/mobile-reader-full-tests.log`), against the already migrated disposable database. Strict OpenSpec validation also passed (`/private/tmp/mobile-reader-specs.log`). Build/S3/final product acceptance are still pending.
+
+
+## 2026-09-23 — assistant layer ownership
+
+- Floating assistant, model menu, context picker/mention portal, notebook source picker, context inspection, conversation drawer, context-choice/save-target popup, slash menu and queue editor participate in the shared layer registry. Existing viewport geometry and focus controls remain in use; close paths do not invoke tool approval or stop transport ownership.
+- A desktop floating assistant is retained during route navigation and does not dismiss on outside clicks; its temporary children close normally. Mobile presentation participates in one-layer Back and closes before a full route navigation. Changing viewport flags updates the same registered layer without deleting its dirty guards.
+- New conformance tests cover model-popup Back followed by hiding an unresolved write approval, route departure while a response is running, slash/queue Escape with both drafts retained, and preservation of a dirty guard during responsive presentation changes. Targeted suite: **31 passed, 0 failed** (`/private/tmp/assistant-closure-tests.log`). Existing context-picker and assistant tests also passed (26 tests before the extra regressions). Full product/browser matrix and final release checks remain required.
+
+
+## 2026-09-23 — durable Undo offer conformance
+
+- Verified shared inverse receipts for source metadata, notebook title, deck metadata/moves and note pinning: concurrent replay/undo is atomic; foreign owners, changed arguments, later ABA writes, deleted targets and expiry reject safely. A new cleanup test inserts 503 receipts and verifies a single pass removes exactly the bounded 500 expired rows; a second pass keeps the unexpired reconciliation record.
+- Same-tab remount restores the server-issued scope from sessionStorage and reloads six offers, including in the independent `StandaloneActions` dialog without Operations. Existing tests cover toast expiry, separate operation counts, exact server-time expiry and lost Undo response reconciliation with no automatic replay.
+- A new failing test found that remounting with denied storage lost the memory-only disclosure. Session lookup now preserves both the in-memory scope and the disclosure across remounts and temporary storage loss. Only opaque IDs are retained here.
+- Targeted receipt/maintenance/offer tests: **20 passed, 0 failed** (`/private/tmp/durable-actions-checks.log`). The wider assistant/layer suite passed **55 tests** (`/private/tmp/assistant-layers-all-tests.log`); typecheck passed (`/private/tmp/assistant-final-types.log`). Browser interaction with ten-minute offers and the complete final release gates remain tracked in section 6.

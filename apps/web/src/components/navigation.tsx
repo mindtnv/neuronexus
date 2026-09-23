@@ -314,7 +314,7 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
   const push = useCallback((href: string, options?: NavigationOptions) => navigate(href, options, false), [navigate]);
   const replace = useCallback((href: string, options?: NavigationOptions) => navigate(href, options, true), [navigate]);
   const back = useCallback(() => {
-    if (transientLayers.hasLayers()) { void transientLayers.dismissTop('back'); return; }
+    if (transientLayers.top() && !transientLayers.top()!.retainOnNavigation) { void transientLayers.dismissTop('back'); return; }
     guarded(() => { flush(); approvedTraversal.current = true; router.back(); });
   }, [router, guarded, flush]);
   const returnTo = useCallback((fallback = '/cards') => {

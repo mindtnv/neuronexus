@@ -86,3 +86,38 @@ test('unavailable session storage is disclosed and server time controls expiry',
     expect([...host.querySelectorAll('button')].find(button => button.textContent === 'actionsRecovery.undo')!.disabled).toBe(true);
   } finally { Object.defineProperty(globalThis, 'sessionStorage', descriptor); }
 });
+
+test('same-tab remount reads the stored server session and offers remain reachable without Operations', async () => {
+  const { StandaloneActions } = await import('./recent-actions');
+  const owner = useNN.getState().profile!.userId!, sessionId = newUuidV7();
+  sessionStorage.setItem(`nn:ui-actions:session:v1:${encodeURIComponent(owner)}`, sessionId);
+  const sessions: string[] = []; let issued = 0;
+  globalThis.fetch = (async (url: unknown) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname.endsWith('/session')) { issued++; return Response.json({ sessionId: newUuidV7() }); }
+    sessions.push(parsed.searchParams.get('sessionId')!);
+    return Response.json({ items: Array.from({ length: 6 }, (_, i) => receipt(i)), nextCursor: null, serverTime: new Date().toISOString() });
+  }) as unknown as typeof fetch;
+  const view = <RecentActionsProvider><StandaloneActions /></RecentActionsProvider>;
+  await act(async () => root.render(view));
+  await act(async () => root.render(null));
+  await act(async () => root.render(view));
+  expect(issued).toBe(0); expect(sessions).toEqual([sessionId, sessionId]);
+  await act(async () => host.querySelector<HTMLButtonElement>('button')!.click());
+  expect(host.querySelector('dialog')!.open).toBe(true); expect(host.querySelectorAll('li')).toHaveLength(6);
+});
+
+test('memory-only session warning survives remount when storage remains denied', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')!;
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, get: () => { throw new Error('denied'); } });
+  let issued = 0;
+  globalThis.fetch = (async (url: unknown) => {
+    if (String(url).endsWith('/session')) { issued++; return Response.json({ sessionId: newUuidV7() }); }
+    return Response.json({ items: [receipt(1)], nextCursor: null, serverTime: new Date().toISOString() });
+  }) as unknown as typeof fetch;
+  try {
+    const view = <RecentActionsProvider><RecentActions /></RecentActionsProvider>;
+    await act(async () => root.render(view)); await act(async () => root.render(null)); await act(async () => root.render(view));
+    expect(issued).toBe(1); expect(host.textContent).toContain('actionsRecovery.reloadUnavailable');
+  } finally { Object.defineProperty(globalThis, 'sessionStorage', descriptor); }
+});

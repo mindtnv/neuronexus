@@ -4,6 +4,8 @@ import { useNN } from './store';
 import { acknowledgeInactiveDraft } from './acknowledge-inactive-draft';
 
 const sessions = new Map<string, Promise<string>>();
+const volatileSessions = new Set<string>();
+const notifyVolatile = (owner: string) => { if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('nn:ui-action-storage-unavailable', { detail: { owner } })); };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const owned = (owner: string) => Boolean(owner) && useNN.getState().profile?.userId === owner;
 export async function uiActionRequest<T>(owner: string, path: string, method = 'GET', body?: unknown): Promise<T> {
@@ -22,13 +24,16 @@ export async function uiActionRequest<T>(owner: string, path: string, method = '
 export function uiActionSession(owner: string): Promise<string> {
   if (!owned(owner)) return Promise.reject(new ApiError('owner_changed', { status: 409 }));
   const key = `nn:ui-actions:session:v1:${encodeURIComponent(owner)}`;
-  try { const stored = sessionStorage.getItem(key); if (stored && uuid.test(stored)) return Promise.resolve(stored); } catch { /* memory-only session */ }
+  try {
+    const stored = sessionStorage.getItem(key);
+    if (stored && uuid.test(stored)) { const restored = Promise.resolve(stored); sessions.set(owner, restored); volatileSessions.delete(owner); return restored; }
+  } catch { volatileSessions.add(owner); }
   const previous = sessions.get(owner);
-  if (previous) return previous;
+  if (previous) { if (volatileSessions.has(owner)) notifyVolatile(owner); return previous; }
   const request = uiActionRequest<{ sessionId: string }>(owner, '/session', 'POST').then(value => {
     if (!uuid.test(value.sessionId) || !owned(owner)) throw new ApiError('owner_changed', { status: 409 });
-    try { sessionStorage.setItem(key, value.sessionId); } catch {
-      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('nn:ui-action-storage-unavailable', { detail: { owner } }));
+    try { sessionStorage.setItem(key, value.sessionId); volatileSessions.delete(owner); } catch {
+      volatileSessions.add(owner); notifyVolatile(owner);
     }
     return value.sessionId;
   }).catch(error => { sessions.delete(owner); throw error; });

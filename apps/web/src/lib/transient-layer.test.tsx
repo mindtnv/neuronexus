@@ -68,3 +68,15 @@ test('a vanished invoker falls back to the workspace instead of leaving keyboard
     expect(document.activeElement).toBe(main);
   } finally { trigger.remove(); main.remove(); }
 });
+
+test('viewport presentation changes keep the same dirty guard registered', async () => {
+  function Responsive({ mobile }: { mobile: boolean }) {
+    const ref = useRef<HTMLDivElement>(null), layer = useTransientLayer({ root: ref, modal: mobile, history: mobile, onClose() {} });
+    useNavigationGuard(async () => false, layer.id);
+    return <div ref={ref}>Draft</div>;
+  }
+  await act(async () => root.render(<Responsive mobile />));
+  await act(async () => root.render(<Responsive mobile={false} />));
+  expect(await transientLayers.dismissTop('escape')).toBe(false);
+  expect(transientLayers.hasLayers()).toBe(true);
+});

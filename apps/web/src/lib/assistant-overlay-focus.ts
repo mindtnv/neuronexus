@@ -1,5 +1,6 @@
 'use client';
 import { assistantOverlayShift, visibleAssistantViewport } from './assistant-overlay-geometry';
+import { useTransientLayer } from './use-transient-layer';
 import { useLayoutEffect, useRef, type RefObject } from 'react';
 
 export const ASSISTANT_FOCUSABLE = 'button:not(:disabled),input:not(:disabled):not([type="hidden"]),textarea:not(:disabled),select:not(:disabled),a[href],[tabindex="0"]';
@@ -22,13 +23,15 @@ export function assistantFocusControls(root: HTMLElement): HTMLElement[] {
     .filter(node => node.tabIndex >= 0 && !node.matches(':disabled') && !disabledByFieldset(node) && node.getClientRects().length > 0 && !node.closest('[inert],[hidden],[aria-hidden="true"]'));
 }
 
-export function useAssistantOverlayFocus(open: boolean, ref: RefObject<HTMLElement | null>, onDismiss: () => void | boolean) {
-  const dismiss = useRef(onDismiss); dismiss.current = onDismiss;
+export function useAssistantOverlayFocus(open: boolean, ref: RefObject<HTMLElement | null>, onDismiss: () => void, busy = false) {
+  const restore = useRef(true), invoking = useRef<HTMLElement | null>(null);
+  const layer = useTransientLayer({ root: ref, enabled: open, busy, restoreFocus: false, portals: () => [invoking.current],
+    onClose: reason => { restore.current = reason !== 'outside' && reason !== 'navigation'; onDismiss(); } });
   useLayoutEffect(() => {
     const popup = ref.current;
     if (!open || !popup) return;
-    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    let restoreFocus = true;
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null; invoking.current = trigger;
+    restore.current = true;
     const original = { maxWidth: popup.style.maxWidth, maxHeight: popup.style.maxHeight, translate: popup.style.translate, overflowY: popup.style.overflowY, boxSizing: popup.style.boxSizing };
     const position = () => {
       Object.assign(popup.style, original);
@@ -48,19 +51,13 @@ export function useAssistantOverlayFocus(open: boolean, ref: RefObject<HTMLEleme
     const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(position);
     observer?.observe(popup);
     (popup.querySelector<HTMLElement>(ASSISTANT_FOCUSABLE) ?? popup).focus();
-    const outside = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || popup.contains(event.target) || trigger?.contains(event.target)) return;
-      restoreFocus = false;
-      if (dismiss.current() === false) restoreFocus = true;
-    };
-    document.addEventListener('pointerdown', outside, true);
     return () => {
-      document.removeEventListener('pointerdown', outside, true);
       window.removeEventListener('resize', position);
       window.visualViewport?.removeEventListener('resize', position);
       window.visualViewport?.removeEventListener('scroll', position);
       observer?.disconnect(); Object.assign(popup.style, original);
-      if (restoreFocus && trigger?.isConnected) trigger.focus({ preventScroll: true });
+      if (restore.current && trigger?.isConnected) trigger.focus({ preventScroll: true });
     };
   }, [open, ref]);
+  return layer;
 }

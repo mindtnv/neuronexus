@@ -7,6 +7,10 @@ export interface TransientLayer {
   portals?: () => Array<HTMLElement | null>;
   modal?: boolean;
   history?: boolean;
+  dismissOnOutside?: boolean;
+  retainOnNavigation?: boolean;
+  /** Consume Escape for an active drag before considering window dismissal. */
+  onEscape?: () => boolean;
   canClose?: () => boolean;
   close: (reason: CloseReason) => void;
 }
@@ -21,6 +25,7 @@ export class LayerStack {
   private owner = '';
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private changed() { for (const listener of this.listeners) listener(); }
+  refresh = () => this.changed();
   setOwner(owner: string) {
     if (this.owner === owner) return;
     this.owner = owner; this.epoch++; this.entries = []; this.guards.clear(); this.checking.clear(); this.changed();
@@ -85,11 +90,11 @@ export class LayerStack {
   }
   dismissTop = (reason: CloseReason) => { const layer = this.top(); return layer ? this.dismiss(layer.id, reason) : Promise.resolve(true); };
   async confirmNavigation() {
-    for (const layer of [...this.entries].reverse()) if (this.get(layer.id) && !await this.canDismiss(layer)) return false;
+    for (const layer of [...this.entries].reverse()) if (!layer.retainOnNavigation && this.get(layer.id) && !await this.canDismiss(layer)) return false;
     return true;
   }
   async closeForNavigation() {
-    for (const layer of [...this.entries].reverse()) await this.dismiss(layer.id, 'navigation', true);
+    for (const layer of [...this.entries].reverse()) if (!layer.retainOnNavigation) await this.dismiss(layer.id, 'navigation', true);
   }
 }
 export const transientLayers = new LayerStack();

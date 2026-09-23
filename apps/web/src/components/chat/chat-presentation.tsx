@@ -1,6 +1,7 @@
 'use client';
 
 // Shared transcript, citation, approval and picker presentation. No stream ownership.
+import { useTransientLayer } from '@/lib/use-transient-layer';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation } from '@/components/navigation';
@@ -2442,18 +2443,11 @@ const PickerMenu = ({
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener('mousedown', onDown);
-    return () => window.removeEventListener('mousedown', onDown);
-  }, [open]);
+  const layer = useTransientLayer({ root: ref, enabled: open, onClose: () => setOpen(false) });
 
   return (
     <div ref={ref} style={{ position: 'relative' }} onKeyDown={event => {
-      if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); ref.current?.querySelector('button')?.focus(); }
+      if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); void layer.close(); }
       if (open && ['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {
         event.preventDefault(); event.stopPropagation();
         const items=Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')??[]);

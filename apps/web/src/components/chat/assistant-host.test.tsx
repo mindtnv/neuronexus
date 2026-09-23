@@ -425,3 +425,50 @@ test('a completed single read has one disclosure and only three result rows unti
   await act(async () => trace.querySelector<HTMLButtonElement>('.reomi-tool-more')!.click());
   expect(trace.querySelectorAll('.reomi-tool-result-row')).toHaveLength(8);
 });
+
+test('Back dismisses a model popup before hiding a pending approval, without deciding the write', async () => {
+  const { transientLayers } = await import('../../lib/layer-stack');
+  models = [{ id: 'fast', label: 'Fast', default: true }]; window.innerWidth = 390;
+  await render(); let key!: string, sending!: Promise<void>;
+  await act(async () => { key = controller.newConversation(); controller.setPresentation('floating'); controller.setDraft(key, 'Propose a deck'); sending = controller.send(key); await new Promise(resolve => setTimeout(resolve, 0)); });
+  await act(async () => { callbacks.onAwaitConfirmation?.({ toolCall: { id: 'pending-write', name: 'create_deck', args: { name: 'Deck' } } }); finish?.(); await sending; });
+  await act(async () => button('chat.composer.model').click());
+  await act(async () => { await transientLayers.dismissTop('back'); });
+  expect(document.querySelector('[role="menu"]')).toBeNull(); expect(controller.getSnapshot().presentation).toBe('floating');
+  await act(async () => { await transientLayers.dismissTop('back'); });
+  expect(controller.getSnapshot().presentation).toBe('hidden');
+  expect(controller.getSnapshot().sessions[key]!.phase).toBe('needs_approval');
+  expect(controller.getSnapshot().sessions[key]!.messages.at(-1)!.toolCalls![0]!.decision).toBeUndefined();
+});
+
+test('route departure closes desktop assistant menus while retaining its running session', async () => {
+  const { transientLayers } = await import('../../lib/layer-stack');
+  models = [{ id: 'fast', label: 'Fast', default: true }]; await render();
+  await act(async () => button('assistant.open').click()); const key = controller.getSnapshot().selectedKey!; let sending!: Promise<void>;
+  await act(async () => { controller.setDraft(key, 'Keep working'); sending = controller.send(key); await new Promise(resolve => setTimeout(resolve, 0)); });
+  await act(async () => button('chat.composer.model').click());
+  await act(async () => { expect(await transientLayers.confirmNavigation()).toBe(true); await transientLayers.closeForNavigation(); });
+  expect(controller.getSnapshot().presentation).toBe('floating'); expect(signal?.aborted).toBe(false);
+  expect(document.querySelector('[role="menu"]')).toBeNull();
+  await act(async () => { callbacks.onDone?.('finished'); finish?.(); await sending; });
+});
+
+test('Escape closes the slash menu and a queued edit without losing either draft or assistant', async () => {
+  await render(); await act(async () => button('assistant.open').click());
+  const key = controller.getSnapshot().selectedKey!;
+  await act(async () => {
+    const input = document.querySelector<HTMLTextAreaElement>('[data-assistant-composer]')!; input.focus();
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '/'); input.setSelectionRange(1, 1); input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(document.querySelector('.reomi-assistant-slash-layer')).not.toBeNull();
+  await act(async () => document.querySelector('[data-assistant-composer]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(document.querySelector('.reomi-assistant-slash-layer')).toBeNull(); expect(controller.getSnapshot().sessions[key]!.draft).toBe('/');
+  let sending!: Promise<void>;
+  await act(async () => { controller.setDraft(key, 'First'); sending = controller.send(key); await new Promise(resolve => setTimeout(resolve, 0)); controller.setDraft(key, 'Queued second'); await controller.send(key); });
+  const item = controller.getSnapshot().sessions[key]!.queue[0]!;
+  await act(async () => controller.setQueueEditing(key, item.id, true));
+  await act(async () => document.querySelector('[data-assistant-queue-editor]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(controller.getSnapshot().sessions[key]!.queue[0]).toMatchObject({ editing: false, content: 'Queued second' });
+  expect(controller.getSnapshot().presentation).toBe('floating');
+  await act(async () => { callbacks.onDone?.('finished'); finish?.(); await sending; });
+});

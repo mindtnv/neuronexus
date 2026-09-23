@@ -224,3 +224,16 @@ test('pin ABA through the legacy endpoint invalidates an earlier undo and concur
   await callApp(app, 'PATCH', `/study/notes/${note.id}`, { cookie: owner.cookie, body: { pinned: true } });
   expect((await callApp(app, 'POST', `/ui-actions/v1/receipts/${result.receipt.id}/undo`, { cookie: owner.cookie })).status).toBe(409);
 });
+
+test('receipt cleanup removes at most 500 expired records and retains live reconciliation data', async () => {
+  const owner = await signUpAndCookie(app, uniqueEmail()), sessionId = newUuidV7(), targetId = newUuidV7();
+  const rows = Array.from({ length: 503 }, (_, index) => ({ userId: owner.userId, sessionId, requestId: newUuidV7(), requestHash: 'test-hash',
+    kind: 'source-metadata' as const, target: { kind: 'source' as const, id: targetId, revision: '1' }, label: 'Cleanup fixture',
+    expiresAt: index === 502 ? new Date(Date.now() + 86400000) : new Date(0) }));
+  await db.insert(uiActionReceipts).values(rows);
+  await cleanupUiActionReceipts();
+  expect(await db.select().from(uiActionReceipts).where(eq(uiActionReceipts.userId, owner.userId))).toHaveLength(3);
+  await cleanupUiActionReceipts();
+  const remaining = await db.select().from(uiActionReceipts).where(eq(uiActionReceipts.userId, owner.userId));
+  expect(remaining).toHaveLength(1); expect(remaining[0]!.requestId).toBe(rows[502]!.requestId);
+});
