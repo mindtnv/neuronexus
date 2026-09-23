@@ -9,6 +9,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { useTransientLayer } from '@/lib/use-transient-layer';
 import { createPortal } from 'react-dom';
 import { NNIcon } from '@/components/ui';
 import { useT } from '@/lib/i18n';
@@ -162,10 +163,12 @@ export function NNSelect<T extends string>({
     (returnFocus = true) => {
       setOpen(false);
       setQuery('');
-      if (returnFocus) triggerRef.current?.focus();
+      if (returnFocus) triggerRef.current?.focus({ preventScroll: true });
     },
     [],
   );
+
+  useTransientLayer({ root: popoverRef, enabled: open, portals: () => [triggerRef.current], onClose: reason => closeMenu(reason !== 'outside' && reason !== 'navigation'), restoreFocus: false });
 
   const commit = useCallback(
     (opt: NNSelectOption<T> | undefined) => {
@@ -192,16 +195,9 @@ export function NNSelect<T extends string>({
       reposition();
     };
     const onResize = () => reposition();
-    const onDocMouseDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (popoverRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
-      closeMenu(false);
-    };
-    document.addEventListener('mousedown', onDocMouseDown);
     window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', onResize);
     return () => {
-      document.removeEventListener('mousedown', onDocMouseDown);
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', onResize);
     };

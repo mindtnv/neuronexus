@@ -77,8 +77,8 @@ export async function getStudyNote(userId: string, id: string, owner?: StudyOwne
     if(!row)throw new StudyError(404,'not_found');return row;
   });
 }
-export async function patchStudyNote(userId: string, id: string, patch: { title?: string; content?: string; pinned?: boolean }, owner?: StudyOwner) {
-  return db.transaction(async tx => {
+export async function patchStudyNote(userId: string, id: string, patch: { title?: string; content?: string; pinned?: boolean }, owner?: StudyOwner, transaction?: Tx) {
+  const run = async (tx: Tx) => {
     if (owner) await ownerRow(tx, userId, owner);
   if (Object.keys(patch).length === 0) throw new StudyError(400, 'nothing_to_update');
   const title = patch.title?.trim();
@@ -89,7 +89,8 @@ export async function patchStudyNote(userId: string, id: string, patch: { title?
     }).where(and(eq(notebookNotes.userId, userId), eq(notebookNotes.id, id), owner ? scope(owner) : eq(notebookNotes.ownerKind, 'source'))).returning();
     if (!row) throw new StudyError(404, 'not_found');
     if (owner) await bump(tx, userId, owner); return row;
-  });
+  };
+  return transaction ? run(transaction) : db.transaction(run);
 }
 export async function deleteStudyNote(userId: string, id: string, owner?: StudyOwner) {
   return db.transaction(async tx => {
@@ -98,4 +99,16 @@ export async function deleteStudyNote(userId: string, id: string, owner?: StudyO
     if (!row) throw new StudyError(404, 'not_found');
     if (owner) await bump(tx, userId, owner); return { ok: true };
   });
+}
+
+/** Parent-before-note lock order matches deletion and legacy notebook mutations. */
+export async function lockStudyNote(tx: Tx, userId: string, id: string) {
+  const [found] = await tx.select().from(notebookNotes).where(and(eq(notebookNotes.userId, userId), eq(notebookNotes.id, id))).limit(1);
+  if (!found) throw new StudyError(404, 'not_found');
+  const owner: StudyOwner | undefined = found.ownerKind === 'notebook' ? { kind: 'notebook', id: found.notebookId! }
+    : found.sourceId ? { kind: 'source', id: found.sourceId } : undefined;
+  if (owner) await ownerRow(tx, userId, owner);
+  const [row] = await tx.select().from(notebookNotes).where(and(eq(notebookNotes.userId, userId), eq(notebookNotes.id, id))).for('update').limit(1);
+  if (!row) throw new StudyError(404, 'not_found');
+  return { row, owner };
 }

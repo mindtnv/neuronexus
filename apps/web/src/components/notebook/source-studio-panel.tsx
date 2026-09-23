@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useAppNavigation } from '@/components/navigation';
 import { useNN } from '@/lib/store';
 import type { NotebookArtifactType } from '@neuronexus/shared';
 import { assistantApi, ok } from '@/lib/api';
@@ -16,7 +16,7 @@ import { NNBtn } from '../ui';
 export function SourceStudioPanel({ sourceId, initialArtifactId, unavailable = false, chatEnabled }: {
   sourceId?: string; initialArtifactId?: string; unavailable?: boolean; chatEnabled: boolean;
 }) {
-  const t = useT(), router = useRouter();
+  const t = useT(), router = useAppNavigation();
   const [pages, setPages] = useState(1), [hasMore, setHasMore] = useState(false);
   const listArtifacts = useCallback(async () => {
     const items: NotebookArtifact[] = []; let offset: number | null = 0;

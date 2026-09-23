@@ -1,3 +1,4 @@
+import type { ActionTx } from './ui-action-receipts';
 // Note-types CRUD (Milestone 1, Phase 4 — Decision C-4 global builtins).
 //
 //   GET    /note-types      → rows owned by the user OR global builtins
@@ -112,7 +113,7 @@ export function defFromRow(row: {
 }
 
 type NoteTypeEdit = { name?: string; fields?: NoteField[]; templates?: CardTemplate[]; styling?: string; kind?: RenderKind; preview?: boolean; confirmationToken?: string; expectedUpdatedAt?: string };
-const noteTypeEditOptions = {
+export const noteTypeEditOptions = {
       auth: true as const,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),
       body: t.Partial(
@@ -128,12 +129,12 @@ const noteTypeEditOptions = {
         }),
       ),
     };
-async function editNoteType(context: { user: { id: string }; params: { id: string }; body: NoteTypeEdit }, kindConversion = false) {
+export async function editNoteType(context: { user: { id: string }; params: { id: string }; body: NoteTypeEdit }, kindConversion = false, transaction?: ActionTx, deferredIndex?: string[]) {
       const { user, params, body } = context;
       const status = reply;
       const log = requestLogFromContext(context);
       // Resolve the target row: must be owned OR a global builtin.
-      const [target] = await db
+      const [target] = await (transaction ?? db)
         .select()
         .from(noteTypes)
         .where(
@@ -213,7 +214,7 @@ async function editNoteType(context: { user: { id: string }; params: { id: strin
       // mutated. Create a user-owned copy carrying the requested changes.
       if (target.userId === null || target.isBuiltin) {
         if (body.preview) return { impact: regenerationImpact([]), sourceVersion: target.updatedAt.toISOString(), confirmationToken: '' };
-        const [clone] = await db
+        const [clone] = await (transaction ?? db)
           .insert(noteTypes)
           .values({
             userId: user.id,
@@ -237,7 +238,7 @@ async function editNoteType(context: { user: { id: string }; params: { id: strin
       const needsRerender = templatesChanged || stylingChanged || kindChanged || fieldsChanged;
 
       const indexIds: string[] = [];
-      const result = await db.transaction(async (tx) => {
+      const run = async (tx: ActionTx) => {
         const checkBudget = await startNoteTypeBudget(tx);
         const [locked] = await tx.select().from(noteTypes)
           .where(eq(noteTypes.id, params.id)).for('update');
@@ -347,7 +348,8 @@ async function editNoteType(context: { user: { id: string }; params: { id: strin
         }, 'note_type.rerender');
 
         return updated;
-      }).catch((error: unknown) => {
+      };
+      const result = await (transaction ? run(transaction) : db.transaction(run)).catch((error: unknown) => {
         const code = noteTypeBudgetFailure(error);
         if (!code) throw error;
         indexIds.length = 0; // The entire transaction was rolled back.
@@ -356,21 +358,22 @@ async function editNoteType(context: { user: { id: string }; params: { id: strin
       // Budget failures clear the rolled-back IDs. Only committed changed text
       // or new cards are enqueued; deletions cascade their derived index rows.
       try {
-        for (const id of indexIds) enqueueIndex(id, logCorrelation(log));
+        if (transaction) deferredIndex?.push(...indexIds);
+        else for (const id of indexIds) enqueueIndex(id, logCorrelation(log));
       } catch (error) { log.warn({ err: safeError(error) }, 'ai.index.enqueue_failed'); }
       return result;
 }
 
 type KindEdit = { kind: RenderKind; answerFieldId?: string; expectedUpdatedAt: string; confirmationToken?: string };
-const kindEditOptions = {
+export const kindEditOptions = {
   auth: true as const,
   params: t.Object({ id: t.String({ format: 'uuid' }) }),
   body: t.Object({ kind: renderKindSchema, answerFieldId: t.Optional(t.String({ maxLength: 128 })),
     expectedUpdatedAt: t.String({ format: 'date-time' }), confirmationToken: t.Optional(t.String({ maxLength: 64 })) }),
 };
-async function convertKind(context: { user: { id: string }; params: { id: string }; body: KindEdit }, preview: boolean) {
+export async function convertKind(context: { user: { id: string }; params: { id: string }; body: KindEdit }, preview: boolean, transaction?: ActionTx, deferredIndex?: string[]) {
   const { user, params, body } = context;
-  const [type] = await db.select().from(noteTypes).where(and(eq(noteTypes.id, params.id), eq(noteTypes.userId, user.id)));
+  const [type] = await (transaction ?? db).select().from(noteTypes).where(and(eq(noteTypes.id, params.id), eq(noteTypes.userId, user.id)));
   if (!type || type.isBuiltin) return reply(404, { error: 'not_found' });
   if (body.kind === type.kind) return reply(400, { error: 'kind_unchanged' });
   const fields = identifiedFields(type.id, type.fields, type.kind);
@@ -378,7 +381,41 @@ async function convertKind(context: { user: { id: string }; params: { id: string
   return editNoteType({ ...context, body: { kind: body.kind, expectedUpdatedAt: body.expectedUpdatedAt,
     confirmationToken: body.confirmationToken, preview,
     ...(body.kind === 'typein' ? { fields: fields.map((field) => ({ ...field, typeinAnswer: field.id === body.answerFieldId })) } : {}),
-  } }, true);
+  } }, true, transaction, deferredIndex);
+}
+
+export const noteTypeCreateBody = t.Object({
+        name: t.String({ minLength: 1, maxLength: 128 }),
+        fields: t.Array(noteFieldSchema, { minItems: 1, maxItems: 64 }),
+        templates: t.Array(cardTemplateSchema, { minItems: 1, maxItems: 32 }),
+        styling: t.Optional(t.String({ maxLength: 32768 })),
+        kind: t.Optional(renderKindSchema),
+      });
+
+export async function createNoteTypeForRequest({ user, body }: { user: { id: string }; body: typeof noteTypeCreateBody.static }, transaction?: ActionTx) {
+      const status = reply;
+      const err = validateOrdinals(body.fields, body.templates);
+      if (err) return status(400, { error: err });
+      if (!validFieldNames(body.fields)) return status(400, { error: 'invalid_field_names' });
+      if (body.fields.filter((field) => field.typeinAnswer).length > 1) return status(400, { error: 'invalid_typein_answer' });
+      const fields = identifiedFields('', body.fields.map((field) => ({ ...field, name: field.name.trim().normalize('NFC'), id: newUuidV7() })), body.kind);
+      const templates = body.templates.map((template) => ({ ...template, id: newUuidV7(),
+        frontTemplate: renameTemplateFields(template.frontTemplate, new Map()), backTemplate: renameTemplateFields(template.backTemplate, new Map()) }));
+      const issues = validateTemplates(fields, templates);
+      if (issues.length) return status(400, { error: 'invalid_template', issues });
+      const [created] = await (transaction ?? db)
+        .insert(noteTypes)
+        .values({
+          userId: user.id,
+          name: body.name,
+          fields,
+          templates,
+          styling: body.styling ?? '',
+          kind: body.kind ?? 'custom',
+          isBuiltin: false,
+        })
+        .returning();
+      return created;
 }
 
 export const noteTypesModule = new Elysia({ prefix: '/note-types' })
@@ -395,43 +432,7 @@ export const noteTypesModule = new Elysia({ prefix: '/note-types' })
     },
     { auth: true },
   )
-  .post(
-    '/',
-    async ({ user, body, status }) => {
-      const err = validateOrdinals(body.fields, body.templates);
-      if (err) return status(400, { error: err });
-      if (!validFieldNames(body.fields)) return status(400, { error: 'invalid_field_names' });
-      if (body.fields.filter((field) => field.typeinAnswer).length > 1) return status(400, { error: 'invalid_typein_answer' });
-      const fields = identifiedFields('', body.fields.map((field) => ({ ...field, name: field.name.trim().normalize('NFC'), id: newUuidV7() })), body.kind);
-      const templates = body.templates.map((template) => ({ ...template, id: newUuidV7(),
-        frontTemplate: renameTemplateFields(template.frontTemplate, new Map()), backTemplate: renameTemplateFields(template.backTemplate, new Map()) }));
-      const issues = validateTemplates(fields, templates);
-      if (issues.length) return status(400, { error: 'invalid_template', issues });
-      const [created] = await db
-        .insert(noteTypes)
-        .values({
-          userId: user.id,
-          name: body.name,
-          fields,
-          templates,
-          styling: body.styling ?? '',
-          kind: body.kind ?? 'custom',
-          isBuiltin: false,
-        })
-        .returning();
-      return created;
-    },
-    {
-      auth: true,
-      body: t.Object({
-        name: t.String({ minLength: 1, maxLength: 128 }),
-        fields: t.Array(noteFieldSchema, { minItems: 1, maxItems: 64 }),
-        templates: t.Array(cardTemplateSchema, { minItems: 1, maxItems: 32 }),
-        styling: t.Optional(t.String({ maxLength: 32768 })),
-        kind: t.Optional(renderKindSchema),
-      }),
-    },
-  )
+  .post('/', createNoteTypeForRequest, { auth: true, body: noteTypeCreateBody })
   .post('/:id/kind/preview', (context) => convertKind(context, true), kindEditOptions)
   .post('/:id/kind', (context) => convertKind(context, false), kindEditOptions)
   .patch('/:id', (context) => editNoteType(context), noteTypeEditOptions)

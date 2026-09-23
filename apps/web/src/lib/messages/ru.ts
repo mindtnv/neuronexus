@@ -1,3 +1,5 @@
+import actionsRecovery from './ru/actions-recovery';
+import operations from './ru/operations';
 import common from './ru/common';
 import home from './ru/home';
 import review from './ru/review';
@@ -19,6 +21,8 @@ import library from './ru/library';
 import assistant from './ru/assistant';
 
 const messages = {
+  actionsRecovery,
+  operations,
   assistant,
   ...common,
   home,

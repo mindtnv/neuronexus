@@ -1,3 +1,4 @@
+import { adaptRecoveryFetch } from '../../lib/test-recovery-fetch';
 import { ensureTestDom, GlobalRegistrator } from '../../lib/test-dom-setup';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import React, { act } from 'react';
@@ -38,12 +39,12 @@ beforeEach(() => {
   originalFetch = globalThis.fetch;
   container = document.createElement('div'); document.body.appendChild(container);
   root = createRoot(container);
-  useNN.setState({ bootstrapped: true, decks: [{ id: 'deck', name: 'Study', color: 'lime', species: 'fern', createdAt: 0 }], cards: [cardFromApi({ id: 'cached', deckId: 'deck', suspended: true })] });
-  globalThis.fetch = ((url: any) => Promise.resolve(Response.json(
-    String(url).endsWith('/decks') ? useNN.getState().decks : String(url).includes('/study-summary') ? overview : String(url).includes('/library') ? { items: [] }
+  useNN.setState({ profile: { userId: 'study-overview-owner' } as any, bootstrapped: true, decks: [{ id: 'deck', name: 'Study', color: 'lime', species: 'fern', createdAt: 0 }], cards: [cardFromApi({ id: 'cached', deckId: 'deck', suspended: true })] });
+  globalThis.fetch = adaptRecoveryFetch(((url: any) => Promise.resolve(Response.json(
+    String(url).endsWith('/deck-hierarchy') ? {revision:0,decks:useNN.getState().decks} : String(url).endsWith('/decks') ? useNN.getState().decks : String(url).includes('/study-summary') ? overview : String(url).includes('/library') ? { items: [] }
     : String(url).includes('/stats/forecast') ? { days: 7, buckets: [], overdueCount: 0, total: 0 }
     : String(url).includes('/status') ? { chatEnabled: false } : [],
-  ))) as unknown as typeof fetch;
+  ))) as unknown as typeof fetch);
 });
 afterEach(async () => {
   await act(async () => root.unmount()); container.remove();
@@ -79,9 +80,9 @@ describe('study overview screens', () => {
   });
 
   test('a failed count request is shown as unavailable with a retry', async () => {
-    globalThis.fetch = ((url: any) => Promise.resolve(String(url).includes('/study-summary')
+    globalThis.fetch = adaptRecoveryFetch(((url: any) => Promise.resolve(String(url).includes('/study-summary')
       ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json(String(url).includes('/stats/forecast')
-        ? { days: 7, buckets: [], overdueCount: 0, total: 0 } : []))) as unknown as typeof fetch;
+        ? { days: 7, buckets: [], overdueCount: 0, total: 0 } : []))) as unknown as typeof fetch);
     await render(<NNHome />);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Could not refresh');
     expect(container.textContent).toContain('—cards due');
@@ -89,10 +90,10 @@ describe('study overview screens', () => {
   });
 
   test('forecast errors do not render a fabricated zero forecast', async () => {
-    globalThis.fetch = ((url: any) => Promise.resolve(
+    globalThis.fetch = adaptRecoveryFetch(((url: any) => Promise.resolve(
       String(url).includes('/stats/forecast') ? Response.json({ error: 'unavailable' }, { status: 503 })
-      : Response.json(String(url).endsWith('/decks') ? useNN.getState().decks : String(url).includes('/study-summary') ? overview : []),
-    )) as unknown as typeof fetch;
+      : Response.json(String(url).endsWith('/deck-hierarchy') ? {revision:0,decks:useNN.getState().decks} : String(url).endsWith('/decks') ? useNN.getState().decks : String(url).includes('/study-summary') ? overview : []),
+    )) as unknown as typeof fetch);
     await render(<NNHome />);
     expect(container.textContent).toContain('Could not refresh the forecast');
     expect(container.textContent).not.toContain('Tomorrow');
@@ -101,7 +102,7 @@ describe('study overview screens', () => {
   test('home refreshes when a scheduled card becomes due and when returning to the window', async () => {
     let loads = 0;
     const due = new Date(Date.now() + 100).toISOString();
-    globalThis.fetch = ((url: any) => {
+    globalThis.fetch = adaptRecoveryFetch(((url: any) => {
       if (String(url).includes('/study-summary')) {
         loads++;
         return Promise.resolve(Response.json({ ...overview, overall: { ...counts,
@@ -109,7 +110,7 @@ describe('study overview screens', () => {
         } }));
       }
       return Promise.resolve(Response.json(String(url).includes('/stats/forecast') ? { days: 7, buckets: [], overdueCount: 0, total: 0 } : []));
-    }) as unknown as typeof fetch;
+    }) as unknown as typeof fetch);
     await render(<NNHome />);
     expect(container.textContent).toContain('0cards due');
     for (let i = 0; i < 30 && !container.textContent?.includes('1cards due'); i++) {
@@ -146,10 +147,10 @@ describe('organized deck workspace', () => {
   test('icon and color editor saves both and safe fallback renders unknown legacy icons', async () => {
     const writes: any[] = [];
     const fallback = globalThis.fetch;
-    globalThis.fetch = (async (url: any, init?: RequestInit) => {
+    globalThis.fetch = adaptRecoveryFetch((async (url: any, init?: RequestInit) => {
       if (init?.method === 'PATCH') { const body = JSON.parse(String(init.body)); writes.push(body); return Response.json({ ...deck, ...body }); }
       return fallback(url, init);
-    }) as typeof fetch;
+    }) as typeof fetch);
     useNN.setState({ decks: [{ ...deck, icon: 'legacy-emoji' }] });
     await render(<NNDecks />);
     expect(container.querySelector('.reomi-deck-row-icon svg path')).not.toBeNull();
@@ -166,10 +167,10 @@ describe('organized deck workspace', () => {
     useNN.setState({ decks: [deck, { ...deck,id:'child',name:'Child',parentId:'deck' },{...deck,id:'target',name:'Target'}] });
     const writes: any[] = [];
     const fallback = globalThis.fetch;
-    globalThis.fetch = (async (url:any,init?:RequestInit) => {
+    globalThis.fetch = adaptRecoveryFetch((async (url:any,init?:RequestInit) => {
       if (String(url).endsWith('/deck/move')) { writes.push(JSON.parse(String(init?.body))); return Response.json([{...deck,parentId:'target',position:0},{...deck,id:'child',name:'Child',parentId:'deck'},{...deck,id:'target',name:'Target'}]); }
       return fallback(url,init);
-    }) as typeof fetch;
+    }) as typeof fetch);
     await render(<NNDecks />);
     await act(async () => container.querySelector('[data-deck-id="deck"]')!.dispatchEvent(new KeyboardEvent('keydown',{key:'F10',shiftKey:true,bubbles:true})));
     await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(b=>b.textContent==='Move deck')!.click());
@@ -183,10 +184,10 @@ describe('organized deck workspace', () => {
   test('desktop drag submits the indicated placement once and preserves subtree scope', async () => {
     useNN.setState({ decks:[deck,{...deck,id:'target',name:'Target'}] });
     const fallback = globalThis.fetch, writes:any[]=[];
-    globalThis.fetch = (async (url:any,init?:RequestInit) => {
+    globalThis.fetch = adaptRecoveryFetch((async (url:any,init?:RequestInit) => {
       if (String(url).endsWith('/deck/move')) { writes.push(JSON.parse(String(init?.body))); return Response.json([{...deck,position:1},{...deck,id:'target',name:'Target',position:0}]); }
       return fallback(url,init);
-    }) as typeof fetch;
+    }) as typeof fetch);
     await render(<NNDecks />);
     const source=container.querySelector<HTMLElement>('[data-deck-id="deck"] .reomi-deck-drag-handle')!;
     const target=container.querySelector<HTMLElement>('[data-deck-id="target"]')!;
@@ -208,7 +209,7 @@ describe('organized deck workspace', () => {
     const width=window.innerWidth;
     Object.defineProperty(window,'innerWidth',{value:432,configurable:true});
     const fallback=globalThis.fetch;
-    globalThis.fetch=(async(url:any,init?:RequestInit)=>String(url).includes('/stats/forecast') ? Response.json({error:'unavailable'},{status:503}) : fallback(url,init)) as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch((async(url:any,init?:RequestInit)=>String(url).includes('/stats/forecast') ? Response.json({error:'unavailable'},{status:503}) : fallback(url,init)) as typeof fetch);
     try {
       await render(<NNDecks />);
       expect(container.querySelector('.reomi-deck-details')).toBeNull();
@@ -226,8 +227,8 @@ describe('organized deck workspace', () => {
 test('deck forecast preserves populated UTC buckets revived by the API client', async () => {
   const fallback=globalThis.fetch;
   const today=new Date().toISOString().slice(0,10);
-  globalThis.fetch=(async(url:any,init?:RequestInit)=>String(url).includes('/stats/forecast')
-    ? Response.json({days:7,buckets:[{day:today,count:7}],overdueCount:2,total:7}) : fallback(url,init)) as typeof fetch;
+  globalThis.fetch = adaptRecoveryFetch((async(url:any,init?:RequestInit)=>String(url).includes('/stats/forecast')
+    ? Response.json({days:7,buckets:[{day:today,count:7}],overdueCount:2,total:7}) : fallback(url,init)) as typeof fetch);
   await render(<NNDecks/>);
   await act(async()=>container.querySelector<HTMLElement>('[data-deck-id="deck"]')!.click());
   expect(container.querySelector('.reomi-deck-forecast strong')?.textContent).toBe('7');
@@ -236,21 +237,22 @@ test('deck forecast preserves populated UTC buckets revived by the API client', 
 
 test('failed move leaves the authoritative tree intact and offers retry in the dialog', async () => {
   const fallback=globalThis.fetch;
-  globalThis.fetch=(async(url:any,init?:RequestInit)=>String(url).endsWith('/deck/move') ? Response.json({error:'unavailable'},{status:503}) : fallback(url,init)) as typeof fetch;
+  globalThis.fetch = adaptRecoveryFetch((async(url:any,init?:RequestInit)=>String(url).endsWith('/deck/move') ? Response.json({error:'unavailable'},{status:503}) : fallback(url,init)) as typeof fetch);
   await render(<NNDecks/>);
   const initial=useNN.getState().decks;
   await act(async()=>container.querySelector<HTMLButtonElement>('.reomi-deck-drag-handle')!.click());
   await act(async()=>container.querySelector<HTMLButtonElement>('dialog[open] button[type="submit"]')!.click());
   expect(useNN.getState().decks).toEqual(initial);
-  expect(container.querySelector('dialog[open] [role="alert"]')).not.toBeNull();
-  expect(container.querySelector<HTMLButtonElement>('dialog[open] button[type="submit"]')?.disabled).toBe(false);
+  expect(container.querySelector('dialog[open] .nn-save-feedback')?.textContent).toContain('Checking whether the change was saved');
+  expect(container.querySelector<HTMLButtonElement>('dialog[open] button[type="submit"]')?.disabled).toBe(true);
+  expect([...container.querySelectorAll('dialog[open] button')].some(button => button.textContent === 'Retry')).toBe(true);
 });
 
 test('pointer drag rejects descendants and Escape cancels without a write', async () => {
   const deck=useNN.getState().decks[0];
   useNN.setState({decks:[deck,{...deck,id:'child',name:'Child',parentId:deck.id},{...deck,id:'target',name:'Target'}]});
   const fallback=globalThis.fetch,writes:any[]=[];
-  globalThis.fetch=(async(url:any,init?:RequestInit)=>{if(String(url).includes('/move')) writes.push(init); return fallback(url,init);}) as typeof fetch;
+  globalThis.fetch = adaptRecoveryFetch((async(url:any,init?:RequestInit)=>{if(String(url).includes('/move')) writes.push(init); return fallback(url,init);}) as typeof fetch);
   await render(<NNDecks/>);
   const source=container.querySelector<HTMLElement>('[data-deck-id="deck"] .reomi-deck-drag-handle')!;
   const child=container.querySelector<HTMLElement>('[data-deck-id="child"]')!,target=container.querySelector<HTMLElement>('[data-deck-id="target"]')!;

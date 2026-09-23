@@ -9,9 +9,9 @@ import { useNavigationGuard } from '@/components/navigation';
 
 type DraftStatus = 'idle' | 'saved' | 'saving' | 'pending' | DraftStorageError['code'];
 /** Components using this hook must be keyed by owner and edited entity. */
-export function useEditorDraft<T extends object>({ scope, value, fingerprint, validate, onRestore, onSave, busy }: {
+export function useEditorDraft<T extends object>({ scope, value, fingerprint, validate, onRestore, onSave, busy, unsettled = false }: {
   scope: DraftScope; value: T; fingerprint: string; validate: (value: unknown) => value is T;
-  onRestore: (value: T) => void; onSave: () => Promise<boolean>; busy: boolean;
+  onRestore: (value: T) => void; onSave: () => Promise<boolean>; busy: boolean; unsettled?: boolean;
 }) {
   const t = useT(); const { select } = useDialog();
   const [pending, setPending] = useState<EditorDraft<T> | null>(null);
@@ -27,13 +27,13 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
   const invalid = useRef(false);
   const loaded = useRef(false); const alive = useRef(true);
   const lastSaved = useRef('');
-  const live = useRef({ value, fingerprint, onRestore, onSave, busy });
-  live.current = { value, fingerprint, onRestore, onSave, busy };
+  const live = useRef({ value, fingerprint, onRestore, onSave, busy, unsettled });
+  live.current = { value, fingerprint, onRestore, onSave, busy, unsettled };
   const owned = () => Boolean(scope.ownerId) && useNN.getState().profile?.userId === scope.ownerId;
   const update = (next: DraftStatus) => { if (alive.current) setStatus(next); };
   const errorStatus = (error: unknown) => error instanceof DraftStorageError ? error.code : 'unavailable';
   const serializedValue = draftFingerprint(value);
-  const dirty = () => restored.current || clean.current !== live.current.fingerprint;
+  const dirty = () => restored.current || live.current.unsettled || clean.current !== live.current.fingerprint;
   const flush = (closing = false): boolean => {
     if ((!owned() && !(closing && scope.ownerId)) || !loaded.current || offered.current || invalid.current) return false;
     if (!dirty()) return true;
@@ -48,15 +48,22 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     } catch (error) { update(errorStatus(error)); return false; }
   };
   const clear = (confirmed = false) => {
-    if (!owned() && !(confirmed && scope.ownerId)) return;
+    if (!owned() && !(confirmed && scope.ownerId)) return false;
     try {
-      if (!clearEditorDraft(scope, revision.current)) { update('changed'); return; }
-      revision.current = null; lastSaved.current = ''; update('idle');
-    } catch (error) { update(errorStatus(error)); }
+      if (!clearEditorDraft(scope, revision.current)) { update('changed'); return false; }
+      revision.current = null; lastSaved.current = ''; update('idle'); return true;
+    } catch (error) { update(errorStatus(error)); return false; }
   };
-  const markSaved = (fingerprint = live.current.fingerprint) => {
-    restored.current = false; invalid.current = false; clean.current = fingerprint; live.current.fingerprint = fingerprint; baselineValue.current = live.current.value;
-    offered.current = null; if (alive.current) setPending(null); clear(true);
+  const markSaved = (fingerprint = live.current.fingerprint, savedValue?: T, canonicalFingerprint?: string) => {
+    const matches = live.current.fingerprint === fingerprint;
+    restored.current = false; invalid.current = false; live.current.unsettled = false; clean.current = canonicalFingerprint ?? fingerprint;
+    // Save-and-return can run before React renders the finally(setBusy(false)).
+    // A confirmed matching save is already settled; do not bounce its navigation.
+    if (matches) live.current.busy = false;
+    if (matches && canonicalFingerprint) { live.current.fingerprint = canonicalFingerprint; if (savedValue) live.current.value = savedValue; }
+    if (savedValue) baselineValue.current = savedValue; else if (matches) baselineValue.current = live.current.value;
+    offered.current = null; if (alive.current) setPending(null);
+    if (matches) clear(true); else flush();
   };
   const restore = () => {
     if (!offered.current || !owned()) return;
@@ -66,14 +73,15 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     live.current.onRestore(record.value); update('saved');
   };
   const discard = (reset = false) => {
-    if (!owned()) return;
+    if (!owned()) return false;
     if (status === 'invalid' && revision.current === null) {
-      try { clearInvalidEditorDraft(scope); revision.current = null; update('idle'); } catch (error) { update(errorStatus(error)); return; }
-    } else clear();
+      try { clearInvalidEditorDraft(scope); revision.current = null; update('idle'); } catch (error) { update(errorStatus(error)); return false; }
+    } else if (!clear()) return false;
     offered.current = null; setPending(null);
     invalid.current = false; restored.current = false;
-    if (reset) { live.current.value = baselineValue.current; live.current.fingerprint = clean.current; live.current.onRestore(baselineValue.current); }
+    if (reset) { live.current.unsettled = false; live.current.value = baselineValue.current; live.current.fingerprint = clean.current; live.current.onRestore(baselineValue.current); }
     else flush();
+    return true;
   };
 
   useEffect(() => {
@@ -111,23 +119,24 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     return () => clearTimeout(timer);
   }, [fingerprint, serializedValue]);
 
-  useNavigationGuard(async () => {
+  const confirmLeave = async () => {
     if (!owned()) return true;
     if (live.current.busy) return false;
     if (!dirty() || offered.current) return true;
-    const choice = await select({ title: t('editor.draft.leaveTitle'), message: t('editor.draft.leaveBody'), value: 'keep',
+    const choice = await select({ title: t('editor.draft.leaveTitle'), message: t(live.current.unsettled ? 'actionsRecovery.uncertainDraftClose' : 'editor.draft.leaveBody'), value: 'keep',
       options: [ { value: 'save', label: t('editor.draft.saveAndLeave') }, { value: 'keep', label: t('editor.draft.keepAndLeave') }, { value: 'discard', label: t('editor.draft.discardAndLeave') } ],
       confirmLabel: t('editor.draft.continue'), cancelLabel: t('editor.draft.stay'),
     });
     if (!alive.current || !owned()) return false;
     if (choice === 'save') return await live.current.onSave();
     if (choice === 'keep') return flush();
-    if (choice === 'discard') { discard(true); return true; }
+    if (choice === 'discard') return discard(true);
     return false;
-  });
+  };
+  useNavigationGuard(confirmLeave);
   const download = () => {
     if (!owned()) return false;
     try { downloadEditorDraft(live.current.value, scope.kind); return true; } catch { return false; }
   };
-  return { download, pending, blocked: !ready || Boolean(pending), status, dirty: dirty(), restore, discard: () => discard(), markSaved, flush };
+  return { download, pending, blocked: !ready || Boolean(pending), status, dirty: dirty(), restore, discard: () => discard(), markSaved, flush, confirmLeave };
 }

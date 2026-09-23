@@ -22,6 +22,10 @@ import { quickCard, suggestCard } from '@/lib/pdf-annotations';
 import { raiseToast } from '@/components/toasts';
 import type { Deck, QuickCardResult } from '@/lib/types';
 import type { MarkRect, SourceTextSelection } from '@neuronexus/shared';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
+import { useModalFocus } from '@/lib/use-modal-focus';
+import { useNavigationGuard } from '@/components/navigation';
+import { useDialog } from '@/components/dialog';
 import { InlineDeckCreate } from '../inline-deck-create';
 
 const DECK_KEY = 'nn:nb:quickdeck';
@@ -66,6 +70,9 @@ export function QuickCardDialog({
   t,
 }: QuickCardDialogProps) {
   const decks = useNN((s) => s.decks);
+  const { select } = useDialog();
+  const dialogRoot = useRef<HTMLDivElement>(null), submitLock = useRef(false);
+  useModalFocus(dialogRoot, open);
 
   const [deckId, setDeckId] = useState<string>('');
   const [front, setFront] = useState('');
@@ -136,8 +143,8 @@ export function QuickCardDialog({
   }, [sourceId, quote, page, locale, suggesting, t]);
 
   const handleSubmit = useCallback(async () => {
-    if (!deckId || submitting || !front.trim()) return;
-    setSubmitting(true);
+    if (!deckId || submitLock.current || !front.trim()) return false;
+    submitLock.current = true; setSubmitting(true);
     setSubmitError(false);
     try {
       const result = await quickCard(sourceId, {
@@ -152,25 +159,35 @@ export function QuickCardDialog({
       });
       const firstCardId = result.cardIds[0] ?? '';
       onCreated(result, firstCardId);
-      onClose();
+      onClose(); return true;
     } catch {
       // Leave dialog open + surface an inline failure line so the user can retry.
-      setSubmitError(true);
+      setSubmitError(true); return false;
     } finally {
-      setSubmitting(false);
+      submitLock.current = false; setSubmitting(false);
     }
   }, [sourceId, sourceVersion, deckId, front, back, page, quote, textSelection, rects, submitting, onCreated, onClose]);
 
+  const layer = useTransientLayer({ root: dialogRoot, enabled: open, modal: true, busy: submitting || suggesting, onClose });
+  useNavigationGuard(async () => {
+    if (submitLock.current || suggesting) return false;
+    if (front === (prefillFront ?? '') && back === (prefillBack ?? quote ?? '')) return true;
+    const choice = await select({ title: t('editor.draft.leaveTitle'), value: 'discard',
+      options: [...(deckId && front.trim() ? [{ value: 'save', label: t('editor.draft.saveAndLeave') }] : []), { value: 'discard', label: t('editor.draft.discardAndLeave') }], cancelLabel: t('editor.draft.stay') });
+    return choice === 'discard' || choice === 'save' && await handleSubmit();
+  }, open ? layer.id : false);
+
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if ((e.key === 'Enter' && (e.metaKey || e.ctrlKey))) {
+    e.stopPropagation();
+    if ((e.key === 'Enter' && (e.metaKey || e.ctrlKey)) && !e.nativeEvent.isComposing) {
       e.preventDefault();
       void handleSubmit();
     }
     if (e.key === 'Escape') {
       e.preventDefault();
-      onClose();
+      void layer.close('escape');
     }
-  }, [handleSubmit, onClose]);
+  }, [handleSubmit, layer.close]);
 
   if (!open) return null;
 
@@ -178,11 +195,9 @@ export function QuickCardDialog({
 
   return (
     // Backdrop with blur
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={t('notebooks.quickcard.title')}
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <LayerParent.Provider value={layer.id}><div
+      role="presentation"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) void layer.close('outside'); }}
       className="nn-dialog-backdrop"
       style={{
         position: 'fixed',
@@ -196,7 +211,7 @@ export function QuickCardDialog({
       }}
     >
       {/* Dialog box */}
-      <div
+      <div ref={dialogRoot} role="dialog" aria-modal="true" aria-label={t('notebooks.quickcard.title')} tabIndex={-1}
         onKeyDown={onKeyDown}
         style={{
           width: '100%',
@@ -233,7 +248,7 @@ export function QuickCardDialog({
           </span>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => void layer.close()}
             aria-label="Close"
             style={{
               width: 30,
@@ -335,6 +350,8 @@ export function QuickCardDialog({
             )}
             <textarea
               ref={frontRef}
+              aria-label={t('notebooks.quickcard.frontLabel')}
+              disabled={submitting || suggesting}
               value={front}
               onChange={(e) => setFront(e.target.value)}
               placeholder={t('notebooks.quickcard.frontPlaceholder')}
@@ -375,6 +392,8 @@ export function QuickCardDialog({
               {t('notebooks.quickcard.backLabel')}
             </label>
             <textarea
+              aria-label={t('notebooks.quickcard.backLabel')}
+              disabled={submitting || suggesting}
               value={back}
               onChange={(e) => setBack(e.target.value)}
               placeholder={t('notebooks.quickcard.backPlaceholder')}
@@ -458,6 +477,6 @@ export function QuickCardDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div></LayerParent.Provider>
   );
 }

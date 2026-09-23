@@ -117,6 +117,31 @@ async function apply(token: string, actionId: string) {
   return invoke(token, 'confirm_action', { actionId, decision: 'apply', confirmed: true });
 }
 
+test('a confirmed MCP hierarchy mutation and a versioned UI move serialize without applying stale decisions', async () => {
+  const { cookie, token } = await fixture();
+  const create = async (name: string) => (await callApp(app, 'POST', '/decks', { cookie, body: { name } })).json<any>();
+  const a = await create('A'), b = await create('B'), c = await create('C');
+  const snapshot = await (await callApp(app, 'GET', '/ui-actions/v1/deck-hierarchy', { cookie })).json<any>();
+  const preview = data(await invoke(token, 'update_deck', { id: b.id, parentId: a.id }));
+  const { newUuidV7 } = await import('@neuronexus/shared');
+  const [ui, agent] = await Promise.all([
+    callApp(app, 'POST', `/ui-actions/v1/decks/${c.id}/move`, { cookie,
+      body: { requestId: newUuidV7(), sessionId: newUuidV7(), expectedRevision: snapshot.revision, targetId: a.id, placement: 'before' } }),
+    apply(token, preview.actionId),
+  ]);
+  if (ui.status === 200) {
+    expect(agent.isError).toBe(true);
+    const receipt = (await ui.json<any>()).receipt;
+    expect((await callApp(app, 'POST', `/ui-actions/v1/receipts/${receipt.id}/undo`, { cookie })).status).toBe(200);
+  } else { expect(ui.status).toBe(409); expect(agent.isError).not.toBe(true); }
+  const current = await (await callApp(app, 'GET', '/decks', { cookie })).json<any[]>();
+  expect(new Set(current.map(row => row.id)).size).toBe(3);
+  for (const row of current) {
+    const seen = new Set<string>(); let id: string | null = row.id;
+    while (id) { expect(seen.has(id)).toBe(false); seen.add(id); id = current.find(deck => deck.id === id)?.parentId ?? null; }
+  }
+});
+
 describe('MCP confirmed management', () => {
   test('preview does not write; explicit confirmation applies once under concurrent replay', async () => {
     const { cookie, token } = await fixture();

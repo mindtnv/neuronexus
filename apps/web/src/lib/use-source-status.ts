@@ -15,6 +15,8 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { SOURCE_NONTERMINAL_STATUSES, type SourceStatus } from '@neuronexus/shared';
+import { followOperationRefresh } from './operation-observer';
+import { useOperations } from '@/components/operations-provider';
 
 const NONTERMINAL = new Set<SourceStatus>(SOURCE_NONTERMINAL_STATUSES);
 
@@ -52,6 +54,9 @@ export function useSourceStatus<T extends PollableSource>({
   intervalMs = 2000,
   enabled = true,
 }: UseSourceStatusOptions<T>): boolean {
+  const operations = useOperations();
+  const ids = items.map(item => item.id).join('|');
+  const signature = items.map(item => `${item.id}:${item.status}`).join('|');
   const hasPending = useMemo(
     () => items.some((s) => NONTERMINAL.has(s.status)),
     [items],
@@ -68,7 +73,20 @@ export function useSourceStatus<T extends PollableSource>({
   updateRef.current = onUpdate;
 
   useEffect(() => {
-    if (!enabled || !hasPending) return;
+    if (enabled && hasPending && operations) void operations.observer.refresh();
+  }, [enabled, signature, operations?.observer]);
+
+  useEffect(() => {
+    if (!operations || !enabled || !hasPending) return;
+    return followOperationRefresh(operations.observer, async current => {
+      const pending = itemsRef.current.filter(item => NONTERMINAL.has(item.status));
+      const rows = await Promise.all(pending.map(item => fetchRef.current(item.id).catch(() => null)));
+      if (current()) { const fresh: T[] = []; for (const row of rows) if (row !== null) fresh.push(row); updateRef.current(fresh); }
+    });
+  }, [operations?.observer, enabled, hasPending, ids]);
+
+  useEffect(() => {
+    if (operations || !enabled || !hasPending) return;
     let cancelled = false;
     const interval = setInterval(async () => {
       const pending = itemsRef.current.filter((s) => NONTERMINAL.has(s.status));
@@ -89,7 +107,7 @@ export function useSourceStatus<T extends PollableSource>({
       cancelled = true;
       clearInterval(interval);
     };
-  }, [enabled, hasPending, intervalMs]);
+  }, [operations?.observer, enabled, hasPending, intervalMs]);
 
   return hasPending;
 }

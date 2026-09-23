@@ -1,15 +1,23 @@
 'use client';
 
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useImperativeHandle, type Ref, type ReactNode } from 'react';
 import { Button } from './primitives';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
+import { useNavigationGuard } from '../navigation';
+import { transientLayers } from '@/lib/layer-stack';
+export interface ModalHandle { close(): Promise<boolean>; checkClose(): Promise<boolean> }
 
 /** Native modal provides focus containment, inert background and focus restoration. */
-export function Modal({ open, title, closeLabel, busy = false, onClose, children }: {
+export function Modal({ open, title, closeLabel, busy = false, onClose, children, className = '', beforeClose, controlRef }: {
   open: boolean; title: string; closeLabel: string; busy?: boolean;
-  onClose: () => void; children: ReactNode;
+  onClose: () => void; children: ReactNode; className?: string;
+  beforeClose?: () => Promise<boolean>; controlRef?: Ref<ModalHandle>;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
+  const layer = useTransientLayer({ root: ref, enabled: open, onClose, busy, modal: true });
+  useImperativeHandle(controlRef, () => ({ close: () => layer.close(), checkClose: async () => { const current = transientLayers.get(layer.id); return !current || await transientLayers.canDismiss(current); } }));
+  useNavigationGuard(beforeClose ?? (async () => true), open ? layer.id : false);
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
@@ -20,16 +28,16 @@ export function Modal({ open, title, closeLabel, busy = false, onClose, children
     else if (!open && dialog.open) dialog.close();
     return () => { if (dialog.open) dialog.close(); };
   }, [open]);
-  return <dialog ref={ref} className="reomi-modal" aria-labelledby={titleId} aria-busy={busy || undefined}
-    onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}
+  return <dialog ref={ref} className={`reomi-modal ${className}`} aria-labelledby={titleId} aria-busy={busy || undefined}
+    onCancel={event => { event.preventDefault(); void layer.close('escape'); }}
     onClick={event => {
       if (event.target !== event.currentTarget || busy) return;
       const rect = event.currentTarget.getBoundingClientRect();
-      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose();
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) void layer.close('outside');
     }}>
     <header className="reomi-modal-header"><h2 id={titleId}>{title}</h2>
-      <Button variant="ghost" className="reomi-create-icon" aria-label={closeLabel} title={closeLabel} disabled={busy} onClick={onClose}><span aria-hidden>×</span></Button>
+      <Button variant="ghost" className="reomi-create-icon" aria-label={closeLabel} title={closeLabel} disabled={busy} onClick={() => void layer.close()}><span aria-hidden>×</span></Button>
     </header>
-    {children}
+    <LayerParent.Provider value={open ? layer.id : false}>{children}</LayerParent.Provider>
   </dialog>;
 }

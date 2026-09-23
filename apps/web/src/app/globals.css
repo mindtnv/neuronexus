@@ -2552,3 +2552,39 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 /* A single page overlay paints intersecting glyph boxes at one opacity. */
 .nn-pdf-page:has([data-pdf-selection-paint])::selection,
 .nn-pdf-page:has([data-pdf-selection-paint]) *::selection { background: transparent; color: transparent; }
+
+/* Account-wide operations: one quiet shell control and a compact, scrollable list. */
+.nn-operations-button, .nn-operations-mobile-button { display: flex; gap: 9px; align-items: center; justify-content: flex-start; border: 0; border-radius: var(--r-md); padding: 10px 12px; background: transparent; color: var(--text-dim); cursor: pointer; font: inherit; }
+.nn-operations-button:hover, .nn-operations-mobile-button:hover { background: var(--surface-hover); color: var(--text); }
+.nn-operations-button:focus-visible, .nn-operations-mobile-button:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+.nn-operations-count { margin-left: auto; min-width: 20px; padding: 1px 5px; border-radius: 20px; background: var(--surface); font-size: 11px; }
+.nn-operations-mobile-button { display: none; }
+.reomi-modal.nn-operations-panel { width: min(440px, calc(100vw - 24px)); max-height: min(620px, calc(100dvh - 80px)); margin: auto auto 20px 16px; padding: 0; }
+.reomi-modal.nn-operations-panel[open] { display: flex; flex-direction: column; }
+.nn-operations-content { overflow: auto; padding: 0 16px 12px; min-height: 0; }
+.nn-operations-content h3 { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--text-dim); margin: 16px 0 8px; }
+.nn-operations-content h3 span { font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.nn-operations-content ul { list-style: none; margin: 0; padding: 0; }
+.nn-operation-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.nn-operation-row > svg { flex-shrink: 0; margin-top: 3px; color: var(--text-dim); }
+.nn-operation-copy { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; font-size: 12px; color: var(--text-dim); }
+.nn-operation-copy strong { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nn-operation-copy progress { width: 100%; height: 5px; accent-color: var(--accent-500); }
+.nn-operation-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+.nn-operation-notice { padding: 8px 0; font-size: 12px; }
+.nn-operations-history { color: var(--text-muted); font-size: 11px; padding-top: 12px; }
+@media (max-width: 719px) {
+  .nn-operations-panel button { min-height: 44px; }
+  .nn-operations-mobile-button { display: flex; flex: 1; flex-direction: column; justify-content: center; gap: 3px; min-width: 44px; min-height: 44px; padding: 8px 4px; position: relative; font-size: 10.5px; }
+  .nn-operations-mobile-button .nn-sidebar-label { display: block; }
+  .nn-operations-mobile-button .nn-operations-count { position: absolute; top: 2px; right: 2px; }
+  .reomi-modal.nn-operations-panel { margin: auto 0 0; width: 100%; max-width: 100%; max-height: calc(100dvh - 40px); border-radius: 18px 18px 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
+}
+
+.nn-written-note-editor { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.nn-written-note-editor label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); }
+.nn-written-note-editor textarea { min-height: 160px; }
+.nn-save-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.nn-save-feedback.is-error { color: var(--rose-400); }
+.nn-save-conflict { border: 1px solid var(--border); padding: 10px; border-radius: 10px; }
+.nn-save-conflict pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: inherit; }

@@ -1,0 +1,243 @@
+{
+  "seededRows": 70001,
+  "ownerRows": 30001,
+  "totals": {
+    "active": 30,
+    "attention": 30,
+    "recent": 2970
+  },
+  "pages": 60,
+  "p50Ms": 8.338083000000097,
+  "p95Ms": 10.252040999999963,
+  "plans": [
+    {
+      "group": "active",
+      "executionMs": 4.627,
+      "nodes": [
+        {
+          "type": "Bitmap Heap Scan",
+          "relation": "sources",
+          "rows": 2020,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "sources_operation_active_idx",
+          "rows": 20,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "sources_operation_recent_idx",
+          "rows": 2000,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Heap Scan",
+          "relation": "notebook_artifacts",
+          "rows": 1010,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "notebook_artifacts_active_idx",
+          "rows": 10,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "artifacts_operation_recent_idx",
+          "rows": 1000,
+          "loops": 1
+        },
+        {
+          "type": "Index Scan",
+          "relation": "sources",
+          "index": "sources_user_idx",
+          "rows": 19961,
+          "loops": 1
+        },
+        {
+          "type": "Index Scan",
+          "relation": "sources",
+          "index": "sources_pkey",
+          "rows": 0,
+          "loops": 0
+        },
+        {
+          "type": "Seq Scan",
+          "relation": "source_chunks",
+          "rows": 0,
+          "loops": 0
+        }
+      ]
+    },
+    {
+      "group": "attention",
+      "executionMs": 4.667,
+      "nodes": [
+        {
+          "type": "Bitmap Heap Scan",
+          "relation": "sources",
+          "rows": 2020,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "sources_operation_active_idx",
+          "rows": 20,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "sources_operation_recent_idx",
+          "rows": 2000,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Heap Scan",
+          "relation": "notebook_artifacts",
+          "rows": 1010,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "notebook_artifacts_active_idx",
+          "rows": 10,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "artifacts_operation_recent_idx",
+          "rows": 1000,
+          "loops": 1
+        },
+        {
+          "type": "Index Scan",
+          "relation": "sources",
+          "index": "sources_user_idx",
+          "rows": 19961,
+          "loops": 1
+        },
+        {
+          "type": "Index Scan",
+          "relation": "sources",
+          "index": "sources_pkey",
+          "rows": 0,
+          "loops": 0
+        },
+        {
+          "type": "Seq Scan",
+          "relation": "source_chunks",
+          "rows": 0,
+          "loops": 0
+        }
+      ]
+    },
+    {
+      "group": "recent",
+      "executionMs": 6.859,
+      "nodes": [
+        {
+          "type": "Bitmap Heap Scan",
+          "relation": "sources",
+          "rows": 2020,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "sources_operation_active_idx",
+          "rows": 20,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "sources_operation_recent_idx",
+          "rows": 2000,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Heap Scan",
+          "relation": "notebook_artifacts",
+          "rows": 1010,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "notebook_artifacts_active_idx",
+          "rows": 10,
+          "loops": 1
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "artifacts_operation_recent_idx",
+          "rows": 1000,
+          "loops": 1
+        },
+        {
+          "type": "Index Scan",
+          "relation": "sources",
+          "index": "sources_user_idx",
+          "rows": 19961,
+          "loops": 1
+        },
+        {
+          "type": "Index Scan",
+          "relation": "sources",
+          "index": "sources_pkey",
+          "rows": 0,
+          "loops": 0
+        },
+        {
+          "type": "Seq Scan",
+          "relation": "source_chunks",
+          "rows": 0,
+          "loops": 0
+        }
+      ]
+    }
+  ],
+  "receiptRows": 48000,
+  "receiptPlans": [
+    {
+      "name": "action-lookup",
+      "executionMs": 0.009,
+      "indexes": [
+        "ui_action_owner_request_idx"
+      ],
+      "rows": 1
+    },
+    {
+      "name": "offers",
+      "executionMs": 0.052,
+      "indexes": [
+        "ui_action_owner_session_order_idx"
+      ],
+      "rows": 21
+    },
+    {
+      "name": "action-cleanup-candidates",
+      "executionMs": 0.074,
+      "indexes": [
+        "ui_action_expiry_idx"
+      ],
+      "rows": 500
+    },
+    {
+      "name": "retry-lookup",
+      "executionMs": 0.009,
+      "indexes": [
+        "operation_retry_owner_request_idx"
+      ],
+      "rows": 1
+    },
+    {
+      "name": "retry-cleanup-candidates",
+      "executionMs": 0.054,
+      "indexes": [
+        "operation_retry_created_idx"
+      ],
+      "rows": 500
+    }
+  ]
+}

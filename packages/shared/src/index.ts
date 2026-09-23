@@ -43,3 +43,5 @@ export * from './source-text-selection';
 export * from './card-evidence';
 
 export * from './source-readability';
+export * from './operations';
+export * from './ui-actions';

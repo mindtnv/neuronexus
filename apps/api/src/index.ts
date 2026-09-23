@@ -1,7 +1,10 @@
 import { closeDb } from '@neuronexus/db';
 import { buildApp, type App } from './app.ts';
 import { env } from './env.ts';
-import { rootLogger } from './logger.ts';
+import { rootLogger, safeError } from './logger.ts';
+import { createReceiptMaintenance } from './receipt-maintenance';
+import { cleanupUiActionReceipts } from './modules/ui-action-receipts';
+import { cleanupOperationRetryReceipts } from './modules/operation-retry';
 import { drainIndexQueue, reconcileOnStartup } from './ai/index-queue.ts';
 import {
   drainSourceIngest,
@@ -14,6 +17,10 @@ import {
 } from './ai/artifacts.ts';
 import { createProcessFailureHandlers, createShutdownCoordinator } from './shutdown.ts';
 
+const receiptMaintenance = createReceiptMaintenance(async () => {
+  await cleanupUiActionReceipts(); await cleanupOperationRetryReceipts();
+}, error => rootLogger.warn({ err: safeError(error) }, 'receipts.cleanup_failed'));
+
 const app = buildApp().listen(env.PORT, () => {
   rootLogger.info(
     { event: 'api.listening', port: env.PORT, corsOrigin: env.WEB_ORIGIN, nodeEnv: env.NODE_ENV },
@@ -23,16 +30,18 @@ const app = buildApp().listen(env.PORT, () => {
   void reconcileOnStartup().then(() => reconcileDocumentsOnStartup({ all: true }));
   void resumeSourceIngestOnStartup();
   void reconcileArtifactsOnStartup();
+  receiptMaintenance.start();
 });
 
 const shutdown = createShutdownCoordinator({
   logger: rootLogger,
   timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
-  stopServer: () => app.stop(),
+  stopServer: () => { receiptMaintenance.cancel(); return app.stop(); },
   workers: {
     index: (timeoutMs) => drainIndexQueue({ timeoutMs }),
     sourceIngest: (timeoutMs) => drainSourceIngest({ timeoutMs }),
     artifact: (timeoutMs) => drainArtifactGeneration({ timeoutMs }),
+    receipts: () => receiptMaintenance.drain(),
   },
   closeDb,
   // Avoid process.exit(): after the listener/pool close, the event loop exits

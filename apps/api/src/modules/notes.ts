@@ -112,15 +112,16 @@ export type NoteCreateResolution =
 export async function resolveNoteCreate(
   userId: string,
   input: { deckId: string; noteTypeId: string; fieldValues: FieldValues; acceptedAnswers?: string[] },
+  executor: Pick<Db, 'select'> = db,
 ): Promise<NoteCreateResolution> {
-  const [deck] = await db
+  const [deck] = await executor
     .select({ id: decks.id })
     .from(decks)
     .where(and(eq(decks.id, input.deckId), eq(decks.userId, userId)))
     .limit(1);
   if (!deck) return { ok: false, error: 'deck_not_found' };
 
-  const [noteType] = await db
+  const [noteType] = await executor
     .select()
     .from(noteTypes)
     .where(eq(noteTypes.id, input.noteTypeId))
@@ -216,15 +217,16 @@ export async function resolveNoteUpdate(
   userId: string,
   noteId: string,
   patch: { acceptedAnswers?: string[]; fieldValues?: FieldValues; tags?: string[]; clozeRetainHistoryFor?: Record<string, number> },
+  executor: Pick<Db, 'select'> = db,
 ): Promise<NoteUpdateResolution> {
-  const [note] = await db
+  const [note] = await executor
     .select()
     .from(notes)
     .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
     .limit(1);
   if (!note) return { ok: false, error: 'not_found' };
 
-  const [noteType] = await db
+  const [noteType] = await executor
     .select()
     .from(noteTypes)
     .where(eq(noteTypes.id, note.noteTypeId))
@@ -241,7 +243,7 @@ export async function resolveNoteUpdate(
   catch (error) { if (error instanceof NoteContentError) return { ok: false, error: error.code }; throw error; }
 
   const def = defFromRow(noteType);
-  const existing = await db.select({ clozeNumber: cards.clozeNumber, templateOrd: cards.templateOrd, renderKind: cards.renderKind }).from(cards)
+  const existing = await executor.select({ clozeNumber: cards.clozeNumber, templateOrd: cards.templateOrd, renderKind: cards.renderKind }).from(cards)
     .where(and(eq(cards.noteId, noteId), eq(cards.userId, userId)));
   const legacy = existing.some(isLegacyClozeCard);
   let generated: ReturnType<typeof generateCards>;
@@ -311,7 +313,7 @@ export async function applyNoteUpdate(tx: Tx, input: NoteUpdateInput, prepared?:
 }
 
 type NoteEdit = { acceptedAnswers?: string[]; expectedTypeUpdatedAt?: string; clozeRetainHistoryFor?: Record<string, number>; fieldValues?: FieldValues; tags?: string[]; deckId?: string; preview?: boolean; confirmationToken?: string; expectedUpdatedAt?: string };
-const noteEditOptions = {
+export const noteEditOptions = {
       auth: true as const,
       params: t.Object({ id: t.String({ format: 'uuid' }) }),
       body: t.Partial(
@@ -328,7 +330,7 @@ const noteEditOptions = {
         }),
       ),
     };
-async function editNote(context: { user: { id: string }; params: { id: string }; body: NoteEdit }) {
+export async function editNote(context: { user: { id: string }; params: { id: string }; body: NoteEdit }, transaction?: Tx, deferredIndex?: string[]) {
       const { user, params, body } = context;
       const status = reply;
       const log = requestLogFromContext(context);
@@ -337,11 +339,11 @@ async function editNote(context: { user: { id: string }; params: { id: string };
         acceptedAnswers: body.acceptedAnswers,
         tags: body.tags,
         clozeRetainHistoryFor: body.clozeRetainHistoryFor,
-      });
+      }, transaction ?? db);
       if (!resolved.ok) return status(resolved.error === 'not_found' || resolved.error === 'note_type_not_found' ? 404 : 400, { error: resolved.error });
       if (body.expectedTypeUpdatedAt && new Date(body.expectedTypeUpdatedAt).getTime() !== resolved.typeUpdatedAt.getTime()) return status(409, { error: 'note_type_changed' });
       if (body.deckId !== undefined) {
-        const [target] = await db.select({ id: decks.id }).from(decks)
+        const [target] = await (transaction ?? db).select({ id: decks.id }).from(decks)
           .where(and(eq(decks.id, body.deckId), eq(decks.userId, user.id))).limit(1);
         if (!target) return status(400, { error: 'deck_not_found' });
       }
@@ -352,7 +354,7 @@ async function editNote(context: { user: { id: string }; params: { id: string };
         expectedUpdatedAt: body.expectedUpdatedAt ? new Date(body.expectedUpdatedAt) : resolved.note.updatedAt,
         expectedTypeUpdatedAt: resolved.typeUpdatedAt,
       };
-      const result = await db.transaction(async (tx) => {
+      const run = async (tx: Tx) => {
         const prepared = await prepareNoteUpdate(tx, input);
         if (body.preview) return prepared.preview;
         if ((prepared.preview.impact.willDeleteCards > 0 || body.clozeRetainHistoryFor !== undefined || body.confirmationToken) &&
@@ -360,7 +362,8 @@ async function editNote(context: { user: { id: string }; params: { id: string };
           throw new NoteWriteConflict(body.confirmationToken ? 'preview_changed' : 'card_removal_confirmation_required');
         }
         return applyNoteUpdate(tx, input, prepared);
-      }).catch((error) => { if (error instanceof NoteWriteConflict) return error; throw error; });
+      };
+      const result = await (transaction ? run(transaction) : db.transaction(run)).catch((error) => { if (error instanceof NoteWriteConflict) return error; throw error; });
       if (result instanceof NoteWriteConflict) return status(409, { error: result.code });
       if ('impact' in result) return result;
 
@@ -377,17 +380,24 @@ async function editNote(context: { user: { id: string }; params: { id: string };
 
       // RAG index hook (Slice 3): re-enqueue surviving + new cards after commit.
       // The sourceHash skip means an unchanged render_text costs nothing.
-      enqueueCardsForIndex(result.cards.map((c) => c.id), log);
+      if (transaction) deferredIndex?.push(...result.cards.map(c => c.id));
+      else enqueueCardsForIndex(result.cards.map((c) => c.id), log);
 
       return { note: result.note, cards: result.cards };
 }
 
-export const notesModule = new Elysia({ prefix: '/notes' })
-  .use(authPlugin)
-  .post(
-    '/',
-    async (context) => {
-      const { user, body, status } = context;
+export const noteCreateBody = t.Object({
+        noteTypeId: t.String({ format: 'uuid' }),
+        expectedTypeUpdatedAt: t.Optional(t.String({ format: 'date-time' })),
+        acceptedAnswers: t.Optional(t.Array(t.String({ minLength: 1, maxLength: 256 }), { maxItems: 20 })),
+        fieldValues: fieldValuesSchema,
+        tags: t.Optional(t.Array(t.String())),
+        deckId: t.String({ format: 'uuid' }),
+      });
+
+export async function createNoteForRequest(context: { user: { id: string }; body: typeof noteCreateBody.static }, transaction?: Tx, deferredIndex?: string[]) {
+      const { user, body } = context;
+      const status = reply;
       const log = requestLogFromContext(context);
       // Authorize deck + note-type ownership and pre-compute sanitize+gen.
       const resolved = await resolveNoteCreate(user.id, {
@@ -395,13 +405,13 @@ export const notesModule = new Elysia({ prefix: '/notes' })
         noteTypeId: body.noteTypeId,
         fieldValues: body.fieldValues,
         acceptedAnswers: body.acceptedAnswers,
-      });
+      }, transaction ?? db);
       if (!resolved.ok) return status(400, { error: resolved.error });
       if (body.expectedTypeUpdatedAt && new Date(body.expectedTypeUpdatedAt).getTime() !== resolved.typeUpdatedAt.getTime()) return status(409, { error: 'note_type_changed' });
       if (resolved.generated.length === 0) return status(400, { error: 'no_cards_generated' });
 
       const now = new Date();
-      const result = await db.transaction((tx) =>
+      const run = (tx: Tx) =>
         insertNoteAndCards(tx, {
           userId: user.id,
           deckId: body.deckId,
@@ -412,8 +422,8 @@ export const notesModule = new Elysia({ prefix: '/notes' })
           tags: body.tags ?? [],
           generated: resolved.generated,
           now,
-        }),
-      ).catch((error) => { if (error instanceof NoteWriteConflict) return error; throw error; });
+        });
+      const result = await (transaction ? run(transaction) : db.transaction(run)).catch((error) => { if (error instanceof NoteWriteConflict) return error; throw error; });
       if (result instanceof NoteWriteConflict) return status(409, { error: result.code });
 
       log.info(
@@ -426,22 +436,15 @@ export const notesModule = new Elysia({ prefix: '/notes' })
       );
 
       // RAG index hook (Slice 3): enqueue each generated card after commit.
-      enqueueCardsForIndex(result.cards.map((c) => c?.id), log);
+      if (transaction) deferredIndex?.push(...result.cards.map(c => c.id));
+      else enqueueCardsForIndex(result.cards.map((c) => c?.id), log);
 
       return result;
-    },
-    {
-      auth: true,
-      body: t.Object({
-        noteTypeId: t.String({ format: 'uuid' }),
-        expectedTypeUpdatedAt: t.Optional(t.String({ format: 'date-time' })),
-        acceptedAnswers: t.Optional(t.Array(t.String({ minLength: 1, maxLength: 256 }), { maxItems: 20 })),
-        fieldValues: fieldValuesSchema,
-        tags: t.Optional(t.Array(t.String())),
-        deckId: t.String({ format: 'uuid' }),
-      }),
-    },
-  )
+}
+
+export const notesModule = new Elysia({ prefix: '/notes' })
+  .use(authPlugin)
+  .post('/', createNoteForRequest, { auth: true, body: noteCreateBody })
   .patch('/:id', editNote, noteEditOptions)
   .get('/:id', async ({ user, params, status }) => {
     const [row] = await db.select({ note: notes, noteType: noteTypes }).from(notes)

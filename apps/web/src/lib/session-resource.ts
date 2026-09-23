@@ -16,6 +16,7 @@ const inFlight = new Map<
   { requestId: number; promise: Promise<SessionResourceResult<unknown>> }
 >();
 const latestRequestByScope = new Map<string, number>();
+const invalidationByScope = new Map<string, number>();
 const MAX_CACHE_ENTRIES = 64;
 let requestSequence = 0;
 let cacheGeneration = 0;
@@ -44,6 +45,14 @@ export function clearSessionResourceCache(): void {
   cache.clear();
   inFlight.clear();
   latestRequestByScope.clear();
+  invalidationByScope.clear();
+}
+
+/** A confirmed mutation invalidates older reads but retains visible/cached data. */
+export function invalidateSessionResourceScope(scope: string): void {
+  invalidationByScope.set(scope, (invalidationByScope.get(scope) ?? 0) + 1);
+  latestRequestByScope.set(scope, ++requestSequence);
+  for (const key of inFlight.keys()) if (key.startsWith(`${scope}\u0000`)) inFlight.delete(key);
 }
 
 /**
@@ -69,13 +78,14 @@ export function fetchSessionResource<T>(options: {
 
   const requestId = ++requestSequence;
   const generation = cacheGeneration;
+  const invalidation = invalidationByScope.get(scope) ?? 0;
   latestRequestByScope.set(scope, requestId);
 
   const promise: Promise<SessionResourceResult<T>> = options.fetcher().then(
     (data) => {
       const current =
         generation === cacheGeneration && latestRequestByScope.get(scope) === requestId;
-      if (generation === cacheGeneration) setSessionResource(options.key, data);
+      if (generation === cacheGeneration && invalidation === (invalidationByScope.get(scope) ?? 0)) setSessionResource(options.key, data);
       return { ok: true as const, data, current };
     },
     (error) => ({

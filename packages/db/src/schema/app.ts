@@ -2,6 +2,7 @@ import { DECK_COLORS } from '@neuronexus/shared';
 import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
+  bigint,
   check,
   doublePrecision,
   index,
@@ -155,6 +156,7 @@ export const decks = pgTable(
   'decks',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    metadataRevision: bigint('metadata_revision', { mode: 'number' }).notNull().default(0),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -663,6 +665,7 @@ export const notebooks = pgTable(
   'notebooks',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    metadataRevision: bigint('metadata_revision', { mode: 'number' }).notNull().default(0),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -696,6 +699,7 @@ export const notebookNotes = pgTable(
   'notebook_notes',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    metadataRevision: bigint('metadata_revision', { mode: 'number' }).notNull().default(0),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -759,6 +763,10 @@ export const notebookArtifacts = pgTable(
     sourceOriginTitle: text('source_origin_title'),
     type: text('type').notNull(), // NOTEBOOK_ARTIFACT_TYPES
     status: text('status').notNull().default('pending'), // ARTIFACT_STATUSES
+    operationRunId: uuid('operation_run_id'),
+    operationStartedAt: timestamp('operation_started_at', { withTimezone: true }),
+    operationFinishedAt: timestamp('operation_finished_at', { withTimezone: true }),
+    generationOptions: jsonb('generation_options').$type<{ questionCount?: number }>(),
     title: text('title').notNull(),
     contentMd: text('content_md'),
     contentJson: jsonb('content_json').$type<QuizContent>(),
@@ -781,6 +789,9 @@ export const notebookArtifacts = pgTable(
     index('notebook_artifacts_active_source_idx').on(t.userId, t.sourceOriginId).where(sql`${t.ownerKind} = 'source' AND ${t.status} IN ('pending','generating')`),
     index('notebook_artifacts_nb_created_idx').on(t.notebookId, t.createdAt.desc()),
     index('notebook_artifacts_user_idx').on(t.userId),
+    index('artifacts_operation_active_idx').on(t.userId, t.operationStartedAt, t.id)
+      .where(sql`${t.status} IN ('pending','generating')`),
+    index('artifacts_operation_recent_idx').on(t.userId, t.operationFinishedAt.desc(), t.id),
     // One generation per notebook at a time (Р16): the CAS concurrency check
     // probes for a pending|generating row of the notebook.
     index('notebook_artifacts_active_idx')
@@ -866,6 +877,7 @@ export const sources = pgTable(
   'sources',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    metadataRevision: bigint('metadata_revision', { mode: 'number' }).notNull().default(0),
     userId: text('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -877,6 +889,9 @@ export const sources = pgTable(
     byteSize: integer('byte_size'),
     byteHash: text('byte_hash'),
     status: text('status').notNull().default('pending'),
+    operationRunId: uuid('operation_run_id'),
+    operationStartedAt: timestamp('operation_started_at', { withTimezone: true }),
+    operationFinishedAt: timestamp('operation_finished_at', { withTimezone: true }),
     // 'pending' | 'parsing' | 'indexing' | 'ready' | 'error' | 'deleting'
     errorCode: text('error_code'),
     charCount: integer('char_count'),
@@ -895,6 +910,9 @@ export const sources = pgTable(
     index('sources_user_idx').on(t.userId),
     // Powers the worker claim (`WHERE status = 'pending' … FOR UPDATE SKIP LOCKED`).
     index('sources_status_idx').on(t.status),
+    index('sources_operation_active_idx').on(t.userId, t.operationStartedAt, t.id)
+      .where(sql`${t.status} IN ('pending','parsing','indexing')`),
+    index('sources_operation_recent_idx').on(t.userId, t.operationFinishedAt.desc(), t.id),
     index('sources_tags_gin_idx').using('gin', t.tags),
   ],
 );

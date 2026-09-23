@@ -13,6 +13,7 @@ export interface ToastPayload {
   titleKey?: string;
   descriptionKey?: string;
   durationMs?: number;
+  action?: { label: string; onClick: () => void };
 }
 interface ToastState extends ToastPayload { id: string; }
 const KIND_META: Record<ToastKind, { icon: IconName; accent: string }> = {
@@ -42,7 +43,9 @@ function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: (id: string
     onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
     onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setFocused(false); }}>
     <span className="reomi-toast-icon" aria-hidden><NNIcon name={meta.icon} size={17} /></span>
-    <div className="reomi-toast-copy">{title && <strong>{title}</strong>}{description && <p>{description}</p>}</div>
+    <div className="reomi-toast-copy">{title && <strong>{title}</strong>}{description && <p>{description}</p>}
+      {toast.action && <button type="button" className="nn-toast-action" onClick={toast.action.onClick}>{toast.action.label}</button>}
+    </div>
     <button type="button" aria-label={t('actions.close')} onClick={() => onDismiss(toast.id)}><NNIcon name="x" size={14} /></button>
   </div>;
 }

@@ -260,6 +260,27 @@
       "when": 1790109793910,
       "tag": "0036_special_dreaming_celestial",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1790147982912,
+      "tag": "0037_special_loners",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790149713825,
+      "tag": "0038_fancy_yellowjacket",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1790177443557,
+      "tag": "0039_daily_ken_ellis",
+      "breakpoints": true
     }
   ]
 }

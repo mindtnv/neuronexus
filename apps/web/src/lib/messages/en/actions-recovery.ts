@@ -1,0 +1,17 @@
+export default {
+  uncertainDraftClose: 'The request may already have been saved. Keeping or discarding a local draft does not cancel it. Check saved work before creating another copy.',
+  expiredSave: 'This request can no longer be confirmed. Check existing work before creating another item. Your input is kept.',
+  uncertainClose: 'Closing will not cancel the submitted request. Its outcome can be checked in recent actions.',
+  description: 'Description',
+  reopenConflict: 'Your input remains in the form. Explicitly close it and reopen the current object before making a new change.',
+  saving: 'Saving…', saved: 'Saved', failed: 'Could not save', uncertain: 'Checking whether the change was saved',
+  conflict: 'The saved version has changed. Your text is still here.', retry: 'Retry',
+  current: 'Show saved version', keepMine: 'Save my version', currentVersion: 'Currently saved',
+  recent: 'Recent actions', undo: 'Undo', undoing: 'Undoing…', undone: 'Change undone',
+  undoFailed: 'Could not undo. You can retry.', undoConflict: 'The object has changed; undo is unavailable.',
+  expires: 'Undo available for {minutes} more min', expired: 'Undo has expired', noActions: 'No actions to undo',
+  reloadUnavailable: 'Actions are available in this tab; reload recovery is unavailable.',
+  unsupported: 'Safe saving is temporarily unavailable. Your input remains in the form.',
+  kinds: { 'study-note-pin': 'Note pin', 'source-metadata': 'Book metadata', 'notebook-title': 'Notebook title',
+    'deck-metadata': 'Deck metadata', 'deck-move': 'Deck move' },
+};

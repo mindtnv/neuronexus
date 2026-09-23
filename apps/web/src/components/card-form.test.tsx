@@ -10,6 +10,7 @@ import { DialogProvider } from './dialog';
 import { BASIC_NOTE_TYPE, CLOZE_NOTE_TYPE } from '@neuronexus/shared';
 import { useNN } from '../lib/store';
 import { cardFromApi, noteTypeFromApi } from '../lib/mappers';
+import { adaptRecoveryFetch } from '../lib/test-recovery-fetch';
 import { clearSessionResourceCache } from '../lib/session-resource';
 
 // Re-register before loading DOM-dependent modules; other suites tear the DOM down.
@@ -37,7 +38,8 @@ beforeEach(() => {
   originalFetch = globalThis.fetch;
   container = document.createElement('div'); document.body.appendChild(container);
   root = createRoot(container);
-  useNN.setState({ bootstrapped: true, cards: [card], noteTypes: [noteTypeFromApi(BASIC_NOTE_TYPE)], decks: [{ id: 'deck', name: 'Study', color: 'lime', species: 'fern', createdAt: 0 }] });
+  sessionStorage.clear();
+  useNN.setState({ profile: { userId: 'card-editor-owner' } as any, bootstrapped: true, cards: [card], noteTypes: [noteTypeFromApi(BASIC_NOTE_TYPE)], decks: [{ id: 'deck', name: 'Study', color: 'lime', species: 'fern', createdAt: 0 }] });
 });
 afterEach(async () => {
   await act(async () => root.unmount()); container.remove();
@@ -102,12 +104,12 @@ describe('card editor', () => {
       note: { ...row.note, fieldValues: { Text: '{{c1::Paris}} {{c2::France}}', Extra: '' } } };
     useNN.setState({ noteTypes: [noteTypeFromApi(CLOZE_NOTE_TYPE)] });
     const requests: any[] = [];
-    globalThis.fetch = (async (_url: any, init: any) => {
+    globalThis.fetch = adaptRecoveryFetch((async (_url: any, init: any) => {
       const body = JSON.parse(init.body); requests.push(body);
       return Response.json(body.preview ? { sourceVersion: row.note.updatedAt, confirmationToken: 'split',
         impact: { willCreateCards: 1, willKeepCards: 1, willDeleteCards: 0, willDeleteReviews: 0, removedCards: [] } }
         : { note: clozeRow.note, cards: [{ ...clozeRow, clozeNumber: 2 }] });
-    }) as typeof fetch;
+    }) as typeof fetch);
     await render({ card: cardFromApi(clozeRow) });
     await act(async () => button('editor.cloze.split').click());
     await act(async () => (container.querySelector('[aria-label="editor.cloze.historyTarget"]') as HTMLButtonElement).click());
@@ -124,7 +126,7 @@ describe('card editor', () => {
   test('double Save and command-Enter submit one request and retain fields on error', async () => {
     let writes = 0;
     const response = Promise.withResolvers<Response>();
-    globalThis.fetch = (() => { writes++; return response.promise; }) as unknown as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch((() => { writes++; return response.promise; }) as unknown as typeof fetch);
     await render();
     await act(async () => {
       const save = button('actions.save');
@@ -142,7 +144,7 @@ describe('card editor', () => {
 
   test('numbered cloze without a deletion stays in the editor with an actionable error', async () => {
     let writes = 0;
-    globalThis.fetch = (async () => { writes++; return Response.json({ note: row.note, cards: [] }); }) as unknown as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch((async () => { writes++; return Response.json({ note: row.note, cards: [] }); }) as unknown as typeof fetch);
     useNN.setState({ noteTypes: [noteTypeFromApi(BASIC_NOTE_TYPE), noteTypeFromApi(CLOZE_NOTE_TYPE)] });
     const cloze = cardFromApi({ ...row, noteType: CLOZE_NOTE_TYPE, renderKind: 'cloze', clozeNumber: 1,
       note: { ...row.note, noteTypeId: CLOZE_NOTE_TYPE.id, fieldValues: { Text: 'Text without a cloze', Extra: '' } } });
@@ -155,7 +157,7 @@ describe('card editor', () => {
 
   test('missing decks and empty rendered questions cannot submit', async () => {
     let writes = 0;
-    globalThis.fetch = (async () => { writes++; return Response.json({}); }) as unknown as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch((async () => { writes++; return Response.json({}); }) as unknown as typeof fetch);
     await render({ card: cardFromApi({ ...row, note: { ...row.note, fieldValues: { Front: '', Back: 'Answer' } } }) });
     await act(async () => button('actions.save').click());
     expect(container.textContent).toContain('editor.errors.noCards');
@@ -187,10 +189,10 @@ describe('card editor', () => {
 
   test('editor fetches a deep-linked card outside the mirror and returns to its study scope after save', async () => {
     useNN.setState({ cards: [] });
-    globalThis.fetch = ((url: any) => Promise.resolve(Response.json(String(url).endsWith('/preview')
+    globalThis.fetch = adaptRecoveryFetch(((url: any) => Promise.resolve(Response.json(String(url).endsWith('/preview')
       ? { impact: { willCreateCards: 0, willKeepCards: 1, willDeleteCards: 0, willDeleteReviews: 0, removedCards: [] },
         confirmationToken: 'preview', sourceVersion: row.note.updatedAt }
-      : String(url).includes('/notes/') ? { note: row.note, cards: [row] } : row))) as unknown as typeof fetch;
+      : String(url).includes('/notes/') ? { note: row.note, cards: [row] } : row))) as unknown as typeof fetch);
     await renderEditor(new URLSearchParams({ card: card.id, returnTo: '/review?deck=deck' }));
     expect(container.querySelector('textarea')?.value).toBe('Question');
     await act(async () => button('editor.saveAndReturn').click());
@@ -199,7 +201,7 @@ describe('card editor', () => {
 
   test('missing editor card shows a recoverable error instead of a new-card form', async () => {
     useNN.setState({ cards: [] });
-    globalThis.fetch = (async () => Response.json({ error: 'not_found' }, { status: 404 })) as unknown as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch((async () => Response.json({ error: 'not_found' }, { status: 404 })) as unknown as typeof fetch);
     await renderEditor(new URLSearchParams({ card: card.id }));
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
     expect(container.querySelector('textarea')).toBeNull();
@@ -208,8 +210,8 @@ describe('card editor', () => {
 
   test('a browser focus link fetches a card outside the first page', async () => {
     useNN.setState({ cards: [] });
-    globalThis.fetch = ((url: any) => Promise.resolve(Response.json(String(url).endsWith(`/cards/${card.id}`)
-      ? row : String(url).includes('/tags') ? { tags: [] } : { items: [], nextCursor: null }))) as unknown as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch(((url: any) => Promise.resolve(Response.json(String(url).endsWith(`/cards/${card.id}`)
+      ? row : String(url).includes('/tags') ? { tags: [] } : { items: [], nextCursor: null }))) as unknown as typeof fetch);
     await renderEditor(new URLSearchParams({ focus: card.id }), <NNCardsBrowser />);
     expect(container.querySelector('textarea')?.value).toBe('Question');
     expect(navigations.at(-1)).toBe('/cards');
@@ -219,7 +221,7 @@ describe('card editor', () => {
     const response = Promise.withResolvers<Response>();
     let writes = 0;
     let submitted: any;
-    globalThis.fetch = ((_url: any, init: any) => { writes++; submitted = JSON.parse(init.body); return response.promise; }) as unknown as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch(((_url: any, init: any) => { writes++; submitted = JSON.parse(init.body); return response.promise; }) as unknown as typeof fetch);
     await renderEditor(new URLSearchParams(), <NNCustomStudy />);
     await act(async () => {
       button('review.customStudy.quickActions.cram').click();
@@ -235,13 +237,13 @@ describe('card editor', () => {
 
   test('cancelling a regeneration preview keeps the draft and makes no write', async () => {
     const methods: string[] = [];
-    globalThis.fetch = (async (_url: any, init: any) => {
+    globalThis.fetch = adaptRecoveryFetch((async (_url: any, init: any) => {
       methods.push(init.method);
       return Response.json({ sourceVersion: row.note.updatedAt, confirmationToken: 'consent', impact: {
         willCreateCards: 0, willKeepCards: 1, willDeleteCards: 1, willDeleteReviews: 7,
         removedCards: [{ id: 'sibling', front: 'Other question', reviews: 7 }],
       } });
-    }) as typeof fetch;
+    }) as typeof fetch);
     await render();
     await act(async () => button('actions.save').click());
     const dialog = container.querySelector('[role="dialog"]')!;
@@ -256,7 +258,7 @@ describe('card editor', () => {
     const nextVersion = '2026-09-19T00:01:00.000Z';
     const requests: any[] = [];
     let attempts = 0;
-    globalThis.fetch = (async (url: any, init: any) => {
+    globalThis.fetch = adaptRecoveryFetch((async (url: any, init: any) => {
       if (String(url).includes('/cards/')) return Response.json({ ...row, note: { ...row.note, updatedAt: nextVersion, fieldValues: { Front: 'Remote question', Back: 'Answer' } } });
       const body = JSON.parse(init.body); requests.push(body);
       if (String(url).endsWith('/preview')) {
@@ -266,7 +268,7 @@ describe('card editor', () => {
         } });
       }
       return Response.json({ note: { ...row.note, updatedAt: nextVersion }, cards: [row] });
-    }) as typeof fetch;
+    }) as typeof fetch);
     await render();
     await act(async () => button('actions.save').click());
     expect(container.querySelector('textarea')!.value).toBe('Question');
@@ -292,7 +294,7 @@ describe('card editor', () => {
     const currentRow = { ...row, noteType: currentType, note: { ...row.note, updatedAt: newVersion, fieldValues: { Question: 'Remote', Back: 'Answer' } } };
     const requests: any[] = [];
     let previews = 0;
-    globalThis.fetch = (async (url: any, init: any) => {
+    globalThis.fetch = adaptRecoveryFetch((async (url: any, init: any) => {
       if (String(url).endsWith('/note-types')) return Response.json([currentType]);
       if (String(url).includes('/cards/')) return Response.json(currentRow);
       const body = JSON.parse(init.body); requests.push(body);
@@ -303,7 +305,7 @@ describe('card editor', () => {
         } });
       }
       return Response.json({ note: { ...currentRow.note, fieldValues: body.fieldValues }, cards: [currentRow] });
-    }) as typeof fetch;
+    }) as typeof fetch);
     await render({ card: cardFromApi({ ...row, noteType: originalType }) });
     await act(async () => button('actions.save').click());
     expect(container.querySelector('textarea')!.value).toBe('Question');
@@ -325,12 +327,12 @@ test('a question from a later field saves with an empty first field', async () =
   const edited = { ...row, noteType: type, note: { ...row.note, fieldValues: { Extra: '', Question: 'Visible question' } } };
   useNN.setState({ noteTypes: [noteTypeFromApi(type)] });
   let saved: any;
-  globalThis.fetch = (async (_url: any, init: any) => {
+  globalThis.fetch = adaptRecoveryFetch((async (_url: any, init: any) => {
     const body = JSON.parse(init.body);
     if (body.preview) return Response.json({ sourceVersion: row.note.updatedAt, confirmationToken: 'valid',
       impact: { willCreateCards: 0, willKeepCards: 1, willDeleteCards: 0, willDeleteReviews: 0, removedCards: [] } });
     saved = body; return Response.json({ note: { ...edited.note, ...body }, cards: [edited] });
-  }) as typeof fetch;
+  }) as typeof fetch);
   await render({ card: cardFromApi(edited) });
   await act(async () => button('actions.save').click());
   expect(saved.fieldValues).toEqual({ Extra: '', Question: 'Visible question' });
@@ -345,11 +347,11 @@ test('conversion keeping the card id replaces the editor fields and type, not on
     templates: [{ id: 'new-template', name: 'Card 1', ord: 0, frontTemplate: '{{Question}}', backTemplate: '{{Answer}}' }] };
   useNN.setState({ noteTypes: [source, target].map(noteTypeFromApi) });
   let saved: any;
-  globalThis.fetch = (async (url: any) => Response.json(String(url).endsWith('/preview') ? {
+  globalThis.fetch = adaptRecoveryFetch((async (url: any) => Response.json(String(url).endsWith('/preview') ? {
     noteCount: 1, sourceVersion: row.note.updatedAt, targetVersion: row.note.updatedAt, confirmationToken: 'convert',
     impact: { willCreateCards: 0, willKeepCards: 1, willDeleteCards: 0, willDeleteReviews: 0, removedCards: [] },
     validation: { checkedNotes: 1, invalidNotes: 0, samples: [] }, fieldMapping: [], unmappedFields: [], unmappedFieldCount: 0, discardedValues: 0, discardedAlternatives: 0,
-  } : { noteIds: [row.noteId], cards: [{ ...row, noteType: target, note: { ...row.note, fieldValues: { Question: 'Mapped question', Answer: 'Mapped answer' } } }] })) as unknown as typeof fetch;
+  } : { noteIds: [row.noteId], cards: [{ ...row, noteType: target, note: { ...row.note, fieldValues: { Question: 'Mapped question', Answer: 'Mapped answer' } } }] })) as unknown as typeof fetch);
   await render({ card: cardFromApi({ ...row, noteType: source }), onSaved: (card) => { saved = card; } });
   await act(async () => button('noteTypes.convert.open').click());
   const select = document.querySelector('[aria-label="noteTypes.convert.target"]') as HTMLSelectElement;
@@ -371,7 +373,7 @@ test('a successful conversion removes the old scoped rows even when refreshing t
   const target = { ...source, id: 'target-type', name: 'Target', isBuiltin: false, templates: [{ ...source.templates[0], id: 'target-template' }] };
   useNN.setState({ noteTypes: [source, target].map(noteTypeFromApi), cards: [cardFromApi({ ...row, noteType: source })] });
   let applied = false;
-  globalThis.fetch = (async (url: any) => {
+  globalThis.fetch = adaptRecoveryFetch((async (url: any) => {
     const path = String(url);
     if (path.includes('/cards/tags')) return Response.json({ tags: [] });
     if (path.includes('/cards/search')) return applied ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ items: [{ ...row, noteType: source }], nextCursor: null });
@@ -380,7 +382,7 @@ test('a successful conversion removes the old scoped rows even when refreshing t
       fieldMapping: [], unmappedFields: [], unmappedFieldCount: 0, discardedValues: 0, discardedAlternatives: 0 });
     if (path.endsWith('/notes/convert')) { applied = true; return Response.json({ noteIds: [row.noteId], cards: [{ ...row, noteType: target }] }); }
     return Response.json({ items: [] });
-  }) as unknown as typeof fetch;
+  }) as unknown as typeof fetch);
   await renderEditor(new URLSearchParams({ noteTypeId: source.id!, convertTo: target.id }), <NNCardsBrowser />);
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
   await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
@@ -444,10 +446,10 @@ describe('editor draft recovery', () => {
     expect(container.textContent).toContain('editor.draft.stale');
     await act(async () => button('editor.draft.restore').click());
     let body: any;
-    globalThis.fetch = (async (url: any, init: any) => {
+    globalThis.fetch = adaptRecoveryFetch((async (url: any, init: any) => {
       if (String(url).endsWith('/preview')) { body = JSON.parse(init.body); return Response.json({ error: 'note_changed' }, { status: 409 }); }
       return Response.json({ ...row, note: { ...row.note, fieldValues: { Front: 'Changed elsewhere', Back: 'Answer' } } });
-    }) as typeof fetch;
+    }) as typeof fetch);
     await act(async () => button('actions.save').click());
     expect(body.expectedUpdatedAt).toBe(row.note.updatedAt);
     expect(body.fieldValues.Front).toBe('My old-base changes');
@@ -456,9 +458,9 @@ describe('editor draft recovery', () => {
   test('failed save retains the draft; a confirmed save removes it and cleanup does not recreate it', async () => {
     await render(); await changeFront('Saved draft'); await flushDraft();
     let fail = true;
-    globalThis.fetch = (async (url: any) => fail ? Response.json({ error: 'offline' }, { status: 503 }) : Response.json(String(url).endsWith('/preview')
+    globalThis.fetch = adaptRecoveryFetch((async (url: any) => fail ? Response.json({ error: 'offline' }, { status: 503 }) : Response.json(String(url).endsWith('/preview')
       ? { confirmationToken: 'current', sourceVersion: row.note.updatedAt, impact: { willDeleteCards: 0 } }
-      : { note: { ...row.note, fieldValues: { Front: 'Saved draft', Back: 'Answer' } }, cards: [row] })) as unknown as typeof fetch;
+      : { note: { ...row.note, fieldValues: { Front: 'Saved draft', Back: 'Answer' } }, cards: [row] })) as unknown as typeof fetch);
     await act(async () => button('actions.save').click());
     expect(readEditorDraft(draftScope)).not.toBeNull();
     fail = false;
@@ -478,7 +480,7 @@ describe('editor draft recovery', () => {
   });
   test('leave can be cancelled or keep the local draft without a server write', async () => {
     let calls = 0;
-    globalThis.fetch = (async (_url: any, _init: any) => { calls++; return Response.json({}); }) as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch((async (_url: any, _init: any) => { calls++; return Response.json({}); }) as typeof fetch);
     await render({ footerExtra: <LeaveEditor /> }); await changeFront('Keep locally');
     await act(async () => button('Leave editor').click());
     expect(container.textContent).toContain('editor.draft.leaveTitle');
@@ -522,7 +524,7 @@ describe('editor draft recovery', () => {
     await act(async () => button('editor.draft.restore').click());
     expect((container.querySelector('textarea[data-nn-field]') as HTMLTextAreaElement).value).toBe('A new unsaved question');
     let created: any;
-    globalThis.fetch = (async (_url: any, init: any) => { created = JSON.parse(init.body); return Response.json({ error: 'offline' }, { status: 503 }); }) as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch((async (_url: any, init: any) => { created = JSON.parse(init.body); return Response.json({ error: 'offline' }, { status: 503 }); }) as typeof fetch);
     await act(async () => button('actions.create').click());
     expect(created).toMatchObject({ deckId: 'deck-2', noteTypeId: other.id, tags: ['two', 'tags'], fieldValues: { Front: 'A new unsaved question', Back: 'Answer' } });
     expect(readEditorDraft(draftScope)).toBeNull();
@@ -533,18 +535,18 @@ describe('editor draft recovery', () => {
     await remountForm({ card: cardFromApi({ ...row, id: 'second-direction', deckId: 'deck-2' }) });
     await act(async () => button('editor.draft.restore').click());
     let request: any;
-    globalThis.fetch = (async (_url: any, init: any) => { request = JSON.parse(init.body); return Response.json({ error: 'offline' }, { status: 503 }); }) as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch((async (_url: any, init: any) => { request = JSON.parse(init.body); return Response.json({ error: 'offline' }, { status: 503 }); }) as typeof fetch);
     await act(async () => button('actions.save').click());
     expect(request.fieldValues.Front).toBe('Shared note draft');
     expect(request.deckId).toBeUndefined();
   });
   test('save-and-leave waits for a confirmed write; failures stay in the editor', async () => {
     let fail = true; let writes = 0;
-    globalThis.fetch = (async (url: any, init: any) => {
+    globalThis.fetch = adaptRecoveryFetch((async (url: any, init: any) => {
       if (String(url).endsWith('/preview')) return Response.json({ confirmationToken: 'current', sourceVersion: row.note.updatedAt, impact: { willDeleteCards: 0 } });
       if (init.method === 'PATCH') writes++;
       return fail ? Response.json({ error: 'offline' }, { status: 503 }) : Response.json({ note: { ...row.note, fieldValues: { Front: 'Save before exit', Back: 'Answer' } }, cards: [row] });
-    }) as typeof fetch;
+    }) as typeof fetch);
     await render({ footerExtra: <LeaveEditor /> }); await changeFront('Save before exit');
     for (const attempt of [1, 2]) {
       await act(async () => button('Leave editor').click());
@@ -582,10 +584,10 @@ describe('editor draft recovery', () => {
     await render(); await act(async () => button('editor.draft.restore').click());
     expect((container.querySelector('textarea[data-nn-field]') as HTMLTextAreaElement).value).toBe('Old schema draft');
     let preview: any;
-    globalThis.fetch = (async (url: any, init: any) => {
+    globalThis.fetch = adaptRecoveryFetch((async (url: any, init: any) => {
       if (String(url).endsWith('/preview')) { preview = JSON.parse(init.body); return Response.json({ error: 'note_type_changed' }, { status: 409 }); }
       return Response.json(String(url).endsWith('/note-types') ? [changedType] : row);
-    }) as typeof fetch;
+    }) as typeof fetch);
     await act(async () => button('actions.save').click());
     expect(preview.expectedTypeUpdatedAt).toBe(oldType.updatedAt);
     expect(preview.fieldValues.Front).toBe('Old schema draft');
@@ -594,10 +596,10 @@ describe('editor draft recovery', () => {
   test('a late confirmed save clears only its original owner slot after account reset', async () => {
     const response = Promise.withResolvers<Response>();
     const started = Promise.withResolvers<void>();
-    globalThis.fetch = (async (url: any) => {
+    globalThis.fetch = adaptRecoveryFetch((async (url: any) => {
       if (String(url).endsWith('/preview')) return Response.json({ confirmationToken: 'current', sourceVersion: row.note.updatedAt, impact: { willDeleteCards: 0 } });
       started.resolve(); return response.promise;
-    }) as unknown as typeof fetch;
+    }) as unknown as typeof fetch);
     await render(); await changeFront('Private pending save'); await flushDraft();
     await act(async () => { button('actions.save').click(); await started.promise; });
     await act(async () => root.render(null));
@@ -615,7 +617,7 @@ describe('editor draft recovery', () => {
 test('shared card editor previews unsaved fields and preserves them on returning to edit', async () => {
   const { CardEditor } = await import('./card-editor');
   let writes = 0;
-  globalThis.fetch = (async (_url: any, init?: RequestInit) => { if (init?.method && init.method !== 'GET') writes++; return Response.json({ items: [] }); }) as typeof fetch;
+  globalThis.fetch = adaptRecoveryFetch((async (_url: any, init?: RequestInit) => { if (init?.method && init.method !== 'GET') writes++; return Response.json({ items: [] }); }) as typeof fetch);
   await renderEditor(new URLSearchParams(), <CardEditor card={card} />);
   const field = container.querySelector('textarea')!;
   await act(async () => {
@@ -657,7 +659,7 @@ test('draft library resumes new cards and types with their correct scope and hid
 describe('card context actions', () => {
   async function mountCards() {
     const second = { ...row, id: '01900000-0000-7000-8000-000000000002' };
-    globalThis.fetch = (async () => Response.json({ items: [row, second], nextCursor: null })) as unknown as typeof fetch;
+    globalThis.fetch = adaptRecoveryFetch((async () => Response.json({ items: [row, second], nextCursor: null })) as unknown as typeof fetch);
     await renderEditor(new URLSearchParams(), <NNCardsBrowser />);
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); });
     return Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
@@ -698,7 +700,7 @@ describe('card context actions', () => {
 test('graph list collapses independently of cluster filters and starts closed on mobile', async () => {
   const { NNGraphForce } = await import('./screens/graph');
   const width = window.innerWidth;
-  globalThis.fetch = (async () => Response.json({ edges: [], nodes: [], reason: 'not_indexed' })) as unknown as typeof fetch;
+  globalThis.fetch = adaptRecoveryFetch((async () => Response.json({ edges: [], nodes: [], reason: 'not_indexed' })) as unknown as typeof fetch);
   await renderEditor(new URLSearchParams(), <NNGraphForce />);
   const toggle = () => container.querySelector<HTMLButtonElement>('.reomi-graph-legend-toggle')!;
   const list = () => container.querySelector<HTMLDivElement>('#graph-cluster-list')!;
@@ -721,12 +723,12 @@ test('graph list collapses independently of cluster filters and starts closed on
 for (const action of ['addTag','removeTag'] as const) test(`${action} chooses existing tags and sends the selected value`, async () => {
   const writes:any[]=[];
   const tagged={...row,note:{...row.note,tags:['architecture']}};
-  globalThis.fetch=(async(url:any,init?:RequestInit)=>{
+  globalThis.fetch = adaptRecoveryFetch((async(url:any,init?:RequestInit)=>{
     const path=String(url);
     if(path.endsWith('/cards/tags')) return Response.json({tags:['architecture','csharp','patterns']});
     if(path.endsWith('/cards/bulk')) { writes.push(JSON.parse(String(init?.body))); return Response.json({ok:true}); }
     return Response.json({items:[tagged],nextCursor:null});
-  }) as typeof fetch;
+  }) as typeof fetch);
   await renderEditor(new URLSearchParams(),<NNCardsBrowser/>);
   await act(async()=>{await new Promise(r=>setTimeout(r,350));});
   await act(async()=>container.querySelector<HTMLButtonElement>('.reomi-card-row-actions')!.click());
@@ -745,7 +747,7 @@ for (const action of ['addTag','removeTag'] as const) test(`${action} chooses ex
 test('cards filter width persists, supports keyboard resizing and stays out of the mobile drawer', async () => {
   const key='nn:cards:filters-width', previous=localStorage.getItem(key), width=window.innerWidth;
   localStorage.removeItem(key);
-  globalThis.fetch=(async()=>Response.json({items:[row],tags:[],nextCursor:null})) as unknown as typeof fetch;
+  globalThis.fetch = adaptRecoveryFetch((async()=>Response.json({items:[row],tags:[],nextCursor:null})) as unknown as typeof fetch);
   try {
     await renderEditor(new URLSearchParams(),<NNCardsBrowser/>);
     const separator=()=>container.querySelector<HTMLElement>('[role="separator"][aria-label="cards.sidebar.resize"]');
@@ -767,7 +769,7 @@ test('cards filter width persists, supports keyboard resizing and stays out of t
 });
 
 test('empty card search offers scoped creation and clearing the search', async () => {
-  globalThis.fetch=(async()=>Response.json({items:[],tags:[],nextCursor:null})) as unknown as typeof fetch;
+  globalThis.fetch = adaptRecoveryFetch((async()=>Response.json({items:[],tags:[],nextCursor:null})) as unknown as typeof fetch);
   await renderEditor(new URLSearchParams({q:'deck:"Study"'}),<NNCardsBrowser/>);
   await act(async()=>{await new Promise(r=>setTimeout(r,350));});
   const empty=container.querySelector('.reomi-cards-empty')!;

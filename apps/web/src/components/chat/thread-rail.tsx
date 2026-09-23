@@ -1,5 +1,7 @@
 'use client';
 
+import { restoreLayerFocus } from '@/lib/use-transient-layer';
+
 // ThreadRail — the chat screen's left rail, extracted from chat.tsx (A-pack).
 // Adds: search-as-you-filter (A1), date-grouped sections with a Pinned group on
 // top (A2/C4 — pure helpers from lib/chat-threads), and a pin/unpin affordance
@@ -81,7 +83,7 @@ export const ThreadRail = ({
   const [renameDraft, setRenameDraft] = useState('');
   const [menu, setMenu] = useState<{ id: string; x: number; y: number; trigger: HTMLElement } | null>(null);
   const closeMenu = useCallback((restoreFocus: boolean) => {
-    if (restoreFocus && menu?.trigger.isConnected) menu.trigger.focus();
+    if (restoreFocus) restoreLayerFocus(menu?.trigger);
     setMenu(null);
   }, [menu]);
   useEffect(() => { setMenu(null); }, [activeId, search]);

@@ -54,6 +54,7 @@ async function bump(ctx: ToolContext, notebookId: string | null) {
     .where(and(eq(notebooks.userId, ctx.userId), eq(notebooks.id, notebookId)));
 }
 async function deckState(ctx: ToolContext, deckId?: string, parentId?: string | null) {
+  if (ctx.tx) await ctx.tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${ctx.userId}, 73))`);
   const query = ex(ctx).select().from(decks).where(eq(decks.userId, ctx.userId)).orderBy(decks.id);
   const rows = await (ctx.tx ? query.for('update') : query);
   const row = deckId ? required(rows.find(r => r.id === deckId)) : undefined;

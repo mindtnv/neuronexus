@@ -1,0 +1,16 @@
+export default {
+  opening: 'Opening…', resultUnavailable: 'This result is no longer available.', openFailed: 'Could not open the result. Try again.',
+  title: 'Operations', active: 'In progress', attention: 'Needs attention', recent: 'Recent',
+  empty: 'No operations yet. Book processing and generated results will appear here.',
+  history: 'Latest results from the past 7 days', loading: 'Loading operations…',
+  stale: 'Could not refresh. Showing the last known state.', unavailable: 'Operations are temporarily unavailable.',
+  refresh: 'Refresh', more: 'Show more', read: 'Read', open: 'Open', retry: 'Retry',
+  retrying: 'Starting…', uncertain: 'The outcome is still unknown. Check again',
+  retryFailed: 'Could not start. Retry', cooldown: 'Retry available in {seconds}s',
+  defaults: 'The old quiz settings are unavailable. Retry with 10 questions?',
+  aiUnavailable: 'AI is currently unavailable for retry', sourceUnavailable: 'The source material is unavailable',
+  completed: 'Operations completed: {count}', count: 'Operations in progress: {count}', progress: '{completed} of {total} complete',
+  phases: { queued: 'Waiting for processing', parsing: 'Preparing text', search_preparing: 'Ready to read; search is still preparing',
+    search_unavailable: 'Ready to read; search is currently unavailable', generating: 'Generating material', ready: 'Ready', failed: 'Could not complete' },
+  readable: 'Ready to read', quizReady: 'Quiz ready',
+};

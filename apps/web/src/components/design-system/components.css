@@ -1344,6 +1344,8 @@ body:has(.reomi-organized-deck-row[data-dragging]) { user-select: none; cursor: 
 .reomi-assistant-main,.reomi-assistant-page-entry,.reomi-assistant-notebook-entry { flex-direction:column; position:relative; }
 .reomi-assistant-page-toolbar,.reomi-assistant-conversation-bar { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; min-height:42px; border-bottom:1px solid var(--panel-edge); font-size:12px; }
 .reomi-assistant-conversation-bar>span { flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--text-dim); }
+.reomi-assistant-thread-layer { display:flex; flex:1; min-height:0; }
+.reomi-assistant-thread-layer > .reomi-assistant-threads { flex:1; min-width:0; }
 .reomi-assistant-threads { display:flex; flex-direction:column; min-height:0; }
 .reomi-assistant-threads>.reomi-thread-rail { flex:1; }
 .reomi-assistant-page>.reomi-assistant-threads { flex-shrink:0; }
@@ -1562,3 +1564,7 @@ body:has(.reomi-organized-deck-row[data-dragging]) { user-select: none; cursor: 
 .reomi-source-annotation-notes article p { white-space: pre-wrap; line-height: 1.5; }
 .reomi-annotation-location { border: 0; background: transparent; color: var(--accent-700); cursor: pointer; padding: 0; font: inherit; }
 .reomi-source-annotation-notes textarea { box-sizing: border-box; width: 100%; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+
+.nn-operations-floating-entry { position:fixed; left:16px; bottom:16px; z-index:35; border:1px solid var(--panel-edge); border-radius:12px; background:var(--surface); box-shadow:var(--shadow-sm); }
+.nn-operations-floating-entry .nn-operations-button { min-width:40px; min-height:40px; padding:10px; }
+.nn-operations-floating-entry .nn-sidebar-label { display:none; }

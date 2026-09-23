@@ -17,15 +17,8 @@ export const GlobalOverlays = () => {
     const handler = (e: KeyboardEvent) => {
       const key = e.key;
 
-      // Close active overlay on Escape
-      if (key === 'Escape') {
-        if (paletteOpen || cheatsheetOpen) {
-          e.preventDefault();
-          setPaletteOpen(false);
-          setCheatsheetOpen(false);
-        }
-        return;
-      }
+      // The shared layer stack owns Escape, including nested overlays.
+      if (key === 'Escape') return;
 
       // ⌘K / Ctrl+K — toggle palette
       if ((e.metaKey || e.ctrlKey) && (key === 'k' || key === 'K')) {

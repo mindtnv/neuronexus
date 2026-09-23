@@ -8,6 +8,7 @@ import { useT } from '@/lib/i18n';
 import { api, ApiError, ok } from '@/lib/api';
 import type { Card, NoteType } from '@/lib/types';
 import { deckPathLabel } from '@/lib/decks';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { useModalFocus } from '@/lib/use-modal-focus';
 import { NNBtn } from './ui';
 
@@ -42,6 +43,7 @@ export function NoteConversionDialog({ cards, targetTypeId, onClose, onConverted
   const [templateMap, setTemplateMap] = useState<Record<string, string | null>>({});
   const [preserve, setPreserve] = useState(true);
   const [busy, setBusy] = useState(false);
+  const layer = useTransientLayer({ root, modal: true, busy, onClose });
   const [error, setError] = useState<string | null>(null);
   const [needsReload, setNeedsReload] = useState(false);
   const [preview, setPreview] = useState<{ input: NoteConversionInput; result: NoteConversionPreview } | null>(null);
@@ -86,12 +88,12 @@ export function NoteConversionDialog({ cards, targetTypeId, onClose, onConverted
       } }
     finally { lock.current = false; if (alive.current) setBusy(false); }
   };
-  return createPortal(<div onClick={(event) => { event.stopPropagation(); if (event.target === event.currentTarget && !busy) onClose(); }}
+  return createPortal(<LayerParent.Provider value={layer.id}><div onClick={(event) => { event.stopPropagation(); if (event.target === event.currentTarget && !busy) void layer.close('outside'); }}
     className="reomi-overlay-backdrop reomi-conversion-backdrop">
     <div ref={root} role="dialog" aria-modal="true" aria-labelledby="note-conversion-title" tabIndex={-1}
-      onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape' && !busy) { event.preventDefault(); onClose(); } }}
+      onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape' && !busy) { event.preventDefault(); void layer.close('escape'); } }}
       className="reomi-flow-dialog reomi-conversion-dialog">
-      <header><div><small>{t(preview ? 'noteTypes.convert.stepReview' : 'noteTypes.convert.stepMapping')}</small><h2 id="note-conversion-title">{t('noteTypes.convert.title')}</h2></div><NNBtn onClick={onClose} disabled={busy} variant="ghost" icon="x" ariaLabel={t('actions.cancel')} /></header>
+      <header><div><small>{t(preview ? 'noteTypes.convert.stepReview' : 'noteTypes.convert.stepMapping')}</small><h2 id="note-conversion-title">{t('noteTypes.convert.title')}</h2></div><NNBtn onClick={() => void layer.close()} disabled={busy} variant="ghost" icon="x" ariaLabel={t('actions.cancel')} /></header>
       <p className="reomi-flow-intro">{t('noteTypes.convert.scope', { n: noteIds.length, source: typeLabel(source) })}</p>
       {!eligible ? <p role="alert">{t(noteIds.length > 200 ? 'noteTypes.convert.tooLarge' : 'noteTypes.convert.oneType')}</p> : !preview ? <fieldset disabled={busy} style={{ border: 0, padding: 0, display: 'grid', gap: 14 }}>
         <label>{t('noteTypes.convert.target')}<select ref={targetSelect} aria-label={t('noteTypes.convert.target')} style={selectStyle} value={targetId} onChange={(event) => setTargetId(event.target.value)}>
@@ -138,5 +140,5 @@ export function NoteConversionDialog({ cards, targetTypeId, onClose, onConverted
       {needsReload && <NNBtn disabled={busy} onClick={() => window.location.reload()}>{t('noteTypes.convert.reload')}</NNBtn>}
       {error && <p role="alert" style={{ color: 'var(--rose-400)' }}>{error}</p>}
     </div>
-  </div>, document.body);
+  </div></LayerParent.Provider>, document.body);
 }

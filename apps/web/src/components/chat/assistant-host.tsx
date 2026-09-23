@@ -1,6 +1,7 @@
 'use client';
 
 import { useWindowControlsOverlay } from '@/lib/ui-store';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { assistantFocusControls } from '@/lib/assistant-overlay-focus';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -48,10 +49,15 @@ export function AssistantHost() {
     return () => { cancelAnimationFrame(frame); if (previous instanceof HTMLElement && previous !== document.body && previous.isConnected) previous.focus({ preventScroll: true }); else launcher.current?.focus({ preventScroll: true }); };
   }, [open,mounted]);
   const close = () => { setThreadsOpen(false); a.controller.setPresentation('hidden'); };
+  const layer = useTransientLayer({ root, enabled: open && mounted, modal: mobile, history: mobile,
+    dismissOnOutside: mobile, retainOnNavigation: !mobile, restoreFocus: false, onClose: close,
+    portals: () => [...document.querySelectorAll<HTMLElement>('[data-assistant-overlay]')],
+    onEscape: () => { if (!drag.current) return false; setRect(drag.current.rect); drag.current = null; return true; },
+  });
   const keyboard = (event: React.KeyboardEvent, resize: boolean) => {
     if (!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','Escape'].includes(event.key)) return;
     event.preventDefault(); event.stopPropagation();
-    if (event.key === 'Escape') { if (drag.current) { setRect(drag.current.rect); drag.current=null; } else close(); return; }
+    if (event.key === 'Escape') { if (drag.current) { setRect(drag.current.rect); drag.current=null; } else void layer.close('escape'); return; }
     const dx=event.key==='ArrowRight'?16:event.key==='ArrowLeft'?-16:0,dy=event.key==='ArrowDown'?16:event.key==='ArrowUp'?-16:0;
     setRect(current => { const next=event.key==='Home'?defaultAssistantWindow(viewport):(resize||event.shiftKey?resizeAssistantWindow:moveAssistantWindow)(current,dx,dy,viewport); saveAssistantWindow(next); return next; });
   };
@@ -67,7 +73,7 @@ export function AssistantHost() {
   };
   const pointerUp = (event: React.PointerEvent) => { if (!drag.current) return; drag.current=null; event.currentTarget.releasePointerCapture?.(event.pointerId); saveAssistantWindow(rectRef.current); };
   if (!mounted || !snapshot.ownerId) return null;
-  return createPortal(<>
+  return createPortal(<LayerParent.Provider value={open ? layer.id : null}>
     {!open && snapshot.presentation !== 'page' && <button ref={launcher} className="reomi-assistant-launcher" aria-label={t('assistant.open')} title={t('assistant.open')}
       onClick={() => { void a.openPage().catch(() => raiseToast({ kind: 'error', titleKey: 'assistant.contextFailed' })); }}>
       <NNIcon name="chat" size={22}/>{count > 0 && <span>{count}</span>}
@@ -80,23 +86,23 @@ export function AssistantHost() {
           const first=controls[0],last=controls.at(-1);
           if (event.shiftKey ? document.activeElement===first : document.activeElement===last) { event.preventDefault(); (event.shiftKey?last:first)?.focus(); }
         }
-        if (event.key==='Escape' && !event.defaultPrevented) close();
+        if (event.key==='Escape' && !event.defaultPrevented) void layer.close('escape');
         event.stopPropagation();
       }}>
       <header className="reomi-assistant-window-header" onPointerDown={event=>pointerDown(event,false)} onPointerMove={pointerMove} onPointerUp={pointerUp}
         onPointerCancel={()=>{ if(drag.current)setRect(drag.current.rect); drag.current=null; }}>
-        {mobile ? <NNBtn variant="ghost" size="sm" icon="chevl" ariaLabel={t('actions.back')} onClick={close}/> : <span tabIndex={0} role="button" className="reomi-assistant-move" aria-label={t('assistant.moveWindow')} title={t('assistant.moveWindow')} onKeyDown={event=>keyboard(event,false)}>⠿</span>}
+        {mobile ? <NNBtn variant="ghost" size="sm" icon="chevl" ariaLabel={t('actions.back')} onClick={() => void layer.close()}/> : <span tabIndex={0} role="button" className="reomi-assistant-move" aria-label={t('assistant.moveWindow')} title={t('assistant.moveWindow')} onKeyDown={event=>keyboard(event,false)}>⠿</span>}
         <strong>{t('assistant.title')}</strong><span className="reomi-assistant-window-title">{session?.conversation?.title ?? ''}</span>
-        <NNBtn variant="ghost" size="sm" icon="chat" ariaLabel={t('chat.threads.title')} title={t('chat.threads.title')} aria-expanded={threadsOpen} onClick={() => setThreadsOpen(value => !value)}/>
+        <NNBtn variant="ghost" size="sm" icon="chat" data-assistant-threads-toggle ariaLabel={t('chat.threads.title')} title={t('chat.threads.title')} aria-expanded={threadsOpen} onClick={() => setThreadsOpen(value => !value)}/>
         <NNBtn variant="ghost" size="sm" icon="plus" ariaLabel={t('chat.threads.newThread')} title={t('chat.threads.newThread')} onClick={() => { setThreadsOpen(false); void a.openPage(true).catch(() => raiseToast({ kind: 'error', titleKey: 'assistant.contextFailed' })); }}/>
         <NNBtn variant="ghost" size="sm" icon="expand" ariaLabel={t('assistant.expand')} title={t('assistant.expand')} onClick={()=>{ a.controller.setPresentation('page'); router.push(`/chat${session?.conversationId?`?thread=${session.conversationId}`:''}`); }}/>
         {!mobile && <NNBtn variant="ghost" size="sm" icon="sync" ariaLabel={t('assistant.resetWindow')} title={t('assistant.resetWindow')} onClick={()=>{ const next=defaultAssistantWindow(viewport);setRect(next);saveAssistantWindow(next); }}/ >}
-        <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('assistant.minimize')} title={t('assistant.minimize')} onClick={close}/>
+        <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('assistant.minimize')} title={t('assistant.minimize')} onClick={() => void layer.close()}/>
       </header>
       <AssistantView hideToolbar threadsOpen={threadsOpen} onThreadsOpenChange={setThreadsOpen}/>
       {!mobile && <div className="reomi-assistant-resize" role="button" tabIndex={0} aria-label={t('assistant.resizeWindow')} title={t('assistant.resizeWindow')}
         onKeyDown={event=>keyboard(event,true)} onPointerDown={event=>pointerDown(event,true)} onPointerMove={pointerMove} onPointerUp={pointerUp}
         onPointerCancel={()=>{if(drag.current)setRect(drag.current.rect);drag.current=null;}} />}
     </div>}
-  </>,document.body);
+  </LayerParent.Provider>,document.body);
 }

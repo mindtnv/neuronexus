@@ -14,6 +14,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ARTIFACT_STATUSES, type ArtifactStatus } from '@neuronexus/shared';
+import { followOperationRefresh } from './operation-observer';
+import { useOperations } from '@/components/operations-provider';
 
 const NONTERMINAL = new Set<ArtifactStatus>(['pending', 'generating']);
 
@@ -55,13 +57,22 @@ export function useArtifactStatus({
   intervalMs = 2500,
   enabled = true,
 }: UseArtifactStatusOptions): boolean {
+  const operations = useOperations();
   const hasPending = anyArtifactNonTerminal(items);
+  const signature = items.map(item => item.status).join('|');
 
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
   useEffect(() => {
-    if (!enabled || !hasPending) return;
+    if (enabled && hasPending && operations) void operations.observer.refresh();
+  }, [enabled, signature, operations?.observer]);
+  useEffect(() => {
+    if (enabled && hasPending && operations) return followOperationRefresh(operations.observer, async () => { await refreshRef.current(); });
+  }, [operations?.observer, enabled, hasPending]);
+
+  useEffect(() => {
+    if (operations || !enabled || !hasPending) return;
     let cancelled = false;
     const interval = setInterval(() => {
       if (cancelled) return;
@@ -71,7 +82,7 @@ export function useArtifactStatus({
       cancelled = true;
       clearInterval(interval);
     };
-  }, [enabled, hasPending, intervalMs]);
+  }, [operations?.observer, enabled, hasPending, intervalMs]);
 
   return hasPending;
 }

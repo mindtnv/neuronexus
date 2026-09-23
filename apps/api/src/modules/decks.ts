@@ -1,7 +1,8 @@
+import { moveDeckInTransaction } from './ui-action-mutations';
 import { Elysia, t } from 'elysia';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { db, deckOptionsPreset, decks } from '@neuronexus/db';
-import { compareDeckOrder, DECK_COLORS } from '@neuronexus/shared';
+import { DECK_COLORS } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin.ts';
 
 const deckColorSchema = t.Union(DECK_COLORS.map(color => t.Literal(color)));
@@ -106,31 +107,8 @@ export const decksModule = new Elysia({ prefix: '/decks' })
       ),
     },
   )
-  .post('/:id/move', async ({ user, params, body, status }) => db.transaction(async tx => {
-    // Serialize owner hierarchy writes before reading parent links or sibling order.
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${user.id}, 73))`);
-    const all = await tx.select().from(decks).where(eq(decks.userId, user.id)).orderBy(asc(decks.id)).for('update');
-    const source = all.find(deck => deck.id === params.id);
-    const target = body.targetId ? all.find(deck => deck.id === body.targetId) : null;
-    if (!source || (body.targetId && !target)) return status(404, { error: 'not_found' });
-    if (!target && body.placement !== 'inside') return status(400, { error: 'invalid_placement' });
-    if (source.id === target?.id) return status(400, { error: 'cycle' });
-    const parentId = !target ? null : body.placement === 'inside' ? target.id : target.parentId;
-    let cursor = parentId;
-    const seen = new Set<string>();
-    while (cursor) {
-      if (cursor === source.id || seen.has(cursor)) return status(400, { error: 'cycle' });
-      seen.add(cursor);
-      cursor = all.find(deck => deck.id === cursor)?.parentId ?? null;
-    }
-    const siblings = all.filter(deck => deck.id !== source.id && deck.parentId === parentId).sort(compareDeckOrder);
-    const index = !target || body.placement === 'inside' ? siblings.length
-      : siblings.findIndex(deck => deck.id === target.id) + (body.placement === 'after' ? 1 : 0);
-    siblings.splice(index, 0, source);
-    for (const [position, deck] of siblings.entries()) {
-      await tx.update(decks).set({ parentId, position }).where(and(eq(decks.id, deck.id), eq(decks.userId, user.id)));
-    }
-    return tx.select().from(decks).where(eq(decks.userId, user.id));
+  .post('/:id/move', async ({ user, params, body }) => db.transaction(async tx => {
+    return (await moveDeckInTransaction(tx, user.id, params.id, body)).result;
   }), { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }), body: t.Object({
     targetId: t.Union([t.String({ format: 'uuid' }), t.Null()]),
     placement: t.Union([t.Literal('before'), t.Literal('after'), t.Literal('inside')]),

@@ -65,6 +65,8 @@ import { createPortal } from 'react-dom';
 import { NotesPanel } from '@/components/notebook/notes-panel';
 import { OverviewPanel } from '@/components/notebook/overview-panel';
 import { StudioPanel } from '@/components/notebook/studio-panel';
+import { sourceOperationLabel } from '@/lib/source-operation-label';
+import { useKnowledgeRefresh } from '@/lib/use-knowledge-refresh';
 import { useSourceStatus } from '@/lib/use-source-status';
 import { prefillKey } from '@/lib/library-handoff';
 import { api, ok } from '@/lib/api';
@@ -165,7 +167,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const bp = useBreakpoint();
   const isDesktop = bp === 'desktop';
   const isTablet = bp === 'tablet';
-  const { prompt, confirm } = useDialog();
+  const { edit, prompt, confirm } = useDialog();
   // WCO (installed desktop PWA): the workspace renders its own topbar instead of
   // NNTopbar, so it carries the same titlebar duties — drag region + insets.
   const { wco, left: wcoLeft, right: wcoRight } = useWcoTopInsets();
@@ -368,18 +370,36 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
   const threadParam = searchParams.get('thread');
   const noteParam = searchParams.get('note');
   const artifactParam = searchParams.get('artifact');
+  const newNoteParam = searchParams.get('newNote') === '1';
   useEffect(() => {
-    if (!noteParam && !artifactParam) return;
+    if (!noteParam && !artifactParam && !newNoteParam) return;
     setDockTab(artifactParam ? 'studio' : 'notes');
     setDockCollapsed(false);
     if (isTablet) setDockSheetOpen(true);
     if (!isDesktop && !isTablet) setTab('dock');
-  }, [noteParam, artifactParam, isDesktop, isTablet]);
+  }, [noteParam, artifactParam, newNoteParam, isDesktop, isTablet]);
   const consumeStudyLink = useCallback((kind: 'note' | 'artifact') => {
     const next = new URLSearchParams(searchParams.toString());
     next.delete(kind);
     router.replace(`/notebooks/${notebookId}${next.size ? `?${next}` : ''}`, { scroll: false, track: false });
   }, [searchParams, notebookId, router]);
+
+  const metadataRefresh = useRef(0);
+  const metadataPending = useRef(false);
+  const refreshWorkspaceMetadata = async () => {
+    if (!sourcesLoaded) { metadataPending.current = true; return; }
+    const sequence = ++metadataRefresh.current, owner = useNN.getState().profile?.userId;
+    const [detail, rows] = await Promise.all([getNotebook(notebookId), listSources(notebookId)]);
+    if (sequence !== metadataRefresh.current || useNN.getState().profile?.userId !== owner) return;
+    setNotebook(detail); setSources(rows);
+    const ids = new Set(rows.map(row => row.id));
+    setScope(previous => new Set([...previous].filter(id => ids.has(id))));
+  };
+  useKnowledgeRefresh(refreshWorkspaceMetadata);
+  useEffect(() => {
+    if (sourcesLoaded && metadataPending.current) { metadataPending.current = false; void refreshWorkspaceMetadata().catch(() => {}); }
+    return () => { metadataRefresh.current++; };
+  }, [notebookId, sourcesLoaded]);
 
   // ── Load notebook + sources ───────────────────────────────────────────────────
   useEffect(() => {
@@ -738,23 +758,14 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
     t,
   ]);
 
-  const onRenameSource = useCallback(
-    async (src: Source) => {
-      const title = await prompt({
-        title: t('notebooks.sources.renameTitle'),
-        label: t('notebooks.sources.renameLabel'),
-        defaultValue: src.title,
-        confirmLabel: t('actions.rename'),
-        validate: (v) => (v.trim().length === 0 ? ' ' : null),
-      });
-      if (title === null) return;
-      const trimmed = title.trim();
-      if (!trimmed || trimmed === src.title) return;
-      const updated = await renameSource(src.id, trimmed);
-      setSources((prev) => prev.map((s) => (s.id === src.id ? updated : s)));
-    },
-    [prompt, t, renameSource],
-  );
+  const onRenameSource = useCallback(async (src: Source) => {
+    await edit({ title: t('notebooks.sources.renameTitle'), label: t('notebooks.sources.renameLabel'), defaultValue: src.title,
+      path: `/sources/${src.id}`, revision: src.metadataRevision ?? 0, maxLength: 300,
+      patch: title => ({ title }), validate: title => title.trim() ? null : ' ',
+      readCurrent: async () => { const current = await getSource(src.id); return { revision: current.metadataRevision ?? 0, value: current.title }; },
+      onSaved: result => { if (result.result) setSources(previous => previous.map(row => row.id === src.id ? { ...row, ...(result.result as Source) } : row)); },
+    });
+  }, [edit, t, getSource]);
 
   // L1 — detach (NOT delete): the material stays in the library; only its link to
   // this notebook is removed. MUST prune the source id from the chat scope —
@@ -951,6 +962,7 @@ export const NotebookWorkspace = ({ notebookId }: { notebookId: string }) => {
       key={notebookId}
       notebookId={notebookId}
       initialNoteId={noteParam}
+      initialCreate={newNoteParam}
       onInitialOpen={() => consumeStudyLink('note')}
       listNotes={listNotebookNotes}
       getNote={getNotebookNote}
@@ -1613,10 +1625,9 @@ const WorkspaceSourceRow = ({
   const isError = source.status === 'error';
   const ready = source.status === 'ready';
   const readable = isSourceTextReadable(source.status, source.errorCode);
-  const statusLabel =
-    isError && source.errorCode
+  const statusLabel = sourceOperationLabel(source, t) ?? (isError && source.errorCode
       ? t(`notebooks.status.${source.errorCode as IngestErrorCode}`)
-      : t(`notebooks.status.${source.status}`);
+      : t(`notebooks.status.${source.status}`));
 
   // Subline: ready → «{author} · прочитано N%» (author → kind label when absent;
   // percent omitted when null). Non-ready rows show the ingest status badge.

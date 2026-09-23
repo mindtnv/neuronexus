@@ -1,5 +1,7 @@
 'use client';
 
+import { restoreLayerFocus, LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
+
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAppNavigation, useNavigationWorkspace, useWorkspaceState, NavigationReturn } from '@/components/navigation';
@@ -166,7 +168,7 @@ export const NNCardsBrowser = () => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionMenu, setActionMenu] = useState<{ x: number; y: number; anchor: HTMLElement } | null>(null);
   const closeActions = useCallback((restoreFocus: boolean) => {
-    if (restoreFocus && actionMenu?.anchor.isConnected) actionMenu.anchor.focus();
+    if (restoreFocus) restoreLayerFocus(actionMenu?.anchor);
     setActionMenu(null);
   }, [actionMenu]);
   const lastClickedRef = useRef<string | null>(null);
@@ -200,6 +202,9 @@ export const NNCardsBrowser = () => {
   };
 
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
+  const filterDrawer = useRef<HTMLElement>(null);
+  const filterLayer = useTransientLayer({ root: filterDrawer, enabled: isMobile && sidebarOpen, modal: true, onClose: () => setSidebarOpen(false) });
+  useEffect(() => { if (isMobile && sidebarOpen) filterDrawer.current?.focus({ preventScroll: true }); }, [isMobile, sidebarOpen]);
   const [filtersVisible, setFiltersVisible] = useWorkspaceState('cards', 'filtersVisible', true);
 
   const urlWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -580,7 +585,7 @@ export const NNCardsBrowser = () => {
   // Close the dock with Escape (only while it's open). Bound globally so it works
   // regardless of where focus sits inside the dock.
   useEffect(() => {
-    if (!focusedId) return;
+    if (!focusedId || isMobile) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       // A dialog / command-palette / cheatsheet that consumed Escape calls
@@ -594,7 +599,7 @@ export const NNCardsBrowser = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [focusedId]);
+  }, [focusedId, isMobile]);
 
   const actionsUnavailable = bulkBusy || searching || !serverActive;
   useEffect(() => { setActionMenu(null); }, [searching, serverActive, query, noteTypeScope]);
@@ -775,10 +780,10 @@ export const NNCardsBrowser = () => {
 
       {isMobile && sidebarOpen && (
         <div
-          onClick={() => setSidebarOpen(false)}
+          onClick={() => void filterLayer.close()}
           style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 40 }}
         >
-          <aside
+          <aside ref={filterDrawer} role="dialog" aria-modal="true" aria-label={t('cards.sidebar.filters')} tabIndex={-1}
             onClick={(e) => e.stopPropagation()}
             style={{
               position: 'absolute',
@@ -792,7 +797,7 @@ export const NNCardsBrowser = () => {
               zIndex: 41,
             }}
           >
-            {sidebar}
+            <LayerParent.Provider value={filterLayer.id}>{sidebar}</LayerParent.Provider>
           </aside>
         </div>
       )}

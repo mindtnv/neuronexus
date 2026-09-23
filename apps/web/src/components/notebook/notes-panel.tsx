@@ -20,9 +20,11 @@ import { AssistantAskButton } from '../chat/assistant-ask-button';
 // All data is panel-local; the parent owns the store methods + the imperative
 // composer-prefill handoff. Inline styles + CSS vars + ui.tsx primitives only.
 
-import { ReadingText, TextInput, TextArea } from '@/components/design-system/primitives';
+import { NotePinButton } from './note-pin-button';
+import { WrittenNoteEditor } from './written-note-editor';
+import { useNN } from '@/lib/store';
+import { ReadingText, TextInput } from '@/components/design-system/primitives';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { NOTE_CONTENT_MAX, NOTE_TITLE_MAX } from '@neuronexus/shared';
 import { NNBtn, NNIcon, NNBadge, NNSkeleton } from '@/components/ui';
 import { renderCardHtml, SafeHtml } from '@/lib/render-card';
 import { useDialog } from '@/components/dialog';
@@ -44,6 +46,7 @@ export interface NotesPanelProps {
   notebookId?: string;
   studyScope?: { kind: 'source'; id: string } | { kind: 'saved' };
   allowCreate?: boolean;
+  initialCreate?: boolean;
   initialNoteId?: string | null;
   onInitialOpen?: () => void;
   getNote?: (scopeId: string, noteId: string) => Promise<NotebookNote>;
@@ -85,18 +88,20 @@ export const NotesPanel = ({
   notebookId: legacyNotebookId,
   studyScope,
   allowCreate = true,
+  initialCreate = false,
   initialNoteId: requestedInitialNoteId,
   onInitialOpen,
   listNotes,
   getNote,
-  createNote,
-  patchNote,
   deleteNote,
   onPrefillChat,
   refreshRef,
   t,
 }: NotesPanelProps) => {
   const { confirm } = useDialog();
+  const account = useNN(state => state.profile?.userId) ?? '';
+  const closeGuardRef = useRef<(() => Promise<boolean>) | null>(null);
+  const guarded = async (action: () => void) => { if (!closeGuardRef.current || await closeGuardRef.current()) action(); };
   const notebookId = studyScope?.kind === 'source' ? studyScope.id : studyScope?.kind === 'saved' ? '' : legacyNotebookId ?? '';
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -121,15 +126,12 @@ export const NotesPanel = ({
   const openNoteRef = useRef(openId);
   openNoteRef.current = openId;
   const notesOwnerRef = useRef(notebookId);
-  const [editing, setEditing] = useState(false);
-  const [editTitle, setEditTitle] = useState('');
-  const [editContent, setEditContent] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useWorkspaceState(navigationScope, 'noteEditing', false);
 
   // Create form.
-  const [creating, setCreating] = useState(false);
-  const [newTitle, setNewTitle] = useState('');
-  const [newContent, setNewContent] = useState('');
+  const [creating, setCreating] = useWorkspaceState(navigationScope, 'noteCreating', false);
+
+  useEffect(() => { if (initialCreate && allowCreate) setCreating(true); }, [initialCreate, allowCreate]);
 
   // ── Debounce the search query (300ms) ─────────────────────────────────────────
   useEffect(() => {
@@ -218,85 +220,18 @@ export const NotesPanel = ({
     onInitialOpen?.();
   }, [initialNoteId, loaded, loadError, notes, search, debouncedQ, onInitialOpen, refresh, getNote, notebookId, t, setOpenId]);
 
-  // ── Create ────────────────────────────────────────────────────────────────────
-  const resetCreate = useCallback(() => {
-    setCreating(false);
-    setNewTitle('');
-    setNewContent('');
-  }, []);
-
-  const submitCreate = useCallback(async () => {
-    const title = newTitle.trim();
-    const content = newContent;
-    if (!title || busy) return;
-    if (content.length > NOTE_CONTENT_MAX) {
-      raiseToast({ kind: 'info', title: t('notebooks.notes.tooLong') });
-      return;
-    }
-    setBusy(true);
-    try {
-      const created = await createNote(notebookId, { title, content });
-      setNotes((prev) => [created, ...prev]);
-      resetCreate();
-    } catch {
-      raiseToast({ kind: 'info', title: t('notebooks.notes.createFailed') });
-    } finally {
-      setBusy(false);
-    }
-  }, [newTitle, newContent, busy, createNote, notebookId, resetCreate, t]);
-
-  // ── Edit ──────────────────────────────────────────────────────────────────────
-  const startEdit = useCallback((n: NotebookNote) => {
-    setEditTitle(n.title);
-    setEditContent(n.content);
-    setEditing(true);
-  }, []);
-
-  const submitEdit = useCallback(async () => {
-    if (!openNote || busy) return;
-    const title = editTitle.trim();
-    if (!title) return;
-    if (editContent.length > NOTE_CONTENT_MAX) {
-      raiseToast({ kind: 'info', title: t('notebooks.notes.tooLong') });
-      return;
-    }
-    setBusy(true);
-    try {
-      const updated = await patchNote(notebookId, openNote.id, {
-        title,
-        content: editContent,
-      });
-      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
-      setEditing(false);
-    } catch {
-      raiseToast({ kind: 'info', title: t('notebooks.notes.createFailed') });
-    } finally {
-      setBusy(false);
-    }
-  }, [openNote, busy, editTitle, editContent, patchNote, notebookId, t]);
+  const resetCreate = () => setCreating(false);
+  const startEdit = () => setEditing(true);
+  const saved = (note: NotebookNote, close: boolean) => {
+    setNotes(previous => [note, ...previous.filter(item => item.id !== note.id)]);
+    if (close) { setCreating(false); setEditing(false); setOpenId(note.id); }
+  };
+  const editorOwner = studyScope?.kind === 'source' ? { kind: 'source' as const, id: notebookId }
+    : legacyNotebookId ? { kind: 'notebook' as const, id: legacyNotebookId } : undefined;
 
   // ── Pin / delete / to-cards ───────────────────────────────────────────────────
-  const togglePin = useCallback(
-    async (n: NotebookNote) => {
-      try {
-        const updated = await patchNote(notebookId, n.id, { pinned: !n.pinned });
-        // Re-fetch keeps the pinned-first server ordering correct.
-        setNotes((prev) => {
-          const next = prev.map((x) => (x.id === updated.id ? updated : x));
-          return [...next].sort((a, b) =>
-            a.pinned === b.pinned
-              ? Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
-              : a.pinned
-                ? -1
-                : 1,
-          );
-        });
-      } catch {
-        raiseToast({ kind: 'info', title: t('notebooks.notes.createFailed') });
-      }
-    },
-    [patchNote, notebookId, t],
-  );
+  const pinUpdated = (updated: NotebookNote) => setNotes(previous => previous.map(note => note.id === updated.id ? updated : note)
+    .sort((a, b) => a.pinned === b.pinned ? Date.parse(b.updatedAt) - Date.parse(a.updatedAt) : a.pinned ? -1 : 1));
 
   const removeNote = useCallback(
     async (n: NotebookNote) => {
@@ -346,10 +281,7 @@ export const NotesPanel = ({
             variant="ghost"
             size="sm"
             icon="chevl"
-            onClick={() => {
-              setOpenId(null);
-              setEditing(false);
-            }}
+            onClick={() => void guarded(() => { setOpenId(null); setEditing(false); })}
           >
             {t('notebooks.notes.back')}
           </NNBtn>
@@ -358,22 +290,14 @@ export const NotesPanel = ({
           {openNote.ownerKind === 'source' && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{openNote.sourceOriginTitle}{!openNote.sourceId ? ` · ${t('assistant.unavailable')}` : ''}</span>}
           {!editing && (
             <>
-              <NNBtn
-                variant="ghost"
-                size="sm"
-                icon="pin"
-                active={openNote.pinned}
-                ariaLabel={openNote.pinned ? t('notebooks.notes.unpin') : t('notebooks.notes.pin')}
-                title={openNote.pinned ? t('notebooks.notes.unpin') : t('notebooks.notes.pin')}
-                onClick={() => void togglePin(openNote)}
-              />
+              <NotePinButton note={openNote} onUpdated={pinUpdated} readCurrent={getNote ? () => getNote(notebookId, openNote.id) : undefined} />
               <NNBtn
                 variant="ghost"
                 size="sm"
                 icon="edit"
                 ariaLabel={t('notebooks.notes.edit')}
                 title={t('notebooks.notes.edit')}
-                onClick={() => startEdit(openNote)}
+                onClick={startEdit}
               />
               <NNBtn
                 variant="ghost"
@@ -389,48 +313,8 @@ export const NotesPanel = ({
 
         <div ref={notePosition.ref} className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
           {editing ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <TextInput
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                maxLength={NOTE_TITLE_MAX}
-                aria-label={t('notebooks.notes.titlePlaceholder')}
-                placeholder={t('notebooks.notes.titlePlaceholder')}
-              />
-              <TextArea
-                value={editContent}
-                onChange={(e) => setEditContent(e.target.value)}
-                aria-label={t('notebooks.notes.contentPlaceholder')}
-                placeholder={t('notebooks.notes.contentPlaceholder')}
-                style={{ minHeight: 220 }}
-              />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span
-                  style={{
-                    fontSize: 11,
-                    color:
-                      editContent.length > NOTE_CONTENT_MAX ? 'var(--rose-400)' : 'var(--text-dim)',
-                  }}
-                >
-                  {t('notebooks.notes.charCount', {
-                    count: editContent.length,
-                    max: NOTE_CONTENT_MAX,
-                  })}
-                </span>
-                <span style={{ flex: 1 }} />
-                <NNBtn variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={busy}>
-                  {t('notebooks.notes.cancel')}
-                </NNBtn>
-                <NNBtn
-                  variant="primary"
-                  size="sm"
-                  onClick={() => void submitEdit()}
-                  disabled={busy || editTitle.trim().length === 0}
-                >
-                  {busy ? t('notebooks.notes.saving') : t('notebooks.notes.save')}
-                </NNBtn>
-              </div>
-            </div>
+            <WrittenNoteEditor key={`${account}:${openNote.id}`} note={openNote} studyOwner={editorOwner} closeGuardRef={closeGuardRef}
+              onSaved={saved} onClose={() => setEditing(false)} getCurrent={getNote ? id => getNote(notebookId, id) : undefined} />
           ) : (
             <>
               <div
@@ -505,7 +389,7 @@ export const NotesPanel = ({
             variant="soft"
             size="sm"
             icon="plus"
-            onClick={() => { openIntent.current++; if (initialNoteId) onInitialOpen?.(); setCreating(v => !v); }}
+            onClick={() => void guarded(() => { openIntent.current++; if (initialNoteId) onInitialOpen?.(); setCreating(v => !v); })}
             active={creating}
           >
             {t('notebooks.notes.add')}
@@ -534,58 +418,9 @@ export const NotesPanel = ({
           />
         </div>
 
-        {creating && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 6,
-              padding: 8,
-              background: 'var(--surface-2)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--r-md)',
-            }}
-          >
-            <TextInput
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              maxLength={NOTE_TITLE_MAX}
-              aria-label={t('notebooks.notes.titlePlaceholder')}
-              placeholder={t('notebooks.notes.titlePlaceholder')}
-              autoFocus
-            />
-            <TextArea
-              value={newContent}
-              onChange={(e) => setNewContent(e.target.value)}
-              aria-label={t('notebooks.notes.contentPlaceholder')}
-              placeholder={t('notebooks.notes.contentPlaceholder')}
-              style={{ minHeight: 110 }}
-            />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span
-                style={{
-                  fontSize: 11,
-                  color:
-                    newContent.length > NOTE_CONTENT_MAX ? 'var(--rose-400)' : 'var(--text-dim)',
-                }}
-              >
-                {t('notebooks.notes.charCount', { count: newContent.length, max: NOTE_CONTENT_MAX })}
-              </span>
-              <span style={{ flex: 1 }} />
-              <NNBtn variant="ghost" size="sm" onClick={resetCreate} disabled={busy}>
-                {t('notebooks.notes.cancel')}
-              </NNBtn>
-              <NNBtn
-                variant="primary"
-                size="sm"
-                onClick={() => void submitCreate()}
-                disabled={busy || newTitle.trim().length === 0}
-              >
-                {busy ? t('notebooks.notes.saving') : t('notebooks.notes.save')}
-              </NNBtn>
-            </div>
-          </div>
-        )}
+        {creating && <WrittenNoteEditor key={`${account}:${notebookId}:new`} studyOwner={editorOwner} closeGuardRef={closeGuardRef}
+          onSaved={saved} onClose={resetCreate} getCurrent={getNote ? id => getNote(notebookId, id) : undefined} />}
+
       </div>
 
       <div ref={listPosition.ref} className="nn-scroll" style={{ flex: 1, overflowY: 'auto', padding: '8px 8px 12px' }}>
@@ -611,13 +446,13 @@ export const NotesPanel = ({
               <NoteRow
                 key={n.id}
                 note={n}
-                onOpen={() => {
+                onOpen={() => void guarded(() => {
                   openIntent.current++;
                   if (initialNoteId) onInitialOpen?.();
                   setOpenId(n.id);
-                  setEditing(false);
-                }}
-                onTogglePin={() => void togglePin(n)}
+                  setEditing(false); setCreating(false);
+                })}
+                pin={<NotePinButton note={n} onUpdated={pinUpdated} readCurrent={getNote ? () => getNote(notebookId, n.id) : undefined} />}
                 t={t}
               />
             ))}
@@ -631,12 +466,12 @@ export const NotesPanel = ({
 const NoteRow = ({
   note,
   onOpen,
-  onTogglePin,
+  pin,
   t,
 }: {
   note: NotebookNote;
   onOpen: () => void;
-  onTogglePin: () => void;
+  pin: React.ReactNode;
   t: Tfn;
 }) => (
   <div className="nn-source-row" style={{ cursor: 'pointer' }}>
@@ -695,15 +530,7 @@ const NoteRow = ({
         )}
       </button>
       <div className="nn-source-row-actions" style={{ display: 'flex', flexShrink: 0 }}>
-        <NNBtn
-          variant="ghost"
-          size="sm"
-          icon="pin"
-          active={note.pinned}
-          ariaLabel={note.pinned ? t('notebooks.notes.unpin') : t('notebooks.notes.pin')}
-          title={note.pinned ? t('notebooks.notes.unpin') : t('notebooks.notes.pin')}
-          onClick={onTogglePin}
-        />
+        {pin}
       </div>
     </div>
   </div>

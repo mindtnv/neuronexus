@@ -1,3 +1,4 @@
+import { sourceOperationPresentation } from './source-operation-presentation';
 // Library module (L1) — the user's personal material store (`/library`). A
 // "library item" IS a `sources` row (Р1 — the table is NOT renamed; the library
 // is a UI/ownership concept over it). Sources are user-level now (notebooks
@@ -79,6 +80,8 @@ interface LibraryItemAggregates {
 
 function shapeLibraryItem(s: Source, agg: LibraryItemAggregates): Record<string, unknown> {
   return {
+    ...sourceOperationPresentation(),
+    metadataRevision: s.metadataRevision,
     id: s.id,
     kind: s.kind,
     title: s.title,

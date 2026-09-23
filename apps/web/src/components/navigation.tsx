@@ -26,6 +26,9 @@ import { NavigationJournal, NAVIGATION_HISTORY_KEY, NAVIGATION_AUTH_RETURN_KEY, 
 import { useNN } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import { installNavigationHistoryBridge } from '@/lib/navigation-history';
+import { transientLayers } from '@/lib/layer-stack';
+import { LayerHistory } from '@/lib/layer-history';
+import { LayerParent } from '@/lib/use-transient-layer';
 import { NNBtn } from '@/components/ui';
 import { raiseToast } from '@/components/toasts';
 import { unavailableOriginFallback } from '@/lib/navigation-origin';
@@ -53,7 +56,7 @@ type NavigationContextValue = {
   capture: (callback: () => void) => () => void;
   resetView: (scope: string) => void;
   confirmLeave: (href?: string) => Promise<boolean>;
-  registerGuard: (guard: (href?: string) => Promise<boolean>) => () => void;
+  registerGuard: (guard: (href?: string) => Promise<boolean>, layerId?: string | null) => () => void;
   hasGuard: () => boolean;
 };
 
@@ -125,6 +128,7 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
   const ownerRef = useRef(owner); ownerRef.current = owner;
   const journalRef = useRef<NavigationJournal | null>(null);
   const pendingRef = useRef<NavigationEntry | null>(null);
+  const layerHistoryRef = useRef<LayerHistory | null>(null);
   const traversingRef = useRef(false);
   const renderedEntryRef = useRef<NavigationEntry | null>(null);
   const approvedTraversal = useRef(false);
@@ -175,6 +179,7 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
     const current = journalRef.current;
     if (current && ownerRef.current === current.owner && sameLocation(current.current.href, window.location.pathname + window.location.search)) {
       window.history.replaceState({ ...window.history.state, [NAVIGATION_HISTORY_KEY]: current.marker() }, '');
+      layerHistoryRef.current?.refresh();
     }
   }, []);
   useLayoutEffect(() => {
@@ -222,24 +227,37 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
     controllerRef.current = new NavigationProgressController(setProgress);
   }
 
-  const guardRef = useRef<{ run: (href?: string) => Promise<boolean> } | null>(null);
+  const guardRef = useRef<{ run: (href?: string) => Promise<boolean>; layerId?: string | null } | null>(null);
+  const guardsRef = useRef<Array<{ run: (href?: string) => Promise<boolean>; layerId?: string | null }>>([]);
   const checkingGuard = useRef(false);
-  const registerGuard = useCallback((guard: (href?: string) => Promise<boolean>) => {
-    const entry = { run: guard }; guardRef.current = entry;
-    return () => { if (guardRef.current === entry) guardRef.current = null; };
+  const registerGuard = useCallback((guard: (href?: string) => Promise<boolean>, layerId?: string | null) => {
+    const entry = { run: guard, layerId }; guardsRef.current.push(entry); guardRef.current = entry;
+    return () => { guardsRef.current = guardsRef.current.filter(item => item !== entry); guardRef.current = guardsRef.current.at(-1) ?? null; };
   }, []);
   const confirmLeave = useCallback(async (href?: string) => {
-    const entry = guardRef.current;
-    if (!entry) return true;
+    if (!guardRef.current && !transientLayers.hasLayers()) return true;
     if (checkingGuard.current) return false;
     checkingGuard.current = true;
-    try { return await entry.run(href) && guardRef.current === entry; }
+    const owner = ownerRef.current;
+    const checked = new Set<object>();
+    try {
+      if (!await transientLayers.confirmNavigation()) return false;
+      for (let step = 0; step < 32; step++) {
+        const entry = [...guardsRef.current].reverse().find(item => !item.layerId && !checked.has(item));
+        if (!entry) return ownerRef.current === owner;
+        checked.add(entry);
+        if (!await entry.run(href) || ownerRef.current !== owner) return false;
+      }
+      return false;
+    }
     finally { checkingGuard.current = false; }
   }, []);
-  const hasGuard = useCallback(() => guardRef.current !== null, []);
+  const hasGuard = useCallback(() => guardRef.current !== null || transientLayers.hasLayers(), []);
   const guarded = useCallback((action: () => void, href?: string) => {
-    if (!guardRef.current) { action(); return; }
-    void confirmLeave(href).then(allowed => { if (allowed) action(); });
+    const owner = ownerRef.current;
+    const perform = async () => { await layerHistoryRef.current?.settled(); if (ownerRef.current === owner) action(); };
+    if (!guardRef.current && !transientLayers.hasLayers()) { void perform(); return; }
+    void confirmLeave(href).then(async allowed => { if (allowed) { await transientLayers.closeForNavigation(); await perform(); } });
   }, [confirmLeave]);
 
   const beginResolved = useCallback((target: URL, track = true) => {
@@ -287,12 +305,18 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
       begin(href, options?.track);
       startTransition(() => (replace ? router.replace : router.push)(href, { scroll: options?.scroll ?? false }));
     };
-    if(replace&&options?.viewOnly&&requestedPath===pathnameRef.current)perform();
+    if(replace&&options?.viewOnly&&requestedPath===pathnameRef.current) {
+      const owner = ownerRef.current;
+      void (layerHistoryRef.current?.settled() ?? Promise.resolve()).then(() => { if (ownerRef.current === owner) perform(); });
+    }
     else guarded(perform, href);
   }, [begin, router, guarded, flush, stamp]);
   const push = useCallback((href: string, options?: NavigationOptions) => navigate(href, options, false), [navigate]);
   const replace = useCallback((href: string, options?: NavigationOptions) => navigate(href, options, true), [navigate]);
-  const back = useCallback(() => { guarded(() => { flush(); approvedTraversal.current = true; router.back(); }); }, [router, guarded, flush]);
+  const back = useCallback(() => {
+    if (transientLayers.top() && !transientLayers.top()!.retainOnNavigation) { void transientLayers.dismissTop('back'); return; }
+    guarded(() => { flush(); approvedTraversal.current = true; router.back(); });
+  }, [router, guarded, flush]);
   const returnTo = useCallback((fallback = '/cards') => {
     if(returning.current)return;
     guarded(async () => {
@@ -347,7 +371,16 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
   useEffect(() => {
     let bounce: { owner: string; currentId: string; targetId: string; delta: number; href: string; checking: boolean } | null = null;
     let approvedId: string | null = null;
+    const mobile = window.matchMedia('(max-width: 719px)');
+    const makeLayers = () => new LayerHistory(transientLayers, {
+      state: () => window.history.state, enabled: () => mobile.matches,
+      push: state => window.history.pushState(state, ''), go: delta => window.history.go(delta),
+      replace: state => window.history.replaceState(state, '', journalRef.current?.current.href),
+    });
+    let layers = makeLayers();
+    layerHistoryRef.current = layers;
     const onPopState = (event: PopStateEvent) => {
+      if (layers.onPop(event)) return;
       const current = journalRef.current;
       const marker = readNavigationMarker(event.state?.[NAVIGATION_HISTORY_KEY]);
       if (!current || ownerRef.current !== current.owner || marker?.owner !== current.owner) return;
@@ -366,15 +399,15 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
         if (bounce.checking) return;
         bounce.checking=true;
         const request = bounce;
-        void confirmLeave(request.href).then(allowed => {
+        void confirmLeave(request.href).then(async allowed => {
           if (bounce !== request) return;
           bounce = null;
           const distance=current.distanceTo(request.targetId);
-          if (allowed && ownerRef.current === current.owner && distance!==null && distance!==0) { approvedId = request.targetId; window.history.go(distance); }
+          if (allowed && ownerRef.current === current.owner && distance!==null && distance!==0) { await transientLayers.closeForNavigation(); await layers.settled(); approvedId = request.targetId; window.history.go(distance); }
         });
         return;
       }
-      if (guardRef.current && approvedId !== marker.id && !approvedTraversal.current) {
+      if ((guardRef.current || transientLayers.hasLayers()) && approvedId !== marker.id && !approvedTraversal.current) {
         const delta = current.distanceTo(marker.id);
         if (delta !== null && delta !== 0) {
           event.stopImmediatePropagation();
@@ -389,7 +422,29 @@ export function AppNavigationProvider({ children, sessionOwner }: { children: Re
     };
     installNavigationHistoryBridge();
     window.__nnNavigationPop = onPopState;
-    return () => { bounce = null; if (window.__nnNavigationPop === onPopState) delete window.__nnNavigationPop; };
+    let active = true;
+    // React Strict Mode replays mount effects. Do not schedule two physical
+    // traversals from the same reload marker before either popstate can arrive.
+    queueMicrotask(() => { if (active) { layers.start(window.__nnNavigationInitialLayer); delete window.__nnNavigationInitialLayer; } });
+    const resizeLayers = () => layers.refresh();
+    const hideLayers = () => layers.dispose();
+    const restoreLayers = (event: PageTransitionEvent) => {
+      if (!event.persisted || !active) return;
+      // A reload can traverse to the previous document's base entry via BFCache.
+      // Its old marker coordinator and transient DOM must not bounce us again.
+      void transientLayers.closeForNavigation().then(() => {
+        if (!active) return;
+        layers = makeLayers(); layerHistoryRef.current = layers; layers.start();
+      });
+    };
+    mobile.addEventListener('change', resizeLayers);
+    window.addEventListener('pagehide', hideLayers); window.addEventListener('pageshow', restoreLayers);
+    return () => {
+      active = false; bounce = null; layers.dispose(); mobile.removeEventListener('change', resizeLayers);
+      window.removeEventListener('pagehide', hideLayers); window.removeEventListener('pageshow', restoreLayers);
+      if (layerHistoryRef.current === layers) layerHistoryRef.current = null;
+      if (window.__nnNavigationPop === onPopState) delete window.__nnNavigationPop;
+    };
   }, [beginResolved, confirmLeave, flush]);
 
   useEffect(() => () => controllerRef.current?.dispose(), []);
@@ -409,11 +464,18 @@ export function useAppNavigation(): Pick<NavigationContextValue, 'push' | 'repla
   return context;
 }
 
-/** One active editor registers a stable callback; state stays in its own hook. */
-export function useNavigationGuard(guard: (href?: string) => Promise<boolean>) {
+/** Editors register stable, stacked guards; closing a dialog reveals the underlying guard. */
+export function useNavigationGuard(guard: (href?: string) => Promise<boolean>, ownedLayer?: string | null | false) {
   const context = useContext(NavigationContext);
+  const inherited = useContext(LayerParent);
+  const layerId = ownedLayer === undefined ? inherited : ownedLayer;
   const latest = useRef(guard); latest.current = guard;
-  useEffect(() => context?.registerGuard(href => latest.current(href)), [context?.registerGuard]);
+  useEffect(() => {
+    if (layerId === false) return;
+    const removeNavigation = context?.registerGuard(href => latest.current(href), layerId);
+    const removeLayer = layerId ? transientLayers.addGuard(layerId, () => latest.current()) : undefined;
+    return () => { removeNavigation?.(); removeLayer?.(); };
+  }, [context?.registerGuard, layerId]);
 }
 
 export type AppLinkProps = LinkProps &
@@ -471,16 +533,16 @@ export function useWorkspaceState<T>(scope: string, key: string, initial: T | ((
   return [value, set];
 }
 
-export function NavigationReturn({ fallback = '/cards' }: { fallback?: string }) {
+export function NavigationReturn({ fallback = '/cards', showLabel = false }: { fallback?: string; showLabel?: boolean }) {
   const context = useNavigationWorkspace();
   const t = useT();
   if (!context?.entry?.parent) return null;
   const parent = context.journal?.entry(context.entry.parent);
   const section = parent?.href.split(/[/?#]/)[1];
   const isSource = parent && (/^\/library\/[^/?]+/.test(parent.href) || (section==='notebooks' && new URL(parent.href,'https://navigation.invalid').searchParams.has('source')));
-  const label = isSource ? t('navigation.source') : section && ['library', 'cards', 'decks', 'notebooks', 'review'].includes(section) ? t(`nav.${section}`) : t('actions.back');
+  const label = isSource ? t('navigation.source') : section && ['library', 'cards', 'decks', 'notebooks', 'review', 'editor', 'chat'].includes(section) ? t(`nav.${section}`) : t('actions.back');
   const title=t('navigation.returnTo',{place:label});
-  return <NNBtn size="sm" variant="ghost" icon="chevl" className="nn-navigation-return" ariaLabel={title} title={title} onClick={()=>context.returnTo(fallback)}/>;
+  return <NNBtn size="sm" variant="ghost" icon="chevl" className="nn-navigation-return" ariaLabel={title} title={title} onClick={()=>context.returnTo(fallback)}>{showLabel ? title : null}</NNBtn>;
 }
 
 export function useWorkspaceSet(scope: string, key: string): [Set<string>, Dispatch<SetStateAction<Set<string>>>] {

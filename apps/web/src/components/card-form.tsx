@@ -14,6 +14,8 @@ import { renderCardHtml } from '@/lib/render-card';
 import { useEditorDraft } from '@/lib/use-editor-draft';
 import { draftFingerprint } from '@/lib/editor-drafts';
 import { isNoteDraftValue, type NoteDraftValue } from '@/lib/editor-draft-values';
+import { useRecoverableAction, type RecoveryAction } from '@/lib/use-recoverable-action';
+import { SaveFeedback } from './save-feedback';
 import { EditorDraftNotice } from './editor-draft-notice';
 import { NoteConversionDialog } from './note-conversion';
 import { RichCard } from '@/components/rich-card';
@@ -485,8 +487,6 @@ const CardFormEditor = ({
 
   const decks = useNN((s) => s.decks);
   const noteTypes = useNN((s) => s.noteTypes);
-  const addNote = useNN((s) => s.addNote);
-  const updateNote = useNN((s) => s.updateNote);
   const deleteNote = useNN((s) => s.deleteNote);
 
   const editing = card ?? null;
@@ -539,6 +539,8 @@ const CardFormEditor = ({
 
   const [deckId, setDeckId] = useState<string>(resolvedDefaultDeckId);
   const [baseDeckId, setBaseDeckId] = useState<string>(resolvedDefaultDeckId);
+  const [savedNoteId, setSavedNoteId] = useState<string | undefined>();
+  const [savedCardId, setSavedCardId] = useState<string | undefined>();
   const [fieldValues, setFieldValues] = useState<FieldValues>(() => ({ ...(editing?.note?.fieldValues ?? {}) }));
   const [acceptedAnswersText, setAcceptedAnswersText] = useState(editing?.note?.acceptedAnswers?.join('\n') ?? '');
 
@@ -670,8 +672,13 @@ const CardFormEditor = ({
     : code === 'typein_answer_placement' ? 'editor.errors.typeinPlacement'
     : 'editor.errors.invalidTemplate');
   const answerField = typedAnswerField(fields);
+  const saveFingerprint = draftFingerprint({ fieldValues, deckId, noteTypeId, tagsText, acceptedAnswersText, clozeRetainHistoryFor });
+  const recovery = useRecoverableAction(ownerId, saveFingerprint, baseVersion);
   const handleSave = async (notify = true): Promise<boolean> => {
     if ((ownerId && useNN.getState().profile?.userId !== ownerId) || mutationLock.current || uploadCount.current > 0 || localDraft.blocked) return false;
+    const recovering = recovery.snapshot.status === 'uncertain' && Boolean(recovery.snapshot.pending);
+    let acceptedAnswers: string[] = [];
+    if (!recovering) {
     setError(null);
     if (!deckId || !decks.some((deck) => deck.id === deckId)) {
       setError(t('editor.errors.pickDeck'));
@@ -683,7 +690,6 @@ const CardFormEditor = ({
       return false;
     }
     if (generation.error) { setError(contentError(generation.error)); return false; }
-    let acceptedAnswers: string[];
     try { acceptedAnswers = acceptedAnswerVariants(acceptedAnswersText.split('\n').map((line) => line.trim()).filter(Boolean)); }
     catch { setError(t('editor.errors.invalidAnswers')); return false; }
     if (clozeRetainHistoryFor !== undefined && !splitChoices.every((choice) => choice.numbers.includes(clozeRetainHistoryFor[String(choice.templateOrd)]))) {
@@ -693,13 +699,18 @@ const CardFormEditor = ({
       setError(t(isCloze ? 'editor.errors.clozeRequired' : 'editor.errors.noCards'));
       return false;
     }
+    }
     mutationLock.current = true;
     setSaving(true);
     try {
-      if (editing) {
-        const patch = { fieldValues, tags, acceptedAnswers, expectedTypeUpdatedAt: activeNoteType.updatedAt, ...(deckId !== baseDeckId ? { deckId } : {}),
+      const targetNoteId = editing?.noteId ?? savedNoteId;
+      let action: RecoveryAction;
+      if (recovering && recovery.snapshot.pending) {
+        action = recovery.snapshot.pending.payload;
+      } else if (targetNoteId) {
+        const patch = { fieldValues, tags, acceptedAnswers, expectedTypeUpdatedAt: activeNoteType?.updatedAt, ...(deckId !== baseDeckId ? { deckId } : {}),
           ...(clozeRetainHistoryFor !== undefined ? { clozeRetainHistoryFor } : {}) };
-        const preview = await ok(await (api as any).notes({ id: editing.noteId }).preview.post({
+        const preview = await ok(await (api as any).notes({ id: targetNoteId }).preview.post({
           ...patch, preview: true, expectedUpdatedAt: baseVersion,
         })) as CardRegenerationPreview;
         if (!mounted.current) return false;
@@ -712,43 +723,43 @@ const CardFormEditor = ({
           }))) return false;
         }
         if (!mounted.current) return false;
-        const updated = await updateNote(editing.noteId, { ...patch,
-          expectedUpdatedAt: preview.sourceVersion, confirmationToken: preview.confirmationToken });
-        const saved = updated.find((c) => c.id === editing.id) ?? updated[0];
-        if (saved) localDraft.markSaved();
-        if (mounted.current) {
-          if (saved) { setBaseDeckId(saved.deckId); setBaseVersion(saved.note?.updatedAt); setLatest(null); setLatestType(null); }
-          if (saved && notify) onSaved?.(saved);
-          if (saved) return true;
-          else setError(t('editor.errors.noCards'));
-        }
+        action = { path: `/card-notes/${targetNoteId}`, method: 'PATCH', args: { input: { ...patch,
+          expectedUpdatedAt: preview.sourceVersion, confirmationToken: preview.confirmationToken } } };
       } else {
-        const created = await addNote({
-          noteTypeId: activeNoteType.id,
-          expectedTypeUpdatedAt: activeNoteType.updatedAt,
-          deckId,
-          fieldValues,
-          acceptedAnswers,
-          tags,
-        });
-        if (created[0]) localDraft.markSaved();
-        if (mounted.current) {
-          if (created[0]) { if (notify) onSaved?.(created[0]); return true; }
-          else setError(t('editor.errors.noCards'));
-        }
+        action = { path: '/card-notes', method: 'POST', args: { input: {
+          noteTypeId: activeNoteType!.id, expectedTypeUpdatedAt: activeNoteType!.updatedAt,
+          deckId, fieldValues, acceptedAnswers, tags,
+        } } };
       }
+      if (!recovering) action.draft = { ...draftValue, pendingSave: null };
+      const accepted = await recovery.save(action, saveFingerprint);
+      if (!mounted.current || useNN.getState().profile?.userId !== ownerId) return false;
+      if (!accepted.response.result || accepted.response.outcome !== 'applied') {
+        setSavedNoteId(accepted.response.receipt.target.id);
+        if (accepted.response.result) { const current = useNN.getState().acceptRecoveredNote(ownerId, accepted.response.result); if (current[0]) { setSavedCardId(current[0].id); setLatest(current[0]); } }
+        throw new ApiError('note_changed', { status: 409 });
+      }
+      const updated = useNN.getState().acceptRecoveredNote(ownerId, accepted.response.result);
+      const saved = updated.find(card => card.id === (editing?.id ?? savedCardId)) ?? updated[0];
+      if (!saved) { setError(t('editor.errors.noCards')); return false; }
+      setSavedNoteId(saved.noteId); setSavedCardId(saved.id); setBaseDeckId(saved.deckId); setBaseVersion(saved.note?.updatedAt);
+      setLatest(null); setLatestType(null);
+      const submittedDraft = isNoteDraftValue(accepted.submitted.payload.draft) ? accepted.submitted.payload.draft : draftValue;
+      localDraft.markSaved(accepted.submitted.fingerprint, { ...submittedDraft, pendingSave: null, savedNoteId: saved.noteId, cardId: saved.id, baseVersion: saved.note?.updatedAt });
+      if (accepted.currentMatches) { if (notify) onSaved?.(saved); return true; }
+      return false;
     } catch (err) {
       if (mounted.current) {
         if (err instanceof ApiError && err.status === 409) {
           setError(t('editor.errors.changed'));
           try {
-            let currentTypeId = activeNoteType.id;
+            let currentTypeId = activeNoteType?.id ?? noteTypeId;
             if (editing) {
               const current = cardFromApi(await ok(await (api as any).cards({ id: editing.id }).get()));
               currentTypeId = current.noteType?.id ?? currentTypeId;
               if (mounted.current) setLatest(current);
             }
-            if (err.safeMessage === 'note_type_changed' || currentTypeId !== activeNoteType.id) {
+            if (err.safeMessage === 'note_type_changed' || currentTypeId !== activeNoteType?.id) {
               const rows = await ok(await (api as any)['note-types'].get()) as any[];
               const current = rows.find((row) => row.id === currentTypeId);
               if (current && mounted.current) setLatestType(noteTypeFromApi(current));
@@ -764,11 +775,13 @@ const CardFormEditor = ({
   };
 
   const draftValue: NoteDraftValue = { fieldValues, deckId, noteTypeId, tagsText, acceptedAnswersText,
-    baseVersion, baseDeckId, cardId: editing?.id, label: selectedPreview?.renderFrontText.slice(0, 160), noteType: activeNoteType, clozeRetainHistoryFor };
+    baseVersion, baseDeckId, savedNoteId, pendingSave: recovery.snapshot.pending, cardId: editing?.id ?? savedCardId, label: selectedPreview?.renderFrontText.slice(0, 160), noteType: activeNoteType, clozeRetainHistoryFor };
   const localDraft = useEditorDraft({ scope: { ownerId, kind: 'note', entityId: editing?.noteId ?? 'new' },
-    value: draftValue, fingerprint: draftFingerprint({ fieldValues, deckId, noteTypeId, tagsText, acceptedAnswersText, clozeRetainHistoryFor }),
-    validate: isNoteDraftValue, busy: saving || deleting || uploadingFields > 0, onSave: () => handleSave(false),
+    value: draftValue, fingerprint: saveFingerprint,
+    validate: isNoteDraftValue, unsettled: Boolean(recovery.snapshot.pending), busy: saving || deleting || uploadingFields > 0, onSave: () => handleSave(false),
     onRestore: (value) => {
+      if (value.pendingSave) recovery.controller.restorePending(value.pendingSave);
+      setSavedNoteId(value.savedNoteId); setSavedCardId(value.cardId);
       // An unchanged deck selection was not an instruction to move sibling
       // cards back after an external move or opening another direction.
       const originalDeck = value.baseDeckId ?? value.deckId;
@@ -831,7 +844,7 @@ const CardFormEditor = ({
             <NNBtn size="sm" variant="danger" icon="x" onClick={handleDelete} loading={deleting} disabled={saving || uploadingFields > 0 || localDraft.blocked}>{t('actions.delete')}</NNBtn>
           )}
           <NNBtn size="sm" variant="primary" icon="check" onClick={() => handleSave()} loading={saving} disabled={deleting || uploadingFields > 0 || localDraft.blocked}>
-            {saving ? t('editor.saving') : saveLabel ?? (editing ? t('actions.save') : t('actions.create'))}
+            {saving ? t('editor.saving') : saveLabel ?? (editing || savedNoteId ? t('actions.save') : t('actions.create'))}
           </NNBtn>
   </>;
 
@@ -858,6 +871,7 @@ const CardFormEditor = ({
         }
       }} />}
       <div className="reomi-card-form-scroll nn-scroll" style={{ padding: isMobile ? '16px 14px' : 24, overflow: isMobile ? 'visible' : 'auto' }}>
+        <SaveFeedback status={recovery.snapshot.status} errorCode={recovery.snapshot.error} onRetry={() => void handleSave()} />
         <EditorDraftNotice draft={localDraft} stale={Boolean(localDraft.pending && (localDraft.pending.value.baseVersion !== editing?.note?.updatedAt || localDraft.pending.value.noteType?.updatedAt !== (noteTypes.find(type => type.id === localDraft.pending!.value.noteTypeId) ?? editingNoteType)?.updatedAt))} />
         <fieldset disabled={localDraft.blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
         {actionsPlacement === 'header' && <div className="reomi-card-form-actions" style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: 20, flexWrap: 'wrap' }}>

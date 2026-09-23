@@ -7,7 +7,7 @@ import { PathnameContext } from 'next/dist/shared/lib/hooks-client-context.share
 import { AppNavigationProvider } from './navigation';
 import { DialogProvider } from './dialog';
 import { useNN } from '../lib/store';
-import { readEditorDraft, writeEditorDraft } from '../lib/editor-drafts';
+import { readEditorDraft, writeEditorDraft, listEditorDrafts } from '../lib/editor-drafts';
 
 ensureTestDom();
 const { createRoot } = await import('react-dom/client');
@@ -46,6 +46,14 @@ test('source remains copyable without its original note or type, and account cha
   await act(async () => useNN.setState({ profile: { userId: 'library-bob' } as any }));
   expect(host.textContent).not.toContain('Alice unsaved source');
   expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Bob source');
+});
+
+test('written-note recovery exposes retained text even when the source no longer exists', async () => {
+  writeEditorDraft({ ...scope, kind: 'study-note', entityId: 'retained-note' }, { version: 1, id: 'retained-note', expectedRevision: 3,
+    owner: { kind: 'source', id: 'deleted-source' }, title: 'Written draft', content: 'Full retained\nwritten text' }, null);
+  await render();
+  expect((host.querySelector('textarea[aria-label="Written draft"]') as HTMLTextAreaElement).value).toBe('Full retained\nwritten text');
+  expect(listEditorDrafts(scope.ownerId).some(entry => entry.scope.kind === 'study-note')).toBe(true);
 });
 
 test('download preserves the entire draft payload and never clears it', async () => {

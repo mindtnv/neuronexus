@@ -502,6 +502,7 @@ async function streamBounded(
   messages: ChatMessage[],
   timeoutMs: number,
   parent?: AbortSignal,
+  runId?: string,
 ): Promise<string> {
   const controller = new AbortController();
   let timedOut = false;
@@ -525,7 +526,7 @@ async function streamBounded(
     const rows = await db
       .update(notebookArtifacts)
       .set({ contentMd: acc, updatedAt: new Date() })
-      .where(and(eq(notebookArtifacts.id, artifactId), eq(notebookArtifacts.status, 'generating')))
+      .where(and(eq(notebookArtifacts.id, artifactId), eq(notebookArtifacts.status, 'generating'), runId ? eq(notebookArtifacts.operationRunId, runId) : undefined))
       .returning({ id: notebookArtifacts.id });
     if (rows.length === 0) {
       controller.abort();
@@ -575,7 +576,9 @@ async function casArtifact(
   set: Record<string, unknown>,
   owner?: Pick<typeof notebookArtifacts.$inferSelect, 'userId' | 'ownerKind' | 'sourceId' | 'sourceOriginId'>,
   signal?: AbortSignal,
+  runId?: string,
 ): Promise<boolean> {
+  if (!runId) return false;
   if (signal?.aborted) return false;
   if (set.status === 'ready' && owner?.ownerKind === 'source') {
     return db.transaction(async tx => {
@@ -583,18 +586,18 @@ async function casArtifact(
         .where(and(eq(sources.userId, owner.userId), eq(sources.id, owner.sourceId))).for('update').limit(1) : [];
       if (signal?.aborted) return false;
       const available = source && isSourceTextReadable(source.status, source.errorCode) && source.id === owner.sourceOriginId;
-      const rows = await tx.update(notebookArtifacts).set(available ? { ...set, updatedAt: new Date() }
-        : { status: 'error', errorCode: 'source_unavailable', contentMd: null, contentJson: null, updatedAt: new Date() })
+      const rows = await tx.update(notebookArtifacts).set(available ? { ...set, operationFinishedAt: new Date(), updatedAt: new Date() }
+        : { status: 'error', errorCode: 'source_unavailable', operationFinishedAt: new Date(), contentMd: null, contentJson: null, updatedAt: new Date() })
         .where(and(eq(notebookArtifacts.userId, owner.userId), eq(notebookArtifacts.id, artifactId),
-          inArray(notebookArtifacts.status, expected as string[]))).returning({ id: notebookArtifacts.id });
+          eq(notebookArtifacts.operationRunId, runId), inArray(notebookArtifacts.status, expected as string[]))).returning({ id: notebookArtifacts.id });
       return Boolean(available && rows.length);
     });
   }
   const rows = await db
     .update(notebookArtifacts)
-    .set({ ...set, updatedAt: new Date() })
+    .set({ ...set, operationFinishedAt: new Date(), updatedAt: new Date() })
     .where(
-      and(eq(notebookArtifacts.id, artifactId), inArray(notebookArtifacts.status, expected as string[])),
+      and(eq(notebookArtifacts.id, artifactId), eq(notebookArtifacts.operationRunId, runId), inArray(notebookArtifacts.status, expected as string[])),
     )
     .returning({ id: notebookArtifacts.id });
   return rows.length > 0;
@@ -609,9 +612,9 @@ async function casArtifact(
  * Both are bounded by `ARTIFACT_TIMEOUT_MS`. Throws `ArtifactCancelled` (stream
  * path only) when the row vanished mid-flight; other throws classify to a code.
  */
-async function runGeneration(artifactId: string, messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
+async function runGeneration(artifactId: string, messages: ChatMessage[], signal?: AbortSignal, runId?: string): Promise<string> {
   if (isChatStreamEnabled()) {
-    return streamBounded(artifactId, messages, env.ai.ARTIFACT_TIMEOUT_MS, signal);
+    return streamBounded(artifactId, messages, env.ai.ARTIFACT_TIMEOUT_MS, signal, runId);
   }
   return completeBounded(messages, env.ai.ARTIFACT_TIMEOUT_MS, signal);
 }
@@ -632,21 +635,23 @@ async function runGeneration(artifactId: string, messages: ChatMessage[], signal
  */
 export async function generateArtifact(
   artifactId: string,
-  opts: { questionCount?: number; log?: Logger; controller?: AbortController } = {},
+  opts: { questionCount?: number; log?: Logger; controller?: AbortController; runId?: string } = {},
 ): Promise<void> {
   const log = opts.log ?? rootLogger;
   const controller=opts.controller ?? new AbortController();let release=()=>{};
+  let runId: string | undefined;
   try {
     if (controller.signal.aborted) return;
     // CAS pending → generating. Returns the claimed row so we have type +
     // user_id + source_ids without a second SELECT.
     const [claimed] = await db
       .update(notebookArtifacts)
-      .set({ status: 'generating', errorCode: null, updatedAt: new Date() })
-      .where(and(eq(notebookArtifacts.id, artifactId), eq(notebookArtifacts.status, 'pending')))
+      .set({ status: 'generating', errorCode: null, operationRunId: sql`COALESCE(${notebookArtifacts.operationRunId}, uuidv7())`, operationFinishedAt: null, updatedAt: new Date() })
+      .where(and(eq(notebookArtifacts.id, artifactId), eq(notebookArtifacts.status, 'pending'), opts.runId ? eq(notebookArtifacts.operationRunId, opts.runId) : undefined))
       .returning();
     if (!claimed) return; // not claimable (already generating / deleted / done)
 
+    runId = claimed.operationRunId!;
     release=registerArtifactRequest(artifactId,controller);
     if (controller.signal.aborted) return;
     const type = claimed.type as NotebookArtifactType;
@@ -654,16 +659,16 @@ export async function generateArtifact(
     const ctx = await buildArtifactContext(claimed.userId, claimed.sourceIds, undefined, claimed.ownerKind === 'source');
     if (controller.signal.aborted) return;
     if (ctx.chunks.length === 0) {
-      await failArtifact(artifactId, 'no_sources');
+      await failArtifact(artifactId, 'no_sources', runId);
       return;
     }
 
     // ── quiz: structured JSON generation (Р8 / N3) ─────────────────────────────
     if (type === 'quiz') {
-      const questionCount = clampQuestionCount(opts.questionCount);
+      const questionCount = clampQuestionCount(claimed.generationOptions?.questionCount ?? opts.questionCount);
       let raw: string;
       try {
-        raw = await runGeneration(artifactId, buildQuizMessages(ctx.chunks, questionCount), controller.signal);
+        raw = await runGeneration(artifactId, buildQuizMessages(ctx.chunks, questionCount), controller.signal, runId);
       } catch (err) {
         // A concurrent delete/regenerate aborted the stream — exit, do NOT write
         // (the row is gone or already re-claimed; a 0-row CAS would no-op anyway).
@@ -672,12 +677,12 @@ export async function generateArtifact(
         if (code === 'generation_failed') {
           log.error({ err: safeError(err), artifactId }, 'ai.artifact.generation_failed');
         }
-        await failArtifact(artifactId, code);
+        await failArtifact(artifactId, code, runId);
         return;
       }
       const quiz = parseQuiz(raw, ctx.allowedChunkIds);
       if (!quiz) {
-        await failArtifact(artifactId, 'invalid_quiz');
+        await failArtifact(artifactId, 'invalid_quiz', runId);
         return;
       }
       // content_md held the partial raw JSON during streaming — overwrite it with
@@ -688,7 +693,7 @@ export async function generateArtifact(
         contentMd: null,
         errorCode: null,
         model: env.ai.CHAT_MODEL,
-      }, claimed, controller.signal);
+      }, claimed, controller.signal, runId);
       if (saved) artifactWorkerState.recover();
       return;
     }
@@ -698,7 +703,7 @@ export async function generateArtifact(
       raw = await runGeneration(
         artifactId,
         buildArtifactMessages(type as Exclude<NotebookArtifactType, 'quiz'>, ctx.chunks),
-        controller.signal,
+        controller.signal, runId,
       );
     } catch (err) {
       if (err instanceof ArtifactCancelled) return;
@@ -706,7 +711,7 @@ export async function generateArtifact(
       if (code === 'generation_failed') {
         log.error({ err: safeError(err), artifactId }, 'ai.artifact.generation_failed');
       }
-      await failArtifact(artifactId, code);
+      await failArtifact(artifactId, code, runId);
       return;
     }
 
@@ -714,7 +719,7 @@ export async function generateArtifact(
     const { text } = applyArtifactCitations(raw, ctx.chunks.map(toSourceCitation));
     const contentMd = text.trim();
     if (contentMd.length === 0) {
-      await failArtifact(artifactId, 'generation_failed');
+      await failArtifact(artifactId, 'generation_failed', runId);
       return;
     }
 
@@ -724,7 +729,7 @@ export async function generateArtifact(
       contentMd,
       errorCode: null,
       model: env.ai.CHAT_MODEL,
-    }, claimed, controller.signal);
+    }, claimed, controller.signal, runId);
     if (saved) artifactWorkerState.recover();
   } catch (err) {
     // Interrupted rows are reconciled on the next compatible startup; avoid
@@ -732,7 +737,7 @@ export async function generateArtifact(
     if (controller.signal.aborted) return;
     // Truly-unexpected (a DB error) — best-effort mark error, never rethrow.
     log.error({ err: safeError(err), artifactId }, 'ai.artifact.unexpected');
-    await failArtifact(artifactId, 'generation_failed').catch(() => {});
+    await failArtifact(artifactId, 'generation_failed', runId).catch(() => {});
   } finally {release();}
 }
 
@@ -741,7 +746,7 @@ const activeArtifactJobs = new Map<Promise<void>, AbortController>();
 /** Fire-and-forget artifact start with bounded request correlation and drain tracking. */
 export function scheduleArtifactGeneration(
   artifactId: string,
-  opts: { questionCount?: number; requestLog?: Logger } = {},
+  opts: { questionCount?: number; requestLog?: Logger; runId?: string } = {},
 ): void {
   if (isRuntimeShuttingDown()) return;
   const controller = new AbortController();
@@ -749,7 +754,7 @@ export function scheduleArtifactGeneration(
   artifactWorkerState.enqueue();
   artifactWorkerState.start();
   let job!: Promise<void>;
-  job = generateArtifact(artifactId, { questionCount: opts.questionCount, log, controller })
+  job = generateArtifact(artifactId, { questionCount: opts.questionCount, runId: opts.runId, log, controller })
     .catch((err) => {
       artifactWorkerState.recordFailure('artifact_unexpected');
       log.error({ err: safeError(err), artifactId }, 'ai.artifact.kick_failed');
@@ -780,9 +785,9 @@ export async function drainArtifactGeneration({ timeoutMs }: { timeoutMs: number
 }
 
 /** CAS generating → error with a machine code (a delete race loses → no-op). */
-async function failArtifact(artifactId: string, errorCode: ArtifactErrorCode): Promise<void> {
+async function failArtifact(artifactId: string, errorCode: ArtifactErrorCode, runId?: string): Promise<void> {
   artifactWorkerState.recordFailure(errorCode);
-  await casArtifact(artifactId, ['generating'], { status: 'error', errorCode });
+  await casArtifact(artifactId, ['generating'], { status: 'error', errorCode }, undefined, undefined, runId);
 }
 
 /** A context chunk → the SourceCitation shape the citation helpers expect. */
@@ -942,7 +947,7 @@ export async function reconcileArtifactsOnStartup(): Promise<void> {
   try {
     const rows = await db
       .update(notebookArtifacts)
-      .set({ status: 'error', errorCode: 'interrupted', updatedAt: new Date() })
+      .set({ status: 'error', errorCode: 'interrupted', operationRunId: sql`COALESCE(${notebookArtifacts.operationRunId}, uuidv7())`, operationFinishedAt: new Date(), updatedAt: new Date() })
       .where(inArray(notebookArtifacts.status, ['pending', 'generating']))
       .returning({ id: notebookArtifacts.id });
     if (rows.length > 0) {

@@ -5,6 +5,7 @@ import { BOTTOM_TABS, getActiveNavId } from './nav-config';
 import { NNIcon } from './ui';
 import { useStudyOverview } from '@/lib/use-study-overview';
 import { useT } from '@/lib/i18n';
+import { OperationsButton } from './operations-center';
 import { AppLink } from './navigation';
 
 export const BottomTabs = () => {
@@ -79,6 +80,7 @@ export const BottomTabs = () => {
           </AppLink>
         );
       })}
+      <OperationsButton mobile />
     </nav>
   );
 };

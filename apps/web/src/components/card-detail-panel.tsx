@@ -1,11 +1,13 @@
 'use client';
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useContext, type CSSProperties } from 'react';
 import { NNBtn } from './ui';
 import { CardEditor } from './card-editor';
 import { ResizeHandle } from './design-system/resize-handle';
 import { CARD_PANEL, boundedPanelWidth, readCardPanelWidth } from '@/lib/panel-width';
 import { useT } from '@/lib/i18n';
 import type { Card } from '@/lib/types';
+import { useIsMobile } from '@/lib/use-breakpoint';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { NavigationReturn } from './navigation';
 
 export function CardDetailPanel({ card, deckName, index, total, onMove, onClose, onOpen, onDeleted, onDirtyChange }: {
@@ -15,6 +17,8 @@ export function CardDetailPanel({ card, deckName, index, total, onMove, onClose,
 }) {
   const t = useT();
   const panel = useRef<HTMLElement>(null);
+  const mobile = useIsMobile(), parent = useContext(LayerParent);
+  const layer = useTransientLayer({ root: panel, enabled: mobile, modal: true, onClose });
   const [preferredWidth, setPreferredWidth] = useState<number>(CARD_PANEL.default);
   const [availableWidth, setAvailableWidth] = useState(1200);
   useLayoutEffect(() => {
@@ -40,7 +44,7 @@ export function CardDetailPanel({ card, deckName, index, total, onMove, onClose,
     heading.current?.focus({preventScroll:true});
     return () => { if (previous?.isConnected) previous.focus({preventScroll:true}); };
   }, []);
-  return <section ref={panel} className="reomi-card-detail" aria-labelledby="card-detail-title" style={{ '--card-detail-width': `${width}px` } as CSSProperties}>
+  return <LayerParent.Provider value={mobile ? layer.id : parent}><section ref={panel} role={mobile ? 'dialog' : undefined} aria-modal={mobile || undefined} className="reomi-card-detail" aria-labelledby="card-detail-title" style={{ '--card-detail-width': `${width}px` } as CSSProperties}>
     {availableWidth > 900 && <ResizeHandle edge="left" width={width} min={CARD_PANEL.min} max={maxWidth} defaultWidth={CARD_PANEL.default}
       label={t('cards.panel.resizeWidth')} onChange={resize} />}
     <header className="reomi-card-detail-header">
@@ -49,8 +53,8 @@ export function CardDetailPanel({ card, deckName, index, total, onMove, onClose,
       <span className="reomi-card-detail-position">{index >= 0 ? `${index + 1} / ${total}` : ''}</span>
       <NNBtn size="sm" icon="chevl" ariaLabel={t('cards.panel.prev')} disabled={index <= 0} onClick={() => onMove(-1)} />
       <NNBtn size="sm" icon="chevr" ariaLabel={t('cards.panel.next')} disabled={index < 0 || index >= total - 1} onClick={() => onMove(1)} />
-      <NNBtn size="sm" icon="x" ariaLabel={t('cards.panel.close')} onClick={onClose} />
+      <NNBtn size="sm" icon="x" ariaLabel={t('cards.panel.close')} onClick={() => mobile ? void layer.close() : onClose()} />
     </header>
     <CardEditor card={card} onOpen={onOpen} onDeleted={onDeleted} onDirtyChange={onDirtyChange} onSaved={() => onDirtyChange(false)} />
-  </section>;
+  </section></LayerParent.Provider>;
 }

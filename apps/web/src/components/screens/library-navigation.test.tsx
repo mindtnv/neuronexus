@@ -76,7 +76,7 @@ test('notebook reload requests the saved archive scope before rendering results'
 test('returning to decks refreshes the hierarchy and drops a deleted inspected deck',async()=>{
   useNN.setState({decks:[{id:'deleted-deck',name:'Gone',parentId:null,position:0,color:'lime',createdAt:0} as any]});
   const journal=new NavigationJournal('library-owner','/decks',null,sessionStorage);journal.field('decks','selectedId','deleted-deck');journal.field('decks','deckSearch','Gone');journal.flush();history.replaceState({[NAVIGATION_HISTORY_KEY]:journal.marker()},'');
-  let checked=false;globalThis.fetch=(async(url:any)=>{if(String(url).endsWith('/decks')){checked=true;return Response.json([]);}return Response.json({error:'unavailable'},{status:503});}) as unknown as typeof fetch;
+  let checked=false;globalThis.fetch=(async(url:any)=>{if(String(url).endsWith('/deck-hierarchy')){checked=true;return Response.json({revision:1,decks:[]});}return Response.json({error:'unavailable'},{status:503});}) as unknown as typeof fetch;
   await render('/decks',<NNDecks/>);expect(checked).toBe(true);expect(host.querySelector('[role="treeitem"]')).toBeNull();expect((host.querySelector('input[aria-label="decks.filters.search"]') as HTMLInputElement).value).toBe('Gone');
 });
 
@@ -98,4 +98,43 @@ test('an unavailable restored library detail closes while preserving collection 
   useNN.setState({getLibraryItem:async()=>{throw new ApiError('not_found',{status:404});}});
   await render();expect(host.querySelector('[aria-label="library.details.close"]')).toBeNull();
   expect((host.querySelector('input[aria-label="library.header.searchPlaceholder"]') as HTMLInputElement).value).toBe('saved topic');
+});
+
+test('a rejected source-tag save keeps the entered tag and retries through its safe action route', async () => {
+  savedView(); const journal = new NavigationJournal('library-owner', '/library', history.state[NAVIGATION_HISTORY_KEY], sessionStorage);
+  journal.field('library', 'detailId', 'source-a'); journal.flush();
+  const item = { id: 'source-a', kind: 'text', title: 'Book', status: 'ready', metadataRevision: 0, tags: [], total: 1, indexed: 1,
+    author: null, description: null, readingStatus: 'unread', percent: null, notebookCount: 0, cardCount: 0, notebooks: [], createdAt: new Date().toISOString() };
+  useNN.setState({ getLibraryItem: async () => item as any });
+  let reject = true, writes = 0;
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    if (String(url).endsWith('/session')) return Response.json({ sessionId: '01900000-0000-7000-8000-000000000020' });
+    if (String(url).includes('/ui-actions/v1/sources/')) {
+      writes++; const body = JSON.parse(String(init?.body));
+      return reject ? Response.json({ error: 'invalid_metadata' }, { status: 400 }) : Response.json({ result: { ...item, tags: body.patch.tags, metadataRevision: 1 }, outcome: 'applied', replayed: false,
+        receipt: { id: 'receipt', requestId: body.requestId, target: { kind: 'source', id: item.id, revision: '1' }, undoUntil: null } });
+    }
+    return Response.json({ items: [], chatEnabled: false });
+  }) as unknown as typeof fetch;
+  await render();
+  const field = host.querySelector<HTMLInputElement>('input[placeholder="library.details.tagsPlaceholder"]')!;
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, 'retained-tag'); field.dispatchEvent(new Event('input', { bubbles: true })); });
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'library.details.addTag')!.click());
+  expect(field.value).toBe('retained-tag'); expect(host.textContent).toContain('actionsRecovery.failed');
+  reject = false;
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'actionsRecovery.retry')!.click());
+  expect(writes).toBe(2); expect(field.value).toBe(''); expect(host.querySelector('.nn-lib-tag')?.textContent).toContain('retained-tag');
+});
+
+test('consuming a library focus URL retains the addressed details layer', async () => {
+  const item = { id: 'source-focus', kind: 'text', title: 'Focused book', status: 'ready', metadataRevision: 0, tags: [], total: 1, indexed: 1,
+    author: null, description: null, readingStatus: 'unread', percent: null, notebookCount: 0, cardCount: 0, notebooks: [], createdAt: new Date().toISOString() };
+  useNN.setState({ getLibraryItem: async () => item as any });
+  const previous = location.href;
+  history.replaceState({}, '', '/library?focus=source-focus');
+  try {
+    await act(async () => root.render(<AppRouterContext.Provider value={router}><PathnameContext.Provider value="/library"><SearchParamsContext.Provider value={new URLSearchParams('focus=source-focus')}><AppNavigationProvider><DialogProvider><LibraryScreen /></DialogProvider></AppNavigationProvider></SearchParamsContext.Provider></PathnameContext.Provider></AppRouterContext.Provider>));
+    expect(host.querySelector('[aria-label="library.details.close"]')).not.toBeNull();
+    expect(host.textContent).toContain('Focused book');
+  } finally { history.replaceState({}, '', previous); }
 });

@@ -3,11 +3,22 @@ import {
   clearSessionResourceCache,
   fetchSessionResource,
   peekSessionResource,
+  invalidateSessionResourceScope,
 } from './session-resource';
 
 afterEach(() => clearSessionResourceCache());
 
 describe('session resource cache', () => {
+  test('a confirmed mutation starts a fresh read and rejects an older in-flight snapshot', async () => {
+    const old = Promise.withResolvers<string>();
+    const first = fetchSessionResource({ key: 'library:list', scope: 'library', fetcher: () => old.promise });
+    invalidateSessionResourceScope('library');
+    const fresh = await fetchSessionResource({ key: 'library:list', scope: 'library', fetcher: async () => 'After undo' });
+    expect(fresh).toMatchObject({ current: true, data: 'After undo' });
+    old.resolve('Before undo');
+    expect(await first).toMatchObject({ current: false });
+    expect(peekSessionResource<string>('library:list')).toBe('After undo');
+  });
   test('deduplicates identical in-flight requests', async () => {
     let calls = 0;
     const deferred = Promise.withResolvers<number>();

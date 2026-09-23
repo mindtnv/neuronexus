@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "baselineMigrations": 37,
+  "finalMigrations": 40,
+  "checks": [
+    "legacy-identities-and-content-preserved",
+    "old-results-not-made-recent",
+    "processing-does-not-change-metadata-revision",
+    "legacy-ABA-detected",
+    "pin-revision",
+    "hierarchy-revision",
+    "idempotent-chain"
+  ]
+}

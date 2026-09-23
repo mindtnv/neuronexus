@@ -17,6 +17,7 @@ import {
   SIDEBAR_WIDTH_EXPANDED,
 } from '@/lib/ui-store';
 import { useT } from '@/lib/i18n';
+import { OperationsButton } from './operations-center';
 import { AccountMenu } from './account-menu';
 import { ThemeToggle } from './theme-toggle';
 
@@ -154,6 +155,7 @@ export const NNSidebar = ({
           {FOOTER_NAV.filter((item) => item.id !== 'settings').map((item) =>
             renderNavItem({ item, isActive: currentId === item.id, collapsed, responsive, label: t(item.labelKey) }),
           )}
+          <OperationsButton />
         </div>
       </nav>
 

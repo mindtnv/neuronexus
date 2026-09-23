@@ -24,6 +24,10 @@ import { sourceStudyModule } from './modules/source-study.ts';
 import { sourceTextMarksModule } from './modules/source-text-marks.ts';
 import { StudyError } from './modules/study-notes.ts';
 import { libraryModule } from './modules/library.ts';
+import { operationsModule } from './modules/operations';
+import { uiActionsModule } from './modules/ui-actions';
+import { cardRecoveryModule } from './modules/card-recovery';
+import { ActionDomainError } from './modules/ui-action-receipts';
 import { personalTokensModule } from './modules/personal-tokens.ts';
 import { handleMcp } from './mcp/server.ts';
 import { AUTH_RATE_RULES, clientIpFromRequest, rateLimitCheck } from './rate-limit.ts';
@@ -208,6 +212,10 @@ export function buildApp(options: BuildAppOptions = {}) {
     .onError({ as: 'global' }, ({ code, error, status, log, requestState }) => {
       const state = requestState as RequestLifecycleState | undefined;
       const errorLog = log ?? baseLogger;
+      if (error instanceof ActionDomainError) {
+        if (state) state.errorStatus = error.status;
+        return status(error.status, error.payload);
+      }
       if (error instanceof StudyError) {
         if (state) state.errorStatus = error.status;
         return status(error.status, { error: error.message });
@@ -262,6 +270,9 @@ export function buildApp(options: BuildAppOptions = {}) {
     .use(sourceStudyModule)
     .use(sourceTextMarksModule)
     .use(libraryModule)
+    .use(operationsModule)
+    .use(uiActionsModule)
+    .use(cardRecoveryModule)
     .all('/mcp', ({ request, log }) => handleMcp(request, (req) => readHandle(req), log), { parse: 'none' })
     // Explicit fallback keeps the completion hook's final status accurate for
     // unmatched routes too (Elysia's implicit 404 is mapped after analytics).

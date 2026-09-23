@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, useId } from 'react';
+import { useTransientLayer } from '@/lib/use-transient-layer';
 import { NNIcon, NNKbd, NNBtn } from '@/components/ui';
 import { useAppNavigation } from '@/components/navigation';
 
@@ -18,6 +19,7 @@ export function CommandPalette({ defaultQuery = '', onClose }: { defaultQuery?: 
   const t = useT();
   const router = useAppNavigation();
   const dialog = useRef<HTMLDialogElement>(null);
+  const layer = useTransientLayer({ root: dialog, modal: true, onClose: () => onClose?.() });
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -41,7 +43,7 @@ export function CommandPalette({ defaultQuery = '', onClose }: { defaultQuery?: 
     if (!node) return;
     const previous = document.activeElement as HTMLElement | null;
     node.showModal(); input.current?.focus();
-    return () => { node.close(); if (previous?.isConnected) previous.focus(); };
+    return () => { node.close(); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
   }, []);
 
   useEffect(() => {
@@ -116,11 +118,11 @@ export function CommandPalette({ defaultQuery = '', onClose }: { defaultQuery?: 
   useEffect(() => { list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }); }, [selectedId]);
 
   return <dialog ref={dialog} className="reomi-palette" aria-label={t('overlays.palette.title')}
-    onCancel={event => { event.preventDefault(); onClose?.(); }}
+    onCancel={event => { event.preventDefault(); void layer.close('escape'); }}
     onClick={event => {
       if (event.target !== event.currentTarget) return;
       const rect = event.currentTarget.getBoundingClientRect();
-      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose?.();
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) void layer.close('outside');
     }}>
     <div className="reomi-palette-search">
       <NNIcon name="search" size={20} />
@@ -137,7 +139,7 @@ export function CommandPalette({ defaultQuery = '', onClose }: { defaultQuery?: 
           }
         }} />
       {query && <NNBtn icon="x" ariaLabel={t('overlays.palette.clear')} title={t('overlays.palette.clear')} onClick={() => { setQuery(''); setActiveId(null); input.current?.focus(); }} />}
-      <button type="button" className="reomi-palette-close" aria-label={t('actions.close')} onClick={onClose}><NNKbd>esc</NNKbd></button>
+      <button type="button" className="reomi-palette-close" aria-label={t('actions.close')} onClick={() => void layer.close()}><NNKbd>esc</NNKbd></button>
 
     </div>
     <div ref={list} id={listId} className="reomi-palette-results nn-scroll" role="listbox" aria-label={t('overlays.palette.results')} aria-busy={pending}>

@@ -136,24 +136,30 @@ async function ingestSourceWithResult(
 ): Promise<string | null> {
   const log = opts.log ?? rootLogger;
   let phase: 'parse' | 'index' = 'parse';
+  let runId: string | undefined;
   try {
     const claimed = await claimForParse(sourceId);
     if (!claimed) {
       // Not claimable as `pending` — maybe already `indexing` (resume) or gone.
       phase = 'index';
-      await resumeIndexing(sourceId, log);
+      const [current] = await db.select().from(sources).where(eq(sources.id, sourceId)).limit(1);
+      if (current?.status === 'indexing' && current.operationRunId) {
+        runId = current.operationRunId;
+        await indexPhase(sourceId, runId, log);
+      }
       return null;
     }
+    runId = claimed.operationRunId!;
     await parsePhase(claimed, log);
     phase = 'index';
-    await indexPhase(sourceId, log);
+    await indexPhase(sourceId, runId!, log);
     return null;
   } catch (err) {
     if (err instanceof TerminalSkip) return null; // vanished / deleting — clean exit
     const code =
       err instanceof SourceParseError ? err.code : phase === 'index' ? ('index_failed' as const) : ('parse_failed' as const);
     log.error({ err: safeError(err), sourceId, code }, 'ai.source_ingest.failed');
-    await casStatus(sourceId, ['pending', 'parsing', 'indexing'], 'error', { errorCode: code });
+    await casStatus(sourceId, runId, ['pending', 'parsing', 'indexing'], 'error', { errorCode: code });
     return code;
   }
 }
@@ -165,8 +171,8 @@ class TerminalSkip extends Error {}
 async function claimForParse(sourceId: string): Promise<Source | null> {
   const [row] = await db
     .update(sources)
-    .set({ status: 'parsing', errorCode: null, updatedAt: new Date() })
-    .where(and(eq(sources.id, sourceId), eq(sources.status, 'pending')))
+    .set({ status: 'parsing', errorCode: null, operationRunId: sql`COALESCE(${sources.operationRunId}, uuidv7())`, operationFinishedAt: null, updatedAt: new Date() })
+    .where(and(eq(sources.id, sourceId), eq(sources.status, 'pending'), eq(sources.verified, true)))
     .returning();
   return row ?? null;
 }
@@ -200,7 +206,7 @@ async function parsePhase(source: Source, log: Logger): Promise<void> {
 
     // Over-limit short-circuit (CRITIC-C1) — never embed a runaway source.
     if (chunks.length > env.ai.MAX_SOURCE_CHUNKS) {
-      await casStatus(source.id, ['parsing'], 'error', { errorCode: 'too_many_chunks' });
+      await casStatus(source.id, source.operationRunId!, ['parsing'], 'error', { errorCode: 'too_many_chunks' });
       throw new TerminalSkip();
     }
 
@@ -210,6 +216,9 @@ async function parsePhase(source: Source, log: Logger): Promise<void> {
     // ONE tx: rewrite the SoT chunks (idempotent — wipe + reinsert so a re-parse
     // never leaves stale rows) + set the progress denominator.
     await db.transaction(async (tx) => {
+      const [live] = await tx.select({ id: sources.id }).from(sources)
+        .where(and(eq(sources.id, source.id), eq(sources.operationRunId, source.operationRunId!), eq(sources.status, 'parsing'))).for('update').limit(1);
+      if (!live) throw new TerminalSkip();
       await tx.delete(sourceChunks).where(eq(sourceChunks.sourceId, source.id));
       if (chunks.length > 0) {
         await tx.insert(sourceChunks).values(
@@ -238,7 +247,7 @@ async function parsePhase(source: Source, log: Logger): Promise<void> {
     await maybeStoreCover(source, cover, imageUrl, log);
 
     // CAS parsing → indexing (a concurrent delete loses this race → 0 rows → skip).
-    const moved = await casStatus(source.id, ['parsing'], 'indexing');
+    const moved = await casStatus(source.id, source.operationRunId!, ['parsing'], 'indexing');
     if (!moved) throw new TerminalSkip();
   } finally {
     // Always evict — SoT recovery from source_chunks makes correctness
@@ -322,7 +331,7 @@ async function loadBytes(source: Source): Promise<Uint8Array | undefined> {
  * source_chunks.embedded=true. Then CAS indexing → ready. notebooksEnabled off
  * → parse-and-park (skip embedding, leave at `indexing`).
  */
-async function indexPhase(sourceId: string, log: Logger): Promise<void> {
+async function indexPhase(sourceId: string, runId: string, log: Logger): Promise<void> {
   // Degrade: no embedder configured OR dim-assertion failed → park at 'indexing'.
   // Mirrors canIndex() in index-queue.ts (isEmbeddingEnabled && !embeddingDegraded).
   if (!isEmbeddingEnabled() || embeddingDegraded()) {
@@ -330,16 +339,19 @@ async function indexPhase(sourceId: string, log: Logger): Promise<void> {
       { sourceId, notebooksEnabled },
       'ai.source_ingest.parked — embedding disabled or dim degraded, SoT written',
     );
-    return; // status stays at 'indexing'; resume finishes it later
+    await db.update(sources).set({ operationFinishedAt: sql`COALESCE(${sources.operationFinishedAt}, now())` })
+      .where(and(eq(sources.id, sourceId), eq(sources.operationRunId, runId), eq(sources.status, 'indexing')));
+    return; // parked, readable, not active; resume finishes it later
   }
 
   // The ingest path runs with the source in `indexing` (this CAS will move it to
   // `ready`); a per-batch re-check that the source is STILL in an allowed status
   // bails cleanly on a concurrent reingest (which flips it back to `pending`).
-  await embedUnembeddedChunks(sourceId, ['indexing'], log);
+  await db.update(sources).set({ operationFinishedAt: null }).where(and(eq(sources.id, sourceId), eq(sources.operationRunId, runId), eq(sources.status, 'indexing')));
+  await embedUnembeddedChunks(sourceId, ['indexing'], log, runId);
 
   // All chunks embedded → CAS indexing → ready (a delete-race loses → skip).
-  await casStatus(sourceId, ['indexing'], 'ready');
+  await casStatus(sourceId, runId, ['indexing'], 'ready');
 }
 
 /**
@@ -360,6 +372,7 @@ async function embedUnembeddedChunks(
   sourceId: string,
   allowedStatuses: readonly string[],
   log: Logger = rootLogger,
+  runId?: string | null,
 ): Promise<void> {
   const model = env.ai.EMBEDDING_MODEL;
 
@@ -370,7 +383,7 @@ async function embedUnembeddedChunks(
     const [source] = await db
       .select({ id: sources.id, status: sources.status, userId: sources.userId })
       .from(sources)
-      .where(eq(sources.id, sourceId))
+      .where(and(eq(sources.id, sourceId), runId ? eq(sources.operationRunId, runId) : undefined))
       .limit(1);
     if (!source || !allowedStatuses.includes(source.status)) throw new TerminalSkip();
 
@@ -409,8 +422,8 @@ async function embedUnembeddedChunks(
       const [live] = await tx
         .select({ id: sources.id })
         .from(sources)
-        .where(and(eq(sources.id, sourceId), sql`status != 'deleting'`))
-        .limit(1);
+        .where(and(eq(sources.id, sourceId), inArray(sources.status, [...allowedStatuses]), runId ? eq(sources.operationRunId, runId) : undefined))
+        .for('update').limit(1);
       if (!live) {
         // Source vanished or went 'deleting' during the embed() call — clean terminal.
         deletedDuringEmbed = true;
@@ -466,23 +479,6 @@ async function embedUnembeddedChunks(
   }
 }
 
-/**
- * Resume an already-`indexing` (or stuck-`parsing`) source. Parse already wrote
- * the SoT, so we only need to finish embedding (or re-CAS parsing→indexing).
- */
-async function resumeIndexing(sourceId: string, log: Logger): Promise<void> {
-  const [row] = await db
-    .select({ id: sources.id, status: sources.status })
-    .from(sources)
-    .where(eq(sources.id, sourceId))
-    .limit(1);
-  if (!row) return; // gone — clean terminal
-  if (row.status === 'indexing') {
-    await indexPhase(sourceId, log);
-  }
-  // pending was handled by claimForParse; parsing/other terminal → nothing here.
-}
-
 // ── CAS helper ────────────────────────────────────────────────────────────────
 
 /**
@@ -492,16 +488,18 @@ async function resumeIndexing(sourceId: string, log: Logger): Promise<void> {
  */
 async function casStatus(
   sourceId: string,
+  runId: string | undefined,
   expected: readonly string[],
   next: string,
   extra?: { errorCode?: string | null },
 ): Promise<boolean> {
-  const set: Record<string, unknown> = { status: next, updatedAt: new Date() };
+  if (!runId) return false;
+  const set: Record<string, unknown> = { status: next, updatedAt: new Date(), operationFinishedAt: next === 'ready' || next === 'error' ? new Date() : null };
   if (extra && 'errorCode' in extra) set.errorCode = extra.errorCode ?? null;
   const rows = await db
     .update(sources)
     .set(set)
-    .where(and(eq(sources.id, sourceId), inArray(sources.status, expected as string[])))
+    .where(and(eq(sources.id, sourceId), eq(sources.operationRunId, runId), inArray(sources.status, expected as string[])))
     .returning({ id: sources.id });
   return rows.length > 0;
 }
@@ -516,16 +514,16 @@ async function casStatus(
  */
 export async function resumeSourceIngestOnStartup(): Promise<void> {
   try {
-    const rows = await db
-      .select({ id: sources.id })
-      .from(sources)
-      .where(inArray(sources.status, ['pending', 'parsing', 'indexing']));
+    const rows = await db.update(sources)
+      .set({ operationRunId: sql`COALESCE(${sources.operationRunId}, uuidv7())` })
+      .where(and(inArray(sources.status, ['pending', 'parsing', 'indexing']), eq(sources.verified, true)))
+      .returning({ id: sources.id });
     if (rows.length === 0) return;
     // Reset parsing/indexing → pending so the full pipeline re-runs idempotently.
     await db
       .update(sources)
       .set({ status: 'pending', updatedAt: new Date() })
-      .where(inArray(sources.status, ['parsing', 'indexing']));
+      .where(and(eq(sources.status, 'parsing'), eq(sources.verified, true)));
     rootLogger.info({ count: rows.length }, 'ai.source_ingest.resume');
     for (const { id } of rows) enqueueSource(id);
   } catch (err) {
@@ -565,7 +563,7 @@ export async function reconcileDocumentsOnStartup(
 
     // Candidate ready sources (user-scoped when reindexing a single user).
     const readyRows = await db
-      .select({ id: sources.id })
+      .select({ id: sources.id, runId: sources.operationRunId })
       .from(sources)
       .where(
         and(
@@ -576,7 +574,7 @@ export async function reconcileDocumentsOnStartup(
     if (readyRows.length === 0) return 0;
 
     let reembedded = 0;
-    for (const { id: sourceId } of readyRows) {
+    for (const { id: sourceId, runId } of readyRows) {
       // A chunk is stale when its SoT hash ≠ hash(text + current model) OR its
       // kb_chunk row is absent / on a different embedding_model. LEFT JOIN so a
       // missing kb_chunk row (kc.embeddingModel IS NULL) counts as stale.
@@ -623,7 +621,7 @@ export async function reconcileDocumentsOnStartup(
       try {
         // Reconcile runs over `ready` sources; a per-batch re-check bails
         // cleanly if a concurrent reingest pulled the source out of `ready`.
-        await embedUnembeddedChunks(sourceId, ['ready'], log);
+        await embedUnembeddedChunks(sourceId, ['ready'], log, runId);
         reembedded += 1;
       } catch (err) {
         if (err instanceof TerminalSkip) continue; // vanished/deleting — clean

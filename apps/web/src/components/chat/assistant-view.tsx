@@ -1,6 +1,7 @@
 'use client';
 
 import { useAssistantOverlayFocus } from '@/lib/assistant-overlay-focus';
+import { AssistantPopup } from './assistant-popup';
 import { NotebookScopePicker } from './notebook-scope-picker';
 import { answerNoteDestinations, type AnswerNoteDestination } from '@/lib/answer-note-destinations';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -77,7 +78,7 @@ export function AssistantObjectChip({ object, onRemove, onPin, onScope }: { obje
   const [unavailable, setUnavailable] = useState(!object.available);
   const [inspect,setInspect]=useState<{left:number;top:number}|null>(null);
   const inspection = useRef<HTMLDivElement>(null);
-  useAssistantOverlayFocus(Boolean(inspect), inspection, () => setInspect(null));
+  const inspectionLayer = useAssistantOverlayFocus(Boolean(inspect), inspection, () => setInspect(null));
   useEffect(() => setUnavailable(!object.available), [object]);
   const open = async () => {
     const owner=controller.getSnapshot().ownerId,intent=controller.beginNavigation(),location=window.location.href;
@@ -101,8 +102,8 @@ export function AssistantObjectChip({ object, onRemove, onPin, onScope }: { obje
     {onPin && <button type="button" onClick={onPin} aria-label={t('assistant.pinContext')} title={t('assistant.pinContext')}><NNIcon name="pin" size={12} /></button>}
     {onRemove && <button type="button" onClick={onRemove} aria-label={t('assistant.removeContext')} title={t('assistant.removeContext')}><NNIcon name="x" size={12} /></button>}
     {inspect&&createPortal(<div ref={inspection} tabIndex={-1} className="reomi-assistant-object-details" role="dialog" data-assistant-overlay aria-label={t('assistant.inspectContext')} style={inspect}
-      onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();setInspect(null);}}}>
-      <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('actions.close')} onClick={()=>setInspect(null)}/>
+      >
+      <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('actions.close')} onClick={()=>void inspectionLayer.close()}/>
       <strong>{object.label}</strong><small>{t(`assistant.kinds.${object.ref.kind}`)}{unavailable?` · ${t('assistant.unavailable')}`:''}</small>
       {object.excerpt&&<blockquote>{object.excerpt}</blockquote>}
       {object.ref.kind==='notebook'&&<p>{object.ref.sourceIds===undefined?t('assistant.allSources'):t('assistant.selectedSources',{count:object.ref.sourceIds.length})}</p>}
@@ -123,18 +124,19 @@ export function AssistantView({ page = false, header, hideToolbar = false, threa
     <div className="reomi-assistant-main">
       {header}
       {!hideToolbar && (!page || bp !== 'desktop') && <div className="reomi-assistant-conversation-bar">
-        <NNBtn size="sm" variant="ghost" icon="chat" onClick={() => setShowThreads(!showThreads)}>{t('chat.threads.title')}</NNBtn>
+        <NNBtn data-assistant-threads-toggle size="sm" variant="ghost" icon="chat" onClick={() => setShowThreads(!showThreads)}>{t('chat.threads.title')}</NNBtn>
         <span>{page ? session?.conversation?.title ?? t('chat.threads.untitled') : null}</span>
         <NNBtn size="sm" variant="ghost" icon="plus" ariaLabel={t('chat.threads.newThread')} onClick={() => { a.newConversation(); setShowThreads(false); }} />
       </div>}
-      {showThreads ? <AssistantThreads compact onSelected={() => setShowThreads(false)} /> : session
+      {showThreads ? <AssistantPopup className="reomi-assistant-thread-layer" label={t('chat.threads.title')} onClose={() => setShowThreads(false)}
+        portals={() => [...document.querySelectorAll<HTMLElement>('[data-assistant-threads-toggle]')]}><AssistantThreads compact onSelected={() => setShowThreads(false)} /></AssistantPopup> : session
         ? <AssistantConversationView key={session.key} sessionKey={session.key} locale={locale} /> : <NNSkeleton height={120} />}
-      {a.pendingAsk && <div className="reomi-assistant-context-choice" role="dialog" data-assistant-overlay aria-label={t('assistant.contextChoice')} onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();a.acceptAsk('cancel');}}}>
+      {a.pendingAsk && <AssistantPopup className="reomi-assistant-context-choice" label={t('assistant.contextChoice')} onClose={() => a.acceptAsk('cancel')}>
         <p>{a.pendingAsk.object.label}</p><p>{t('assistant.contextChoice')}</p>
         <NNBtn size="sm" onClick={() => a.acceptAsk('current')}>{t('assistant.addToCurrent')}</NNBtn>
         <NNBtn size="sm" variant="primary" onClick={() => a.acceptAsk('new')}>{t('chat.threads.newThread')}</NNBtn>
         <NNBtn size="sm" variant="ghost" onClick={() => a.acceptAsk('cancel')}>{t('actions.cancel')}</NNBtn>
-      </div>}
+      </AssistantPopup>}
     </div>
   </div>;
 }
@@ -262,14 +264,13 @@ function AssistantConversationView({ sessionKey, locale }: { sessionKey: string;
         {t(policy === 'strict' ? 'assistant.onlyMaterials' : 'assistant.allowSupplementary')}
       </NNBtn>)}
     </div>}
-    {saveChoice && <div className="reomi-assistant-context-choice" role="dialog" data-assistant-overlay aria-label={t('assistant.saveAnswerWhere')}
-      onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setSaveChoice(null); } }}>
+    {saveChoice && <AssistantPopup className="reomi-assistant-context-choice" label={t('assistant.saveAnswerWhere')} onClose={() => setSaveChoice(null)} beforeClose={() => !savingAnswer.current}>
       <p>{t('assistant.saveAnswerWhere')}</p>
       {saveChoice.targets.map(target => <NNBtn key={`${target.kind}:${target.id}`} size="sm" onClick={() => void saveAnswerTo(saveChoice.messageId, target)}>
         {target.label} · {t(`assistant.kinds.${target.kind}`)}
       </NNBtn>)}
-      <NNBtn size="sm" variant="ghost" onClick={() => setSaveChoice(null)}>{t('actions.cancel')}</NNBtn>
-    </div>}
+      <NNBtn size="sm" variant="ghost" onClick={() => { if (!savingAnswer.current) setSaveChoice(null); }}>{t('actions.cancel')}</NNBtn>
+    </AssistantPopup>}
     {!compact && session.pins.length > 0 && <div className="reomi-assistant-pins" aria-label={t('assistant.pinnedContext')}>
       {session.pins.map(object => <AssistantObjectChip key={assistantRefKey(object.ref)} object={object} onScope={(next,original) => updateNotebookScope(next,original,true)} onRemove={() => void changePins(session.pins.filter(s => assistantRefKey(s.ref) !== assistantRefKey(object.ref)))} />)}
       <NNBtn size="sm" variant="ghost" icon="filter" ariaLabel={t('assistant.relatedConversations')} title={t('assistant.relatedConversations')} onClick={() => { const first = session.pins[0]!; a.setFilter({ kind:first.ref.kind,id:first.ref.id,label:first.label }); }}>{snapshot.presentation === 'page' ? t('assistant.relatedConversations') : null}</NNBtn>
@@ -308,18 +309,18 @@ function AssistantConversationView({ sessionKey, locale }: { sessionKey: string;
     {a.status?.chatEnabled && !contextSupported && !a.checking && <div role="alert" className="reomi-assistant-compatibility">
       <p>{t(a.statusError ? 'chat.unavailable.connection' : 'assistant.errors.context_unsupported')}</p><NNBtn size="sm" onClick={a.refreshStatus}>{t('review.retry')}</NNBtn>
     </div>}
-    {session.queue.length > 0 && <div className="reomi-assistant-queue">{session.queue.map(item => <div key={item.id}>
+    {session.queue.length > 0 && <div className="reomi-assistant-queue">{session.queue.map(item => <AssistantPopup key={item.id} enabled={Boolean(item.editing)} role="group" focus={false} onClose={() => a.controller.setQueueEditing(sessionKey,item.id,false)}>
       {item.editing?<textarea autoFocus data-assistant-queue-editor value={item.content} maxLength={8000} aria-label={t('chat.message.edit')}
         onChange={e=>a.controller.editQueued(sessionKey,item.id,e.target.value)} onKeyDown={e=>{e.stopPropagation();if(e.key==='Escape'){e.preventDefault();a.controller.setQueueEditing(sessionKey,item.id,false);}}}
         />:<span title={item.content}>{t('assistant.queued')} · {item.content}</span>}
       <NNBtn size="sm" variant="ghost" icon={item.editing?'check':'edit'} ariaLabel={t(item.editing?'actions.save':'chat.message.edit')} onClick={()=>a.controller.setQueueEditing(sessionKey,item.id,!item.editing)}/>
       {!session.busy&&session.phase!=='needs_approval'&&<NNBtn size="sm" variant="ghost" icon="send" ariaLabel={t('assistant.send')} onClick={()=>void a.controller.sendQueued(sessionKey,item.id)}/>}
       <NNBtn size="sm" variant="ghost" icon="x" ariaLabel={t('actions.delete')} onClick={() => a.controller.removeQueued(sessionKey,item.id)}/>
-    </div>)}</div>}
+    </AssistantPopup>)}</div>}
     {!a.status?.chatEnabled && !a.checking ? <ChatUnavailable connectionError={Boolean(a.statusError)} busy={a.checking} onRetry={a.refreshStatus} onLeave={() => router.push('/cards')}/> :
       <div className="reomi-assistant-composer" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); void addFiles([...e.dataTransfer.files]); }}>
-        {trigger?.kind === 'mention' && <ContextPicker ownerId={snapshot.ownerId} query={trigger.query} selectedMaterials={selectedMaterials} handleRef={picker} anchorRef={textarea} onPick={pickObject} onClose={() => { setTrigger(null); textarea.current?.focus(); }}/ >}
-        {trigger?.kind === 'slash' && <SlashMenu commands={slashCommands} activeIndex={slashIndex} onPick={chooseSlash} onHover={setSlashIndex} isMobile={false} t={t}/>}
+        {trigger?.kind === 'mention' && <ContextPicker ownerId={snapshot.ownerId} query={trigger.query} selectedMaterials={selectedMaterials} handleRef={picker} anchorRef={textarea} onPick={pickObject} onClose={() => setTrigger(null)}/ >}
+        {trigger?.kind === 'slash' && <AssistantPopup className="reomi-assistant-slash-layer" label={t('assistant.addContext')} focus={false} onClose={() => setTrigger(null)} portals={() => [textarea.current]}><SlashMenu commands={slashCommands} activeIndex={slashIndex} onPick={chooseSlash} onHover={setSlashIndex} isMobile={false} t={t}/></AssistantPopup>}
         {!compact && <div className="reomi-assistant-composer-context">{mentionChips}</div>}
         {session.attachments.length > 0 && <div className="reomi-assistant-attachments">{session.attachments.map((attachment,index) => <span key={index}>
           {attachment.kind === 'image' && <img alt={attachment.name ?? ''} src={`/m/${attachment.mediaId}`}/>}{attachment.name}
