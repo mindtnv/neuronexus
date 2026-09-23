@@ -16,7 +16,7 @@ export function NotePinButton({ note, onUpdated, readCurrent }: { note: Notebook
     <NNBtn variant="ghost" size="sm" icon="pin" active={note.pinned} disabled={action.busy || action.uncertain || action.snapshot.status === 'conflict'}
       ariaLabel={t(note.pinned ? 'notebooks.notes.unpin' : 'notebooks.notes.pin')} title={t(note.pinned ? 'notebooks.notes.unpin' : 'notebooks.notes.pin')}
       onClick={() => { void action.run(`/study-notes/${note.id}`, { expectedRevision: note.metadataRevision ?? 0, patch: { pinned: !note.pinned } }).then(accept); }} />
-    <SaveFeedback status={action.snapshot.status} onRetry={() => { void action.retry().then(accept); }} />
+    <SaveFeedback status={action.snapshot.status} errorCode={action.snapshot.error} onRetry={() => { void action.retry().then(accept); }} />
     {action.snapshot.status === 'conflict' && readCurrent && <NNBtn size="sm" onClick={() => {
       void readCurrent().then(row => { if (useNN.getState().profile?.userId === owner) { onUpdated(row); action.controller.resolveConflict(); } }).catch(() => {});
     }}>{t('actionsRecovery.current')}</NNBtn>}

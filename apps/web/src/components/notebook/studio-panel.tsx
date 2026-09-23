@@ -1,5 +1,7 @@
 'use client';
 
+import { Modal } from '../design-system/modal';
+import { useTransientLayer } from '@/lib/use-transient-layer';
 import { useWorkspaceState } from '@/components/navigation';
 import { useNavigationScroll } from '@/lib/use-navigation-scroll';
 import { AssistantAskButton } from '../chat/assistant-ask-button';
@@ -567,6 +569,8 @@ const ArtifactRow = ({
   t: Tfn;
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRoot = useRef<HTMLDivElement>(null);
+  useTransientLayer({ root: menuRoot, enabled: menuOpen, onClose: () => setMenuOpen(false) });
   const ready = artifact.status === 'ready';
   const generating = artifact.status === 'generating';
   const pending = artifact.status === 'pending';
@@ -689,7 +693,7 @@ const ArtifactRow = ({
             onClick={onDelete}
           />
         ) : (
-          <div
+          <div ref={menuRoot}
             className="nn-source-row-actions"
             style={{ display: 'flex', gap: 0, flexShrink: 0, position: 'relative', opacity: 1 }}
           >
@@ -703,11 +707,7 @@ const ArtifactRow = ({
             />
             {menuOpen && (
               <>
-                <div
-                  onClick={() => setMenuOpen(false)}
-                  style={{ position: 'fixed', inset: 0, zIndex: 40 }}
-                />
-                <div className="nn-lib-menu" style={{ right: 0, top: 'calc(100% + 4px)', minWidth: 180 }}>
+                <div role="menu" aria-label={t('library.item.menu')} className="nn-lib-menu" style={{ right: 0, top: 'calc(100% + 4px)', minWidth: 180 }}>
                   <button
                     type="button"
                     className="nn-lib-menu-item"
@@ -789,44 +789,8 @@ const QuizCountDialog = ({
 }) => {
   const [count, setCount] = useState<number>(QUIZ_QUESTIONS_DEFAULT);
   return (
-    <>
-      <div
-        className="nn-dialog-backdrop"
-        onClick={onClose}
-        style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--scrim)' }}
-      />
-      <div
-        style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 91,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: 16,
-          pointerEvents: 'none',
-        }}
-      >
-        <NNCard
-          padding={18}
-          style={{
-            width: 360,
-            maxWidth: '100%',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 14,
-            pointerEvents: 'auto',
-            boxShadow: 'var(--shadow-lg)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <NNIcon name="target" size={16} color="var(--lime-400)" />
-            <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0, flex: 1, fontFamily: 'var(--font-sans)' }}>
-              {t('notebooks.quiz.dialogTitle')}
-            </h3>
-            <NNBtn variant="ghost" size="sm" icon="x" ariaLabel={t('actions.cancel')} onClick={onClose} />
-          </div>
-
+    <Modal open title={t('notebooks.quiz.dialogTitle')} closeLabel={t('actions.cancel')} onClose={onClose}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '12px 22px 22px' }}>
           <p style={{ fontSize: 12.5, color: 'var(--text-dim)', margin: 0 }}>
             {t('notebooks.quiz.dialogHint')}
           </p>
@@ -871,9 +835,8 @@ const QuizCountDialog = ({
               {t('notebooks.quiz.dialogGenerate')}
             </NNBtn>
           </div>
-        </NNCard>
       </div>
-    </>
+    </Modal>
   );
 };
 

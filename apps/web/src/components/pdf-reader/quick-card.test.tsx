@@ -2,6 +2,7 @@ import { ensureTestDom, GlobalRegistrator } from '../../lib/test-dom-setup';
 import { afterAll, afterEach, beforeEach, expect, test } from 'bun:test';
 import React, { act } from 'react';
 import type { Root } from 'react-dom/client';
+import { DialogProvider } from '../dialog';
 import { useNN } from '../../lib/store';
 ensureTestDom();
 const { createRoot } = await import('react-dom/client');
@@ -15,6 +16,7 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); globalThis.fetch = oldFetch; useNN.getState().reset(); delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT; });
 afterAll(() => { try { GlobalRegistrator.unregister(); } catch {} });
 const t = (key: string) => key;
+const render = (children: React.ReactNode) => root.render(<DialogProvider>{children}</DialogProvider>);
 async function enterName() {
   const plus = Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('Создать колоду') || b.textContent?.includes('Create a deck') || b.textContent?.includes('assistant.newDestinationDeck'))!;
   await act(async () => plus.click());
@@ -36,7 +38,7 @@ test('a fresh account creates a destination and submits the original source-back
     submitted = JSON.parse(init.body);
     return Response.json({ noteId: 'note', cardIds: ['card'] });
   }) as unknown as typeof fetch;
-  await act(async () => root.render(<QuickCardDialog open sourceId="source" sourceName="Book" sourceVersion="2026-09-21T00:00:00.000Z" page={7} quote="Original quote"
+  await act(async () => render(<QuickCardDialog open sourceId="source" sourceName="Book" sourceVersion="2026-09-21T00:00:00.000Z" page={7} quote="Original quote"
     prefillFront="My question" prefillBack="My edited answer" chatEnabled={false} t={t}
     onCreated={(_result,id) => { created = id; }} onClose={() => { closed = true; }} />));
   const input = await enterName();
@@ -58,7 +60,7 @@ test('a fresh account creates a destination and submits the original source-back
 
 test('failed destination creation preserves the card fields and permits a retry', async () => {
   globalThis.fetch = (async () => Response.json({ error: 'unavailable' }, { status: 500 })) as unknown as typeof fetch;
-  await act(async () => root.render(<QuickCardDialog open sourceId="source" sourceName="Book" quote="Preserved quote"
+  await act(async () => render(<QuickCardDialog open sourceId="source" sourceName="Book" quote="Preserved quote"
     prefillFront="Question" chatEnabled={false} t={t} onCreated={() => {}} onClose={() => {}} />));
   const input = await enterName();
   await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await new Promise(resolve => setTimeout(resolve, 0)); });
@@ -76,7 +78,7 @@ test('text selections reach the save endpoint intact after the card is edited', 
     if (String(url).endsWith('/decks')) return Response.json({ id: 'new-deck', name: 'Kubernetes', color: 'lime' });
     submitted = JSON.parse(init.body); return Response.json({ noteId: 'note', cardIds: ['card'] });
   }) as unknown as typeof fetch;
-  await act(async () => root.render(<QuickCardDialog open sourceId="source" sourceName="Book" quote={textSelection.quote} textSelection={textSelection}
+  await act(async () => render(<QuickCardDialog open sourceId="source" sourceName="Book" quote={textSelection.quote} textSelection={textSelection}
     prefillFront="Edited question" prefillBack="Edited answer" chatEnabled={false} t={t} onCreated={() => {}} onClose={() => {}} />));
   const input = await enterName();
   await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
@@ -92,4 +94,28 @@ test('harvest transport keeps date-looking content and evidence versions as lite
     evidence: { sourceVersion: '2026-09-21T00:00:00.000Z', originHash: 'a'.repeat(64) } };
   globalThis.fetch = (async () => Response.json({ candidates: [candidate] })) as unknown as typeof fetch;
   expect(await useNN.getState().harvestCards('source')).toEqual([candidate]);
+});
+
+test('closing an edited selection card asks before losing its source-backed fields', async () => {
+  let closed = false;
+  await act(async () => render(<QuickCardDialog open sourceId="source" sourceName="Book" quote="Original source passage" chatEnabled={false} t={t} onCreated={() => {}} onClose={() => { closed = true; }} />));
+  await act(async () => { const input = host.querySelector('textarea')!; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Keep my edited question'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+  await act(async () => host.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(closed).toBe(false); expect(document.body.textContent).toContain('editor.draft.leaveTitle');
+  await act(async () => [...document.querySelectorAll('button')].find(button => button.textContent === 'editor.draft.stay')!.click());
+  expect(host.querySelector('textarea')!.value).toBe('Keep my edited question'); expect([...host.querySelectorAll('textarea')][1]!.value).toBe('Original source passage');
+});
+
+test('a submitted selection card holds its inputs and ignores duplicate submit or close until settlement', async () => {
+  useNN.setState({ decks: [{ id: 'deck', name: 'Deck', color: 'lime', position: 0 }] as any });
+  const response = Promise.withResolvers<Response>(); let writes = 0, closed = false;
+  globalThis.fetch = (async () => { writes++; return response.promise; }) as unknown as typeof fetch;
+  await act(async () => render(<QuickCardDialog open sourceId="source" sourceName="Book" prefillFront="Question" quote="Original quote" chatEnabled={false} t={t} onCreated={() => {}} onClose={() => { closed = true; }} />));
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'notebooks.quickcard.createBtn')!.click());
+  expect([...host.querySelectorAll('textarea')].every(input => input.disabled)).toBe(true);
+  await act(async () => host.querySelector('[role="dialog"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })));
+  await act(async () => host.querySelector('[role="dialog"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(writes).toBe(1); expect(closed).toBe(false);
+  await act(async () => response.resolve(Response.json({ noteId: 'note', cardIds: ['card'] })));
+  expect(closed).toBe(true);
 });

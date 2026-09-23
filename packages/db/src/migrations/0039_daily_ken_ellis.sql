@@ -1,0 +1,1 @@
+CREATE INDEX "ui_action_owner_session_order_idx" ON "ui_action_receipts" USING btree ("user_id","session_id","id" DESC NULLS LAST) WHERE "ui_action_receipts"."consumed_at" IS NULL AND "ui_action_receipts"."undo_until" IS NOT NULL;

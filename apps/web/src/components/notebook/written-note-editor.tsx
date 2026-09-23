@@ -90,7 +90,7 @@ export function WrittenNoteEditor({ note, studyOwner, onSaved, onClose, getCurre
     <label>{t('notebooks.notes.contentPlaceholder')}<TextArea aria-label={t('notebooks.notes.contentPlaceholder')} rows={10}
       value={content} onChange={event => setContent(event.target.value)} /></label>
     <small>{content.length} / {NOTE_CONTENT_MAX}</small>
-    <SaveFeedback status={state.status} onRetry={() => void submit()} />
+    <SaveFeedback status={state.status} errorCode={state.error} onRetry={() => void submit()} />
     {state.status === 'conflict' && <div className="nn-save-conflict">
       <NNBtn size="sm" variant="ghost" disabled={readingCurrent || !getCurrent || !id} onClick={() => void loadCurrent()}>{t('actionsRecovery.current')}</NNBtn>
       {current && <><details open><summary>{t('actionsRecovery.currentVersion')}</summary><strong>{current.title}</strong><pre>{current.content}</pre></details>

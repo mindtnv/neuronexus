@@ -30,13 +30,13 @@
 
 - [x] 5.1 Add failing layer conformance tests for nested portals, one-layer Escape, outside click-through, dirty guards, IME composition and focus return; implement the registry and guarded closure, verifying the suite passes.
 - [x] 5.2 Migrate shared dialogs, shell drawers, account/card/thread menus and global overlays; verify each uses the conformance suite and preserves keyboard action/confirmation semantics.
-- [ ] 5.3 Migrate PDF/text selection editors, reader saved-work panels and mobile inspector/filter sheets; verify selection snapshots and text survive errors and every closing path, while saved marks remain unchanged.
+- [x] 5.3 Migrate PDF/text selection editors, reader saved-work panels and mobile inspector/filter sheets; verify selection snapshots and text survive errors and every closing path, while saved marks remain unchanged.
 - [x] 5.4 Integrate assistant-owned popups with the common layer ownership/focus model; verify pending approvals never confirm on dismissal, stream ownership persists and disabled controls stay outside focus cycling.
 - [x] 5.5 Add failing history-bridge tests, then integrate mobile layer markers through the existing navigation provider; verify one-layer Back, Forward, reload cleanup, repeated Back during a guard, route-backed readers and browser keyboard dismissal without loops.
 
 ## 6. Acceptance and release readiness
 
-- [ ] 6.1 Record real Chromium and mobile WebKit browser evidence for each surface in the design matrix, including save failure, lost response, reload draft recovery, ten-minute Undo, later cross-tab writes and nested dismissal; include keyboard/screen-reader and reduced-motion checks in acceptance.md.
-- [ ] 6.2 Verify migration/trigger behavior on fresh and preexisting data, receipt query indexes, bounded cleanup, API-first rollout and old-API fail-closed behavior; record executable evidence and rollback steps.
-- [ ] 6.3 Update CLAUDE.md and mirror AGENTS.md with the supported action list, draft bounds and versioned-route contract; verify canonical bodies remain identical apart from headers and no unrelated audit tasks are marked complete.
-- [ ] 6.4 After the final edit run strict OpenSpec validation, typecheck, committed test migrations, test:ci, build and real-S3 test:s3:ci against disposable services; record fresh results and remaining limitations before archive.
+- [x] 6.1 Record real Chromium and mobile WebKit browser evidence for each surface in the design matrix, including save failure, lost response, reload draft recovery, ten-minute Undo, later cross-tab writes and nested dismissal; include keyboard/screen-reader and reduced-motion checks in acceptance.md.
+- [x] 6.2 Verify migration/trigger behavior on fresh and preexisting data, receipt query indexes, bounded cleanup, API-first rollout and old-API fail-closed behavior; record executable evidence and rollback steps.
+- [x] 6.3 Update CLAUDE.md and mirror AGENTS.md with the supported action list, draft bounds and versioned-route contract; verify canonical bodies remain identical apart from headers and no unrelated audit tasks are marked complete.
+- [x] 6.4 After the final edit run strict OpenSpec validation, typecheck, committed test migrations, test:ci, build and real-S3 test:s3:ci against disposable services; record fresh results and remaining limitations before archive.

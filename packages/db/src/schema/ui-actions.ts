@@ -20,6 +20,7 @@ export const uiActionReceipts = pgTable('ui_action_receipts', {
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
 }, t => [uniqueIndex('ui_action_owner_request_idx').on(t.userId, t.requestId),
   index('ui_action_owner_session_expiry_idx').on(t.userId, t.sessionId, t.undoUntil, t.id),
+  index('ui_action_owner_session_order_idx').on(t.userId, t.sessionId, t.id.desc()).where(sql`${t.consumedAt} IS NULL AND ${t.undoUntil} IS NOT NULL`),
   index('ui_action_expiry_idx').on(t.expiresAt)]);
 
 export const deckHierarchyRevisions = pgTable('deck_hierarchy_revisions', {

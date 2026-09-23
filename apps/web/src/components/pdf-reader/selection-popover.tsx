@@ -7,6 +7,7 @@ import { clientRectsToMarkRects } from '@/lib/pdf-ink';
 import { NNBtn, NNIcon } from '@/components/ui';
 import { copyCodeText } from '@/components/chat/code-copy';
 import { MARK_COLOR_CSS } from './mark-colors';
+import { transientLayers } from '@/lib/layer-stack';
 import { useTransientLayer } from '@/lib/use-transient-layer';
 import { useNavigationGuard } from '@/components/navigation';
 import { useDialog } from '@/components/dialog';
@@ -114,11 +115,20 @@ export function SelectionPopover({ pageEls, handMode, onHighlight, onNote, onCar
   const { info, noteOpen, noteText, busy, error } = state;
   const markTooLong = info.text.length > MARK_QUOTE_MAX;
   const askTooLong = info.text.length > ASSISTANT_CONTEXT_LIMITS.excerptChars;
-  const run = async (action: () => void | Promise<void>, errorKey = 'assistant.selectionSaveFailed') => {
+  const allowAction = async () => {
+    const registered = transientLayers.get(layer.id);
+    return !registered || await transientLayers.canDismiss(registered);
+  };
+  const run = async (action: () => void | Promise<void>, errorKey = 'assistant.selectionSaveFailed', guard = true, closeAfter = true) => {
+    if (guard && noteOpen && noteText.trim() && !await allowAction()) return;
+    if (!alive.current) return;
     setState(value => value ? { ...value, busy: true, error: null } : value);
     try {
       await action();
-      if (alive.current && current.current?.info === info) { dismiss(); window.getSelection()?.removeAllRanges(); }
+      if (alive.current && current.current?.info === info) {
+        if (closeAfter) { dismiss(); window.getSelection()?.removeAllRanges(); }
+        else setState(value => value?.info === info ? { ...value, busy: false, error: null } : value);
+      }
     } catch {
       if (alive.current) setState(value => value?.info === info ? { ...value, busy: false, error: errorKey } : value);
     }
@@ -138,12 +148,12 @@ export function SelectionPopover({ pageEls, handMode, onHighlight, onNote, onCar
     <div className="reomi-pdf-selection-actions">
       <NNBtn variant="soft" size="sm" icon="chat" disabled={busy || askTooLong} title={askTooLong ? t('notebooks.marks.selectionTooLong') : undefined} onClick={() => void run(() => onAsk(info))}>{t('assistant.askObject')}</NNBtn>
       <NNBtn variant="ghost" size="sm" icon="cards" disabled={busy || askTooLong} onClick={() => void run(() => onCard(info))}>{t('notebooks.marks.cardAction')}</NNBtn>
-      <NNBtn variant="ghost" size="sm" icon="edit" disabled={busy || markTooLong} onClick={() => { setState(value => value ? { ...value, noteOpen: !value.noteOpen } : value); if (!noteOpen) requestAnimationFrame(() => noteRef.current?.focus({ preventScroll: true })); }}>{t('notebooks.marks.note')}</NNBtn>
-      <NNBtn variant="ghost" size="sm" icon="copy" disabled={busy} onClick={() => void run(() => copyCodeText(info.text), 'notebooks.marks.copyFailed')}>{t('notebooks.marks.copyAction')}</NNBtn>
+      <NNBtn variant="ghost" size="sm" icon="edit" disabled={busy || markTooLong} onClick={async () => { if (noteOpen && noteText.trim() && !await allowAction()) return; setState(value => value ? { ...value, noteOpen: !value.noteOpen, ...(value.noteOpen ? { noteText: '' } : {}) } : value); if (!noteOpen) requestAnimationFrame(() => noteRef.current?.focus({ preventScroll: true })); }}>{t('notebooks.marks.note')}</NNBtn>
+      <NNBtn variant="ghost" size="sm" icon="copy" disabled={busy} onClick={() => void run(() => copyCodeText(info.text), 'notebooks.marks.copyFailed', false, !noteOpen)}>{t('notebooks.marks.copyAction')}</NNBtn>
     </div>
     {markTooLong && <small>{t('notebooks.marks.selectionTooLong')}</small>}
     {noteOpen && <div className="reomi-pdf-selection-note"><textarea ref={noteRef} aria-label={t('notebooks.marks.note')} placeholder={t('notebooks.marks.notePlaceholder')} value={noteText} maxLength={MARK_NOTE_MAX} disabled={busy} rows={3} onChange={event => setState(value => value ? { ...value, noteText: event.target.value } : value)}/>
-      <NNBtn variant="primary" size="sm" disabled={busy || !noteText.trim()} onClick={() => void run(() => onNote(info, noteText.trim()))}>{t('notebooks.marks.noteSave')}</NNBtn></div>}
+      <NNBtn variant="primary" size="sm" disabled={busy || !noteText.trim()} onClick={() => void run(() => onNote(info, noteText.trim()), 'assistant.selectionSaveFailed', false)}>{t('notebooks.marks.noteSave')}</NNBtn></div>}
     {busy && <small role="status">{t('states.loading')}</small>}
     {error && <p role="alert">{t(error)}</p>}
   </div>, document.body)}</>;

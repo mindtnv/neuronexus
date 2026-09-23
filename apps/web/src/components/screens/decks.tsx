@@ -259,7 +259,7 @@ export const NNDecks = () => {
           {creating && <><p className="reomi-modal-description">{t('decks.underParent')}: {newParentId ? deckPathLabel(decks,newParentId) : t('decks.move.root')}</p>
             <Field label={t('decks.name')}><TextInput autoFocus required maxLength={100} value={newName} disabled={busy} onChange={event => setNewName(event.target.value)} placeholder={t('decks.namePlaceholder')}/></Field></>}
           <DeckAppearance icon={newIcon} color={newColor} disabled={busy || appearanceAction.busy} onIcon={setNewIcon} onColor={setNewColor}/>
-          {appearanceId && <SaveFeedback status={appearanceAction.snapshot.status} onRetry={() => { void appearanceAction.retry().then(acceptAppearance); }} />}
+          {appearanceId && <SaveFeedback status={appearanceAction.snapshot.status} errorCode={appearanceAction.snapshot.error} onRetry={() => { void appearanceAction.retry().then(acceptAppearance); }} />}
           {appearanceId && appearanceAction.snapshot.status === 'conflict' && <div>
             <NNBtn size="sm" onClick={() => { void api.decks.get().then(ok).then(rows => { const row = rows.find(row => row.id === appearanceId); if (row && useNN.getState().profile?.userId === ownerId) setAppearanceLatest(deckFromApi(row)); }).catch(() => setFormError(t('common.toasts.error'))); }}>{t('actionsRecovery.current')}</NNBtn>
             {appearanceLatest && <><p>{appearanceLatest.name} · {appearanceLatest.color} · {appearanceLatest.icon}</p><NNBtn size="sm" onClick={() => { appearanceAction.controller.resolveConflict(); void appearanceAction.run(`/decks/${appearanceId}`, { expectedRevision: appearanceLatest.metadataRevision ?? 0, patch: { color: newColor, icon: newIcon } }).then(acceptAppearance); }}>{t('actionsRecovery.keepMine')}</NNBtn></>}
@@ -276,13 +276,13 @@ export const NNDecks = () => {
             <Field label={t('decks.move.placement')}><select className="reomi-input" aria-label={t('decks.move.placement')} value={placement} disabled={busy || !moveTarget} onChange={event => setPlacement(event.target.value as DeckPlacement)}>
               {(['inside','before','after'] as const).map(value => <option key={value} value={value}>{t(`decks.move.${value}`)}</option>)}
             </select></Field><p className="reomi-modal-description">{t('decks.move.subtree')}</p>
-            <SaveFeedback status={moveAction.snapshot.status} onRetry={() => { void moveAction.retry().then(acceptMove); }} />
+            <SaveFeedback status={moveAction.snapshot.status} errorCode={moveAction.snapshot.error} onRetry={() => { void moveAction.retry().then(acceptMove); }} />
             {moveAction.snapshot.status === 'conflict' && <NNBtn size="sm" onClick={() => { setHierarchyRevision(null); setRefreshRevision(value => value + 1); moveAction.controller.resolveConflict(); }}>{t('actionsRecovery.current')}</NNBtn>}
             {moveError && <p role="alert">{moveError}</p>}
           </div><footer className="reomi-modal-footer"><NNBtn variant="ghost" disabled={busy || moveAction.busy} onClick={() => setMovingId(null)}>{t('actions.cancel')}</NNBtn><NNBtn type="submit" variant="primary" loading={busy || moveAction.busy} disabled={!decks.some(deck => deck.id === movingId) || hierarchyRevision === null || moveAction.uncertain || moveAction.snapshot.status === 'conflict'}>{t('decks.move.apply')}</NNBtn></footer>
         </form>
       </Modal>
-      <SaveFeedback status={moveAction.snapshot.status} onRetry={() => { void moveAction.retry().then(acceptMove); }} />
+      <SaveFeedback status={moveAction.snapshot.status} errorCode={moveAction.snapshot.error} onRetry={() => { void moveAction.retry().then(acceptMove); }} />
       {moveAction.snapshot.status === 'conflict' && <NNBtn size="sm" onClick={() => { setRefreshRevision(value => value + 1); moveAction.controller.resolveConflict(); }}>{t('actionsRecovery.current')}</NNBtn>}
       {(decks.length > 0 || filterActive) && <div className="reomi-decks-toolbar">
         <div className="reomi-decks-search"><NNIcon name="search" size={16} />

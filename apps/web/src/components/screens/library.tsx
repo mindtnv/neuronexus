@@ -340,7 +340,7 @@ export const LibraryScreen = () => {
     if (!focusParam || consumedFocusRef.current === focusParam) return;
     consumedFocusRef.current = focusParam;
     setDetailId(focusParam);
-    navigation.replace('/library', { scroll: false, track: false });
+    navigation.replace('/library', { scroll: false, track: false, viewOnly: true });
   }, [focusParam, navigation]);
 
   // ── Upload queue (sequential presign → POST → finalize) ────────────────────────
@@ -729,7 +729,10 @@ const LibraryHeader = ({
   onAddText: () => void;
   isMobile: boolean;
   t: Tr;
-}) => (
+}) => {
+  const menuRoot = useRef<HTMLDivElement>(null);
+  useTransientLayer({ root: menuRoot, enabled: addMenuOpen, onClose: () => setAddMenuOpen(false) });
+  return (
   <div className="reomi-library-toolbar">
     {/* Search-mode toggle + search + add */}
     <div style={{ display: 'flex', alignItems: 'center', flexWrap:isMobile?'wrap':'nowrap',gap: 10 }}>
@@ -750,12 +753,11 @@ const LibraryHeader = ({
         />
       </div>
       <NNBtn variant="ghost" icon="sync" ariaLabel={t('navigation.reset')} title={t('navigation.reset')} onClick={onReset}/>
-      <div style={{ position: 'relative' }}>
-        <NNBtn className="reomi-create-icon" variant="soft" icon="plus" ariaLabel={t('library.header.add')} title={t('library.header.add')} aria-expanded={addMenuOpen} onClick={() => setAddMenuOpen(!addMenuOpen)} />
+      <div ref={menuRoot} style={{ position: 'relative' }}>
+        <NNBtn className="reomi-create-icon" variant="soft" icon="plus" ariaLabel={t('library.header.add')} title={t('library.header.add')} aria-expanded={addMenuOpen} onClick={event => { event.currentTarget.focus({ preventScroll: true }); setAddMenuOpen(!addMenuOpen); }} />
         {addMenuOpen && (
           <>
-            <div onClick={() => setAddMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-            <div className="nn-lib-menu" style={{ right: 0 }}>
+            <div role="group" aria-label={t('library.header.add')} className="nn-lib-menu" style={{ right: 0 }}>
               <button type="button" className="nn-lib-menu-item" onClick={onPickFiles}>
                 <NNIcon name="book" size={14} color="var(--text-muted)" />{t('library.header.addFiles')}
               </button>
@@ -794,6 +796,7 @@ const LibraryHeader = ({
     )}
   </div>
 );
+};
 
 // ── Continue reading shelf ────────────────────────────────────────────────────
 
@@ -1546,7 +1549,7 @@ const DetailsPanel = ({
                 />
                 <NNBtn variant="soft" size="sm" onClick={onAddTag} disabled={!tagDraft.trim() || tagAction.busy || tagAction.uncertain}>{t('library.details.addTag')}</NNBtn>
               </div>
-              <SaveFeedback status={tagAction.snapshot.status} onRetry={() => { void tagAction.retry().then(acceptTags); }} />
+              <SaveFeedback status={tagAction.snapshot.status} errorCode={tagAction.snapshot.error} onRetry={() => { void tagAction.retry().then(acceptTags); }} />
               {tagAction.snapshot.status === 'conflict' && <NNBtn size="sm" onClick={() => { void reload().then(() => tagAction.controller.resolveConflict()); }}>{t('actionsRecovery.current')}</NNBtn>}
             </div>
 

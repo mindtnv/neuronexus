@@ -56,6 +56,11 @@ export class LayerStack {
     }
     return top;
   }
+  modalAncestor(layer = this.top()): TransientLayer | undefined {
+    const seen = new Set<string>();
+    while (layer && !seen.has(layer.id)) { seen.add(layer.id); if (layer.modal) return layer; layer = layer.parent ? this.get(layer.parent) : undefined; }
+    return undefined;
+  }
   owns(layer: TransientLayer, node: Node | null): boolean {
     if (!node) return false;
     if (layer.root()?.contains(node) || layer.portals?.().some(root => root?.contains(node))) return true;

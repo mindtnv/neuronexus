@@ -36,6 +36,7 @@ import type {
   SourceMark,
 } from '@/lib/types';
 import { useT } from '@/lib/i18n';
+import { transientLayers } from '@/lib/layer-stack';
 import { ActiveLayerScope, LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { useWcoTopInsets } from '@/lib/ui-store';
 import { useDialog } from '@/components/dialog';
@@ -126,8 +127,10 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
       if (forwarding) return;
       event.stopImmediatePropagation();
       const intent = (event as CustomEvent).detail;
-      void notesModal.current?.close().then(allowed => {
+      void transientLayers.confirmNavigation().then(async allowed => {
         if (!allowed || !notesModal.current || useNN.getState().profile?.userId !== owner) return;
+        await transientLayers.closeForNavigation();
+        if (!notesModal.current || useNN.getState().profile?.userId !== owner) return;
         forwarding = true;
         window.dispatchEvent(new CustomEvent('nn:assistant:ask', { detail: intent }));
         forwarding = false;
@@ -554,7 +557,7 @@ export const SourceStudyWorkspace = ({ sourceId, initialLocation, origin }: Sour
   const isPdfReady = source?.kind === 'pdf' && readerMode === 'pdf' && canReadSource(source, 'pdf');
   const tocAvailable = (tocEntries?.length ?? 0) > 0;
   const parentRoute = navigationWorkspace?.journal?.parent()?.href.split(/[/?#]/)[1];
-  const returnLabel = parentRoute && ['library','cards','decks','notebooks','review'].includes(parentRoute) ? t('navigation.returnTo',{place:t(`nav.${parentRoute}`)}) : undefined;
+  const returnLabel = parentRoute && ['library','cards','decks','notebooks','review','editor','chat'].includes(parentRoute) ? t('navigation.returnTo',{place:t(`nav.${parentRoute}`)}) : undefined;
 
   return (
     <div className="reomi-library-reader">

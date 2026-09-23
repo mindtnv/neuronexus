@@ -107,7 +107,7 @@ export function SourceTextStudy({ sourceId, sourceName, host, chunks, onJump, ch
     {showMarks && <div className="nn-scroll" style={{ maxHeight: 240, overflowY: 'auto' }}>{marks.map(mark => <div key={mark.id} style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
       <p>{mark.selection.quote}</p>{mark.note && <p>{mark.note}</p>}
       {editId === mark.id ? <div><textarea aria-label={t('notebooks.notes.heading')} value={editNote} maxLength={2000} onChange={event => setEditNote(event.target.value)} />
-        <NNBtn disabled={busy} size="sm" onClick={() => void saveEdited()}>{t('actions.save')}</NNBtn><NNBtn disabled={busy} size="sm" onClick={() => setEditId(null)}>{t('actions.cancel')}</NNBtn></div>
+        <NNBtn disabled={busy} size="sm" onClick={() => void saveEdited()}>{t('actions.save')}</NNBtn><NNBtn disabled={busy} size="sm" onClick={() => { void allowEditClose().then(allowed => { if (allowed) setEditId(null); }); }}>{t('actions.cancel')}</NNBtn></div>
         : <NNBtn size="sm" onClick={() => { void allowEditClose().then(allowed => { if (allowed) { setEditId(mark.id); setEditNote(mark.note ?? ''); } }); }}>{t('notebooks.notes.edit')}</NNBtn>}
       {mark.anchorStatus !== 'anchored' ? <small>{t('assistant.anchorUnavailable')}</small> : <NNBtn size="sm" onClick={() => onJump(mark.selection.chunks[0]!.chunkId)}>{t('assistant.readSource')}</NNBtn>}
       <NNBtn size="sm" onClick={() => ask(mark.anchorStatus === 'anchored' ? mark.selection : { ...mark.selection, chunks: [] })}>{t('assistant.askObject')}</NNBtn>

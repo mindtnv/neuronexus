@@ -1,4 +1,5 @@
 export default {
+  opening: 'Opening…', resultUnavailable: 'This result is no longer available.', openFailed: 'Could not open the result. Try again.',
   title: 'Operations', active: 'In progress', attention: 'Needs attention', recent: 'Recent',
   empty: 'No operations yet. Book processing and generated results will appear here.',
   history: 'Latest results from the past 7 days', loading: 'Loading operations…',

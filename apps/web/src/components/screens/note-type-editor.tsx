@@ -5,6 +5,7 @@ import { newUuidV7, normalizeFieldName, validFieldNames, validateTemplates, type
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { useModalFocus } from '@/lib/use-modal-focus';
 import { raiseToast } from '@/components/toasts';
 import { useSearchParams } from 'next/navigation';
@@ -710,7 +711,7 @@ const NoteTypeForm = ({
   return (
     <div ref={formRoot} className="reomi-page-surface reomi-note-type-editor nn-scroll">
       <EditorDraftNotice draft={localDraft} stale={Boolean(localDraft.pending && localDraft.pending.value.baseVersion !== editing?.updatedAt)} />
-<SaveFeedback status={recovery.snapshot.status} onRetry={() => void handleSave()} />
+<SaveFeedback status={recovery.snapshot.status} errorCode={recovery.snapshot.error} onRetry={() => void handleSave()} />
 <header className="reomi-note-type-editor-heading">
         <NNBtn size="sm" variant="ghost" icon="chevl" onClick={() => { void localDraft.confirmLeave().then(allowed => { if (allowed) onCancel(); }); }} disabled={saving}>
           {t('noteTypes.editor.back')}
@@ -894,6 +895,7 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
   const [version, setVersion] = useState(editing.updatedAt);
   const recovery = useRecoverableAction(ownerId, draftFingerprint({ kind, answerFieldId }), version);
   const [busy, setBusy] = useState(false);
+  const layer = useTransientLayer({ root: modal, modal: true, busy, onClose: onDone });
   const [error, setError] = useState<string | null>(null);
   const lock = useRef(false);
   const alive = useRef(true);
@@ -935,12 +937,12 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
       }
     } finally { lock.current = false; if (alive.current) setBusy(false); }
   };
-  return createPortal(<div className="reomi-overlay-backdrop" onClick={event => { if (event.target === event.currentTarget && !busy) onDone(); }}>
+  return createPortal(<LayerParent.Provider value={layer.id}><div className="reomi-overlay-backdrop" onClick={event => { if (event.target === event.currentTarget && !busy) void layer.close('outside'); }}>
     <div ref={modal} role="dialog" aria-modal="true" aria-labelledby="note-type-mode-title" className="reomi-flow-dialog" tabIndex={-1}
-      onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.stopPropagation(); onDone(); } }}>
-    <header><h2 id="note-type-mode-title">{t('noteTypes.kind.title', { name: editing.name })}</h2><NNBtn variant="ghost" icon="x" onClick={onDone} disabled={busy} ariaLabel={t('actions.close')} /></header>
+      onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.stopPropagation(); void layer.close('escape'); } }}>
+    <header><h2 id="note-type-mode-title">{t('noteTypes.kind.title', { name: editing.name })}</h2><NNBtn variant="ghost" icon="x" onClick={() => void layer.close()} disabled={busy} ariaLabel={t('actions.close')} /></header>
     <p className="reomi-flow-intro">{t('noteTypes.kind.intro')}</p>
-    <SaveFeedback status={recovery.snapshot.status} onRetry={() => void apply()} />
+    <SaveFeedback status={recovery.snapshot.status} errorCode={recovery.snapshot.error} onRetry={() => void apply()} />
     <fieldset disabled={busy} style={{ border: 0, padding: 0, display: 'grid', gap: 16 }}>
       <label>{t('noteTypes.kind.mode')}<select aria-label={t('noteTypes.kind.mode')} style={inputStyle} value={kind} onChange={(event) => setKind(event.target.value as RenderKind)}>
         {(['basic', 'custom', 'typein', 'cloze'] as const).map((value) => <option value={value} key={value}>{label(value)}</option>)}
@@ -952,7 +954,7 @@ const NoteTypeKindForm = ({ editing, onDone }: { editing: NoteType; onDone: () =
       <NNBtn variant="primary" disabled={kind === editing.kind} onClick={apply}>{busy ? t('noteTypes.actions.saving') : t('noteTypes.kind.preview')}</NNBtn>
     </fieldset>
     {error && <p role="alert" style={{ color: 'var(--rose-400)', whiteSpace: 'pre-wrap' }}>{error}</p>}
-  </div></div>, document.body);
+  </div></div></LayerParent.Provider>, document.body);
 };
 
 // ── Screen orchestrator ──────────────────────────────────────────────────────

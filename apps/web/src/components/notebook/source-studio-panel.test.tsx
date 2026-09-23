@@ -4,6 +4,7 @@ import React, { act } from 'react';
 import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 import type { Root } from 'react-dom/client';
 import { AppNavigationProvider } from '../navigation';
+import { Modal } from '../design-system/modal';
 import { DialogProvider } from '../dialog';
 ensureTestDom();
 const { createRoot } = await import('react-dom/client');
@@ -49,4 +50,16 @@ test('an artifact read failure retains a retryable viewer and never starts gener
   const retry=[...document.body.querySelectorAll('button')].find(button=>button.textContent==='review.retry');
   expect(retry).not.toBeUndefined();await act(async()=>retry!.click());
   expect(document.body.textContent).toContain('notebooks.quiz.start');expect(methods.every(method=>method==='GET')).toBe(true);
+});
+
+test('Escape closes quiz settings before the saved-work panel and does not generate anything', async () => {
+  let writes = 0;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => { if (init?.method === 'POST') writes++; return Response.json({ items: [], nextOffset: null }); }) as typeof fetch;
+  await act(async () => root.render(<AppRouterContext.Provider value={{ push() {} } as any}><AppNavigationProvider><DialogProvider>
+    <Modal open title="Saved work" closeLabel="Close work" onClose={() => { throw new Error('parent closed'); }}><SourceStudioPanel sourceId="book" chatEnabled /></Modal>
+  </DialogProvider></AppNavigationProvider></AppRouterContext.Provider>));
+  await act(async () => host.querySelector<HTMLButtonElement>('button[title="notebooks.studio.type_quizDesc"]')!.click());
+  expect(host.querySelectorAll('dialog[open]')).toHaveLength(2);
+  await act(async () => host.querySelector('input[type="range"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(host.querySelectorAll('dialog[open]')).toHaveLength(1); expect(writes).toBe(0);
 });

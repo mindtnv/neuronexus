@@ -243,3 +243,26 @@ test('retry after source deletion preserves retained work without scheduling una
   const [current] = await db.select().from(notebookArtifacts).where(eq(notebookArtifacts.id, artifact.id));
   expect(current!.operationRunId).toBe(artifact.operationRunId); expect(calls).toBe(0);
 });
+
+test('result resolution exposes only owned navigation metadata and handles deletion or a newer active run', async () => {
+  const owner = await signUpAndCookie(app, uniqueEmail()), other = await signUpAndCookie(app, uniqueEmail());
+  const { artifact, source } = await failedArtifact(owner.userId);
+  await db.update(notebookArtifacts).set({ status: 'ready', contentMd: 'PRIVATE GENERATED BODY' }).where(eq(notebookArtifacts.id, artifact.id));
+  const resolve = (cookie = owner.cookie) => callApp(app, 'GET', `/operations/v1/artifacts/${artifact.id}`, { cookie });
+  const response = await resolve(); expect(response.status).toBe(200);
+  const body = await response.json<any>(); expect(Object.keys(body)).toEqual(['destination']);
+  expect(body.destination).toEqual({ kind: 'source-artifact', id: artifact.id, sourceId: source.id });
+  expect(JSON.stringify(body)).not.toContain('PRIVATE GENERATED BODY'); expect((await resolve(other.cookie)).status).toBe(404);
+  const [notebook] = await db.insert(notebooks).values({ userId: owner.userId, title: 'Owned notebook' }).returning();
+  const [notebookResult] = await db.insert(notebookArtifacts).values({ userId: owner.userId, notebookId: notebook!.id,
+    type: 'summary', title: 'Notebook result', status: 'ready', sourceIds: [source.id], contentMd: 'PRIVATE NOTEBOOK BODY' }).returning();
+  const notebookResolution = await callApp(app, 'GET', `/operations/v1/artifacts/${notebookResult!.id}`, { cookie: owner.cookie });
+  expect(await notebookResolution.json<any>()).toEqual({ destination: { kind: 'notebook-artifact', id: notebookResult!.id, notebookId: notebook!.id } });
+  await db.update(sources).set({ status: 'deleting' }).where(eq(sources.id, source.id));
+  expect((await (await resolve()).json<any>()).destination.sourceId).toBeNull();
+  await db.delete(sources).where(eq(sources.id, source.id));
+  expect((await (await resolve()).json<any>()).destination).toEqual({ kind: 'source-artifact', id: artifact.id, sourceId: null });
+  await db.update(notebookArtifacts).set({ status: 'pending' }).where(eq(notebookArtifacts.id, artifact.id));
+  expect((await resolve()).status).toBe(409);
+  await db.delete(notebookArtifacts).where(eq(notebookArtifacts.id, artifact.id)); expect((await resolve()).status).toBe(404);
+});

@@ -16,7 +16,7 @@
 // mimeFor / NONTERMINAL / AddKind) are CONSUMED by notebook-workspace.tsx and
 // stay here unchanged.
 
-import React, { useCallback, useMemo, useState, type SetStateAction } from 'react';
+import React, { useCallback, useMemo, useState, useRef, type SetStateAction } from 'react';
 import {
   NOTEBOOK_COLORS,
   SOURCE_MIME_TO_KIND,
@@ -30,6 +30,7 @@ import { NNBtn, NNCard, NNIcon, NNBadge, NNInlineRefresh, NNLoadError, NNSkeleto
 import { TextInput, PageSurface } from '@/components/design-system/primitives';
 import { useNN } from '@/lib/store';
 import type { Notebook, NotebookCoverSource, Source } from '@/lib/types';
+import { useTransientLayer } from '@/lib/use-transient-layer';
 import { useIsMobile } from '@/lib/use-breakpoint';
 import { useT } from '@/lib/i18n';
 import { relativeUpdated } from '@/lib/notebook-format';
@@ -561,6 +562,8 @@ const NotebookCard = ({
   t: Tfn;
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRoot = useRef<HTMLDivElement>(null);
+  useTransientLayer({ root: menuRoot, enabled: menuOpen, onClose: () => setMenuOpen(false) });
   const accent = notebook.color ? NOTEBOOK_COLOR_VAR[notebook.color] : 'var(--text-muted)';
   const avatarChar =
     notebook.emoji && notebook.emoji.length > 0
@@ -596,7 +599,7 @@ const NotebookCard = ({
           {avatarChar}
         </span>
         <span style={{ flex: 1 }} />
-        <div
+        <div ref={menuRoot}
           className="nn-nb-menu-anchor"
           style={{ position: 'relative', flexShrink: 0 }}
           onClick={(e) => e.stopPropagation()}
@@ -607,12 +610,11 @@ const NotebookCard = ({
             icon="dots"
             ariaLabel={t('library.item.menu')}
             title={t('library.item.menu')}
-            onClick={() => setMenuOpen((v) => !v)}
+            aria-expanded={menuOpen} onClick={event => { event.currentTarget.focus({ preventScroll: true }); setMenuOpen(v => !v); }}
           />
           {menuOpen && (
             <>
-              <div onClick={() => setMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-              <div className="nn-lib-menu" style={{ right: 0, top: 'calc(100% + 4px)', minWidth: 180 }}>
+              <div role="group" aria-label={notebook.title} className="nn-lib-menu" style={{ right: 0, top: 'calc(100% + 4px)', minWidth: 180 }}>
                 <button
                   type="button"
                   className="nn-lib-menu-item"

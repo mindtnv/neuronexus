@@ -125,3 +125,16 @@ test('a rejected source-tag save keeps the entered tag and retries through its s
   await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'actionsRecovery.retry')!.click());
   expect(writes).toBe(2); expect(field.value).toBe(''); expect(host.querySelector('.nn-lib-tag')?.textContent).toContain('retained-tag');
 });
+
+test('consuming a library focus URL retains the addressed details layer', async () => {
+  const item = { id: 'source-focus', kind: 'text', title: 'Focused book', status: 'ready', metadataRevision: 0, tags: [], total: 1, indexed: 1,
+    author: null, description: null, readingStatus: 'unread', percent: null, notebookCount: 0, cardCount: 0, notebooks: [], createdAt: new Date().toISOString() };
+  useNN.setState({ getLibraryItem: async () => item as any });
+  const previous = location.href;
+  history.replaceState({}, '', '/library?focus=source-focus');
+  try {
+    await act(async () => root.render(<AppRouterContext.Provider value={router}><PathnameContext.Provider value="/library"><SearchParamsContext.Provider value={new URLSearchParams('focus=source-focus')}><AppNavigationProvider><DialogProvider><LibraryScreen /></DialogProvider></AppNavigationProvider></SearchParamsContext.Provider></PathnameContext.Provider></AppRouterContext.Provider>));
+    expect(host.querySelector('[aria-label="library.details.close"]')).not.toBeNull();
+    expect(host.textContent).toContain('Focused book');
+  } finally { history.replaceState({}, '', previous); }
+});

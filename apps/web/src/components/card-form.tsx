@@ -871,7 +871,7 @@ const CardFormEditor = ({
         }
       }} />}
       <div className="reomi-card-form-scroll nn-scroll" style={{ padding: isMobile ? '16px 14px' : 24, overflow: isMobile ? 'visible' : 'auto' }}>
-        <SaveFeedback status={recovery.snapshot.status} onRetry={() => void handleSave()} />
+        <SaveFeedback status={recovery.snapshot.status} errorCode={recovery.snapshot.error} onRetry={() => void handleSave()} />
         <EditorDraftNotice draft={localDraft} stale={Boolean(localDraft.pending && (localDraft.pending.value.baseVersion !== editing?.note?.updatedAt || localDraft.pending.value.noteType?.updatedAt !== (noteTypes.find(type => type.id === localDraft.pending!.value.noteTypeId) ?? editingNoteType)?.updatedAt))} />
         <fieldset disabled={localDraft.blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
         {actionsPlacement === 'header' && <div className="reomi-card-form-actions" style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: 20, flexWrap: 'wrap' }}>

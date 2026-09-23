@@ -91,3 +91,18 @@ test('PDF selection ignores layout and whitespace sentinels outside selected gly
   expect(paint.children.length).toBe(1);
   expect((paint.firstElementChild as HTMLElement).style.height).toBe('2.25%');
 });
+
+test('Ask cannot discard an unsaved PDF comment and the comment toggle uses the same decision', async () => {
+  let asks = 0;
+  await act(async () => root.render(<DialogProvider><SelectionPopover pageEls={new Map([[1, page]])} handMode onHighlight={() => {}} onNote={() => {}} onCard={() => {}} onAsk={() => { asks++; }} t={key => key}/></DialogProvider>));
+  await select(); await act(async () => button('notebooks.marks.note').click());
+  await act(async () => { const input = document.querySelector<HTMLTextAreaElement>('#nn-sel-popover textarea')!; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Keep this annotation'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+  await act(async () => button('assistant.askObject').click());
+  expect(asks).toBe(0); expect(document.body.textContent).toContain('editor.draft.leaveTitle');
+  await act(async () => button('editor.draft.stay').click());
+  expect(document.querySelector<HTMLTextAreaElement>('#nn-sel-popover textarea')!.value).toBe('Keep this annotation');
+  await act(async () => button('notebooks.marks.note').click());
+  expect(document.body.textContent).toContain('editor.draft.leaveTitle');
+  await act(async () => button('editor.draft.stay').click());
+  expect(document.querySelector<HTMLTextAreaElement>('#nn-sel-popover textarea')!.value).toBe('Keep this annotation');
+});

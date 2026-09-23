@@ -155,11 +155,11 @@ export const NNSidebar = ({
           {FOOTER_NAV.filter((item) => item.id !== 'settings').map((item) =>
             renderNavItem({ item, isActive: currentId === item.id, collapsed, responsive, label: t(item.labelKey) }),
           )}
+          <OperationsButton />
         </div>
       </nav>
 
       <div className="nn-sidebar-footer">
-        <OperationsButton />
         <AccountMenu name={profileName || t('settings.nav.account')} onSignOut={handleSignOut} />
       </div>
     </aside>

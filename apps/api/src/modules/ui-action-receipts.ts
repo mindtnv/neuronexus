@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq, gt, lt, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, lt, isNull, sql } from 'drizzle-orm';
 import { db, cards, deckHierarchyRevisions, decks, notebookNotes, notebooks, notes, noteTypes, sources, uiActionReceipts } from '@neuronexus/db';
 import type { UiActionEnvelope, UiActionInverse, UiActionKind, UiActionOffers, UiActionReceipt, UiActionResult, UiActionTarget } from '@neuronexus/shared';
 import { StudyError } from './study-notes';
@@ -93,9 +93,10 @@ export async function getUiAction(userId: string, requestId: string) {
   });
 }
 export async function listUiActions(userId: string, sessionId: string, cursor?: string): Promise<UiActionOffers> {
+  // Match the session-order index; id is NOT NULL, so cursor ordering is unchanged.
   const rows = await db.select().from(uiActionReceipts).where(and(eq(uiActionReceipts.userId, userId), eq(uiActionReceipts.sessionId, sessionId),
     gt(uiActionReceipts.undoUntil, new Date()), isNull(uiActionReceipts.consumedAt), cursor ? lt(uiActionReceipts.id, cursor) : undefined))
-    .orderBy(desc(uiActionReceipts.id)).limit(21);
+    .orderBy(sql`${uiActionReceipts.id} DESC NULLS LAST`).limit(21);
   return { items: rows.slice(0, 20).map(actionReceipt), nextCursor: rows.length > 20 ? rows[19]!.id : null, serverTime: new Date().toISOString() };
 }
 export async function cleanupUiActionReceipts() {

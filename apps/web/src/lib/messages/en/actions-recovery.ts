@@ -1,4 +1,6 @@
 export default {
+  uncertainDraftClose: 'The request may already have been saved. Keeping or discarding a local draft does not cancel it. Check saved work before creating another copy.',
+  expiredSave: 'This request can no longer be confirmed. Check existing work before creating another item. Your input is kept.',
   uncertainClose: 'Closing will not cancel the submitted request. Its outcome can be checked in recent actions.',
   description: 'Description',
   reopenConflict: 'Your input remains in the form. Explicitly close it and reopen the current object before making a new change.',

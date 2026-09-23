@@ -1,6 +1,6 @@
-# Implementation evidence — in progress
+# Acceptance evidence
 
-This checkpoint is not release approval. Unchecked tasks remain required; neither change is ready to archive or deploy.
+Implementation and browser/data acceptance are complete. The release-gate record at the end is authoritative; earlier dated sections document intermediate checkpoints.
 
 ## 2026-09-23 — written notes and server recovery foundation
 
@@ -130,3 +130,45 @@ Remaining layer/release work:
 - Same-tab remount restores the server-issued scope from sessionStorage and reloads six offers, including in the independent `StandaloneActions` dialog without Operations. Existing tests cover toast expiry, separate operation counts, exact server-time expiry and lost Undo response reconciliation with no automatic replay.
 - A new failing test found that remounting with denied storage lost the memory-only disclosure. Session lookup now preserves both the in-memory scope and the disclosure across remounts and temporary storage loss. Only opaque IDs are retained here.
 - Targeted receipt/maintenance/offer tests: **20 passed, 0 failed** (`/private/tmp/durable-actions-checks.log`). The wider assistant/layer suite passed **55 tests** (`/private/tmp/assistant-layers-all-tests.log`); typecheck passed (`/private/tmp/assistant-final-types.log`). Browser interaction with ten-minute offers and the complete final release gates remain tracked in section 6.
+
+
+## Final browser and data acceptance — 2026-09-23
+
+All listed browser scenarios passed against the real local web/API, a dedicated local test account/database and MinIO bucket, and a deterministic loopback AI upstream. `browser-evidence.json` records the compact outcomes. Chromium 153 covered desktop flows; WebKit 26.6 covered mobile at 390×844 and keyboard-height 390×520, including reduced motion. The independent real-Next history proof also passed Firefox 155 in Linux. Keyboard focus, accessible names/status announcements and the ARIA tree were checked; this was not a physical VoiceOver or on-device keyboard session.
+
+| Surface | Executed evidence |
+| --- | --- |
+| Source processing / Operations | Real PDF upload, leave for Cards, readable-while-indexing copy, open original PDF; quiz generation after leaving, exact result and labelled return; failure and lost-response retry starts once; offline rows persist; another same-owner session is discovered without focus/manual refresh (29.6 s). |
+| Mobile / shared layers | Sheet bounds and 44 px controls, Back/Forward/reload, keyboard-height resize without dismissal, hidden-sidebar entry, focus return, card inspector/filter sheets, nested quiz settings, portal picker before parent, conversion cancellation without applying. |
+| Card / note-type editors | Card save rejection retains both fields and retry opens the created identity. Lost note-type create response, newer name, reload/restore and explicit reconciliation produce one type and one later update. Existing destructive preview/token tests remain required in the full suite. |
+| Written notes | Failed save preserves text; repeated Back shares one decision; tab switch and assistant handoff respect Stay; a lost create reply plus newer input and reload produces one note, then updates that same note. Retained note opens after source deletion. |
+| Metadata and Undo | Missing new endpoint fails closed with retained input and no legacy write; retry and Undo; two real tabs conflict without losing the local title, explicit current-version choice, stale inverse rejected. Deck name/color/icon, hierarchy placement, notebook title and note pin inverses were exercised through UI; card schedules and note content recency stayed unchanged. |
+| Ten-minute offer | A real 600,000 ms server window was observed; after wall-clock expiry the control was unavailable and the API returned 409 without restoring the old value. Toast and storage-denial/remount behavior also have component coverage. |
+| PDF / text selection | Native pointer PDF selection, failed comment with unchanged quote/page/rectangles, dirty Ask/close guards, successful retry, failed saved-margin-comment edit; rendered text selection and exact chunk locator survive failure and retry. |
+| Assistant | Nested inspection/picker, model menu and conversation drawer dismiss independently; drafts persist, minimizing does not abort the real SSE turn, and the persisted thread opens in the full page. Pending-write dismissal remains covered by the controller/component suite without submitting approval. |
+| Deleted results | An intentionally stale operation row resolves a retained quiz after source deletion. A deleted quiz shows an unavailable-result fallback; refresh removes its action. Neither opening nor deletion starts generation. |
+
+Browser work caught and fixed: sidebar/footer crowding and CSS precedence on sheet geometry; query cleanup dismissing Library details; Next dropping an inspector marker after an asynchronous query replacement; lost focus across operation run changes; keyboard pagination held behind focus freezing; dirty PDF Ask/toggle paths; nested result/quiz/card dialogs; and stale live-source destinations. Expired unconfirmed saves now retain their original identity across another reload and explain the need to inspect existing work; reauthentication during reconciliation does not erase uncertainty.
+
+The 70,001-row operation proof read every bounded page (60 requests; 30 active, 30 attention, 2,970 recent owned rows), with no duplicates or foreign rows. Final local p50 was 8.34 ms and p95 10.25 ms. Active/recent source and artifact indexes were used. The additional 48,000-receipt proof uses the owner/request, session/order and expiry indexes; the offer read was 0.052 ms and cleanup candidate reads stayed bounded to 500 rows. Migration 0039 adds the ordered offer index; the query explicitly matches its `DESC NULLS LAST` ordering. These are local measurements, not a production latency promise.
+
+The upgrade proof applies migrations 0000–0036, inserts pre-change UUIDv4/content/date fixtures, then applies 0037–0039 and repeats the complete chain. All 40 migrations pass; identities/content/old completion recency are preserved, processing does not alter metadata revisions, legacy ABA/pin/hierarchy changes advance the correct counters, and rerunning is idempotent. It removes its own temporary database. API-first rollout, missing-endpoint degradation and rollback are documented in `docs/operations-and-recovery-rollout.md`; CLAUDE.md and AGENTS.md have matching canonical bodies.
+
+Local evidence lives under `/private/tmp/reomi-operations-proof/`; generated PDF and credentials are test fixtures, not product assets. The checked-in history, query-plan and upgrade proof scripts are reusable. No production write was used for acceptance, and unrelated OpenSpec changes remain untouched. Final release gates are recorded below after execution.
+
+
+## Final release gates — passed
+
+- `bun run spec:validate`: passed with no failures; final post-archive validation is recorded below.
+- `bun run typecheck`: all five workspaces passed.
+- `bun run db:migrate:apply:test`: complete committed chain through 0039 applied successfully; no schema push.
+- `bun run test:ci`: **3034 passed, 0 failed**, 263 files, 115.87 s.
+- `bun run test:s3:ci`: **16 passed, 0 failed**, required local MinIO round trips enabled.
+- `bun run build`: API bundle and production Next standalone build passed.
+- `git diff --check` passed; CLAUDE.md/AGENTS.md canonical bodies match.
+
+Logs: `/private/tmp/reomi-operations-proof/publish-{tests,s3,build,types,specs,migrations}.log`. The final nested-card smoke also verifies picker-before-parent Escape, guarded mobile Back and conversion cancellation with zero writes. Local proof servers were stopped and the dedicated S3 bucket removed; shared PostgreSQL/MinIO and unrelated services were retained. Production release follows the repository pipeline after merge.
+
+The final result resolver is `/operations/v1/artifacts/:id`: it projects only owned destination IDs, rechecks the live parent and readiness, and never returns generated content. Integration tests cover private content exclusion, foreign ownership, logical/hard source deletion, notebook destinations and changed/deleted results. The final gate above includes this endpoint.
+
+Post-archive strict validation: **25 passed, 0 failed**. All delta requirements and Purpose text were synchronized and compared before the CLI archive; `--skip-specs` avoided applying them twice. The unrelated `complete-spaced-repetition-polish` checklist remains at 38/123.

@@ -84,7 +84,7 @@ export function MetadataPrompt({ owner, options, resolve, onClose }: { owner: st
             : <input className="reomi-input" aria-label={options.label ?? options.title} value={value} maxLength={options.maxLength} onChange={event => setValue(event.target.value)} />}
         </label>
         {error && <p role="alert">{error}</p>}
-        <SaveFeedback status={snapshot.status} onRetry={() => void submit()} />
+        <SaveFeedback status={snapshot.status} errorCode={snapshot.error} onRetry={() => void submit()} />
         {snapshot.status === 'conflict' && <div>
           {options.readCurrent ? <NNBtn variant="ghost" size="sm" onClick={() => {
             void options.readCurrent!().then(current => { if (alive.current) setLatest(current); }).catch(() => setError(t('actionsRecovery.failed')));
@@ -98,7 +98,7 @@ export function MetadataPrompt({ owner, options, resolve, onClose }: { owner: st
         <p>{t('editor.draft.leaveBody')}</p>
         {snapshot.pending && <p>{t('actionsRecovery.uncertainClose')}</p>}
         <NNBtn onClick={() => void submit()} disabled={snapshot.status === 'saving' || snapshot.status === 'conflict'}>{t('editor.draft.saveAndLeave')}</NNBtn>
-        <NNBtn variant="ghost" onClick={() => choose(true)}>{t('editor.draft.discardAndLeave')}</NNBtn>
+        <NNBtn variant="ghost" disabled={snapshot.status === 'saving'} onClick={() => choose(true)}>{t('editor.draft.discardAndLeave')}</NNBtn>
         <NNBtn variant="ghost" onClick={() => void decisionLayer.close()}>{t('editor.draft.stay')}</NNBtn>
       </div>}
     </div>

@@ -533,16 +533,16 @@ export function useWorkspaceState<T>(scope: string, key: string, initial: T | ((
   return [value, set];
 }
 
-export function NavigationReturn({ fallback = '/cards' }: { fallback?: string }) {
+export function NavigationReturn({ fallback = '/cards', showLabel = false }: { fallback?: string; showLabel?: boolean }) {
   const context = useNavigationWorkspace();
   const t = useT();
   if (!context?.entry?.parent) return null;
   const parent = context.journal?.entry(context.entry.parent);
   const section = parent?.href.split(/[/?#]/)[1];
   const isSource = parent && (/^\/library\/[^/?]+/.test(parent.href) || (section==='notebooks' && new URL(parent.href,'https://navigation.invalid').searchParams.has('source')));
-  const label = isSource ? t('navigation.source') : section && ['library', 'cards', 'decks', 'notebooks', 'review'].includes(section) ? t(`nav.${section}`) : t('actions.back');
+  const label = isSource ? t('navigation.source') : section && ['library', 'cards', 'decks', 'notebooks', 'review', 'editor', 'chat'].includes(section) ? t(`nav.${section}`) : t('actions.back');
   const title=t('navigation.returnTo',{place:label});
-  return <NNBtn size="sm" variant="ghost" icon="chevl" className="nn-navigation-return" ariaLabel={title} title={title} onClick={()=>context.returnTo(fallback)}/>;
+  return <NNBtn size="sm" variant="ghost" icon="chevl" className="nn-navigation-return" ariaLabel={title} title={title} onClick={()=>context.returnTo(fallback)}>{showLabel ? title : null}</NNBtn>;
 }
 
 export function useWorkspaceSet(scope: string, key: string): [Set<string>, Dispatch<SetStateAction<Set<string>>>] {

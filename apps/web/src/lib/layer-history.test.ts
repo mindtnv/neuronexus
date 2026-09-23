@@ -67,3 +67,11 @@ test('an account change invalidates an outstanding mobile close and consumes old
   f.stack.setOwner('b'); decision.resolve(true); await tick();
   expect(f.stack.hasLayers()).toBe(false); expect(f.index).toBe(1); f.history.dispose();
 });
+
+test('a delayed Next query replacement cannot erase the already-pushed inspector marker', async () => {
+  const f = fixture(); f.add('inspector'); await tick(); const index = f.index;
+  const replacement: Record<string, unknown> = { ...f.states[index], tree: 'query consumed after inspector mounted' }; delete replacement[LAYER_HISTORY_KEY];
+  f.states[index] = replacement; f.history.refresh(); await tick();
+  expect((f.states[index]?.[LAYER_HISTORY_KEY] as { depth?: number })?.depth).toBe(1); expect(f.index).toBe(index);
+  f.pop(-1); await tick(); expect(f.stack.hasLayers()).toBe(false); expect(f.index).toBe(1); f.history.dispose();
+});

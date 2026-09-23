@@ -61,9 +61,18 @@ function installEvents() {
     }
     void transientLayers.dismiss(layer.id, 'outside');
   };
+  const containFocus = (event: FocusEvent) => {
+    const modal = transientLayers.modalAncestor();
+    if (!modal || transientLayers.owns(modal, event.target as Node)) return;
+    const root = modal.root(); if (!root) return;
+    const target = [...root.querySelectorAll<HTMLElement>('button,input,textarea,select,a[href],[tabindex]')]
+      .find(node => !node.matches(':disabled') && node.tabIndex >= 0 && !node.closest('[inert],[hidden],[aria-hidden="true"]') && node.getClientRects().length > 0) ?? root;
+    if (target === root && !root.hasAttribute('tabindex')) root.tabIndex = -1;
+    target.focus({ preventScroll: true });
+  };
   const click = (event: MouseEvent) => { if (swallowClick) { swallowClick = false; event.preventDefault(); event.stopImmediatePropagation(); } };
-  doc.addEventListener('keydown', key, true); doc.addEventListener('pointerdown', outside, true); doc.addEventListener('click', click, true);
-  cleanupEvents = () => { doc.removeEventListener('keydown', key, true); doc.removeEventListener('pointerdown', outside, true); doc.removeEventListener('click', click, true); };
+  doc.addEventListener('keydown', key, true); doc.addEventListener('pointerdown', outside, true); doc.addEventListener('click', click, true); doc.addEventListener('focusin', containFocus, true);
+  cleanupEvents = () => { doc.removeEventListener('keydown', key, true); doc.removeEventListener('pointerdown', outside, true); doc.removeEventListener('click', click, true); doc.removeEventListener('focusin', containFocus, true); };
 }
 
 export function useTransientLayer({ root, enabled = true, onClose, busy = false, modal = false, history = true, portals, parent, restoreFocus = true, dismissOnOutside = true, retainOnNavigation = false, onEscape }: {

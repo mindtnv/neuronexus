@@ -34,7 +34,7 @@ const feed: OperationsFeed = { serverTime: new Date().toISOString(), active: { i
 
 test('the shell list survives route content changes and opens an exact retained quiz without a write', async () => {
   const paths: string[] = [], methods: string[] = [];
-  globalThis.fetch = (async (_url: any, init: any) => { methods.push(init?.method ?? 'GET'); return Response.json(feed); }) as unknown as typeof fetch;
+  globalThis.fetch = (async (_url: any, init: any) => { methods.push(init?.method ?? 'GET'); return Response.json(String(_url).endsWith('/artifacts/quiz') ? { destination: feed.recent.items[0]!.destination } : feed); }) as unknown as typeof fetch;
   const render = (page: string) => <Navigation push={path => paths.push(path)}>
     <OperationsProvider><p>{page}</p><OperationsButton /><OperationsHost /></OperationsProvider>
   </Navigation>;
@@ -63,7 +63,7 @@ test('account change removes outgoing titles before a delayed replacement feed a
 test('a denied departure keeps Operations open and its exact destination ready for retry', async () => {
   const paths: string[] = []; let allowed = false;
   function Editor() { useNavigationGuard(async () => allowed); return <input defaultValue="Unsaved note" />; }
-  globalThis.fetch = (async () => Response.json(feed)) as unknown as typeof fetch;
+  globalThis.fetch = (async (url: unknown) => Response.json(String(url).endsWith('/artifacts/quiz') ? { destination: feed.recent.items[0]!.destination } : feed)) as unknown as typeof fetch;
   await act(async () => root.render(<Navigation push={path => paths.push(path)}><OperationsProvider><Editor /><OperationsButton /><OperationsHost /></OperationsProvider></Navigation>));
   await act(async () => host.querySelector<HTMLButtonElement>('.nn-operations-button')!.click());
   const open = () => [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.open')!.click();
@@ -97,4 +97,55 @@ test('lost retry response remains explicit and reuses its receipt identity', asy
   await act(async () => retry()); expect(host.textContent).toContain('operations.uncertain');
   await act(async () => window.dispatchEvent(new Event('focus'))); expect(requests).toHaveLength(1);
   await act(async () => retry()); expect(requests).toHaveLength(2); expect(requests[1]).toEqual(requests[0]);
+});
+
+test('a source deleted after observation resolves its still-retained quiz at action time', async () => {
+  const current = structuredClone(feed); current.recent.items[0]!.destination = { kind: 'source-artifact', id: 'quiz', sourceId: 'gone-book' };
+  const paths: string[] = [], reads: string[] = [];
+  globalThis.fetch = (async (url: unknown) => {
+    reads.push(String(url));
+    return Response.json(String(url).endsWith('/operations/v1/artifacts/quiz') ? { destination: { kind: 'source-artifact', id: 'quiz', sourceId: null } } : current);
+  }) as unknown as typeof fetch;
+  await act(async () => root.render(<Navigation push={path => paths.push(path)}><OperationsProvider><OperationsButton /><OperationsHost /></OperationsProvider></Navigation>));
+  await act(async () => host.querySelector<HTMLButtonElement>('.nn-operations-button')!.click());
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.open')!.click());
+  expect(paths).toEqual(['/library/study?artifact=quiz']); expect(reads.some(path => path.endsWith('/operations/v1/artifacts/quiz'))).toBe(true);
+});
+
+test('keyboard Show more releases row ordering so the newly loaded page is actually visible', async () => {
+  const first = structuredClone(feed); first.recent.total = 2; first.recent.nextCursor = 'second';
+  globalThis.fetch = (async (url: unknown) => {
+    const next = structuredClone(first);
+    if (String(url).includes('recentCursor=second')) next.recent = { items: [{ ...feed.recent.items[0]!, id: 'second-quiz', title: 'Second quiz' }], total: 2, nextCursor: null };
+    return Response.json(next);
+  }) as unknown as typeof fetch;
+  await act(async () => root.render(<Navigation><OperationsProvider><OperationsButton /><OperationsHost /></OperationsProvider></Navigation>));
+  await act(async () => host.querySelector<HTMLButtonElement>('.nn-operations-button')!.click());
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.open')!.focus());
+  await act(async () => { const more = [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.more')!; more.focus(); more.click(); });
+  expect(host.querySelectorAll('[data-operation-id]')).toHaveLength(2); expect(host.textContent).toContain('Second quiz');
+});
+
+test('a deleted result remains a labelled fallback, never an enabled result or retry', async () => {
+  let current = structuredClone(feed); current.recent.items[0]!.destination = { kind: 'source-artifact', id: 'quiz', sourceId: 'book' };
+  globalThis.fetch = (async () => Response.json(current)) as unknown as typeof fetch;
+  await act(async () => root.render(<Navigation><OperationsProvider><OperationsButton /><OperationsHost /></OperationsProvider></Navigation>));
+  await act(async () => host.querySelector<HTMLButtonElement>('.nn-operations-button')!.click());
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.open')!.focus());
+  current.recent = { items: [], total: 0, nextCursor: null };
+  await act(async () => window.dispatchEvent(new Event('nn:operations-changed')));
+  expect(host.textContent).toContain('operations.resultUnavailable'); expect(host.textContent).not.toContain('operations.quizReady');
+  expect([...host.querySelectorAll('[data-operation-id] button')].some(button => button.textContent === 'operations.open' || button.textContent === 'operations.retry')).toBe(false);
+});
+
+test('closing Operations while resolving a result cancels the later navigation intent', async () => {
+  const current = structuredClone(feed); current.recent.items[0]!.destination = { kind: 'source-artifact', id: 'quiz', sourceId: 'book' };
+  const result = Promise.withResolvers<Response>(), paths: string[] = [];
+  globalThis.fetch = (async (url: unknown) => String(url).endsWith('/operations/v1/artifacts/quiz') ? result.promise : Response.json(current)) as unknown as typeof fetch;
+  await act(async () => root.render(<Navigation push={path => paths.push(path)}><OperationsProvider><OperationsButton /><OperationsHost /></OperationsProvider></Navigation>));
+  await act(async () => host.querySelector<HTMLButtonElement>('.nn-operations-button')!.click());
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'operations.open')!.click());
+  await act(async () => host.querySelector<HTMLButtonElement>('dialog header button')!.click());
+  await act(async () => result.resolve(Response.json({ destination: { kind: 'source-artifact', id: 'quiz', sourceId: 'book' } })));
+  expect(paths).toEqual([]); expect(host.querySelector('dialog')!.open).toBe(false);
 });

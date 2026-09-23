@@ -2559,7 +2559,8 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-operations-button:focus-visible, .nn-operations-mobile-button:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
 .nn-operations-count { margin-left: auto; min-width: 20px; padding: 1px 5px; border-radius: 20px; background: var(--surface); font-size: 11px; }
 .nn-operations-mobile-button { display: none; }
-.nn-operations-panel { width: min(440px, calc(100vw - 24px)); max-height: min(620px, calc(100dvh - 80px)); margin: auto auto 20px 16px; padding: 0; }
+.reomi-modal.nn-operations-panel { width: min(440px, calc(100vw - 24px)); max-height: min(620px, calc(100dvh - 80px)); margin: auto auto 20px 16px; padding: 0; }
+.reomi-modal.nn-operations-panel[open] { display: flex; flex-direction: column; }
 .nn-operations-content { overflow: auto; padding: 0 16px 12px; min-height: 0; }
 .nn-operations-content h3 { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--text-dim); margin: 16px 0 8px; }
 .nn-operations-content h3 span { font-variant-numeric: tabular-nums; color: var(--text-muted); }
@@ -2573,10 +2574,11 @@ a, button { -webkit-tap-highlight-color: transparent; touch-action: manipulation
 .nn-operation-notice { padding: 8px 0; font-size: 12px; }
 .nn-operations-history { color: var(--text-muted); font-size: 11px; padding-top: 12px; }
 @media (max-width: 719px) {
+  .nn-operations-panel button { min-height: 44px; }
   .nn-operations-mobile-button { display: flex; flex: 1; flex-direction: column; justify-content: center; gap: 3px; min-width: 44px; min-height: 44px; padding: 8px 4px; position: relative; font-size: 10.5px; }
   .nn-operations-mobile-button .nn-sidebar-label { display: block; }
   .nn-operations-mobile-button .nn-operations-count { position: absolute; top: 2px; right: 2px; }
-  .nn-operations-panel { margin: auto 0 0; width: 100%; max-width: 100%; max-height: calc(100dvh - 40px); border-radius: 18px 18px 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .reomi-modal.nn-operations-panel { margin: auto 0 0; width: 100%; max-width: 100%; max-height: calc(100dvh - 40px); border-radius: 18px 18px 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
 }
 
 .nn-written-note-editor { display: flex; flex-direction: column; gap: 10px; padding: 12px; }

@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
-import { db } from '@neuronexus/db';
-import { sql } from 'drizzle-orm';
-import { OPERATION_GROUPS, type OperationGroup, type OperationItem, type OperationPage, type OperationsFeed } from '@neuronexus/shared';
+import { db, notebookArtifacts, sources, notebooks } from '@neuronexus/db';
+import { and, eq, ne, sql } from 'drizzle-orm';
+import { OPERATION_GROUPS, type OperationDestination, type OperationGroup, type OperationItem, type OperationPage, type OperationsFeed } from '@neuronexus/shared';
 import { authPlugin } from '../auth-plugin';
 import { isArtifactGenerationEnabled, isEmbeddingEnabled } from '../ai/openai-client';
 import { embeddingDegraded } from '../ai/index-queue';
@@ -100,12 +100,27 @@ export async function listOperations(userId: string, query: FeedQuery = {}): Pro
   return { ...Object.fromEntries(pages), serverTime: now.toISOString() } as OperationsFeed;
 }
 
+/** Resolve only navigation metadata; opening the reader owns the content read. */
+export async function resolveOperationResult(userId: string, id: string): Promise<{ destination: OperationDestination }> {
+  const [row] = await db.select({ id: notebookArtifacts.id, status: notebookArtifacts.status, ownerKind: notebookArtifacts.ownerKind,
+    sourceId: sources.id, notebookId: notebooks.id }).from(notebookArtifacts)
+    .leftJoin(sources, and(eq(sources.id, notebookArtifacts.sourceId), eq(sources.userId, userId), ne(sources.status, 'deleting')))
+    .leftJoin(notebooks, and(eq(notebooks.id, notebookArtifacts.notebookId), eq(notebooks.userId, userId)))
+    .where(and(eq(notebookArtifacts.userId, userId), eq(notebookArtifacts.id, id))).limit(1);
+  if (!row || row.ownerKind === 'notebook' && !row.notebookId) throw new StudyError(404, 'not_found');
+  if (row.status !== 'ready') throw new StudyError(409, 'result_changed');
+  return { destination: row.ownerKind === 'notebook'
+    ? { kind: 'notebook-artifact', id: row.id, notebookId: row.notebookId! }
+    : { kind: 'source-artifact', id: row.id, sourceId: row.sourceId } };
+}
+
 export const operationsModule = new Elysia({ prefix: '/operations/v1' }).use(authPlugin)
   .get('', ({ user, query }) => listOperations(user.id, query), { auth: true, query: t.Object({
     limit: t.Optional(t.Integer({ minimum: 1, maximum: 50 })),
     activeCursor: t.Optional(t.String({ maxLength: 512 })), attentionCursor: t.Optional(t.String({ maxLength: 512 })),
     recentCursor: t.Optional(t.String({ maxLength: 512 })),
   }) })
+  .get('/artifacts/:id', ({ user, params }) => resolveOperationResult(user.id, params.id), { auth: true, params: t.Object({ id: t.String({ format: 'uuid' }) }) })
   .post('/retry', async context => {
     try { return await retryOperation(context.user.id, context.body, requestLogFromContext(context)); }
     catch (error) {

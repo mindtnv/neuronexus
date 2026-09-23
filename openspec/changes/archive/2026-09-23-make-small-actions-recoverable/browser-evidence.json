@@ -1,0 +1,198 @@
+{
+  "upload_read": {
+    "passed": true,
+    "stages": [
+      "upload-accepted",
+      "left-route-still-readable",
+      "reader-opened"
+    ],
+    "errors": []
+  },
+  "quiz": {
+    "passed": true,
+    "stages": [
+      "reader-controls",
+      "quiz-settings",
+      "generating-after-navigation",
+      "exact-quiz-opened"
+    ],
+    "errors": []
+  },
+  "mobile_note_recovery": {
+    "passed": true,
+    "engine": "webkit",
+    "version": "26.6",
+    "serverCreates": 1,
+    "patches": 1,
+    "checks": [
+      "failed-save-retains-input",
+      "one-decision-back",
+      "guarded-tab-switch",
+      "guarded-assistant-handoff",
+      "viewport-resize-keeps-editor",
+      "lost-reply-reload-recovers-newer-draft",
+      "one-created-note"
+    ],
+    "errors": []
+  },
+  "metadata_conflicts": {
+    "passed": true,
+    "checks": [
+      "older-api-fails-closed",
+      "input-retained-and-retried",
+      "metadata-undo",
+      "cross-tab-conflict-retains-input",
+      "explicit-current-version-resolution",
+      "stale-undo-does-not-overwrite"
+    ],
+    "legacyWrites": 0,
+    "errors": []
+  },
+  "card_type_recovery": {
+    "passed": true,
+    "cardCreates": 1,
+    "typeCreates": 1,
+    "typePatches": 1,
+    "checks": [
+      "card-failure-keeps-fields",
+      "card-retry-navigates-to-created-identity",
+      "type-lost-create-reload-restores-newer-name",
+      "type-reconciliation-updates-original-object"
+    ],
+    "errors": []
+  },
+  "pdf_comments": {
+    "passed": true,
+    "quoteLength": 40,
+    "rectangles": 1,
+    "checks": [
+      "native-pointer-selection",
+      "failed-save-snapshot-retained",
+      "Ask-guard-Stay",
+      "explicit-retry-saves-original-location",
+      "failed-saved-annotation-edit-is-guarded"
+    ],
+    "errors": []
+  },
+  "text_comments": {
+    "passed": true,
+    "checks": [
+      "real-rendered-text-selection",
+      "failed-comment-retained",
+      "Escape-Stay",
+      "retry-keeps-source-locator"
+    ],
+    "chunks": 1
+  },
+  "organization_undo": {
+    "passed": true,
+    "checks": [
+      "deck-name-undo",
+      "deck-color-icon-undo",
+      "subtree-placement-undo",
+      "unchanged-card-schedules",
+      "notebook-menu-Escape-and-title-undo",
+      "study-note-pin-undo-without-content-recency-change"
+    ],
+    "errors": []
+  },
+  "retry_return": {
+    "passed": true,
+    "retryRequests": 2,
+    "providerCalls": 2,
+    "checks": [
+      "failure-persists-after-navigation",
+      "explicit-retry-after-lost-response-is-once",
+      "ready-quiz-open-obeys-card-draft-guard",
+      "labelled-return-restores-editor"
+    ],
+    "errors": []
+  },
+  "mobile_operations": {
+    "passed": true,
+    "engine": "webkit",
+    "checks": [
+      "mobile-sheet-bounds-and-touch-targets",
+      "accessible-status-tree",
+      "stale-data-retained-offline",
+      "explicit-refresh",
+      "Back-Forward-reload",
+      "viewport-change-does-not-dismiss",
+      "mobile-inspector-and-filter-dismissal",
+      "hidden-sidebar-entry-and-focus-return"
+    ],
+    "errors": []
+  },
+  "assistant_layers": {
+    "passed": true,
+    "checks": [
+      "nested-inspection-then-picker-Escape",
+      "model-menu-only-dismissal",
+      "conversation-drawer-preserves-draft",
+      "minimize-does-not-abort-stream",
+      "same-persisted-thread-opens-in-page"
+    ],
+    "errors": []
+  },
+  "retained_results": {
+    "passed": true,
+    "checks": [
+      "delete-preview-distinguishes-study-work",
+      "stale-operation-link-resolves-retained-quiz",
+      "labelled-return-to-origin",
+      "deleted-quiz-has-labelled-fallback",
+      "refresh-removes-result",
+      "no-generation-on-open-or-deletion",
+      "written-note-remains-readable"
+    ],
+    "errors": []
+  },
+  "peer_discovery": {
+    "passed": true,
+    "discoveredMs": 29556,
+    "checks": [
+      "idle-discovery-from-another-owner-session-without-focus-event",
+      "subsequent-ready-state"
+    ]
+  },
+  "nested_card_dialogs": {
+    "passed": true,
+    "checks": [
+      "deck-picker-Escape-keeps-card-dialog",
+      "mobile-Back-respects-selection-card-input",
+      "discard-does-not-create-a-card",
+      "conversion-dismissal-keeps-inspector-and-never-applies"
+    ],
+    "errors": []
+  },
+  "real_undo_expiry": {
+    "passed": true,
+    "durationMs": 600000,
+    "expiredStatus": 409,
+    "mutationAfterExpiry": false
+  },
+  "history_engines": [
+    {
+      "engine": "chromium",
+      "version": "153.0.8010.12",
+      "passed": true
+    },
+    {
+      "engine": "firefox",
+      "version": "155.0",
+      "passed": true
+    },
+    {
+      "engine": "webkit",
+      "version": "26.6",
+      "passed": true
+    }
+  ],
+  "accessibility": {
+    "keyboardAndFocus": true,
+    "screenReaderFacingAriaTree": "mobile-operations.aria.txt",
+    "mobileViewport": "390 x 844 and 390 x 520",
+    "reducedMotion": true,
+    "physicalVoiceOverSession": false
+  }
+}

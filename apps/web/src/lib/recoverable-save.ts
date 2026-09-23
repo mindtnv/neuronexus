@@ -71,11 +71,16 @@ export class RecoverableSave<T> {
     } catch (error) {
       if (!this.alive) return null;
       const status = (error as { status?: number }).status ?? 0;
-      const knownFailure = executing && status >= 400 && status < 500;
+      const code = typeof (error as { safeMessage?: string }).safeMessage === 'string' ? (error as { safeMessage: string }).safeMessage : 'save_failed';
+      const expiredUncertainty = Boolean(original && code === 'request_expired');
+      const lostAuthentication = Boolean(original && (status === 401 || status === 403));
+      const knownFailure = executing && status >= 400 && status < 500 && !lostAuthentication;
+      // Expiry says the old receipt is no longer available, not that the old
+      // create never committed. Keep its identity in the persisted draft.
       this.publish({ status: knownFailure && status === 409 ? 'conflict' : knownFailure ? 'failed' : 'uncertain',
         errorStatus: status,
-        pending: knownFailure ? null : submitted,
-        error: typeof (error as { safeMessage?: string }).safeMessage === 'string' ? (error as { safeMessage: string }).safeMessage : 'save_failed' });
+        pending: knownFailure && !expiredUncertainty ? null : submitted,
+        error: code });
       return null;
     } finally { this.busy = false; }
   }

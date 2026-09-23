@@ -72,3 +72,26 @@ test('missing reconciliation support does not discard an uncertain request or mi
   expect(save.getSnapshot().pending).toEqual(pending);
   expect(writes).toBe(0);
 });
+
+test('expired uncertainty survives another reload instead of becoming a fresh create identity', async () => {
+  const first = new RecoverableSave<{ title: string }>('owner');
+  await first.run({ title: 'A' }, 'A', async () => { throw new Error('lost'); }, async () => result());
+  const original = first.getSnapshot().pending!;
+  const missing = async () => { throw Object.assign(new Error('receipt_not_found'), { status: 404, safeMessage: 'receipt_not_found' }); };
+  const expired = async () => { throw Object.assign(new Error('request_expired'), { status: 409, safeMessage: 'request_expired' }); };
+  await first.run({ title: 'B' }, 'B', expired, missing);
+  expect(first.getSnapshot().status).toBe('conflict'); expect(first.getSnapshot().pending).toEqual(original);
+  const reloaded = new RecoverableSave<{ title: string }>('owner'); reloaded.restorePending(first.getSnapshot().pending!);
+  let identity = '';
+  await reloaded.run({ title: 'B' }, 'B', async request => { identity = request.requestId; return expired(); }, missing);
+  expect(identity).toBe(original.requestId); expect(reloaded.getSnapshot().pending).toEqual(original);
+});
+
+test('reauthentication between a missing-receipt read and replay does not erase uncertainty', async () => {
+  const save = new RecoverableSave<{ title: string }>('owner');
+  await save.run({ title: 'A' }, 'A', async () => { throw new Error('lost'); }, async () => result());
+  const original = save.getSnapshot().pending;
+  await save.run({ title: 'B' }, 'B', async () => { throw Object.assign(new Error('unauthorized'), { status: 401 }); },
+    async () => { throw Object.assign(new Error('receipt_not_found'), { status: 404, safeMessage: 'receipt_not_found' }); });
+  expect(save.getSnapshot().status).toBe('uncertain'); expect(save.getSnapshot().pending).toEqual(original);
+});

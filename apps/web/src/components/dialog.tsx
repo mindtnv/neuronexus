@@ -515,6 +515,7 @@ function DialogHost({ dialog, onClose }: { dialog: BasicDialog; onClose: () => v
                       <button
                         key={i}
                         type="button"
+                        aria-pressed={selected}
                         onClick={() => setSelectValue(opt.value)}
                         onDoubleClick={() => {
                           setSelectValue(opt.value);

@@ -24,3 +24,13 @@ export function operationHref(destination: OperationDestination): string {
   return destination.sourceId ? `/library/${encodeURIComponent(destination.sourceId)}?artifact=${id}` : `/library/study?artifact=${id}`;
 }
 export function notifyOperationsChanged() { if (typeof window !== 'undefined') window.dispatchEvent(new Event('nn:operations-changed')); }
+
+/** The source may disappear while its completed artifact remains owned. Resolve
+ * that live link when opening instead of trusting an older observation row. */
+export async function resolveOperationHref(destination: OperationDestination, signal?: AbortSignal): Promise<string> {
+  if (destination.kind === 'source') return operationHref(destination);
+  const result = await fetch(`${apiBaseURL}/operations/v1/artifacts/${encodeURIComponent(destination.id)}`, { credentials: 'include', signal })
+    .then(read<{ destination: OperationDestination }>);
+  if (!result.destination || result.destination.id !== destination.id || result.destination.kind === 'source') throw new OperationRequestError('invalid_result', 502);
+  return operationHref(result.destination);
+}

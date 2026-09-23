@@ -80,3 +80,13 @@ test('viewport presentation changes keep the same dirty guard registered', async
   expect(await transientLayers.dismissTop('escape')).toBe(false);
   expect(transientLayers.hasLayers()).toBe(true);
 });
+
+test('a portal picker cannot move focus into the background of its modal owner', async () => {
+  await act(async () => root.render(<Frame />));
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Menu')!.click());
+  const menu = document.querySelector('[role="menu"]')!;
+  await act(async () => menu.querySelector<HTMLButtonElement>('button')!.focus());
+  expect(menu.contains(document.activeElement)).toBe(true);
+  await act(async () => host.querySelector<HTMLButtonElement>('[data-danger]')!.focus());
+  expect(host.querySelector('[role="dialog"]')!.contains(document.activeElement) || menu.contains(document.activeElement)).toBe(true);
+});

@@ -28,6 +28,8 @@
 // Esc closes. The component is presentational — the parent (StudioPanel) owns the
 // store calls + polling and threads them in as callbacks.
 
+import { NavigationReturn } from '../navigation';
+import { LayerParent, useTransientLayer } from '@/lib/use-transient-layer';
 import { useNavigationScroll } from '@/lib/use-navigation-scroll';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { SourceCitation } from '@neuronexus/shared';
@@ -120,34 +122,27 @@ export const ArtifactReader = ({
   onClose,
   t,
 }: ArtifactReaderProps) => {
-  // Esc closes the overlay.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  const root = useRef<HTMLDivElement>(null);
+  // The artifact is addressed by its existing route/journal entry. Register
+  // dismissal/focus ownership without inserting another browser history entry.
+  const layer = useTransientLayer({ root, modal: true, history: false, onClose });
 
   // A ready quiz renders the PLAYER inside the overlay (wider = comfier).
   const isQuizReady =
     artifact != null && artifact.type === 'quiz' && artifact.status === 'ready';
 
   return (
-    <>
+    <LayerParent.Provider value={layer.id}>
       <div
         className="nn-dialog-backdrop nn-artifact-reader-backdrop"
-        onClick={onClose}
+        onClick={() => void layer.close()}
         aria-hidden
       />
-      <div className="nn-artifact-reader" role="dialog" aria-modal="true">
+      <div ref={root} className="nn-artifact-reader" role="dialog" aria-modal="true" aria-label={artifact?.title ?? t('notebooks.studio.heading')} tabIndex={-1}>
         {loadError && <div role="alert" className="nn-navigation-notice"><span>{t('assistant.contextFailed')}</span><NNBtn size="sm" onClick={onRetry}>{t('review.retry')}</NNBtn></div>}
-        {artifact?.ownerKind === 'source' && <p style={{ margin: 0, padding: '8px 16px', fontSize: 12, color: 'var(--text-dim)' }}>
-          {artifact.sourceOriginTitle}{!artifact.sourceId ? ` · ${t('assistant.sourceUnavailable')}` : ''}
-        </p>}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 16px', fontSize: 12, color: 'var(--text-dim)' }}><NavigationReturn showLabel />
+          {artifact?.ownerKind === 'source' && <span>{artifact.sourceOriginTitle}{!artifact.sourceId ? ` · ${t('assistant.sourceUnavailable')}` : ''}</span>}
+        </div>
         {isQuizReady ? (
           // The QuizPlayer owns its own header (Back) — drop our chrome and let it
           // fill the overlay column. A thin close affordance rides the corner.
@@ -160,7 +155,7 @@ export const ArtifactReader = ({
               listQuizAttempts={listQuizAttempts}
               onOpenCitation={onOpenCitation}
               onPrefillChat={onPrefillChat}
-              onBack={onClose}
+              onBack={() => void layer.close()}
               t={t}
             />
           </div>
@@ -173,12 +168,12 @@ export const ArtifactReader = ({
             onSaveToNote={onSaveToNote}
             onRegenerate={onRegenerate}
             onDelete={onDelete}
-            onClose={onClose}
+            onClose={() => void layer.close()}
             t={t}
           />
         )}
       </div>
-    </>
+    </LayerParent.Provider>
   );
 };
 

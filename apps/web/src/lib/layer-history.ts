@@ -34,7 +34,7 @@ export class LayerHistory {
     enabled: () => boolean;
     push: (state: State) => void;
     go: (delta: number) => void;
-    replace?: (state: State) => void;
+    replace: (state: State) => void;
   }) {}
   start(initialLayer?: unknown) {
     this.unsubscribe = this.stack.subscribe(this.schedule);
@@ -50,7 +50,21 @@ export class LayerHistory {
     this.schedule();
     return new Promise(resolve => this.waiters.add(resolve));
   };
-  refresh = () => { if (!this.moving) this.snapshot = this.browser.state(); this.schedule(); };
+  refresh = () => {
+    if (!this.moving) {
+      const state = this.browser.state(), current = route(state), layer = marker(state);
+      // Next may have captured state before an async inspector mounted, then
+      // commit its query-only replacement after our same-route push. Repair the
+      // marker in that existing entry; never add another entry to compensate.
+      if (this.ids.length && this.base && current?.id === this.base.id && current.owner === this.base.owner
+        && (!layer || layer.generation !== this.generation || layer.depth !== this.ids.length)) {
+        const value: Marker = { version: 1, generation: this.generation, depth: this.ids.length, route: this.base.id, owner: this.base.owner };
+        this.browser.replace({ ...state, [LAYER_HISTORY_KEY]: value });
+      }
+      this.snapshot = this.browser.state();
+    }
+    this.schedule();
+  };
   private schedule = () => {
     if (this.scheduled || this.disposed) return;
     this.scheduled = true;
@@ -106,7 +120,7 @@ export class LayerHistory {
       if (this.snapshot && route(this.snapshot)?.id === target?.id) {
         const restored = { ...this.snapshot }; delete restored[LAYER_HISTORY_KEY];
         if (layer) restored[LAYER_HISTORY_KEY] = layer;
-        this.browser.replace?.(restored);
+        this.browser.replace(restored);
       }
       pending.then?.(); this.schedule(); return true;
     }

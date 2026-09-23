@@ -123,7 +123,7 @@ export function useEditorDraft<T extends object>({ scope, value, fingerprint, va
     if (!owned()) return true;
     if (live.current.busy) return false;
     if (!dirty() || offered.current) return true;
-    const choice = await select({ title: t('editor.draft.leaveTitle'), message: t('editor.draft.leaveBody'), value: 'keep',
+    const choice = await select({ title: t('editor.draft.leaveTitle'), message: t(live.current.unsettled ? 'actionsRecovery.uncertainDraftClose' : 'editor.draft.leaveBody'), value: 'keep',
       options: [ { value: 'save', label: t('editor.draft.saveAndLeave') }, { value: 'keep', label: t('editor.draft.keepAndLeave') }, { value: 'discard', label: t('editor.draft.discardAndLeave') } ],
       confirmLabel: t('editor.draft.continue'), cancelLabel: t('editor.draft.stay'),
     });
