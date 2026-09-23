@@ -1566,5 +1566,5 @@ body:has(.reomi-organized-deck-row[data-dragging]) { user-select: none; cursor: 
 .reomi-source-annotation-notes textarea { box-sizing: border-box; width: 100%; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
 
 .nn-operations-floating-entry { position:fixed; left:16px; bottom:16px; z-index:35; border:1px solid var(--panel-edge); border-radius:12px; background:var(--surface); box-shadow:var(--shadow-sm); }
-.nn-operations-floating-entry .nn-operations-button { min-width:40px; min-height:40px; padding:10px; }
+.nn-operations-floating-entry .nn-operations-button { min-width:40px; min-height:40px; margin:0; padding:10px; }
 .nn-operations-floating-entry .nn-sidebar-label { display:none; }
